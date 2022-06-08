@@ -2,10 +2,10 @@
 
 // FIXME: `WakerId` is non-unique! (`TaskId` may be as well.)
 
-mod abi;
 mod module;
 mod state;
 mod time;
+mod utils;
 mod workflow;
 
 /// Pointer to a task.

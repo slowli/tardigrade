@@ -21,6 +21,31 @@ use crate::{
 };
 use tardigrade_shared::{workflow::Interface, ChannelErrorKind, JoinError, PollMessage};
 
+/// Thin wrapper around `Vec<u8>`.
+#[derive(Clone, PartialEq)]
+struct Message(Vec<u8>);
+
+impl fmt::Debug for Message {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Message")
+            .field("len", &self.0.len())
+            .finish()
+    }
+}
+
+impl From<Vec<u8>> for Message {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+}
+
+impl From<Message> for Vec<u8> {
+    fn from(message: Message) -> Self {
+        message.0
+    }
+}
+
 /// WASM waker ID. Equal to a pointer to the waker instance.
 pub type WakerId = u32;
 
@@ -51,9 +76,10 @@ impl WasmContext {
 
     pub fn save_waker(self, caller: &mut Caller<'_, State>) -> Result<(), Trap> {
         if let Some(placement) = &self.placement {
-            let create_waker = caller.data().exports().create_waker;
-            let waker_id = create_waker.call(&mut *caller, self.ptr)?;
-            dbg!(waker_id);
+            let waker_id = caller
+                .data()
+                .exports()
+                .create_waker(&mut *caller, self.ptr)?;
             caller.data_mut().place_waker(placement, waker_id);
         }
         Ok(())
@@ -99,10 +125,9 @@ impl Wakers {
     }
 
     pub fn wake_all(self, store: &mut Store<State>, receipt: &mut Receipt) {
-        let wake_waker = store.data().exports().wake_waker;
         store.data_mut().current_wakeup_cause = Some(self.cause);
         for waker_id in self.inner {
-            let result = wake_waker.call(&mut *store, waker_id);
+            let result = store.data().exports().wake_waker(&mut *store, waker_id);
             receipt
                 .executions
                 .push(Execution::Waker { waker_id, result });
@@ -218,14 +243,14 @@ impl TaskQueue {
 struct InboundChannelState {
     is_acquired: bool,
     received_messages: usize,
-    pending_message: Option<Vec<u8>>,
+    pending_message: Option<Message>,
     wakes_on_next_element: HashSet<WakerId>,
 }
 
 impl InboundChannelState {
     fn poll_next(&mut self) -> Poll<Option<Vec<u8>>> {
         if let Some(message) = self.pending_message.take() {
-            Poll::Ready(Some(message))
+            Poll::Ready(Some(message.into()))
         } else {
             Poll::Pending
         }
@@ -235,7 +260,7 @@ impl InboundChannelState {
 #[derive(Debug, Default)]
 struct OutboundChannelState {
     flushed_messages: usize,
-    messages: Vec<Vec<u8>>,
+    messages: Vec<Message>,
     wakes_on_flush: HashSet<WakerId>,
 }
 
@@ -287,6 +312,8 @@ impl CurrentTask {
 
     /// Returns aborted tasks.
     fn commit(self, state: &mut State) -> Vec<TaskId> {
+        crate::trace!("Committing {:?} onto {:?}", self, state);
+
         for task_id in self.spawned_tasks {
             let cause = WakeUpCause::Spawned(Some(self.task_id));
             state.task_queue.insert_task(task_id, &cause);
@@ -307,15 +334,22 @@ impl CurrentTask {
                 aborted_tasks.push(*task_id);
             }
         }
+        crate::trace!(
+            "Committed CurrentTask onto {:?}; aborted tasks are {:?}",
+            state,
+            aborted_tasks
+        );
         aborted_tasks
     }
 
     fn revert(self, state: &mut State) {
+        crate::trace!("Reverting {:?} from {:?}", self, state);
         for task_id in self.spawned_tasks {
             state.tasks.remove(&task_id);
             // Since new tasks can only be mentioned in `self.tasks_to_be_awoken`, not in
             // `state.task_queue`, cleaning up the queue is not needed.
         }
+        crate::trace!("Reverted CurrentTask from {:?}", state);
     }
 }
 
@@ -326,7 +360,7 @@ pub(crate) struct State {
 
     inbound_channels: HashMap<String, InboundChannelState>,
     outbound_channels: HashMap<String, OutboundChannelState>,
-    data_inputs: HashMap<String, Vec<u8>>,
+    data_inputs: HashMap<String, Message>,
     timers: Timers,
 
     /// All tasks together with relevant info.
@@ -366,6 +400,10 @@ impl State {
             .outbound_channels()
             .map(|(name, _)| (name.to_owned(), OutboundChannelState::default()))
             .collect();
+        let data_inputs = data_inputs
+            .into_iter()
+            .map(|(name, bytes)| (name, bytes.into()))
+            .collect();
 
         Self {
             exports: None,
@@ -381,9 +419,8 @@ impl State {
         }
     }
 
-    pub fn exports(&self) -> &ModuleExports {
+    pub fn exports(&self) -> ModuleExports {
         self.exports
-            .as_ref()
             .expect("exports accessed before `State` is fully initialized")
     }
 
@@ -429,6 +466,7 @@ impl State {
     }
 
     fn place_waker(&mut self, placement: &WakerPlacement, waker: WakerId) {
+        crate::trace!("Placing waker {} in {:?}", waker, placement);
         match placement {
             WakerPlacement::InboundChannel(name) => {
                 let channel_state = self.inbound_channels.get_mut(name).unwrap();
@@ -452,6 +490,7 @@ impl State {
     }
 
     fn schedule_wakers(&mut self, wakers: HashSet<WakerId>, cause: WakeUpCause) {
+        crate::trace!("Scheduled wakers {:?} with cause {:?}", wakers, cause);
         self.waker_queue.push(Wakers::new(wakers, cause));
     }
 
@@ -488,7 +527,7 @@ impl State {
             channel_name
         );
         let message_index = channel_state.received_messages;
-        channel_state.pending_message = Some(message);
+        channel_state.pending_message = Some(message.into());
         channel_state.received_messages += 1;
 
         let wakers = mem::take(&mut channel_state.wakes_on_next_element);
@@ -538,7 +577,7 @@ impl State {
         message: Vec<u8>,
     ) -> Result<(), Trap> {
         let channel_state = self.outbound_channel(channel_name)?;
-        channel_state.messages.push(message);
+        channel_state.messages.push(message.into());
         Ok(())
     }
 
@@ -573,7 +612,7 @@ impl State {
     }
 
     pub fn data_input(&self, input_name: &str) -> Option<Vec<u8>> {
-        self.data_inputs.get(input_name).cloned()
+        self.data_inputs.get(input_name).map(|data| data.0.clone())
     }
 
     pub fn needs_flushing(&self) -> bool {
@@ -600,7 +639,7 @@ impl State {
                 message_indexes: start_message_idx..(start_message_idx + messages.len()),
             },
         );
-        messages
+        messages.into_iter().map(Into::into).collect()
     }
 
     pub fn spawn_task(&mut self, task_id: TaskId, task_name: String) -> Result<(), Trap> {
@@ -691,11 +730,13 @@ impl State {
         }
     }
 
-    pub fn complete_task(&mut self, task: TaskId, result: Result<(), JoinError>) {
-        let task_state = self.tasks.get_mut(&task).unwrap();
+    pub fn complete_task(&mut self, task_id: TaskId, result: Result<(), JoinError>) {
+        let result = crate::log_result!(result, "Completed task {}", task_id);
+        let task_state = self.tasks.get_mut(&task_id).unwrap();
         task_state.completion_result = Some(result);
+
         let wakers = mem::take(&mut task_state.wakes_on_completion);
-        self.schedule_wakers(wakers, WakeUpCause::CompletedTask(task));
+        self.schedule_wakers(wakers, WakeUpCause::CompletedTask(task_id));
     }
 
     pub fn timers(&self) -> &Timers {
@@ -709,8 +750,9 @@ impl State {
     pub fn set_current_time(&mut self, time: DateTime<Utc>) {
         let wakers_by_timer = self.timers.set_current_time(time);
         for (id, wakers) in wakers_by_timer {
-            self.waker_queue
-                .push(Wakers::new(wakers, WakeUpCause::Timer { id }));
+            let cause = WakeUpCause::Timer { id };
+            crate::trace!("Scheduled wakers {:?} with cause {:?}", wakers, cause);
+            self.waker_queue.push(Wakers::new(wakers, cause));
         }
     }
 

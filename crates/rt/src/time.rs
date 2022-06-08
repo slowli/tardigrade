@@ -136,10 +136,9 @@ impl Timers {
         &mut self,
         time: DateTime<Utc>,
     ) -> impl Iterator<Item = (TimerId, HashSet<WakerId>)> + '_ {
-        self.current_time = dbg!(time);
+        self.current_time = time;
         self.timers.iter_mut().filter_map(move |(&id, state)| {
             if state.definition.expires_at <= time {
-                dbg!(id);
                 Some((id, state.complete()))
             } else {
                 None

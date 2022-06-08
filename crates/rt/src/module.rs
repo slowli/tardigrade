@@ -2,15 +2,16 @@
 
 use anyhow::{anyhow, bail, ensure, Context};
 use wasmtime::{
-    Caller, Engine, ExternType, Func, Instance, Linker, Memory, Store, Trap, TypedFunc,
+    AsContextMut, Caller, Engine, ExternType, Func, Instance, Linker, Memory, Store, Trap,
+    TypedFunc,
 };
 
-use std::fmt;
+use std::{fmt, task::Poll};
 
 use crate::{
-    abi::{copy_bytes_from_wasm, copy_string_from_wasm, WasmAllocator},
     state::{State, WakerId, WasmContext, WasmContextPointer},
     time::{Timer, TimerId},
+    utils::{copy_bytes_from_wasm, copy_string_from_wasm, WasmAllocator},
     TaskId,
 };
 use tardigrade_shared::{
@@ -114,14 +115,58 @@ impl<W: ValidateInterface<()>> WorkflowModule<W> {
     }
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct ModuleExports {
     pub memory: Memory,
-    pub create_main_task: TypedFunc<(), TaskId>,
-    pub poll_task: TypedFunc<(TaskId, TaskId), i32>,
-    pub drop_task: TypedFunc<TaskId, ()>,
-    pub alloc_bytes: TypedFunc<u32, u32>,
-    pub create_waker: TypedFunc<WasmContextPointer, WakerId>,
-    pub wake_waker: TypedFunc<WakerId, ()>,
+    create_main_task: TypedFunc<(), TaskId>,
+    poll_task: TypedFunc<(TaskId, TaskId), i32>,
+    drop_task: TypedFunc<TaskId, ()>,
+    alloc_bytes: TypedFunc<u32, u32>,
+    create_waker: TypedFunc<WasmContextPointer, WakerId>,
+    wake_waker: TypedFunc<WakerId, ()>,
+}
+
+impl ModuleExports {
+    pub fn create_main_task(&self, cx: impl AsContextMut) -> Result<TaskId, Trap> {
+        let result = self.create_main_task.call(cx, ());
+        crate::log_result!(result, "Created main task")
+    }
+
+    pub fn poll_task(&self, cx: impl AsContextMut, task_id: TaskId) -> Result<Poll<()>, Trap> {
+        let result = self
+            .poll_task
+            .call(cx, (task_id, task_id))
+            .and_then(|raw| match raw {
+                0 => Ok(Poll::Pending),
+                1 => Ok(Poll::Ready(())),
+                _ => Err(Trap::new("unexpected value returned by task polling")),
+            });
+        crate::log_result!(result, "Polled task {}", task_id)
+    }
+
+    pub fn drop_task(&self, cx: impl AsContextMut, task_id: TaskId) -> Result<(), Trap> {
+        let result = self.drop_task.call(cx, task_id);
+        crate::log_result!(result, "Dropped task {}", task_id)
+    }
+
+    pub fn alloc_bytes(&self, cx: impl AsContextMut, capacity: u32) -> Result<u32, Trap> {
+        let result = self.alloc_bytes.call(cx, capacity);
+        crate::log_result!(result, "Allocated {} bytes", capacity)
+    }
+
+    pub fn create_waker(
+        &self,
+        cx: impl AsContextMut,
+        cx_ptr: WasmContextPointer,
+    ) -> Result<WakerId, Trap> {
+        let result = self.create_waker.call(cx, cx_ptr);
+        crate::log_result!(result, "Created waker from context {}", cx_ptr)
+    }
+
+    pub fn wake_waker(&self, cx: impl AsContextMut, waker_id: WakerId) -> Result<(), Trap> {
+        let result = self.wake_waker.call(cx, waker_id);
+        crate::log_result!(result, "Waked waker {}", waker_id)
+    }
 }
 
 impl fmt::Debug for ModuleExports {
@@ -319,58 +364,63 @@ impl ModuleImports {
         store: &mut Store<State>,
         linker: &mut Linker<State>,
     ) -> anyhow::Result<()> {
-        let future_poll_task_completion =
-            Func::wrap(&mut *store, Self::future_poll_task_completion);
+        let poll_task_completion = Func::wrap(&mut *store, Self::poll_task_completion);
         linker.define(
             Self::RT_MODULE,
             "task_poll_completion",
-            future_poll_task_completion,
+            poll_task_completion,
         )?;
-        let future_spawn_task = Func::wrap(&mut *store, Self::future_spawn_task);
-        linker.define(Self::RT_MODULE, "task_spawn", future_spawn_task)?;
-        let future_wake_task = Func::wrap(&mut *store, Self::future_wake_task);
-        linker.define(Self::RT_MODULE, "task_wake", future_wake_task)?;
-        let future_schedule_task_abortion = Func::wrap(store, Self::future_schedule_task_abortion);
+        let spawn_task = Func::wrap(&mut *store, Self::spawn_task);
+        linker.define(Self::RT_MODULE, "task_spawn", spawn_task)?;
+        let wake_task = Func::wrap(&mut *store, Self::wake_task);
+        linker.define(Self::RT_MODULE, "task_wake", wake_task)?;
+        let schedule_task_abortion = Func::wrap(store, Self::schedule_task_abortion);
         linker.define(
             Self::RT_MODULE,
             "task_schedule_abortion",
-            future_schedule_task_abortion,
+            schedule_task_abortion,
         )?;
 
         Ok(())
     }
 
-    fn future_poll_task_completion(
+    fn poll_task_completion(
         mut caller: Caller<'_, State>,
-        task: TaskId,
+        task_id: TaskId,
         cx: WasmContextPointer,
     ) -> Result<i64, Trap> {
         let mut cx = WasmContext::new(cx);
-        let poll_result = caller.data_mut().poll_task_completion(task, &mut cx);
+        let poll_result = caller.data_mut().poll_task_completion(task_id, &mut cx);
+        crate::trace!(
+            "Polled completion for task {} with context {:?}: {:?}",
+            task_id,
+            cx,
+            poll_result
+        );
         cx.save_waker(&mut caller)?;
         poll_result.into_abi(&mut WasmAllocator::new(caller))
     }
 
-    fn future_spawn_task(
+    fn spawn_task(
         mut caller: Caller<'_, State>,
         task_name_ptr: u32,
         task_name_len: u32,
-        task: TaskId,
+        task_id: TaskId,
     ) -> Result<(), Trap> {
-        let memory = &caller.data().exports().memory;
-        let task_name = copy_string_from_wasm(&caller, memory, task_name_ptr, task_name_len)?;
-        caller.data_mut().spawn_task(task, task_name)
+        let memory = caller.data().exports().memory;
+        let task_name = copy_string_from_wasm(&caller, &memory, task_name_ptr, task_name_len)?;
+        let result = caller.data_mut().spawn_task(task_id, task_name.clone());
+        crate::log_result!(result, "Spawned task {} with name `{}`", task_id, task_name)
     }
 
-    fn future_wake_task(mut caller: Caller<'_, State>, task: TaskId) -> Result<(), Trap> {
-        caller.data_mut().schedule_task_wakeup(task)
+    fn wake_task(mut caller: Caller<'_, State>, task_id: TaskId) -> Result<(), Trap> {
+        let result = caller.data_mut().schedule_task_wakeup(task_id);
+        crate::log_result!(result, "Scheduled task {} wakeup", task_id)
     }
 
-    fn future_schedule_task_abortion(
-        mut caller: Caller<'_, State>,
-        task: TaskId,
-    ) -> Result<(), Trap> {
-        caller.data_mut().schedule_task_abortion(task)
+    fn schedule_task_abortion(mut caller: Caller<'_, State>, task_id: TaskId) -> Result<(), Trap> {
+        let result = caller.data_mut().schedule_task_abortion(task_id);
+        crate::log_result!(result, "Scheduled task {} to be aborted", task_id)
     }
 
     fn import_channel_functions(
@@ -414,12 +464,12 @@ impl ModuleImports {
         channel_name_ptr: u32,
         channel_name_len: u32,
     ) -> Result<i32, Trap> {
-        let memory = &caller.data().exports().memory;
+        let memory = caller.data().exports().memory;
         let channel_name =
-            copy_string_from_wasm(&caller, memory, channel_name_ptr, channel_name_len)?;
-        caller
-            .data_mut()
-            .acquire_inbound_channel(&channel_name)
+            copy_string_from_wasm(&caller, &memory, channel_name_ptr, channel_name_len)?;
+        let result = caller.data_mut().acquire_inbound_channel(&channel_name);
+
+        crate::log_result!(result, "Acquired inbound channel `{}`", channel_name)
             .into_abi(&mut WasmAllocator::new(caller))
     }
 
@@ -429,15 +479,21 @@ impl ModuleImports {
         channel_name_len: u32,
         cx: WasmContextPointer,
     ) -> Result<i64, Trap> {
-        let memory = &caller.data().exports().memory;
+        let memory = caller.data().exports().memory;
         let channel_name =
-            copy_string_from_wasm(&caller, memory, channel_name_ptr, channel_name_len)?;
-        dbg!("recv", &channel_name);
+            copy_string_from_wasm(&caller, &memory, channel_name_ptr, channel_name_len)?;
 
         let mut cx = WasmContext::new(cx);
         let poll_result = caller
             .data_mut()
-            .poll_inbound_channel(&channel_name, &mut cx)?;
+            .poll_inbound_channel(&channel_name, &mut cx);
+        let poll_result = crate::log_result!(
+            poll_result,
+            "Polled inbound channel `{}` with context {:?}",
+            channel_name,
+            cx
+        )?;
+
         cx.save_waker(&mut caller)?;
         poll_result.into_abi(&mut WasmAllocator::new(caller))
     }
@@ -447,15 +503,16 @@ impl ModuleImports {
         channel_name_ptr: u32,
         channel_name_len: u32,
     ) -> Result<i32, Trap> {
-        let memory = &caller.data().exports().memory;
+        let memory = caller.data().exports().memory;
         let channel_name =
-            copy_string_from_wasm(&caller, memory, channel_name_ptr, channel_name_len)?;
+            copy_string_from_wasm(&caller, &memory, channel_name_ptr, channel_name_len)?;
         let result = if caller.data().has_outbound_channel(&channel_name) {
             Ok(())
         } else {
             Err(ChannelErrorKind::Unknown)
         };
-        result.into_abi(&mut WasmAllocator::new(caller))
+        crate::log_result!(result, "Acquired outbound channel `{}`", channel_name)
+            .into_abi(&mut WasmAllocator::new(caller))
     }
 
     fn mpsc_sender_poll_ready(
@@ -464,15 +521,20 @@ impl ModuleImports {
         channel_name_len: u32,
         cx: WasmContextPointer,
     ) -> Result<i32, Trap> {
-        dbg!("mpsc_sender_poll_ready");
-        let memory = &caller.data().exports().memory;
+        let memory = caller.data().exports().memory;
         let channel_name =
-            copy_string_from_wasm(&caller, memory, channel_name_ptr, channel_name_len)?;
+            copy_string_from_wasm(&caller, &memory, channel_name_ptr, channel_name_len)?;
 
         let mut cx = WasmContext::new(cx);
         let poll_result = caller
             .data_mut()
-            .poll_outbound_channel(&channel_name, false, &mut cx)?;
+            .poll_outbound_channel(&channel_name, false, &mut cx);
+        let poll_result = crate::log_result!(
+            poll_result,
+            "Polled outbound channel `{}` for readiness",
+            channel_name
+        )?;
+
         cx.save_waker(&mut caller)?;
         poll_result.into_abi(&mut WasmAllocator::new(caller))
     }
@@ -484,14 +546,20 @@ impl ModuleImports {
         message_ptr: u32,
         message_len: u32,
     ) -> Result<(), Trap> {
-        dbg!("mpsc_sender_start_send");
-        let memory = &caller.data().exports().memory;
+        let memory = caller.data().exports().memory;
         let channel_name =
-            copy_string_from_wasm(&caller, memory, channel_name_ptr, channel_name_len)?;
-        let message = copy_bytes_from_wasm(&caller, memory, message_ptr, message_len)?;
-        caller
+            copy_string_from_wasm(&caller, &memory, channel_name_ptr, channel_name_len)?;
+        let message = copy_bytes_from_wasm(&caller, &memory, message_ptr, message_len)?;
+
+        let result = caller
             .data_mut()
-            .push_outbound_message(&channel_name, message)
+            .push_outbound_message(&channel_name, message);
+        crate::log_result!(
+            result,
+            "Started sending message ({} bytes) over outbound channel `{}`",
+            message_len,
+            channel_name
+        )
     }
 
     fn mpsc_sender_poll_flush(
@@ -500,15 +568,20 @@ impl ModuleImports {
         channel_name_len: u32,
         cx: WasmContextPointer,
     ) -> Result<i32, Trap> {
-        dbg!("mpsc_sender_poll_flush");
-        let memory = &caller.data().exports().memory;
+        let memory = caller.data().exports().memory;
         let channel_name =
-            copy_string_from_wasm(&caller, memory, channel_name_ptr, channel_name_len)?;
+            copy_string_from_wasm(&caller, &memory, channel_name_ptr, channel_name_len)?;
 
         let mut cx = WasmContext::new(cx);
         let poll_result = caller
             .data_mut()
-            .poll_outbound_channel(&channel_name, true, &mut cx)?;
+            .poll_outbound_channel(&channel_name, true, &mut cx);
+        let poll_result = crate::log_result!(
+            poll_result,
+            "Polled outbound channel `{}` for flush",
+            channel_name
+        )?;
+
         cx.save_waker(&mut caller)?;
         poll_result.into_abi(&mut WasmAllocator::new(caller))
     }
@@ -518,12 +591,19 @@ impl ModuleImports {
         input_name_ptr: u32,
         input_name_len: u32,
     ) -> Result<i64, Trap> {
-        let memory = &caller.data().exports().memory;
-        let input_name = copy_string_from_wasm(&caller, memory, input_name_ptr, input_name_len)?;
-        caller
-            .data()
-            .data_input(&input_name)
-            .into_abi(&mut WasmAllocator::new(caller))
+        let memory = caller.data().exports().memory;
+        let input_name = copy_string_from_wasm(&caller, &memory, input_name_ptr, input_name_len)?;
+        let maybe_data = caller.data().data_input(&input_name);
+
+        crate::trace!(
+            "Acquired data input `{}`: {}",
+            input_name,
+            maybe_data
+                .as_ref()
+                .map(|bytes| format!("{} bytes", bytes.len()))
+                .unwrap_or_else(|| "(no data)".to_owned())
+        );
+        maybe_data.into_abi(&mut WasmAllocator::new(caller))
     }
 
     fn import_timer_functions(
@@ -546,21 +626,29 @@ impl ModuleImports {
         timer_kind: i32,
         timer_value: i64,
     ) -> Result<TimerId, Trap> {
-        dbg!("timer_new");
-        let timer_kind =
-            TimerKind::try_from(timer_kind).map_err(|err| Trap::new(err.to_string()))?;
-        let memory = &caller.data().exports().memory;
-        let timer_name = copy_string_from_wasm(&caller, memory, timer_name_ptr, timer_name_len)?;
-        dbg!(&timer_name);
-        Ok(caller
+        let timer_kind = TimerKind::try_from(timer_kind).map_err(|err| Trap::new(err.to_string()));
+        let timer_kind = crate::log_result!(timer_kind, "Parsed `TimerKind`")?;
+
+        let definition = Timer::from_raw(timer_kind, timer_value);
+        let memory = caller.data().exports().memory;
+        let timer_name = copy_string_from_wasm(&caller, &memory, timer_name_ptr, timer_name_len)?;
+
+        let timer_id = caller
             .data_mut()
             .timers_mut()
-            .insert(timer_name, dbg!(Timer::from_raw(timer_kind, timer_value))))
+            .insert(timer_name.clone(), definition);
+        crate::trace!(
+            "Created timer {} with definition {:?} and name `{}`",
+            timer_id,
+            definition,
+            timer_name
+        );
+        Ok(timer_id)
     }
 
     fn timer_drop(mut caller: Caller<'_, State>, timer_id: TimerId) -> Result<(), Trap> {
-        dbg!(timer_id);
-        caller.data_mut().timers_mut().drop(timer_id)
+        let result = caller.data_mut().timers_mut().drop(timer_id);
+        crate::log_result!(result, "Dropped timer {}", timer_id)
     }
 
     fn timer_poll(
@@ -568,10 +656,14 @@ impl ModuleImports {
         timer_id: TimerId,
         cx: WasmContextPointer,
     ) -> Result<i32, Trap> {
-        dbg!("timer_poll", timer_id);
-
         let mut cx = WasmContext::new(cx);
-        let poll_result = caller.data_mut().poll_timer(timer_id, &mut cx)?;
+        let poll_result = caller.data_mut().poll_timer(timer_id, &mut cx);
+        let poll_result = crate::log_result!(
+            poll_result,
+            "Polled timer {} with context {:?}",
+            timer_id,
+            cx
+        )?;
         cx.save_waker(&mut caller)?;
         poll_result.into_abi(&mut WasmAllocator::new(caller))
     }

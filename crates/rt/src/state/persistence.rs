@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    state::{State, TaskQueue, TaskState, WakerId},
+    state::{Message, State, TaskQueue, TaskState, WakerId},
     time::Timers,
     TaskId,
 };
@@ -109,7 +109,7 @@ pub struct WorkflowState {
     inbound_channels: HashMap<String, InboundChannelState>,
     outbound_channels: HashMap<String, OutboundChannelState>,
     timers: Timers,
-    data_inputs: HashMap<String, Vec<u8>>,
+    data_inputs: HashMap<String, Message>,
     tasks: HashMap<TaskId, TaskState>,
 }
 

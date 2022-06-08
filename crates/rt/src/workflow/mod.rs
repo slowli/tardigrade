@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use wasmtime::{Linker, Store, Trap};
 
-use std::{marker::PhantomData, task::Poll};
+use std::marker::PhantomData;
 
 mod env;
 pub use self::env::{
@@ -96,24 +96,18 @@ impl<W> Workflow<W> {
     }
 
     fn spawn_main_task(&mut self) -> Result<(), Trap> {
-        let main_task_fn = self.store.data().exports().create_main_task;
-        let task_ptr = main_task_fn.call(&mut self.store, ())?;
+        let exports = self.store.data().exports();
+        let task_ptr = exports.create_main_task(&mut self.store)?;
         self.store.data_mut().spawn_main_task(task_ptr);
         Ok(())
     }
 
     fn poll_task(&mut self, task_id: TaskId, receipt: &mut Receipt) {
+        crate::trace!("Polling task {}", task_id);
         self.store.data_mut().set_current_task(task_id);
-        let host_context = task_id;
 
-        let poll_fn = self.store.data().exports().poll_task;
-        let poll_result = poll_fn.call(&mut self.store, (task_id, host_context));
-        let poll_result = poll_result.and_then(|is_finished| match is_finished {
-            0 => Ok(Poll::Pending),
-            1 => Ok(Poll::Ready(())),
-            _ => Err(Trap::new("unexpected value returned by task polling")),
-        });
-
+        let exports = self.store.data().exports();
+        let poll_result = exports.poll_task(&mut self.store, task_id);
         let dropped_tasks = self
             .store
             .data_mut()
@@ -121,11 +115,12 @@ impl<W> Workflow<W> {
         for task_id in dropped_tasks {
             self.drop_task(task_id, receipt);
         }
+        crate::trace!("Finished polling task {}: {:?}", task_id, poll_result);
     }
 
     fn drop_task(&mut self, task_id: TaskId, receipt: &mut Receipt) {
-        let drop_fn = self.store.data().exports().drop_task;
-        let result = drop_fn.call(&mut self.store, task_id);
+        let exports = self.store.data().exports();
+        let result = exports.drop_task(&mut self.store, task_id);
         receipt
             .executions
             .push(Execution::TaskDrop { task_id, result });
@@ -137,6 +132,7 @@ impl<W> Workflow<W> {
 
     fn wake_tasks(&mut self, receipt: &mut Receipt) {
         for wakers in self.store.data_mut().take_wakers() {
+            crate::trace!("Waking up {:?}", wakers);
             wakers.wake_all(&mut self.store, receipt);
         }
     }
@@ -161,19 +157,33 @@ impl<W> Workflow<W> {
         self.store.data().data_input(input_name)
     }
 
-    fn consume_message(
+    fn push_inbound_message(
         &mut self,
         channel_name: &str,
         message: Vec<u8>,
     ) -> Result<Receipt, ConsumeError> {
-        self.store
+        let message_len = message.len();
+        let result = self
+            .store
             .data_mut()
-            .push_inbound_message(channel_name, message)?;
+            .push_inbound_message(channel_name, message);
+        crate::log_result!(
+            result,
+            "Consumed message ({} bytes) for channel `{}`",
+            message_len,
+            channel_name
+        )?;
         Ok(self.tick())
     }
 
     fn take_outbound_messages(&mut self, channel_name: &str) -> Vec<Vec<u8>> {
-        self.store.data_mut().take_outbound_messages(channel_name)
+        let messages = self.store.data_mut().take_outbound_messages(channel_name);
+        crate::trace!(
+            "Taken messages with lengths {:?} from channel `{}`",
+            messages.iter().map(Vec::len).collect::<Vec<_>>(),
+            channel_name
+        );
+        messages
     }
 
     fn current_time(&self) -> DateTime<Utc> {
@@ -182,6 +192,7 @@ impl<W> Workflow<W> {
 
     fn set_current_time(&mut self, time: DateTime<Utc>) {
         self.store.data_mut().set_current_time(time);
+        crate::trace!("Set current time to {}", time);
     }
 
     pub fn persist_state(&self) -> Result<(WorkflowState, Vec<u8>), PersistError> {

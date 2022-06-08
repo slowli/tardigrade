@@ -50,7 +50,7 @@ impl<T, C: Encoder<T>, W> MessageSender<'_, T, C, W> {
     pub fn send(&mut self, message: T) -> Result<Receipt, ConsumeError> {
         let raw_message = self.codec.encode_value(message);
         self.env
-            .with(|workflow| workflow.consume_message(&self.channel_name, raw_message))
+            .with(|workflow| workflow.push_inbound_message(&self.channel_name, raw_message))
     }
 }
 

@@ -49,8 +49,17 @@ impl fmt::Display for ChannelKind {
 pub enum ChannelErrorKind {
     /// Channel was not registered in the workflow interface.
     Unknown,
-    /// An inbound channel was already acquired by the flow.
+    /// An inbound channel was already acquired by the workflow.
     AlreadyAcquired,
+}
+
+impl fmt::Display for ChannelErrorKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Unknown => "channel was not registered in the workflow interface",
+            Self::AlreadyAcquired => "inbound channel was already acquired",
+        })
+    }
 }
 
 impl ChannelErrorKind {
