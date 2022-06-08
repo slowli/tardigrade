@@ -1,0 +1,18 @@
+{
+  "v": 0,
+  "in": {
+    "orders": {
+      "description": "New pizza orders go here"
+    }
+  },
+  "out": {
+    "events": {
+      "description": "Domain events emitted during pizza order lifecycle"
+    }
+  },
+  "data": {
+    "inputs": {
+      "description": "Configuration, such as the number of ovens"
+    }
+  }
+}

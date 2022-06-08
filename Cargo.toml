@@ -1,0 +1,33 @@
+[package]
+name = "tardigrade"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chrono = "0.4.19"
+futures = { version = "0.3.21", features = ["executor"] }
+pin-project-lite = "0.2.9"
+serde = "1"
+serde_json = { version = "1", optional = true }
+
+tardigrade-shared = { version = "0.1.0", path = "crates/shared" }
+
+[features]
+default = ["serde_json"]
+
+# FIXME: make complete, ensure it works
+[profile.wasm]
+inherits = "release"
+panic = "abort"
+codegen-units = 1
+opt-level = "z" # Optimize for size, rather than speed
+lto = true
+
+[workspace]
+members = [
+  ".",
+  "crates/shared",
+  "crates/rt",
+  "e2e-tests/basic",
+]
+
