@@ -31,18 +31,30 @@ pub struct DataInputSpec {
     // TODO: options?
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct Interface<W: ?Sized> {
     #[serde(rename = "v")]
     version: u32,
-    #[serde(rename = "in")]
+    #[serde(rename = "in", default, skip_serializing_if = "HashMap::is_empty")]
     inbound_channels: HashMap<String, InboundChannelSpec>,
-    #[serde(rename = "out")]
+    #[serde(rename = "out", default, skip_serializing_if = "HashMap::is_empty")]
     outbound_channels: HashMap<String, OutboundChannelSpec>,
-    #[serde(rename = "data")]
+    #[serde(rename = "data", default, skip_serializing_if = "HashMap::is_empty")]
     data_inputs: HashMap<String, DataInputSpec>,
-    #[serde(default)]
+    #[serde(skip, default)]
     _workflow: PhantomData<*const W>,
+}
+
+impl Default for Interface<()> {
+    fn default() -> Self {
+        Self {
+            version: 0,
+            inbound_channels: HashMap::new(),
+            outbound_channels: HashMap::new(),
+            data_inputs: HashMap::new(),
+            _workflow: PhantomData,
+        }
+    }
 }
 
 impl<W> Interface<W> {

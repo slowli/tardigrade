@@ -3,6 +3,7 @@
 use anyhow::{anyhow, bail, ensure, Context};
 use wasmtime::{
     AsContextMut, Engine, ExternType, Func, Instance, Linker, Memory, Store, Trap, TypedFunc,
+    WasmParams, WasmResults,
 };
 
 use std::{fmt, task::Poll};
@@ -12,6 +13,21 @@ use crate::{
     TaskId, TimerId, WakerId,
 };
 use tardigrade_shared::workflow::{Interface, ValidateInterface};
+
+fn ensure_func_ty<Args, Out>(ty: &ExternType, fn_name: &str) -> anyhow::Result<()>
+where
+    Args: WasmParams,
+    Out: WasmResults,
+{
+    let ty = ty
+        .func()
+        .ok_or_else(|| anyhow!("`{}` is not a function", fn_name))?;
+
+    Args::typecheck(ty.params())
+        .with_context(|| format!("`{}` function has incorrect param types", fn_name))?;
+    Out::typecheck(ty.results())
+        .with_context(|| format!("`{}` function has incorrect return types", fn_name))
+}
 
 pub struct WorkflowModule<W> {
     pub(crate) inner: wasmtime::Module,
@@ -176,7 +192,7 @@ impl ModuleExports {
     fn validate_module(module: &wasmtime::Module) -> anyhow::Result<()> {
         let memory_ty = module
             .get_export("memory")
-            .ok_or_else(|| anyhow!("Module does not export memory"))?;
+            .ok_or_else(|| anyhow!("module does not export memory"))?;
         ensure!(
             matches!(memory_ty, ExternType::Memory(_)),
             "`memory` export is not a memory"
@@ -197,28 +213,13 @@ impl ModuleExports {
 
     fn ensure_export_ty<Args, Out>(module: &wasmtime::Module, fn_name: &str) -> anyhow::Result<()>
     where
-        Args: wasmtime::WasmParams,
-        Out: wasmtime::WasmResults,
+        Args: WasmParams,
+        Out: WasmResults,
     {
         let ty = module
             .get_export(fn_name)
-            .ok_or_else(|| anyhow!("Module does not export `{}` function", fn_name))?;
-        Self::ensure_func_ty::<Args, Out>(&ty, fn_name)
-    }
-
-    fn ensure_func_ty<Args, Out>(ty: &ExternType, fn_name: &str) -> anyhow::Result<()>
-    where
-        Args: wasmtime::WasmParams,
-        Out: wasmtime::WasmResults,
-    {
-        let ty = ty
-            .func()
-            .ok_or_else(|| anyhow!("`{}` is not a function", fn_name))?;
-
-        Args::typecheck(ty.params())
-            .with_context(|| format!("`{}` function has incorrect param types", fn_name))?;
-        Out::typecheck(ty.results())
-            .with_context(|| format!("`{}` function has incorrect return types", fn_name))
+            .ok_or_else(|| anyhow!("module does not export `{}` function", fn_name))?;
+        ensure_func_ty::<Args, Out>(&ty, fn_name)
     }
 
     pub fn new(store: &mut Store<State>, instance: &Instance) -> Self {
@@ -253,12 +254,12 @@ impl ModuleExports {
         fn_name: &str,
     ) -> TypedFunc<Args, Out>
     where
-        Args: wasmtime::WasmParams,
-        Out: wasmtime::WasmResults,
+        Args: WasmParams,
+        Out: WasmResults,
     {
         instance
             .get_func(&mut *store, fn_name)
-            .unwrap_or_else(|| panic!("Function `{}` is not exported", fn_name))
+            .unwrap_or_else(|| panic!("function `{}` is not exported", fn_name))
             .typed(&*store)
             .with_context(|| format!("Function `{}` has incorrect signature", fn_name))
             .unwrap()
@@ -279,58 +280,45 @@ impl ModuleImports {
         for import in rt_imports {
             let ty = import.ty();
             let fn_name = import.name();
-
-            match fn_name {
-                "task_poll_completion" => {
-                    ModuleExports::ensure_func_ty::<(TaskId, WasmContextPtr), i64>(&ty, fn_name)?;
-                }
-                "task_spawn" => {
-                    ModuleExports::ensure_func_ty::<(u32, u32, TaskId), ()>(&ty, fn_name)?;
-                }
-                "task_wake" | "task_schedule_abortion" => {
-                    ModuleExports::ensure_func_ty::<TaskId, ()>(&ty, fn_name)?;
-                }
-
-                "data_input_get" => {
-                    ModuleExports::ensure_func_ty::<(u32, u32), i64>(&ty, fn_name)?;
-                }
-
-                "mpsc_receiver_get" | "mpsc_sender_get" => {
-                    ModuleExports::ensure_func_ty::<(u32, u32), i32>(&ty, fn_name)?;
-                }
-
-                "mpsc_receiver_poll_next" => {
-                    ModuleExports::ensure_func_ty::<(u32, u32, WasmContextPtr), i64>(&ty, fn_name)?;
-                }
-
-                "mpsc_sender_poll_ready" | "mpsc_sender_poll_flush" => {
-                    ModuleExports::ensure_func_ty::<(u32, u32, WasmContextPtr), i32>(&ty, fn_name)?;
-                }
-                "mpsc_sender_start_send" => {
-                    ModuleExports::ensure_func_ty::<(u32, u32, u32, u32), ()>(&ty, fn_name)?;
-                }
-
-                "timer_new" => {
-                    ModuleExports::ensure_func_ty::<(u32, u32, i32, i64), TimerId>(&ty, fn_name)?;
-                }
-                "timer_drop" => {
-                    ModuleExports::ensure_func_ty::<TimerId, ()>(&ty, fn_name)?;
-                }
-                "timer_poll" => {
-                    ModuleExports::ensure_func_ty::<(TimerId, WasmContextPtr), i32>(&ty, fn_name)?;
-                }
-
-                other => {
-                    bail!(
-                        "Unknown import from `{}` module: `{}`",
-                        Self::RT_MODULE,
-                        other
-                    );
-                }
-            }
+            Self::validate_import(&ty, fn_name)?;
         }
 
         Ok(())
+    }
+
+    fn validate_import(ty: &ExternType, fn_name: &str) -> anyhow::Result<()> {
+        match fn_name {
+            "task_poll_completion" => ensure_func_ty::<(TaskId, WasmContextPtr), i64>(ty, fn_name),
+            "task_spawn" => ensure_func_ty::<(u32, u32, TaskId), ()>(ty, fn_name),
+            "task_wake" | "task_schedule_abortion" => ensure_func_ty::<TaskId, ()>(ty, fn_name),
+
+            "data_input_get" => ensure_func_ty::<(u32, u32), i64>(ty, fn_name),
+
+            "mpsc_receiver_get" | "mpsc_sender_get" => {
+                ensure_func_ty::<(u32, u32), i32>(ty, fn_name)
+            }
+
+            "mpsc_receiver_poll_next" => {
+                ensure_func_ty::<(u32, u32, WasmContextPtr), i64>(ty, fn_name)
+            }
+
+            "mpsc_sender_poll_ready" | "mpsc_sender_poll_flush" => {
+                ensure_func_ty::<(u32, u32, WasmContextPtr), i32>(ty, fn_name)
+            }
+            "mpsc_sender_start_send" => ensure_func_ty::<(u32, u32, u32, u32), ()>(ty, fn_name),
+
+            "timer_new" => ensure_func_ty::<(u32, u32, i32, i64), TimerId>(ty, fn_name),
+            "timer_drop" => ensure_func_ty::<TimerId, ()>(ty, fn_name),
+            "timer_poll" => ensure_func_ty::<(TimerId, WasmContextPtr), i32>(ty, fn_name),
+
+            other => {
+                bail!(
+                    "Unknown import from `{}` module: `{}`",
+                    Self::RT_MODULE,
+                    other
+                );
+            }
+        }
     }
 
     pub fn extend_linker(
@@ -414,5 +402,28 @@ impl ModuleImports {
         let poll_timer = Func::wrap(&mut *store, StateFunctions::poll_timer);
         linker.define(Self::RT_MODULE, "timer_poll", poll_timer)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::collections::HashMap;
+
+    #[test]
+    fn import_checks_are_consistent() {
+        let interface = Interface::default();
+        let state = State::from_interface(&interface, HashMap::new());
+        let engine = Engine::default();
+        let mut store = Store::new(&engine, state);
+        let mut linker = Linker::new(&engine);
+
+        ModuleImports::extend_linker(&mut store, &mut linker).unwrap();
+        let linker_contents: Vec<_> = linker.iter(&mut store).collect();
+        for (module, name, value) in linker_contents {
+            assert_eq!(module, ModuleImports::RT_MODULE);
+            ModuleImports::validate_import(&value.ty(&store), name).unwrap();
+        }
     }
 }
