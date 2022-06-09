@@ -9,10 +9,9 @@ use wasmtime::{
 use std::{fmt, task::Poll};
 
 use crate::{
-    state::{State, WakerId, WasmContext, WasmContextPointer},
-    time::{Timer, TimerId},
+    state::{State, WasmContext, WasmContextPtr},
     utils::{copy_bytes_from_wasm, copy_string_from_wasm, WasmAllocator},
-    TaskId,
+    TaskId, TimerId, WakerId,
 };
 use tardigrade_shared::{
     workflow::{Interface, ValidateInterface},
@@ -122,7 +121,7 @@ pub(crate) struct ModuleExports {
     poll_task: TypedFunc<(TaskId, TaskId), i32>,
     drop_task: TypedFunc<TaskId, ()>,
     alloc_bytes: TypedFunc<u32, u32>,
-    create_waker: TypedFunc<WasmContextPointer, WakerId>,
+    create_waker: TypedFunc<WasmContextPtr, WakerId>,
     wake_waker: TypedFunc<WakerId, ()>,
 }
 
@@ -157,7 +156,7 @@ impl ModuleExports {
     pub fn create_waker(
         &self,
         cx: impl AsContextMut,
-        cx_ptr: WasmContextPointer,
+        cx_ptr: WasmContextPtr,
     ) -> Result<WakerId, Trap> {
         let result = self.create_waker.call(cx, cx_ptr);
         crate::log_result!(result, "Created waker from context {}", cx_ptr)
@@ -192,7 +191,7 @@ impl ModuleExports {
         Self::ensure_export_ty::<(TaskId, TaskId), i32>(module, "__tardigrade_rt__poll_task")?;
         Self::ensure_export_ty::<TaskId, ()>(module, "__tardigrade_rt__drop_task")?;
         Self::ensure_export_ty::<u32, u32>(module, "__tardigrade_rt__alloc_bytes")?;
-        Self::ensure_export_ty::<WasmContextPointer, WakerId>(
+        Self::ensure_export_ty::<WasmContextPtr, WakerId>(
             module,
             "__tardigrade_rt__context_create_waker",
         )?;
@@ -288,9 +287,7 @@ impl ModuleImports {
 
             match fn_name {
                 "task_poll_completion" => {
-                    ModuleExports::ensure_func_ty::<(TaskId, WasmContextPointer), i64>(
-                        &ty, fn_name,
-                    )?;
+                    ModuleExports::ensure_func_ty::<(TaskId, WasmContextPtr), i64>(&ty, fn_name)?;
                 }
                 "task_spawn" => {
                     ModuleExports::ensure_func_ty::<(u32, u32, TaskId), ()>(&ty, fn_name)?;
@@ -308,15 +305,11 @@ impl ModuleImports {
                 }
 
                 "mpsc_receiver_poll_next" => {
-                    ModuleExports::ensure_func_ty::<(u32, u32, WasmContextPointer), i64>(
-                        &ty, fn_name,
-                    )?;
+                    ModuleExports::ensure_func_ty::<(u32, u32, WasmContextPtr), i64>(&ty, fn_name)?;
                 }
 
                 "mpsc_sender_poll_ready" | "mpsc_sender_poll_flush" => {
-                    ModuleExports::ensure_func_ty::<(u32, u32, WasmContextPointer), i32>(
-                        &ty, fn_name,
-                    )?;
+                    ModuleExports::ensure_func_ty::<(u32, u32, WasmContextPtr), i32>(&ty, fn_name)?;
                 }
                 "mpsc_sender_start_send" => {
                     ModuleExports::ensure_func_ty::<(u32, u32, u32, u32), ()>(&ty, fn_name)?;
@@ -329,9 +322,7 @@ impl ModuleImports {
                     ModuleExports::ensure_func_ty::<TimerId, ()>(&ty, fn_name)?;
                 }
                 "timer_poll" => {
-                    ModuleExports::ensure_func_ty::<(TimerId, WasmContextPointer), i32>(
-                        &ty, fn_name,
-                    )?;
+                    ModuleExports::ensure_func_ty::<(TimerId, WasmContextPtr), i32>(&ty, fn_name)?;
                 }
 
                 other => {
@@ -387,7 +378,7 @@ impl ModuleImports {
     fn poll_task_completion(
         mut caller: Caller<'_, State>,
         task_id: TaskId,
-        cx: WasmContextPointer,
+        cx: WasmContextPtr,
     ) -> Result<i64, Trap> {
         let mut cx = WasmContext::new(cx);
         let poll_result = caller.data_mut().poll_task_completion(task_id, &mut cx);
@@ -477,7 +468,7 @@ impl ModuleImports {
         mut caller: Caller<'_, State>,
         channel_name_ptr: u32,
         channel_name_len: u32,
-        cx: WasmContextPointer,
+        cx: WasmContextPtr,
     ) -> Result<i64, Trap> {
         let memory = caller.data().exports().memory;
         let channel_name =
@@ -519,7 +510,7 @@ impl ModuleImports {
         mut caller: Caller<'_, State>,
         channel_name_ptr: u32,
         channel_name_len: u32,
-        cx: WasmContextPointer,
+        cx: WasmContextPtr,
     ) -> Result<i32, Trap> {
         let memory = caller.data().exports().memory;
         let channel_name =
@@ -566,7 +557,7 @@ impl ModuleImports {
         mut caller: Caller<'_, State>,
         channel_name_ptr: u32,
         channel_name_len: u32,
-        cx: WasmContextPointer,
+        cx: WasmContextPtr,
     ) -> Result<i32, Trap> {
         let memory = caller.data().exports().memory;
         let channel_name =
@@ -629,10 +620,10 @@ impl ModuleImports {
         let timer_kind = TimerKind::try_from(timer_kind).map_err(|err| Trap::new(err.to_string()));
         let timer_kind = crate::log_result!(timer_kind, "Parsed `TimerKind`")?;
 
-        let definition = Timer::from_raw(timer_kind, timer_value);
         let memory = caller.data().exports().memory;
         let timer_name = copy_string_from_wasm(&caller, &memory, timer_name_ptr, timer_name_len)?;
 
+        let definition = caller.data().timer_definition(timer_kind, timer_value);
         let timer_id = caller
             .data_mut()
             .create_timer(timer_name.clone(), definition);
@@ -653,7 +644,7 @@ impl ModuleImports {
     fn timer_poll(
         mut caller: Caller<'_, State>,
         timer_id: TimerId,
-        cx: WasmContextPointer,
+        cx: WasmContextPtr,
     ) -> Result<i32, Trap> {
         let mut cx = WasmContext::new(cx);
         let poll_result = caller.data_mut().poll_timer(timer_id, &mut cx);

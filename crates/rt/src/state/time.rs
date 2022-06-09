@@ -9,31 +9,17 @@ use std::{
     task::Poll,
 };
 
-use crate::state::WakerId;
-use tardigrade_shared::TimerKind;
-
-pub type TimerId = u64;
-
-#[derive(Debug, Clone, Copy)]
-#[non_exhaustive]
-pub struct Timer {
-    pub expires_at: DateTime<Utc>,
-}
-
-impl Timer {
-    pub fn from_raw(kind: TimerKind, value: i64) -> Self {
-        let expires_at = match kind {
-            TimerKind::Duration => Utc::now() + Duration::milliseconds(value),
-            TimerKind::Instant => Utc.timestamp_millis(value),
-        };
-        Self { expires_at }
-    }
-}
+use super::{
+    helpers::{WakeIfPending, WakerPlacement, Wakers, WasmContext},
+    State,
+};
+use crate::{TimerId, WakeUpCause, WakerId};
+use tardigrade_shared::{TimerDefinition, TimerKind};
 
 #[derive(Debug, Clone)]
 pub struct TimerState {
     name: String,
-    definition: Timer,
+    definition: TimerDefinition,
     is_completed: bool,
     wakes_on_completion: HashSet<WakerId>,
 }
@@ -43,7 +29,7 @@ impl TimerState {
         &self.name
     }
 
-    pub fn definition(&self) -> Timer {
+    pub fn definition(&self) -> TimerDefinition {
         self.definition
     }
 
@@ -73,7 +59,7 @@ pub(crate) struct Timers {
 }
 
 impl Timers {
-    pub fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             current_time: Utc::now(), // FIXME: generalize
             timers: HashMap::new(),
@@ -89,7 +75,7 @@ impl Timers {
         self.timers.iter().map(|(id, state)| (*id, state))
     }
 
-    pub fn insert(&mut self, name: String, definition: Timer) -> TimerId {
+    fn insert(&mut self, name: String, definition: TimerDefinition) -> TimerId {
         let id = self.next_timer_id;
         self.timers.insert(
             id,
@@ -104,11 +90,11 @@ impl Timers {
         id
     }
 
-    pub fn remove(&mut self, timer_id: TimerId) {
+    pub(super) fn remove(&mut self, timer_id: TimerId) {
         self.timers.remove(&timer_id);
     }
 
-    pub fn poll(&mut self, id: TimerId) -> Result<Poll<()>, Trap> {
+    fn poll(&mut self, id: TimerId) -> Result<Poll<()>, Trap> {
         let timer_state = self
             .timers
             .get_mut(&id)
@@ -116,7 +102,7 @@ impl Timers {
         Ok(timer_state.poll())
     }
 
-    pub fn place_waker(&mut self, id: TimerId, waker: WakerId) {
+    pub(super) fn place_waker(&mut self, id: TimerId, waker: WakerId) {
         self.timers
             .get_mut(&id)
             .unwrap()
@@ -129,7 +115,7 @@ impl Timers {
     }
 
     /// **NB.** The returned iterator must be completely consumed!
-    pub fn set_current_time(
+    fn set_current_time(
         &mut self,
         time: DateTime<Utc>,
     ) -> impl Iterator<Item = (TimerId, HashSet<WakerId>)> + '_ {
@@ -141,5 +127,54 @@ impl Timers {
                 None
             }
         })
+    }
+}
+
+impl State {
+    pub fn timer_definition(&self, kind: TimerKind, value: i64) -> TimerDefinition {
+        let expires_at = match kind {
+            TimerKind::Duration => self.timers.current_time + Duration::milliseconds(value),
+            TimerKind::Instant => Utc.timestamp_millis(value),
+        };
+        TimerDefinition { expires_at }
+    }
+
+    pub fn timers(&self) -> &Timers {
+        &self.timers
+    }
+
+    pub fn create_timer(&mut self, name: String, definition: TimerDefinition) -> TimerId {
+        let timer_id = self.timers.insert(name, definition);
+        let current_task = self.current_execution.as_mut().unwrap();
+        current_task.register_timer(timer_id);
+        timer_id
+    }
+
+    pub fn drop_timer(&mut self, timer_id: TimerId) -> Result<(), Trap> {
+        if self.timers.get(timer_id).is_none() {
+            let message = format!("Timer ID {} is not defined", timer_id);
+            return Err(Trap::new(message));
+        }
+        let current_task = self.current_execution.as_mut().unwrap();
+        current_task.register_timer_drop(timer_id);
+        Ok(())
+    }
+
+    pub fn set_current_time(&mut self, time: DateTime<Utc>) {
+        let wakers_by_timer = self.timers.set_current_time(time);
+        for (id, wakers) in wakers_by_timer {
+            let cause = WakeUpCause::Timer { id };
+            crate::trace!("Scheduled wakers {:?} with cause {:?}", wakers, cause);
+            self.waker_queue.push(Wakers::new(wakers, cause));
+        }
+    }
+
+    pub fn poll_timer(
+        &mut self,
+        timer_id: TimerId,
+        cx: &mut WasmContext,
+    ) -> Result<Poll<()>, Trap> {
+        let poll_result = self.timers.poll(timer_id)?;
+        Ok(poll_result.wake_if_pending(cx, || WakerPlacement::Timer(timer_id)))
     }
 }

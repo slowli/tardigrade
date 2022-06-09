@@ -3,140 +3,18 @@
 use chrono::{DateTime, Utc};
 use wasmtime::{Linker, Store, Trap};
 
-use std::{error, fmt, marker::PhantomData, task::Poll};
+use std::{marker::PhantomData, task::Poll};
 
 mod env;
 pub use self::env::{DataPeeker, MessageReceiver, MessageSender, WorkflowEnv, WorkflowHandle};
 
 use crate::{
     module::{ModuleExports, ModuleImports, WorkflowModule},
-    state::{ConsumeError, PersistError, State, WakeUpCause, WakerId, WorkflowState},
-    time::{TimerId, TimerState},
-    TaskId,
+    state::{PersistError, State, TimerState, WorkflowState},
+    ConsumeError, ExecutedFunction, Execution, ExecutionError, Receipt, ResourceEvent, TaskId,
+    TimerId, WakeUpCause,
 };
 use tardigrade_shared::workflow::{InputsBuilder, PutHandle, TakeHandle};
-
-/// Executed WASM function.
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub enum ExecutedFunction {
-    /// Entry point.
-    Entry,
-    /// Polling a task.
-    #[non_exhaustive]
-    Task {
-        task_id: TaskId,
-        wake_up_cause: WakeUpCause,
-        poll_result: Poll<()>,
-    },
-    /// Waking up a waker.
-    #[non_exhaustive]
-    Waker { waker_id: WakerId },
-    /// Dropping a completed task.
-    #[non_exhaustive]
-    TaskDrop { task_id: TaskId },
-}
-
-impl ExecutedFunction {
-    fn write_summary(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Entry => formatter.write_str("spawning workflow"),
-            Self::Task { task_id, .. } => {
-                write!(formatter, "polling task {}", task_id)
-            }
-            Self::Waker { waker_id } => {
-                write!(formatter, "waking up waker {}", waker_id)
-            }
-            Self::TaskDrop { task_id } => {
-                write!(formatter, "dropping task {}", task_id)
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-#[non_exhaustive]
-pub struct Execution {
-    pub function: ExecutedFunction,
-    pub resource_events: Vec<ResourceEvent>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum ResourceId {
-    Timer(TimerId),
-    Task(TaskId),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum ResourceEventKind {
-    Created,
-    Dropped,
-}
-
-#[derive(Debug)]
-#[non_exhaustive]
-pub struct ResourceEvent {
-    /// Resource ID.
-    pub resource_id: ResourceId,
-    /// Event kind.
-    pub kind: ResourceEventKind,
-}
-
-impl ResourceEvent {
-    /// Extracts IDs of dropped tasks from a vector of events.
-    fn dropped_tasks(events: &[Self]) -> Vec<TaskId> {
-        let task_ids = events.iter().filter_map(|event| {
-            if let (ResourceEventKind::Dropped, ResourceId::Task(task_id)) =
-                (event.kind, event.resource_id)
-            {
-                Some(task_id)
-            } else {
-                None
-            }
-        });
-        task_ids.collect()
-    }
-}
-
-#[derive(Debug)]
-pub struct Receipt {
-    pub(crate) executions: Vec<Execution>,
-}
-
-impl Receipt {
-    fn new() -> Self {
-        Self {
-            executions: Vec::new(),
-        }
-    }
-
-    pub fn executions(&self) -> &[Execution] {
-        &self.executions
-    }
-}
-
-#[derive(Debug)]
-pub struct ExecutionError {
-    receipt: Receipt,
-    trap: Trap,
-}
-
-impl fmt::Display for ExecutionError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "workflow execution failed while ")?;
-        let execution = self.receipt.executions.last().unwrap();
-        execution.function.write_summary(formatter)?;
-        write!(formatter, ": {}", self.trap)
-    }
-}
-
-impl error::Error for ExecutionError {
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
-        Some(&self.trap)
-    }
-}
 
 /// Workflow instance.
 #[derive(Debug)]
@@ -266,7 +144,7 @@ impl<W> Workflow<W> {
         let mut receipt = Receipt::new();
         match self.do_tick(&mut receipt) {
             Ok(()) => Ok(receipt),
-            Err(trap) => Err(ExecutionError { trap, receipt }),
+            Err(trap) => Err(ExecutionError::new(trap, receipt)),
         }
     }
 

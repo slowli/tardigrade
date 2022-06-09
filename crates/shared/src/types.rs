@@ -1,5 +1,7 @@
 //! Types shared between host and client envs.
 
+use chrono::{DateTime, Utc};
+
 use std::{error, fmt, task::Poll};
 
 use crate::{FromAbi, IntoAbiOnStack};
@@ -186,4 +188,9 @@ impl TryFrom<i32> for TimerKind {
             }),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TimerDefinition {
+    pub expires_at: DateTime<Utc>,
 }

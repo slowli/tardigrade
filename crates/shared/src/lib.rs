@@ -8,6 +8,6 @@ pub use crate::{
     abi::{AbiValue, AllocateBytes, FromAbi, IntoAbi, IntoAbiOnStack},
     types::{
         ChannelError, ChannelErrorKind, ChannelKind, JoinError, PollMessage, PollTask,
-        RawChannelResult, TimerKind,
+        RawChannelResult, TimerDefinition, TimerKind,
     },
 };

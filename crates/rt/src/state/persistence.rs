@@ -5,11 +5,13 @@ use std::{
     error, fmt,
 };
 
-use crate::{
-    state::{Message, State, TaskQueue, TaskState, WakerId},
+use super::{
+    helpers::Message,
+    task::{TaskQueue, TaskState},
     time::Timers,
-    TaskId,
+    State,
 };
+use crate::{TaskId, WakerId};
 
 #[derive(Debug)]
 #[non_exhaustive]
