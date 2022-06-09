@@ -53,7 +53,7 @@ pub(super) enum WakerPlacement {
 
 #[derive(Debug)]
 #[must_use = "Needs to be converted to a waker"]
-pub(crate) struct WasmContext {
+pub(super) struct WasmContext {
     ptr: WasmContextPtr,
     placement: Option<WakerPlacement>,
 }

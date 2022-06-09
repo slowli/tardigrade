@@ -1,5 +1,7 @@
 //! Workflow state.
 
+use wasmtime::{Caller, Trap};
+
 use std::collections::{HashMap, HashSet};
 
 mod channel;
@@ -8,7 +10,7 @@ mod persistence;
 mod task;
 mod time;
 
-pub(crate) use self::helpers::{WasmContext, WasmContextPtr};
+pub(crate) use self::helpers::WasmContextPtr;
 pub use self::{
     channel::{ConsumeError, ConsumeErrorKind},
     persistence::{PersistError, WorkflowState},
@@ -21,8 +23,12 @@ use self::{
     task::{TaskQueue, TaskState},
     time::Timers,
 };
-use crate::{module::ModuleExports, TaskId, WakeUpCause};
-use tardigrade_shared::workflow::Interface;
+use crate::{
+    module::ModuleExports,
+    utils::{copy_string_from_wasm, WasmAllocator},
+    TaskId, WakeUpCause,
+};
+use tardigrade_shared::{workflow::Interface, IntoAbi};
 
 #[derive(Debug)]
 pub(crate) struct State {
@@ -101,5 +107,30 @@ impl State {
 
     pub fn data_input(&self, input_name: &str) -> Option<Vec<u8>> {
         self.data_inputs.get(input_name).map(|data| data.to_vec())
+    }
+}
+
+/// Functions operating on `State` exported to WASM.
+pub(crate) struct StateFunctions(());
+
+impl StateFunctions {
+    pub fn data_input(
+        caller: Caller<'_, State>,
+        input_name_ptr: u32,
+        input_name_len: u32,
+    ) -> Result<i64, Trap> {
+        let memory = caller.data().exports().memory;
+        let input_name = copy_string_from_wasm(&caller, &memory, input_name_ptr, input_name_len)?;
+        let maybe_data = caller.data().data_input(&input_name);
+
+        crate::trace!(
+            "Acquired data input `{}`: {}",
+            input_name,
+            maybe_data
+                .as_ref()
+                .map(|bytes| format!("{} bytes", bytes.len()))
+                .unwrap_or_else(|| "(no data)".to_owned())
+        );
+        maybe_data.into_abi(&mut WasmAllocator::new(caller))
     }
 }

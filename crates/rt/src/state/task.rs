@@ -1,6 +1,6 @@
 //! Functionality to manage tasks.
 
-use wasmtime::Trap;
+use wasmtime::{Caller, Trap};
 
 use std::{
     collections::{HashMap, HashSet},
@@ -9,11 +9,14 @@ use std::{
 };
 
 use super::{
-    helpers::{CurrentExecution, WakeIfPending, WakerPlacement, WasmContext},
-    State,
+    helpers::{CurrentExecution, WakeIfPending, WakerPlacement, WasmContext, WasmContextPtr},
+    State, StateFunctions,
 };
-use crate::{ExecutedFunction, ResourceEvent, TaskId, WakeUpCause, WakerId};
-use tardigrade_shared::JoinError;
+use crate::{
+    utils::{copy_string_from_wasm, WasmAllocator},
+    ExecutedFunction, ResourceEvent, TaskId, WakeUpCause, WakerId,
+};
+use tardigrade_shared::{IntoAbi, JoinError};
 
 /// Priority queue for tasks.
 #[derive(Debug, Default)]
@@ -92,7 +95,7 @@ impl State {
         current_execution.register_task_drop(task_id);
     }
 
-    pub fn spawn_task(&mut self, task_id: TaskId, task_name: String) -> Result<(), Trap> {
+    fn spawn_task(&mut self, task_id: TaskId, task_name: String) -> Result<(), Trap> {
         if self.tasks.contains_key(&task_id) {
             let message = format!("ABI misuse: task ID {} is reused", task_id);
             return Err(Trap::new(message));
@@ -118,7 +121,7 @@ impl State {
         );
     }
 
-    pub fn poll_task_completion(
+    fn poll_task_completion(
         &mut self,
         task: TaskId,
         cx: &mut WasmContext,
@@ -131,7 +134,7 @@ impl State {
         poll_result.wake_if_pending(cx, || WakerPlacement::TaskCompletion(task))
     }
 
-    pub fn schedule_task_wakeup(&mut self, task_id: TaskId) -> Result<(), Trap> {
+    fn schedule_task_wakeup(&mut self, task_id: TaskId) -> Result<(), Trap> {
         if !self.tasks.contains_key(&task_id) {
             let message = format!("unknown task ID {} scheduled for wakeup", task_id);
             return Err(Trap::new(message));
@@ -149,7 +152,7 @@ impl State {
         Ok(())
     }
 
-    pub fn schedule_task_abortion(&mut self, task_id: TaskId) -> Result<(), Trap> {
+    fn schedule_task_abortion(&mut self, task_id: TaskId) -> Result<(), Trap> {
         if !self.tasks.contains_key(&task_id) {
             let message = format!("unknown task {} scheduled for abortion", task_id);
             return Err(Trap::new(message));
@@ -186,5 +189,50 @@ impl State {
 
         let wakers = mem::take(&mut task_state.wakes_on_completion);
         self.schedule_wakers(wakers, WakeUpCause::CompletedTask(task_id));
+    }
+}
+
+/// Task-related functions exported to WASM.
+impl StateFunctions {
+    pub fn poll_task_completion(
+        mut caller: Caller<'_, State>,
+        task_id: TaskId,
+        cx: WasmContextPtr,
+    ) -> Result<i64, Trap> {
+        let mut cx = WasmContext::new(cx);
+        let poll_result = caller.data_mut().poll_task_completion(task_id, &mut cx);
+        crate::trace!(
+            "Polled completion for task {} with context {:?}: {:?}",
+            task_id,
+            cx,
+            poll_result
+        );
+        cx.save_waker(&mut caller)?;
+        poll_result.into_abi(&mut WasmAllocator::new(caller))
+    }
+
+    pub fn spawn_task(
+        mut caller: Caller<'_, State>,
+        task_name_ptr: u32,
+        task_name_len: u32,
+        task_id: TaskId,
+    ) -> Result<(), Trap> {
+        let memory = caller.data().exports().memory;
+        let task_name = copy_string_from_wasm(&caller, &memory, task_name_ptr, task_name_len)?;
+        let result = caller.data_mut().spawn_task(task_id, task_name.clone());
+        crate::log_result!(result, "Spawned task {} with name `{}`", task_id, task_name)
+    }
+
+    pub fn wake_task(mut caller: Caller<'_, State>, task_id: TaskId) -> Result<(), Trap> {
+        let result = caller.data_mut().schedule_task_wakeup(task_id);
+        crate::log_result!(result, "Scheduled task {} wakeup", task_id)
+    }
+
+    pub fn schedule_task_abortion(
+        mut caller: Caller<'_, State>,
+        task_id: TaskId,
+    ) -> Result<(), Trap> {
+        let result = caller.data_mut().schedule_task_abortion(task_id);
+        crate::log_result!(result, "Scheduled task {} to be aborted", task_id)
     }
 }

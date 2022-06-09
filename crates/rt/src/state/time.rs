@@ -1,7 +1,7 @@
 //! Time utilities.
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
-use wasmtime::Trap;
+use wasmtime::{Caller, Trap};
 
 use std::{
     collections::{HashMap, HashSet},
@@ -10,11 +10,14 @@ use std::{
 };
 
 use super::{
-    helpers::{WakeIfPending, WakerPlacement, Wakers, WasmContext},
-    State,
+    helpers::{WakeIfPending, WakerPlacement, Wakers, WasmContext, WasmContextPtr},
+    State, StateFunctions,
 };
-use crate::{TimerId, WakeUpCause, WakerId};
-use tardigrade_shared::{TimerDefinition, TimerKind};
+use crate::{
+    utils::{copy_string_from_wasm, WasmAllocator},
+    TimerId, WakeUpCause, WakerId,
+};
+use tardigrade_shared::{IntoAbi, TimerDefinition, TimerKind};
 
 #[derive(Debug, Clone)]
 pub struct TimerState {
@@ -131,7 +134,7 @@ impl Timers {
 }
 
 impl State {
-    pub fn timer_definition(&self, kind: TimerKind, value: i64) -> TimerDefinition {
+    fn timer_definition(&self, kind: TimerKind, value: i64) -> TimerDefinition {
         let expires_at = match kind {
             TimerKind::Duration => self.timers.current_time + Duration::milliseconds(value),
             TimerKind::Instant => Utc.timestamp_millis(value),
@@ -143,14 +146,14 @@ impl State {
         &self.timers
     }
 
-    pub fn create_timer(&mut self, name: String, definition: TimerDefinition) -> TimerId {
+    fn create_timer(&mut self, name: String, definition: TimerDefinition) -> TimerId {
         let timer_id = self.timers.insert(name, definition);
         let current_task = self.current_execution.as_mut().unwrap();
         current_task.register_timer(timer_id);
         timer_id
     }
 
-    pub fn drop_timer(&mut self, timer_id: TimerId) -> Result<(), Trap> {
+    fn drop_timer(&mut self, timer_id: TimerId) -> Result<(), Trap> {
         if self.timers.get(timer_id).is_none() {
             let message = format!("Timer ID {} is not defined", timer_id);
             return Err(Trap::new(message));
@@ -169,12 +172,59 @@ impl State {
         }
     }
 
-    pub fn poll_timer(
-        &mut self,
-        timer_id: TimerId,
-        cx: &mut WasmContext,
-    ) -> Result<Poll<()>, Trap> {
+    fn poll_timer(&mut self, timer_id: TimerId, cx: &mut WasmContext) -> Result<Poll<()>, Trap> {
         let poll_result = self.timers.poll(timer_id)?;
         Ok(poll_result.wake_if_pending(cx, || WakerPlacement::Timer(timer_id)))
+    }
+}
+
+/// Timer-related functions exported to WASM.
+impl StateFunctions {
+    pub fn create_timer(
+        mut caller: Caller<'_, State>,
+        timer_name_ptr: u32,
+        timer_name_len: u32,
+        timer_kind: i32,
+        timer_value: i64,
+    ) -> Result<TimerId, Trap> {
+        let timer_kind = TimerKind::try_from(timer_kind).map_err(|err| Trap::new(err.to_string()));
+        let timer_kind = crate::log_result!(timer_kind, "Parsed `TimerKind`")?;
+
+        let memory = caller.data().exports().memory;
+        let timer_name = copy_string_from_wasm(&caller, &memory, timer_name_ptr, timer_name_len)?;
+
+        let definition = caller.data().timer_definition(timer_kind, timer_value);
+        let timer_id = caller
+            .data_mut()
+            .create_timer(timer_name.clone(), definition);
+        crate::trace!(
+            "Created timer {} with definition {:?} and name `{}`",
+            timer_id,
+            definition,
+            timer_name
+        );
+        Ok(timer_id)
+    }
+
+    pub fn drop_timer(mut caller: Caller<'_, State>, timer_id: TimerId) -> Result<(), Trap> {
+        let result = caller.data_mut().drop_timer(timer_id);
+        crate::log_result!(result, "Dropped timer {}", timer_id)
+    }
+
+    pub fn poll_timer(
+        mut caller: Caller<'_, State>,
+        timer_id: TimerId,
+        cx: WasmContextPtr,
+    ) -> Result<i32, Trap> {
+        let mut cx = WasmContext::new(cx);
+        let poll_result = caller.data_mut().poll_timer(timer_id, &mut cx);
+        let poll_result = crate::log_result!(
+            poll_result,
+            "Polled timer {} with context {:?}",
+            timer_id,
+            cx
+        )?;
+        cx.save_waker(&mut caller)?;
+        poll_result.into_abi(&mut WasmAllocator::new(caller))
     }
 }
