@@ -81,8 +81,12 @@ impl Timers {
         }
     }
 
-    pub fn inner(&self) -> &HashMap<TimerId, TimerState> {
-        &self.timers
+    pub fn get(&self, id: TimerId) -> Option<&TimerState> {
+        self.timers.get(&id)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (TimerId, &TimerState)> + '_ {
+        self.timers.iter().map(|(id, state)| (*id, state))
     }
 
     pub fn insert(&mut self, name: String, definition: Timer) -> TimerId {
@@ -100,15 +104,8 @@ impl Timers {
         id
     }
 
-    pub fn drop(&mut self, id: TimerId) -> Result<(), Trap> {
-        if self.timers.remove(&id).is_none() {
-            Err(Trap::new(format!(
-                "Timeout with ID {} is not registered",
-                id
-            )))
-        } else {
-            Ok(())
-        }
+    pub fn remove(&mut self, timer_id: TimerId) {
+        self.timers.remove(&timer_id);
     }
 
     pub fn poll(&mut self, id: TimerId) -> Result<Poll<()>, Trap> {

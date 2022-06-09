@@ -16,8 +16,8 @@ pub use self::persistence::{PersistError, WorkflowState};
 
 use crate::{
     module::ModuleExports,
-    time::{TimerId, Timers},
-    Execution, Receipt, TaskId,
+    time::{Timer, TimerId, Timers},
+    ExecutedFunction, ResourceEvent, ResourceEventKind, ResourceId, TaskId,
 };
 use tardigrade_shared::{workflow::Interface, ChannelErrorKind, JoinError, PollMessage};
 
@@ -111,7 +111,7 @@ impl<T> WakeIfPending for Poll<T> {
 
 #[must_use = "Wakers need to be actually woken up"]
 #[derive(Debug)]
-pub(crate) struct Wakers {
+struct Wakers {
     inner: HashSet<WakerId>,
     cause: WakeUpCause,
 }
@@ -124,15 +124,11 @@ impl Wakers {
         }
     }
 
-    pub fn wake_all(self, store: &mut Store<State>, receipt: &mut Receipt) {
-        store.data_mut().current_wakeup_cause = Some(self.cause);
-        for waker_id in self.inner {
-            let result = store.data().exports().wake_waker(&mut *store, waker_id);
-            receipt
-                .executions
-                .push(Execution::Waker { waker_id, result });
-        }
-        store.data_mut().current_wakeup_cause = None;
+    fn into_iter(self) -> impl Iterator<Item = (WakerId, WakeUpCause)> {
+        let cause = self.cause;
+        self.inner
+            .into_iter()
+            .map(move |waker_id| (waker_id, cause.clone()))
     }
 }
 
@@ -205,7 +201,7 @@ pub enum WakeUpCause {
     },
 
     /// Initial task enqueuing after it was spawned.
-    Spawned(Option<TaskId>),
+    Spawned(Box<ExecutedFunction>),
     /// Woken up by another task (e.g., due to internal channels or other sync primitives).
     Task(TaskId),
     /// Woken up by task completion.
@@ -268,12 +264,12 @@ struct OutboundChannelState {
 struct TaskState {
     _name: String,
     completion_result: Option<Result<(), JoinError>>,
-    _spawned_by: Option<TaskId>,
+    _spawned_by: ExecutedFunction,
     wakes_on_completion: HashSet<WakerId>,
 }
 
 impl TaskState {
-    fn new(name: String, spawned_by: Option<TaskId>) -> Self {
+    fn new(name: String, spawned_by: ExecutedFunction) -> Self {
         Self {
             _name: name,
             completion_result: None,
@@ -289,67 +285,100 @@ impl TaskState {
 
 // FIXME: encapsulate channel progress as well
 #[derive(Debug)]
-pub(crate) struct CurrentTask {
-    /// ID of the current task.
-    task_id: TaskId,
-    /// Newly spawned tasks.
-    spawned_tasks: HashSet<TaskId>,
+pub(crate) struct CurrentExecution {
+    /// Executed function.
+    function: ExecutedFunction,
     /// Tasks to be awaken after the task finishes polling.
     tasks_to_be_awoken: HashSet<TaskId>,
     /// Tasks to be aborted after the task finishes polling.
     tasks_to_be_aborted: HashSet<TaskId>,
+    /// Log of resource events.
+    resource_events: Vec<ResourceEvent>,
 }
 
-impl CurrentTask {
-    fn new(task_id: TaskId) -> Self {
+impl CurrentExecution {
+    fn new(function: ExecutedFunction) -> Self {
         Self {
-            task_id,
-            spawned_tasks: HashSet::new(),
+            function,
             tasks_to_be_awoken: HashSet::new(),
             tasks_to_be_aborted: HashSet::new(),
+            resource_events: Vec::new(),
         }
     }
 
-    /// Returns aborted tasks.
-    fn commit(self, state: &mut State) -> Vec<TaskId> {
+    fn register_task(&mut self, task_id: TaskId) {
+        self.resource_events.push(ResourceEvent {
+            resource_id: ResourceId::Task(task_id),
+            kind: ResourceEventKind::Created,
+        });
+    }
+
+    fn register_task_drop(&mut self, task_id: TaskId) {
+        if self.tasks_to_be_aborted.insert(task_id) {
+            self.resource_events.push(ResourceEvent {
+                resource_id: ResourceId::Task(task_id),
+                kind: ResourceEventKind::Dropped,
+            });
+        }
+    }
+
+    fn register_timer(&mut self, timer_id: TimerId) {
+        self.resource_events.push(ResourceEvent {
+            resource_id: ResourceId::Timer(timer_id),
+            kind: ResourceEventKind::Created,
+        });
+    }
+
+    fn register_timer_drop(&mut self, timer_id: TimerId) {
+        self.resource_events.push(ResourceEvent {
+            resource_id: ResourceId::Timer(timer_id),
+            kind: ResourceEventKind::Dropped,
+        });
+    }
+
+    fn commit(self, state: &mut State) -> Vec<ResourceEvent> {
+        use self::ResourceEventKind::*;
+
         crate::trace!("Committing {:?} onto {:?}", self, state);
-
-        for task_id in self.spawned_tasks {
-            let cause = WakeUpCause::Spawned(Some(self.task_id));
-            state.task_queue.insert_task(task_id, &cause);
-        }
-        for task_id in self.tasks_to_be_awoken {
-            state
-                .task_queue
-                .insert_task(task_id, &WakeUpCause::Task(self.task_id));
-        }
-
-        let mut aborted_tasks = Vec::with_capacity(self.tasks_to_be_aborted.len());
-        for task_id in &self.tasks_to_be_aborted {
-            let task_state = state.tasks.get_mut(task_id).unwrap();
-            if task_state.completion_result.is_none() {
-                task_state.completion_result = Some(Err(JoinError::Aborted));
-                let wakers = mem::take(&mut task_state.wakes_on_completion);
-                state.schedule_wakers(wakers, WakeUpCause::CompletedTask(*task_id));
-                aborted_tasks.push(*task_id);
+        for event in &self.resource_events {
+            match (event.kind, event.resource_id) {
+                (Created, ResourceId::Task(task_id)) => {
+                    let cause = WakeUpCause::Spawned(Box::new(self.function.clone()));
+                    state.task_queue.insert_task(task_id, &cause);
+                }
+                (Dropped, ResourceId::Timer(timer_id)) => {
+                    state.timers.remove(timer_id);
+                }
+                _ => { /* Do nothing */ }
             }
         }
-        crate::trace!(
-            "Committed CurrentTask onto {:?}; aborted tasks are {:?}",
-            state,
-            aborted_tasks
-        );
-        aborted_tasks
+
+        for task_id in self.tasks_to_be_awoken {
+            state.task_queue.insert_task(task_id, &WakeUpCause::Task(0)); // FIXME: ???
+        }
+        crate::trace!("Committed CurrentTask onto {:?}", state);
+        self.resource_events
     }
 
-    fn revert(self, state: &mut State) {
+    fn revert(self, state: &mut State) -> Vec<ResourceEvent> {
+        use self::ResourceEventKind::*;
+
         crate::trace!("Reverting {:?} from {:?}", self, state);
-        for task_id in self.spawned_tasks {
-            state.tasks.remove(&task_id);
-            // Since new tasks can only be mentioned in `self.tasks_to_be_awoken`, not in
-            // `state.task_queue`, cleaning up the queue is not needed.
+        for event in &self.resource_events {
+            match (event.kind, event.resource_id) {
+                (Created, ResourceId::Task(task_id)) => {
+                    state.tasks.remove(&task_id);
+                    // Since new tasks can only be mentioned in `self.tasks_to_be_awoken`, not in
+                    // `state.task_queue`, cleaning up the queue is not needed.
+                }
+                (Created, ResourceId::Timer(timer_id)) => {
+                    state.timers.remove(timer_id);
+                }
+                _ => { /* Do nothing */ }
+            }
         }
         crate::trace!("Reverted CurrentTask from {:?}", state);
+        self.resource_events
     }
 }
 
@@ -365,8 +394,8 @@ pub(crate) struct State {
 
     /// All tasks together with relevant info.
     tasks: HashMap<TaskId, TaskState>,
-    /// Currently polled task.
-    current_task: Option<CurrentTask>,
+    /// Data related to the currently executing WASM call.
+    current_execution: Option<CurrentExecution>,
     /// Tasks that should be polled after `current_task`.
     task_queue: TaskQueue,
     /// Wakers that need to be woken up.
@@ -412,7 +441,7 @@ impl State {
             data_inputs,
             timers: Timers::new(),
             tasks: HashMap::new(),
-            current_task: None,
+            current_execution: None,
             task_queue: TaskQueue::default(),
             waker_queue: Vec::new(),
             current_wakeup_cause: None,
@@ -428,41 +457,31 @@ impl State {
         self.exports = Some(exports);
     }
 
-    pub fn set_current_task(&mut self, task_id: TaskId) {
-        self.current_task = Some(CurrentTask::new(task_id));
+    pub fn set_current_execution(&mut self, function: ExecutedFunction) {
+        self.current_execution = Some(CurrentExecution::new(function));
     }
 
     /// Returns tasks that need to be dropped.
-    pub fn remove_current_task(&mut self, poll_result: Result<Poll<()>, &Trap>) -> Vec<TaskId> {
-        let current_task = self.current_task.take().expect("no current task");
-        let current_task_id = current_task.task_id;
-        let mut dropped_tasks = Vec::new();
-        if poll_result.is_ok() {
-            dropped_tasks = current_task.commit(self);
+    pub fn remove_current_execution(&mut self, revert: bool) -> Vec<ResourceEvent> {
+        let current_execution = self.current_execution.take().expect("no current task");
+        if revert {
+            current_execution.revert(self)
         } else {
-            // TODO: is dropping tasks still relevant in this case? (Probably not.)
-            current_task.revert(self);
+            current_execution.commit(self)
         }
+    }
 
-        match poll_result {
-            Ok(Poll::Pending) => { /* Nothing to do here */ }
-            Ok(Poll::Ready(())) => {
-                self.complete_task(current_task_id, Ok(()));
-                dropped_tasks.push(current_task_id);
-            }
-            Err(_) => {
-                self.complete_task(current_task_id, Err(JoinError::Trapped));
-                dropped_tasks.push(current_task_id);
-            }
-        }
+    pub fn complete_current_task(&mut self) {
+        let current_execution = self.current_execution.as_ref().unwrap();
+        let task_id = if let ExecutedFunction::Task { task_id, .. } = current_execution.function {
+            task_id
+        } else {
+            unreachable!("`complete_current_task` called when task isn't executing")
+        };
+        self.complete_task(task_id, Ok(()));
 
-        debug_assert_eq!(
-            dropped_tasks.iter().collect::<HashSet<_>>().len(),
-            dropped_tasks.len(),
-            "Dropped tasks contain duplicates: {:?}",
-            dropped_tasks
-        );
-        dropped_tasks
+        let current_execution = self.current_execution.as_mut().unwrap();
+        current_execution.register_task_drop(task_id);
     }
 
     fn place_waker(&mut self, placement: &WakerPlacement, waker: WakerId) {
@@ -494,8 +513,20 @@ impl State {
         self.waker_queue.push(Wakers::new(wakers, cause));
     }
 
-    pub fn take_wakers(&mut self) -> Vec<Wakers> {
-        mem::take(&mut self.waker_queue)
+    pub fn take_wakers(&mut self) -> impl Iterator<Item = (WakerId, WakeUpCause)> {
+        let wakers = mem::take(&mut self.waker_queue);
+        wakers.into_iter().flat_map(Wakers::into_iter)
+    }
+
+    pub fn wake(
+        store: &mut Store<Self>,
+        waker_id: WakerId,
+        cause: WakeUpCause,
+    ) -> Result<(), Trap> {
+        store.data_mut().current_wakeup_cause = Some(cause);
+        let result = store.data().exports().wake_waker(&mut *store, waker_id);
+        store.data_mut().current_wakeup_cause = None;
+        result
     }
 
     pub fn push_inbound_message(
@@ -569,6 +600,13 @@ impl State {
             let message = format!("No outbound channel `{}`", channel_name);
             Trap::new(message)
         })
+    }
+
+    pub fn outbound_message_indices(&self, channel_name: &str) -> Range<usize> {
+        let channel_state = &self.outbound_channels[channel_name];
+        let start = channel_state.flushed_messages;
+        let end = start + channel_state.messages.len();
+        start..end
     }
 
     pub fn push_outbound_message(
@@ -648,12 +686,9 @@ impl State {
             return Err(Trap::new(message));
         }
 
-        let current_task = self
-            .current_task
-            .as_mut()
-            .expect("task spawned outside event loop");
-        current_task.spawned_tasks.insert(task_id);
-        let task_state = TaskState::new(task_name, Some(current_task.task_id));
+        let current_task = self.current_execution.as_mut().unwrap();
+        current_task.register_task(task_id);
+        let task_state = TaskState::new(task_name, current_task.function.clone());
         self.tasks.insert(task_id, task_state);
         Ok(())
     }
@@ -661,12 +696,14 @@ impl State {
     pub fn spawn_main_task(&mut self, task_id: TaskId) {
         debug_assert!(self.tasks.is_empty());
         debug_assert!(self.task_queue.is_empty());
-        debug_assert!(self.current_task.is_none());
+        debug_assert!(self.current_execution.is_none());
 
-        let task_state = TaskState::new("_main".to_owned(), None);
+        let task_state = TaskState::new("_main".to_owned(), ExecutedFunction::Entry);
         self.tasks.insert(task_id, task_state);
-        self.task_queue
-            .insert_task(task_id, &WakeUpCause::Spawned(None));
+        self.task_queue.insert_task(
+            task_id,
+            &WakeUpCause::Spawned(Box::new(ExecutedFunction::Entry)),
+        );
     }
 
     pub fn poll_task_completion(
@@ -688,7 +725,7 @@ impl State {
             return Err(Trap::new(message));
         }
 
-        if let Some(current_task) = &mut self.current_task {
+        if let Some(current_task) = &mut self.current_execution {
             current_task.tasks_to_be_awoken.insert(task_id);
         } else {
             let cause = self
@@ -707,7 +744,7 @@ impl State {
         }
 
         let current_task = self
-            .current_task
+            .current_execution
             .as_mut()
             .expect("task aborted outside event loop");
         current_task.tasks_to_be_aborted.insert(task_id);
@@ -743,8 +780,21 @@ impl State {
         &self.timers
     }
 
-    pub fn timers_mut(&mut self) -> &mut Timers {
-        &mut self.timers
+    pub fn create_timer(&mut self, name: String, definition: Timer) -> TimerId {
+        let timer_id = self.timers.insert(name, definition);
+        let current_task = self.current_execution.as_mut().unwrap();
+        current_task.register_timer(timer_id);
+        timer_id
+    }
+
+    pub fn drop_timer(&mut self, timer_id: TimerId) -> Result<(), Trap> {
+        if self.timers.get(timer_id).is_none() {
+            let message = format!("Timer ID {} is not defined", timer_id);
+            return Err(Trap::new(message));
+        }
+        let current_task = self.current_execution.as_mut().unwrap();
+        current_task.register_timer_drop(timer_id);
+        Ok(())
     }
 
     pub fn set_current_time(&mut self, time: DateTime<Utc>) {

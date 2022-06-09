@@ -134,7 +134,7 @@ impl From<WorkflowState> for State {
             timers: persisted.timers,
             data_inputs: persisted.data_inputs,
             tasks: persisted.tasks,
-            current_task: None,
+            current_execution: None,
             task_queue: TaskQueue::default(),
             waker_queue: Vec::new(),
             current_wakeup_cause: None,
@@ -145,7 +145,7 @@ impl From<WorkflowState> for State {
 impl State {
     pub fn persist(&self) -> Result<WorkflowState, PersistError> {
         // Check that we're not losing info.
-        if self.current_task.is_some()
+        if self.current_execution.is_some()
             || !self.task_queue.is_empty()
             || !self.waker_queue.is_empty()
         {

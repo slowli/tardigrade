@@ -1,11 +1,8 @@
 //! Workflow environment.
 
-use chrono::{DateTime, Utc};
+use std::{cell::RefCell, marker::PhantomData, ops::Range, rc::Rc};
 
-use std::{cell::RefCell, collections::HashMap, marker::PhantomData, rc::Rc};
-
-use super::{ConsumeError, Receipt, Workflow};
-use crate::time::{TimerId, TimerState};
+use super::{ConsumeError, ExecutionError, Receipt, Workflow};
 use tardigrade::{
     channel::{Receiver, Sender},
     Data, Decoder, Encoder,
@@ -47,7 +44,7 @@ pub struct MessageSender<'a, T, C, W> {
 }
 
 impl<T, C: Encoder<T>, W> MessageSender<'_, T, C, W> {
-    pub fn send(&mut self, message: T) -> Result<Receipt, ConsumeError> {
+    pub fn send(&mut self, message: T) -> Result<(), ConsumeError> {
         let raw_message = self.codec.encode_value(message);
         self.env
             .with(|workflow| workflow.push_inbound_message(&self.channel_name, raw_message))
@@ -84,7 +81,20 @@ pub struct MessageReceiver<'a, T, C, W> {
 }
 
 impl<T, C: Decoder<T>, W> MessageReceiver<'_, T, C, W> {
-    pub fn flush_messages(&mut self) -> (Vec<T>, Receipt) {
+    pub fn message_indices(&self) -> Range<usize> {
+        self.env.with(|workflow| {
+            workflow
+                .store
+                .data()
+                .outbound_message_indices(&self.channel_name)
+        })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.message_indices().is_empty()
+    }
+
+    pub fn flush_messages(&mut self) -> (Vec<T>, Result<Receipt, ExecutionError>) {
         let (raw_messages, receipt) = self.env.with(|workflow| {
             let messages = workflow.take_outbound_messages(&self.channel_name);
             (messages, workflow.tick())
@@ -158,36 +168,12 @@ where
     }
 }
 
-#[derive(Debug)]
-pub struct TimerHandle<'a, W> {
-    env: WorkflowEnv<'a, W>,
-}
-
-impl<W> TimerHandle<'_, W> {
-    pub fn current_time(&self) -> DateTime<Utc> {
-        self.env.with(|workflow| workflow.current_time())
-    }
-
-    pub fn set_current_time(&mut self, time: DateTime<Utc>) -> Receipt {
-        self.env.with(|workflow| {
-            workflow.set_current_time(time);
-            workflow.tick()
-        })
-    }
-
-    pub fn timers(&self) -> HashMap<TimerId, TimerState> {
-        self.env
-            .with(|workflow| workflow.store.data().timers().inner().clone())
-    }
-}
-
-#[non_exhaustive]
 pub struct WorkflowHandle<'a, W>
 where
     W: WithHandle<WorkflowEnv<'a, W>> + 'a,
 {
     pub interface: <W as WithHandle<WorkflowEnv<'a, W>>>::Handle,
-    pub timers: TimerHandle<'a, W>,
+    env: WorkflowEnv<'a, W>,
 }
 
 impl<'a, W> WorkflowHandle<'a, W>
@@ -198,7 +184,11 @@ where
         let mut env = WorkflowEnv::new(workflow);
         Self {
             interface: W::take_handle(&mut env, ()),
-            timers: TimerHandle { env },
+            env,
         }
+    }
+
+    pub fn with<T>(&mut self, action: impl FnOnce(&mut Workflow<W>) -> T) -> T {
+        self.env.with(action)
     }
 }

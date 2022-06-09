@@ -635,8 +635,7 @@ impl ModuleImports {
 
         let timer_id = caller
             .data_mut()
-            .timers_mut()
-            .insert(timer_name.clone(), definition);
+            .create_timer(timer_name.clone(), definition);
         crate::trace!(
             "Created timer {} with definition {:?} and name `{}`",
             timer_id,
@@ -647,7 +646,7 @@ impl ModuleImports {
     }
 
     fn timer_drop(mut caller: Caller<'_, State>, timer_id: TimerId) -> Result<(), Trap> {
-        let result = caller.data_mut().timers_mut().drop(timer_id);
+        let result = caller.data_mut().drop_timer(timer_id);
         crate::log_result!(result, "Dropped timer {}", timer_id)
     }
 

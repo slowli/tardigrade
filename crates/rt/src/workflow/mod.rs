@@ -3,38 +3,101 @@
 use chrono::{DateTime, Utc};
 use wasmtime::{Linker, Store, Trap};
 
-use std::marker::PhantomData;
+use std::{error, fmt, marker::PhantomData, task::Poll};
 
 mod env;
-pub use self::env::{
-    DataPeeker, MessageReceiver, MessageSender, TimerHandle, WorkflowEnv, WorkflowHandle,
-};
+pub use self::env::{DataPeeker, MessageReceiver, MessageSender, WorkflowEnv, WorkflowHandle};
 
 use crate::{
     module::{ModuleExports, ModuleImports, WorkflowModule},
     state::{ConsumeError, PersistError, State, WakeUpCause, WakerId, WorkflowState},
+    time::{TimerId, TimerState},
     TaskId,
 };
 use tardigrade_shared::workflow::{InputsBuilder, PutHandle, TakeHandle};
 
+/// Executed WASM function.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub enum Execution {
+pub enum ExecutedFunction {
+    /// Entry point.
+    Entry,
+    /// Polling a task.
     #[non_exhaustive]
     Task {
         task_id: TaskId,
         wake_up_cause: WakeUpCause,
+        poll_result: Poll<()>,
     },
+    /// Waking up a waker.
     #[non_exhaustive]
-    Waker {
-        waker_id: WakerId,
-        result: Result<(), Trap>,
-    },
+    Waker { waker_id: WakerId },
+    /// Dropping a completed task.
     #[non_exhaustive]
-    TaskDrop {
-        task_id: TaskId,
-        result: Result<(), Trap>,
-    },
+    TaskDrop { task_id: TaskId },
+}
+
+impl ExecutedFunction {
+    fn write_summary(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Entry => formatter.write_str("spawning workflow"),
+            Self::Task { task_id, .. } => {
+                write!(formatter, "polling task {}", task_id)
+            }
+            Self::Waker { waker_id } => {
+                write!(formatter, "waking up waker {}", waker_id)
+            }
+            Self::TaskDrop { task_id } => {
+                write!(formatter, "dropping task {}", task_id)
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct Execution {
+    pub function: ExecutedFunction,
+    pub resource_events: Vec<ResourceEvent>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ResourceId {
+    Timer(TimerId),
+    Task(TaskId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ResourceEventKind {
+    Created,
+    Dropped,
+}
+
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct ResourceEvent {
+    /// Resource ID.
+    pub resource_id: ResourceId,
+    /// Event kind.
+    pub kind: ResourceEventKind,
+}
+
+impl ResourceEvent {
+    /// Extracts IDs of dropped tasks from a vector of events.
+    fn dropped_tasks(events: &[Self]) -> Vec<TaskId> {
+        let task_ids = events.iter().filter_map(|event| {
+            if let (ResourceEventKind::Dropped, ResourceId::Task(task_id)) =
+                (event.kind, event.resource_id)
+            {
+                Some(task_id)
+            } else {
+                None
+            }
+        });
+        task_ids.collect()
+    }
 }
 
 #[derive(Debug)]
@@ -54,6 +117,27 @@ impl Receipt {
     }
 }
 
+#[derive(Debug)]
+pub struct ExecutionError {
+    receipt: Receipt,
+    trap: Trap,
+}
+
+impl fmt::Display for ExecutionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "workflow execution failed while ")?;
+        let execution = self.receipt.executions.last().unwrap();
+        execution.function.write_summary(formatter)?;
+        write!(formatter, ": {}", self.trap)
+    }
+}
+
+impl error::Error for ExecutionError {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        Some(&self.trap)
+    }
+}
+
 /// Workflow instance.
 #[derive(Debug)]
 pub struct Workflow<W> {
@@ -68,7 +152,7 @@ impl<W: PutHandle<InputsBuilder, ()>> Workflow<W> {
         let mut this = Self::from_state(module, state)?;
         this.spawn_main_task()?;
         let receipt = this.tick();
-        Ok((this, receipt))
+        Ok((this, receipt?))
     }
 }
 
@@ -76,7 +160,7 @@ impl<'a, W> Workflow<W>
 where
     W: TakeHandle<WorkflowEnv<'a, W>, ()> + 'a,
 {
-    pub fn handle(&'a mut self) -> WorkflowHandle<W> {
+    pub fn handle(&'a mut self) -> WorkflowHandle<'a, W> {
         WorkflowHandle::new(self)
     }
 }
@@ -102,55 +186,98 @@ impl<W> Workflow<W> {
         Ok(())
     }
 
-    fn poll_task(&mut self, task_id: TaskId, receipt: &mut Receipt) {
-        crate::trace!("Polling task {}", task_id);
-        self.store.data_mut().set_current_task(task_id);
+    fn wrap_execution<T>(
+        &mut self,
+        function: ExecutedFunction,
+        receipt: &mut Receipt,
+        action: impl FnOnce(&mut Self) -> Result<T, Trap>,
+    ) -> Result<T, Trap> {
+        self.store
+            .data_mut()
+            .set_current_execution(function.clone());
 
-        let exports = self.store.data().exports();
-        let poll_result = exports.poll_task(&mut self.store, task_id);
-        let dropped_tasks = self
+        let output = action(self);
+        let resource_events = self
             .store
             .data_mut()
-            .remove_current_task(poll_result.as_ref().copied());
+            .remove_current_execution(output.is_err());
+        let dropped_tasks = ResourceEvent::dropped_tasks(&resource_events);
+        receipt.executions.push(Execution {
+            function,
+            resource_events,
+        });
+
+        // On error, we don't drop tasks mentioned in `resource_events`.
+        let output = output?;
+
         for task_id in dropped_tasks {
-            self.drop_task(task_id, receipt);
+            let function = ExecutedFunction::TaskDrop { task_id };
+            let exports = self.store.data().exports();
+            self.wrap_execution(function, receipt, |this| {
+                exports.drop_task(&mut this.store, task_id)
+            })?;
         }
-        crate::trace!("Finished polling task {}: {:?}", task_id, poll_result);
+        Ok(output)
     }
 
-    fn drop_task(&mut self, task_id: TaskId, receipt: &mut Receipt) {
-        let exports = self.store.data().exports();
-        let result = exports.drop_task(&mut self.store, task_id);
-        receipt
-            .executions
-            .push(Execution::TaskDrop { task_id, result });
+    fn poll_task(
+        &mut self,
+        task_id: TaskId,
+        wake_up_cause: WakeUpCause,
+        receipt: &mut Receipt,
+    ) -> Result<(), Trap> {
+        crate::trace!("Polling task {} because of {:?}", task_id, wake_up_cause);
+
+        let function = ExecutedFunction::Task {
+            task_id,
+            wake_up_cause,
+            poll_result: Poll::Pending,
+        };
+        let poll_result = self.wrap_execution(function, receipt, |this| {
+            let exports = this.store.data().exports();
+            let poll_result = exports.poll_task(&mut this.store, task_id);
+            if let Ok(Poll::Ready(())) = &poll_result {
+                this.store.data_mut().complete_current_task();
+            }
+            poll_result
+        });
+
+        crate::log_result!(poll_result, "Finished polling task {}", task_id).map(drop)
     }
 
     pub fn queued_tasks(&self) -> impl Iterator<Item = (TaskId, &WakeUpCause)> + '_ {
         self.store.data().queued_tasks()
     }
 
-    fn wake_tasks(&mut self, receipt: &mut Receipt) {
-        for wakers in self.store.data_mut().take_wakers() {
-            crate::trace!("Waking up {:?}", wakers);
-            wakers.wake_all(&mut self.store, receipt);
+    fn wake_tasks(&mut self, receipt: &mut Receipt) -> Result<(), Trap> {
+        let wakers = self.store.data_mut().take_wakers();
+        for (waker_id, cause) in wakers {
+            let function = ExecutedFunction::Waker { waker_id };
+            self.wrap_execution(function, receipt, |this| {
+                crate::trace!("Waking up waker {} with cause {:?}", waker_id, cause);
+                State::wake(&mut this.store, waker_id, cause)
+            })?;
         }
+        Ok(())
     }
 
     // FIXME: revert actions (sending messages, spawning tasks) on task panic
-    fn tick(&mut self) -> Receipt {
+    pub fn tick(&mut self) -> Result<Receipt, ExecutionError> {
         let mut receipt = Receipt::new();
-        self.wake_tasks(&mut receipt);
+        match self.do_tick(&mut receipt) {
+            Ok(()) => Ok(receipt),
+            Err(trap) => Err(ExecutionError { trap, receipt }),
+        }
+    }
+
+    fn do_tick(&mut self, receipt: &mut Receipt) -> Result<(), Trap> {
+        self.wake_tasks(receipt)?;
 
         while let Some((task_id, wake_up_cause)) = self.store.data_mut().take_next_task() {
-            receipt.executions.push(Execution::Task {
-                task_id,
-                wake_up_cause,
-            });
-            self.poll_task(task_id, &mut receipt);
-            self.wake_tasks(&mut receipt);
+            self.poll_task(task_id, wake_up_cause, receipt)?;
+            self.wake_tasks(receipt)?;
         }
-        receipt
+        Ok(())
     }
 
     fn data_input(&self, input_name: &str) -> Option<Vec<u8>> {
@@ -161,7 +288,7 @@ impl<W> Workflow<W> {
         &mut self,
         channel_name: &str,
         message: Vec<u8>,
-    ) -> Result<Receipt, ConsumeError> {
+    ) -> Result<(), ConsumeError> {
         let message_len = message.len();
         let result = self
             .store
@@ -172,8 +299,7 @@ impl<W> Workflow<W> {
             "Consumed message ({} bytes) for channel `{}`",
             message_len,
             channel_name
-        )?;
-        Ok(self.tick())
+        )
     }
 
     fn take_outbound_messages(&mut self, channel_name: &str) -> Vec<Vec<u8>> {
@@ -186,13 +312,22 @@ impl<W> Workflow<W> {
         messages
     }
 
-    fn current_time(&self) -> DateTime<Utc> {
+    pub fn current_time(&self) -> DateTime<Utc> {
         self.store.data().timers().current_time()
     }
 
-    fn set_current_time(&mut self, time: DateTime<Utc>) {
+    pub fn set_current_time(&mut self, time: DateTime<Utc>) -> Result<Receipt, ExecutionError> {
         self.store.data_mut().set_current_time(time);
         crate::trace!("Set current time to {}", time);
+        self.tick()
+    }
+
+    pub fn timer(&self, id: TimerId) -> Option<&TimerState> {
+        self.store.data().timers().get(id)
+    }
+
+    pub fn timers(&self) -> impl Iterator<Item = (TimerId, &TimerState)> + '_ {
+        self.store.data().timers().iter()
     }
 
     pub fn persist_state(&self) -> Result<(WorkflowState, Vec<u8>), PersistError> {

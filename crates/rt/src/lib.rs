@@ -14,7 +14,7 @@ pub type TaskId = i64;
 pub use crate::{
     module::WorkflowModule,
     workflow::{
-        DataPeeker, Execution, MessageReceiver, MessageSender, Receipt, TimerHandle, Workflow,
-        WorkflowHandle,
+        DataPeeker, ExecutedFunction, Execution, ExecutionError, MessageReceiver, MessageSender,
+        Receipt, ResourceEvent, ResourceEventKind, ResourceId, Workflow, WorkflowHandle,
     },
 };
