@@ -75,13 +75,6 @@ impl ExecutedFunction {
     }
 }
 
-#[derive(Debug)]
-#[non_exhaustive]
-pub struct Execution {
-    pub function: ExecutedFunction,
-    pub resource_events: Vec<ResourceEvent>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ResourceId {
@@ -105,20 +98,56 @@ pub struct ResourceEvent {
     pub kind: ResourceEventKind,
 }
 
-impl ResourceEvent {
-    /// Extracts IDs of dropped tasks from a vector of events.
-    pub(crate) fn dropped_tasks(events: &[Self]) -> Vec<TaskId> {
-        let task_ids = events.iter().filter_map(|event| {
-            if let (ResourceEventKind::Dropped, ResourceId::Task(task_id)) =
-                (event.kind, event.resource_id)
-            {
-                Some(task_id)
-            } else {
-                None
-            }
-        });
-        task_ids.collect()
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ChannelEventKind {
+    InboundChannelPolled,
+    OutboundChannelReady,
+    OutboundChannelFlushed,
+}
+
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct ChannelEvent {
+    pub kind: ChannelEventKind,
+    pub channel_name: String,
+    pub result: Poll<()>,
+}
+
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum Event {
+    Resource(ResourceEvent),
+    Channel(ChannelEvent),
+}
+
+impl From<ResourceEvent> for Event {
+    fn from(event: ResourceEvent) -> Self {
+        Self::Resource(event)
     }
+}
+
+impl From<ChannelEvent> for Event {
+    fn from(event: ChannelEvent) -> Self {
+        Self::Channel(event)
+    }
+}
+
+impl Event {
+    pub(crate) fn as_resource_event(&self) -> Option<&ResourceEvent> {
+        if let Event::Resource(res_event) = self {
+            Some(res_event)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct Execution {
+    pub function: ExecutedFunction,
+    pub events: Vec<Event>,
 }
 
 #[derive(Debug)]

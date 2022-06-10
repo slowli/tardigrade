@@ -2,7 +2,10 @@
 
 use std::{cell::RefCell, marker::PhantomData, ops::Range, rc::Rc};
 
-use crate::{ConsumeError, ExecutionError, Receipt, Workflow};
+use crate::{
+    receipt::{ExecutionError, Receipt},
+    ConsumeError, Workflow,
+};
 use tardigrade::{
     channel::{Receiver, Sender},
     Data, Decoder, Encoder,

@@ -13,8 +13,9 @@ use super::{
     State, StateFunctions,
 };
 use crate::{
+    receipt::{Event, ExecutedFunction, WakeUpCause},
     utils::{copy_string_from_wasm, WasmAllocator},
-    ExecutedFunction, ResourceEvent, TaskId, WakeUpCause, WakerId,
+    TaskId, WakerId,
 };
 use tardigrade_shared::{IntoAbi, JoinError};
 
@@ -79,13 +80,19 @@ impl TaskState {
 }
 
 impl State {
+    pub(super) fn current_execution(&mut self) -> &mut CurrentExecution {
+        self.current_execution
+            .as_mut()
+            .expect("called outside event loop")
+    }
+
     pub fn set_current_execution(&mut self, function: ExecutedFunction) {
         self.current_execution = Some(CurrentExecution::new(function));
     }
 
     /// Returns tasks that need to be dropped.
-    pub fn remove_current_execution(&mut self, revert: bool) -> Vec<ResourceEvent> {
-        let current_execution = self.current_execution.take().expect("no current task");
+    pub fn remove_current_execution(&mut self, revert: bool) -> Vec<Event> {
+        let current_execution = self.current_execution.take().unwrap();
         if revert {
             current_execution.revert(self)
         } else {
@@ -94,16 +101,14 @@ impl State {
     }
 
     pub fn complete_current_task(&mut self) {
-        let current_execution = self.current_execution.as_ref().unwrap();
+        let current_execution = self.current_execution();
         let task_id = if let ExecutedFunction::Task { task_id, .. } = current_execution.function {
             task_id
         } else {
             unreachable!("`complete_current_task` called when task isn't executing")
         };
         self.complete_task(task_id, Ok(()));
-
-        let current_execution = self.current_execution.as_mut().unwrap();
-        current_execution.register_task_drop(task_id);
+        self.current_execution().register_task_drop(task_id);
     }
 
     fn spawn_task(&mut self, task_id: TaskId, task_name: String) -> Result<(), Trap> {
@@ -112,9 +117,9 @@ impl State {
             return Err(Trap::new(message));
         }
 
-        let current_task = self.current_execution.as_mut().unwrap();
-        current_task.register_task(task_id);
-        let task_state = TaskState::new(task_name, current_task.function.clone());
+        let execution = self.current_execution();
+        execution.register_task(task_id);
+        let task_state = TaskState::new(task_name, execution.function.clone());
         self.tasks.insert(task_id, task_state);
         Ok(())
     }
@@ -164,12 +169,7 @@ impl State {
             let message = format!("unknown task {} scheduled for abortion", task_id);
             return Err(Trap::new(message));
         }
-
-        let current_task = self
-            .current_execution
-            .as_mut()
-            .expect("task aborted outside event loop");
-        current_task.register_task_drop(task_id);
+        self.current_execution().register_task_drop(task_id);
         Ok(())
     }
 

@@ -5,9 +5,14 @@ use wasmtime::{Caller, Store, Trap};
 use std::{collections::HashSet, fmt, mem, task::Poll};
 
 use crate::{
-    state::State, ExecutedFunction, ResourceEvent, ResourceEventKind, ResourceId, TaskId, TimerId,
-    WakeUpCause, WakerId,
+    receipt::{
+        ChannelEvent, ChannelEventKind, Event, ExecutedFunction, ResourceEvent, ResourceEventKind,
+        ResourceId, WakeUpCause,
+    },
+    state::State,
+    TaskId, TimerId, WakerId,
 };
+use tardigrade_shared::PollMessage;
 
 /// Thin wrapper around `Vec<u8>`.
 #[derive(Clone, PartialEq)]
@@ -133,8 +138,8 @@ pub(super) struct CurrentExecution {
     tasks_to_be_awoken: HashSet<TaskId>,
     /// Tasks to be aborted after the task finishes polling.
     tasks_to_be_aborted: HashSet<TaskId>,
-    /// Log of resource events.
-    resource_events: Vec<ResourceEvent>,
+    /// Log of events.
+    events: Vec<Event>,
 }
 
 impl CurrentExecution {
@@ -143,12 +148,23 @@ impl CurrentExecution {
             function,
             tasks_to_be_awoken: HashSet::new(),
             tasks_to_be_aborted: HashSet::new(),
-            resource_events: Vec::new(),
+            events: Vec::new(),
+        }
+    }
+
+    fn push_event(&mut self, event: impl Into<Event>) {
+        self.events.push(event.into());
+    }
+
+    fn drop_value<T>(poll_result: &Poll<T>) -> Poll<()> {
+        match poll_result {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(_) => Poll::Ready(()),
         }
     }
 
     pub fn register_task(&mut self, task_id: TaskId) {
-        self.resource_events.push(ResourceEvent {
+        self.push_event(ResourceEvent {
             resource_id: ResourceId::Task(task_id),
             kind: ResourceEventKind::Created,
         });
@@ -156,7 +172,7 @@ impl CurrentExecution {
 
     pub fn register_task_drop(&mut self, task_id: TaskId) {
         if self.tasks_to_be_aborted.insert(task_id) {
-            self.resource_events.push(ResourceEvent {
+            self.push_event(ResourceEvent {
                 resource_id: ResourceId::Task(task_id),
                 kind: ResourceEventKind::Dropped,
             });
@@ -167,25 +183,54 @@ impl CurrentExecution {
         self.tasks_to_be_awoken.insert(task_id);
     }
 
+    pub fn register_inbound_channel_poll(&mut self, channel_name: &str, result: &PollMessage) {
+        self.push_event(ChannelEvent {
+            kind: ChannelEventKind::InboundChannelPolled,
+            channel_name: channel_name.to_owned(),
+            result: Self::drop_value(result),
+        })
+    }
+
+    pub fn register_outbound_channel_poll(
+        &mut self,
+        channel_name: &str,
+        flush: bool,
+        result: Poll<()>,
+    ) {
+        self.push_event(ChannelEvent {
+            kind: if flush {
+                ChannelEventKind::OutboundChannelFlushed
+            } else {
+                ChannelEventKind::OutboundChannelReady
+            },
+            channel_name: channel_name.to_owned(),
+            result,
+        });
+    }
+
     pub fn register_timer(&mut self, timer_id: TimerId) {
-        self.resource_events.push(ResourceEvent {
+        self.push_event(ResourceEvent {
             resource_id: ResourceId::Timer(timer_id),
             kind: ResourceEventKind::Created,
         });
     }
 
     pub fn register_timer_drop(&mut self, timer_id: TimerId) {
-        self.resource_events.push(ResourceEvent {
+        self.push_event(ResourceEvent {
             resource_id: ResourceId::Timer(timer_id),
             kind: ResourceEventKind::Dropped,
         });
     }
 
-    pub fn commit(self, state: &mut State) -> Vec<ResourceEvent> {
+    fn resource_events(events: &[Event]) -> impl Iterator<Item = &ResourceEvent> {
+        events.iter().filter_map(Event::as_resource_event)
+    }
+
+    pub fn commit(self, state: &mut State) -> Vec<Event> {
         use self::ResourceEventKind::*;
 
         crate::trace!("Committing {:?} onto {:?}", self, state);
-        for event in &self.resource_events {
+        for event in Self::resource_events(&self.events) {
             match (event.kind, event.resource_id) {
                 (Created, ResourceId::Task(task_id)) => {
                     let cause = WakeUpCause::Spawned(Box::new(self.function.clone()));
@@ -202,14 +247,14 @@ impl CurrentExecution {
             state.task_queue.insert_task(task_id, &WakeUpCause::Task(0)); // FIXME: ???
         }
         crate::trace!("Committed CurrentTask onto {:?}", state);
-        self.resource_events
+        self.events
     }
 
-    pub fn revert(self, state: &mut State) -> Vec<ResourceEvent> {
+    pub fn revert(self, state: &mut State) -> Vec<Event> {
         use self::ResourceEventKind::*;
 
         crate::trace!("Reverting {:?} from {:?}", self, state);
-        for event in &self.resource_events {
+        for event in Self::resource_events(&self.events) {
             match (event.kind, event.resource_id) {
                 (Created, ResourceId::Task(task_id)) => {
                     state.tasks.remove(&task_id);
@@ -223,7 +268,7 @@ impl CurrentExecution {
             }
         }
         crate::trace!("Reverted CurrentTask from {:?}", state);
-        self.resource_events
+        self.events
     }
 }
 

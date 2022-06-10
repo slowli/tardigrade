@@ -26,8 +26,9 @@ use self::{
 };
 use crate::{
     module::ModuleExports,
+    receipt::WakeUpCause,
     utils::{copy_string_from_wasm, WasmAllocator},
-    TaskId, WakeUpCause,
+    TaskId,
 };
 use tardigrade_shared::{workflow::Interface, IntoAbi};
 

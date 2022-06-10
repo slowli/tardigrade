@@ -10,9 +10,12 @@ pub use self::env::{DataPeeker, MessageReceiver, MessageSender, WorkflowEnv, Wor
 
 use crate::{
     module::{ModuleExports, ModuleImports, WorkflowModule},
-    state::{PersistError, State, TaskState, TimerState, WorkflowState},
-    ConsumeError, ExecutedFunction, Execution, ExecutionError, Receipt, ResourceEvent, TaskId,
-    TimerId, WakeUpCause,
+    receipt::{
+        Event, ExecutedFunction, Execution, ExecutionError, Receipt, ResourceEventKind, ResourceId,
+        WakeUpCause,
+    },
+    state::{ConsumeError, PersistError, State, TaskState, TimerState, WorkflowState},
+    TaskId, TimerId,
 };
 use tardigrade_shared::workflow::{InputsBuilder, PutHandle, TakeHandle};
 
@@ -118,15 +121,12 @@ impl<W> Workflow<W> {
             .set_current_execution(function.clone());
 
         let output = self.do_execute(&mut function);
-        let resource_events = self
+        let events = self
             .store
             .data_mut()
             .remove_current_execution(output.is_err());
-        let dropped_tasks = ResourceEvent::dropped_tasks(&resource_events);
-        receipt.executions.push(Execution {
-            function,
-            resource_events,
-        });
+        let dropped_tasks = Self::dropped_tasks(&events);
+        receipt.executions.push(Execution { function, events });
 
         // On error, we don't drop tasks mentioned in `resource_events`.
         let output = output?;
@@ -136,6 +136,20 @@ impl<W> Workflow<W> {
             self.execute(function, receipt)?;
         }
         Ok(output)
+    }
+
+    fn dropped_tasks(events: &[Event]) -> Vec<TaskId> {
+        let task_ids = events.iter().filter_map(|event| {
+            let event = event.as_resource_event()?;
+            if let (ResourceEventKind::Dropped, ResourceId::Task(task_id)) =
+                (event.kind, event.resource_id)
+            {
+                Some(task_id)
+            } else {
+                None
+            }
+        });
+        task_ids.collect()
     }
 
     fn poll_task(

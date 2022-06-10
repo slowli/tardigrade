@@ -9,8 +9,9 @@ use super::{
     State, StateFunctions,
 };
 use crate::{
+    receipt::WakeUpCause,
     utils::{copy_bytes_from_wasm, copy_string_from_wasm, WasmAllocator},
-    WakeUpCause, WakerId,
+    WakerId,
 };
 use tardigrade_shared::{ChannelErrorKind, IntoAbi, PollMessage};
 
@@ -193,7 +194,10 @@ impl State {
         cx: &mut WasmContext,
     ) -> Result<PollMessage, Trap> {
         let channel_state = self.inbound_channel_mut(channel_name)?;
-        Ok(channel_state.poll_next().wake_if_pending(cx, || {
+        let poll_result = channel_state.poll_next();
+        self.current_execution()
+            .register_inbound_channel_poll(channel_name, &poll_result);
+        Ok(poll_result.wake_if_pending(cx, || {
             WakerPlacement::InboundChannel(channel_name.to_owned())
         }))
     }
@@ -212,11 +216,16 @@ impl State {
         } else {
             Poll::Ready(())
         };
+
+        self.current_execution()
+            .register_outbound_channel_poll(channel_name, flush, poll_result);
+
         Ok(poll_result.wake_if_pending(cx, || {
             WakerPlacement::OutboundChannel(channel_name.to_owned())
         }))
     }
 
+    // FIXME: use channel-local logic?
     fn needs_flushing(&self) -> bool {
         self.outbound_channels
             .values()

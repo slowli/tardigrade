@@ -14,8 +14,9 @@ use super::{
     State, StateFunctions,
 };
 use crate::{
+    receipt::WakeUpCause,
     utils::{copy_string_from_wasm, WasmAllocator},
-    TimerId, WakeUpCause, WakerId,
+    TimerId, WakerId,
 };
 use tardigrade_shared::{IntoAbi, TimerDefinition, TimerKind};
 
@@ -148,8 +149,7 @@ impl State {
 
     fn create_timer(&mut self, name: String, definition: TimerDefinition) -> TimerId {
         let timer_id = self.timers.insert(name, definition);
-        let current_task = self.current_execution.as_mut().unwrap();
-        current_task.register_timer(timer_id);
+        self.current_execution().register_timer(timer_id);
         timer_id
     }
 
@@ -158,8 +158,7 @@ impl State {
             let message = format!("Timer ID {} is not defined", timer_id);
             return Err(Trap::new(message));
         }
-        let current_task = self.current_execution.as_mut().unwrap();
-        current_task.register_timer_drop(timer_id);
+        self.current_execution().register_timer_drop(timer_id);
         Ok(())
     }
 
