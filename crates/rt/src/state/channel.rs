@@ -150,18 +150,20 @@ impl State {
         }
     }
 
-    fn inbound_channel(&mut self, channel_name: &str) -> Result<&mut InboundChannelState, Trap> {
+    fn inbound_channel_mut(
+        &mut self,
+        channel_name: &str,
+    ) -> Result<&mut InboundChannelState, Trap> {
         self.inbound_channels.get_mut(channel_name).ok_or_else(|| {
             let message = format!("No inbound channel `{}`", channel_name);
             Trap::new(message)
         })
     }
 
-    fn has_outbound_channel(&self, channel_name: &str) -> bool {
-        self.outbound_channels.contains_key(channel_name)
-    }
-
-    fn outbound_channel(&mut self, channel_name: &str) -> Result<&mut OutboundChannelState, Trap> {
+    fn outbound_channel_mut(
+        &mut self,
+        channel_name: &str,
+    ) -> Result<&mut OutboundChannelState, Trap> {
         self.outbound_channels.get_mut(channel_name).ok_or_else(|| {
             let message = format!("No outbound channel `{}`", channel_name);
             Trap::new(message)
@@ -180,7 +182,7 @@ impl State {
         channel_name: &str,
         message: Vec<u8>,
     ) -> Result<(), Trap> {
-        let channel_state = self.outbound_channel(channel_name)?;
+        let channel_state = self.outbound_channel_mut(channel_name)?;
         channel_state.messages.push(message.into());
         Ok(())
     }
@@ -190,7 +192,7 @@ impl State {
         channel_name: &str,
         cx: &mut WasmContext,
     ) -> Result<PollMessage, Trap> {
-        let channel_state = self.inbound_channel(channel_name)?;
+        let channel_state = self.inbound_channel_mut(channel_name)?;
         Ok(channel_state.poll_next().wake_if_pending(cx, || {
             WakerPlacement::InboundChannel(channel_name.to_owned())
         }))
@@ -203,7 +205,7 @@ impl State {
         cx: &mut WasmContext,
     ) -> Result<Poll<()>, Trap> {
         let needs_flushing = self.needs_flushing();
-        let channel_state = self.outbound_channel(channel_name)?;
+        let channel_state = self.outbound_channel_mut(channel_name)?;
 
         let poll_result = if needs_flushing || (flush && !channel_state.messages.is_empty()) {
             Poll::Pending
@@ -292,7 +294,7 @@ impl StateFunctions {
         let memory = caller.data().exports().memory;
         let channel_name =
             copy_string_from_wasm(&caller, &memory, channel_name_ptr, channel_name_len)?;
-        let result = if caller.data().has_outbound_channel(&channel_name) {
+        let result = if caller.data().outbound_channels.contains_key(&channel_name) {
             Ok(())
         } else {
             Err(ChannelErrorKind::Unknown)

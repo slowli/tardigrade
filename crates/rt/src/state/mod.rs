@@ -14,13 +14,14 @@ pub(crate) use self::helpers::WasmContextPtr;
 pub use self::{
     channel::{ConsumeError, ConsumeErrorKind},
     persistence::{PersistError, WorkflowState},
+    task::TaskState,
     time::TimerState,
 };
 
 use self::{
     channel::{InboundChannelState, OutboundChannelState},
     helpers::{CurrentExecution, Message, Wakers},
-    task::{TaskQueue, TaskState},
+    task::TaskQueue,
     time::Timers,
 };
 use crate::{

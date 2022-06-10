@@ -41,28 +41,39 @@ impl TaskQueue {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct TaskState {
-    _name: String,
-    completion_result: Option<Result<(), JoinError>>,
-    _spawned_by: ExecutedFunction,
+pub struct TaskState {
+    name: String,
+    completion_result: Poll<Result<(), JoinError>>,
+    spawned_by: ExecutedFunction,
     wakes_on_completion: HashSet<WakerId>,
 }
 
 impl TaskState {
     fn new(name: String, spawned_by: ExecutedFunction) -> Self {
         Self {
-            _name: name,
-            completion_result: None,
-            _spawned_by: spawned_by,
+            name,
+            completion_result: Poll::Pending,
+            spawned_by,
             wakes_on_completion: HashSet::new(),
         }
     }
 
-    fn is_completed(&self) -> bool {
-        self.completion_result.is_some()
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
-    pub fn insert_waker(&mut self, waker_id: WakerId) {
+    pub fn spawned_by(&self) -> &ExecutedFunction {
+        &self.spawned_by
+    }
+
+    pub fn result(&self) -> Poll<Result<(), &JoinError>> {
+        match &self.completion_result {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(res) => Poll::Ready(res.as_ref().copied()),
+        }
+    }
+
+    pub(super) fn insert_waker(&mut self, waker_id: WakerId) {
         self.wakes_on_completion.insert(waker_id);
     }
 }
@@ -126,11 +137,7 @@ impl State {
         task: TaskId,
         cx: &mut WasmContext,
     ) -> Poll<Result<(), JoinError>> {
-        let poll_result = if let Some(result) = &self.tasks[&task].completion_result {
-            Poll::Ready(result.as_ref().copied().map_err(JoinError::clone))
-        } else {
-            Poll::Pending
-        };
+        let poll_result = self.tasks[&task].result().map_err(JoinError::clone);
         poll_result.wake_if_pending(cx, || WakerPlacement::TaskCompletion(task))
     }
 
@@ -166,17 +173,18 @@ impl State {
         Ok(())
     }
 
-    pub fn queued_tasks(&self) -> impl Iterator<Item = (TaskId, &WakeUpCause)> + '_ {
-        self.task_queue
-            .inner
-            .iter()
-            .map(|(task, cause)| (*task, cause))
+    pub fn task(&self, task_id: TaskId) -> Option<&TaskState> {
+        self.tasks.get(&task_id)
+    }
+
+    pub fn tasks(&self) -> impl Iterator<Item = (TaskId, &TaskState)> + '_ {
+        self.tasks.iter().map(|(id, state)| (*id, state))
     }
 
     pub fn take_next_task(&mut self) -> Option<(TaskId, WakeUpCause)> {
         loop {
             let (task, wake_up_cause) = self.task_queue.take_task()?;
-            if !self.tasks[&task].is_completed() {
+            if self.tasks[&task].completion_result.is_pending() {
                 return Some((task, wake_up_cause));
             }
         }
@@ -185,7 +193,7 @@ impl State {
     pub fn complete_task(&mut self, task_id: TaskId, result: Result<(), JoinError>) {
         let result = crate::log_result!(result, "Completed task {}", task_id);
         let task_state = self.tasks.get_mut(&task_id).unwrap();
-        task_state.completion_result = Some(result);
+        task_state.completion_result = Poll::Ready(result);
 
         let wakers = mem::take(&mut task_state.wakes_on_completion);
         self.schedule_wakers(wakers, WakeUpCause::CompletedTask(task_id));

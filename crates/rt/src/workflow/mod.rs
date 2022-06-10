@@ -10,7 +10,7 @@ pub use self::env::{DataPeeker, MessageReceiver, MessageSender, WorkflowEnv, Wor
 
 use crate::{
     module::{ModuleExports, ModuleImports, WorkflowModule},
-    state::{PersistError, State, TimerState, WorkflowState},
+    state::{PersistError, State, TaskState, TimerState, WorkflowState},
     ConsumeError, ExecutedFunction, Execution, ExecutionError, Receipt, ResourceEvent, TaskId,
     TimerId, WakeUpCause,
 };
@@ -62,6 +62,14 @@ impl<W> Workflow<W> {
         let task_ptr = exports.create_main_task(&mut self.store)?;
         self.store.data_mut().spawn_main_task(task_ptr);
         Ok(())
+    }
+
+    pub fn task(&self, task_id: TaskId) -> Option<&TaskState> {
+        self.store.data().task(task_id)
+    }
+
+    pub fn tasks(&self) -> impl Iterator<Item = (TaskId, &TaskState)> + '_ {
+        self.store.data().tasks()
     }
 
     fn do_execute(&mut self, function: &mut ExecutedFunction) -> Result<(), Trap> {
@@ -145,10 +153,6 @@ impl<W> Workflow<W> {
         };
         let poll_result = self.execute(function, receipt);
         crate::log_result!(poll_result, "Finished polling task {}", task_id).map(drop)
-    }
-
-    pub fn queued_tasks(&self) -> impl Iterator<Item = (TaskId, &WakeUpCause)> + '_ {
-        self.store.data().queued_tasks()
     }
 
     fn wake_tasks(&mut self, receipt: &mut Receipt) -> Result<(), Trap> {
