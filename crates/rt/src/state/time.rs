@@ -14,7 +14,7 @@ use super::{
     State, StateFunctions,
 };
 use crate::{
-    receipt::WakeUpCause,
+    receipt::{ResourceEventKind, ResourceId, WakeUpCause},
     utils::{copy_string_from_wasm, WasmAllocator},
     TimerId, WakerId,
 };
@@ -149,7 +149,8 @@ impl State {
 
     fn create_timer(&mut self, name: String, definition: TimerDefinition) -> TimerId {
         let timer_id = self.timers.insert(name, definition);
-        self.current_execution().register_timer(timer_id);
+        self.current_execution()
+            .push_resource_event(ResourceId::Timer(timer_id), ResourceEventKind::Created);
         timer_id
     }
 
@@ -158,7 +159,8 @@ impl State {
             let message = format!("Timer ID {} is not defined", timer_id);
             return Err(Trap::new(message));
         }
-        self.current_execution().register_timer_drop(timer_id);
+        self.current_execution()
+            .push_resource_event(ResourceId::Timer(timer_id), ResourceEventKind::Dropped);
         Ok(())
     }
 
@@ -173,6 +175,10 @@ impl State {
 
     fn poll_timer(&mut self, timer_id: TimerId, cx: &mut WasmContext) -> Result<Poll<()>, Trap> {
         let poll_result = self.timers.poll(timer_id)?;
+        self.current_execution().push_resource_event(
+            ResourceId::Timer(timer_id),
+            ResourceEventKind::Polled(poll_result),
+        );
         Ok(poll_result.wake_if_pending(cx, || WakerPlacement::Timer(timer_id)))
     }
 }

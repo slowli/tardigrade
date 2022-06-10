@@ -2,7 +2,7 @@
 
 use wasmtime::{AsContext, Caller, Memory, Trap};
 
-use std::fmt;
+use std::{fmt, task::Poll};
 
 use crate::state::State;
 use tardigrade_shared::AllocateBytes;
@@ -86,4 +86,11 @@ pub(crate) fn copy_string_from_wasm(
 ) -> Result<String, Trap> {
     let buffer = copy_bytes_from_wasm(ctx, memory, ptr, len)?;
     String::from_utf8(buffer).map_err(|err| Trap::new(format!("invalid UTF-8 string: {}", err)))
+}
+
+pub(crate) fn drop_value<T>(poll_result: &Poll<T>) -> Poll<()> {
+    match poll_result {
+        Poll::Pending => Poll::Pending,
+        Poll::Ready(_) => Poll::Ready(()),
+    }
 }

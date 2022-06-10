@@ -156,7 +156,7 @@ impl State {
         channel_name: &str,
     ) -> Result<&mut InboundChannelState, Trap> {
         self.inbound_channels.get_mut(channel_name).ok_or_else(|| {
-            let message = format!("No inbound channel `{}`", channel_name);
+            let message = format!("no inbound channel `{}`", channel_name);
             Trap::new(message)
         })
     }
@@ -166,7 +166,7 @@ impl State {
         channel_name: &str,
     ) -> Result<&mut OutboundChannelState, Trap> {
         self.outbound_channels.get_mut(channel_name).ok_or_else(|| {
-            let message = format!("No outbound channel `{}`", channel_name);
+            let message = format!("no outbound channel `{}`", channel_name);
             Trap::new(message)
         })
     }
@@ -196,7 +196,7 @@ impl State {
         let channel_state = self.inbound_channel_mut(channel_name)?;
         let poll_result = channel_state.poll_next();
         self.current_execution()
-            .register_inbound_channel_poll(channel_name, &poll_result);
+            .push_inbound_channel_event(channel_name, &poll_result);
         Ok(poll_result.wake_if_pending(cx, || {
             WakerPlacement::InboundChannel(channel_name.to_owned())
         }))
@@ -210,7 +210,6 @@ impl State {
     ) -> Result<Poll<()>, Trap> {
         let needs_flushing = self.needs_flushing();
         let channel_state = self.outbound_channel_mut(channel_name)?;
-
         let poll_result = if needs_flushing || (flush && !channel_state.messages.is_empty()) {
             Poll::Pending
         } else {
@@ -218,8 +217,7 @@ impl State {
         };
 
         self.current_execution()
-            .register_outbound_channel_poll(channel_name, flush, poll_result);
-
+            .push_outbound_channel_event(channel_name, flush, poll_result);
         Ok(poll_result.wake_if_pending(cx, || {
             WakerPlacement::OutboundChannel(channel_name.to_owned())
         }))

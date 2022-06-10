@@ -87,6 +87,8 @@ pub enum ResourceId {
 pub enum ResourceEventKind {
     Created,
     Dropped,
+    /// The resource was polled for completion.
+    Polled(Poll<()>),
 }
 
 #[derive(Debug)]

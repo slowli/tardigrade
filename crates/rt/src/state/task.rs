@@ -13,8 +13,8 @@ use super::{
     State, StateFunctions,
 };
 use crate::{
-    receipt::{Event, ExecutedFunction, WakeUpCause},
-    utils::{copy_string_from_wasm, WasmAllocator},
+    receipt::{Event, ExecutedFunction, ResourceEventKind, ResourceId, WakeUpCause},
+    utils::{copy_string_from_wasm, drop_value, WasmAllocator},
     TaskId, WakerId,
 };
 use tardigrade_shared::{IntoAbi, JoinError};
@@ -108,7 +108,8 @@ impl State {
             unreachable!("`complete_current_task` called when task isn't executing")
         };
         self.complete_task(task_id, Ok(()));
-        self.current_execution().register_task_drop(task_id);
+        self.current_execution()
+            .push_resource_event(ResourceId::Task(task_id), ResourceEventKind::Dropped);
     }
 
     fn spawn_task(&mut self, task_id: TaskId, task_name: String) -> Result<(), Trap> {
@@ -118,7 +119,7 @@ impl State {
         }
 
         let execution = self.current_execution();
-        execution.register_task(task_id);
+        execution.push_resource_event(ResourceId::Task(task_id), ResourceEventKind::Created);
         let task_state = TaskState::new(task_name, execution.function.clone());
         self.tasks.insert(task_id, task_state);
         Ok(())
@@ -139,11 +140,16 @@ impl State {
 
     fn poll_task_completion(
         &mut self,
-        task: TaskId,
+        task_id: TaskId,
         cx: &mut WasmContext,
     ) -> Poll<Result<(), JoinError>> {
-        let poll_result = self.tasks[&task].result().map_err(JoinError::clone);
-        poll_result.wake_if_pending(cx, || WakerPlacement::TaskCompletion(task))
+        let poll_result = self.tasks[&task_id].result().map_err(JoinError::clone);
+        let empty_result = drop_value(&poll_result);
+        self.current_execution().push_resource_event(
+            ResourceId::Task(task_id),
+            ResourceEventKind::Polled(empty_result),
+        );
+        poll_result.wake_if_pending(cx, || WakerPlacement::TaskCompletion(task_id))
     }
 
     fn schedule_task_wakeup(&mut self, task_id: TaskId) -> Result<(), Trap> {
@@ -169,7 +175,8 @@ impl State {
             let message = format!("unknown task {} scheduled for abortion", task_id);
             return Err(Trap::new(message));
         }
-        self.current_execution().register_task_drop(task_id);
+        self.current_execution()
+            .push_resource_event(ResourceId::Task(task_id), ResourceEventKind::Dropped);
         Ok(())
     }
 

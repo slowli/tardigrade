@@ -10,6 +10,7 @@ use crate::{
         ResourceId, WakeUpCause,
     },
     state::State,
+    utils::drop_value,
     TaskId, TimerId, WakerId,
 };
 use tardigrade_shared::PollMessage;
@@ -156,42 +157,19 @@ impl CurrentExecution {
         self.events.push(event.into());
     }
 
-    fn drop_value<T>(poll_result: &Poll<T>) -> Poll<()> {
-        match poll_result {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(_) => Poll::Ready(()),
-        }
-    }
-
-    pub fn register_task(&mut self, task_id: TaskId) {
-        self.push_event(ResourceEvent {
-            resource_id: ResourceId::Task(task_id),
-            kind: ResourceEventKind::Created,
-        });
-    }
-
-    pub fn register_task_drop(&mut self, task_id: TaskId) {
-        if self.tasks_to_be_aborted.insert(task_id) {
-            self.push_event(ResourceEvent {
-                resource_id: ResourceId::Task(task_id),
-                kind: ResourceEventKind::Dropped,
-            });
-        }
-    }
-
     pub fn register_task_wakeup(&mut self, task_id: TaskId) {
         self.tasks_to_be_awoken.insert(task_id);
     }
 
-    pub fn register_inbound_channel_poll(&mut self, channel_name: &str, result: &PollMessage) {
+    pub fn push_inbound_channel_event(&mut self, channel_name: &str, result: &PollMessage) {
         self.push_event(ChannelEvent {
             kind: ChannelEventKind::InboundChannelPolled,
             channel_name: channel_name.to_owned(),
-            result: Self::drop_value(result),
+            result: drop_value(result),
         })
     }
 
-    pub fn register_outbound_channel_poll(
+    pub fn push_outbound_channel_event(
         &mut self,
         channel_name: &str,
         flush: bool,
@@ -208,18 +186,13 @@ impl CurrentExecution {
         });
     }
 
-    pub fn register_timer(&mut self, timer_id: TimerId) {
-        self.push_event(ResourceEvent {
-            resource_id: ResourceId::Timer(timer_id),
-            kind: ResourceEventKind::Created,
-        });
-    }
-
-    pub fn register_timer_drop(&mut self, timer_id: TimerId) {
-        self.push_event(ResourceEvent {
-            resource_id: ResourceId::Timer(timer_id),
-            kind: ResourceEventKind::Dropped,
-        });
+    pub fn push_resource_event(&mut self, resource_id: ResourceId, kind: ResourceEventKind) {
+        if let (ResourceId::Task(id), ResourceEventKind::Dropped) = (resource_id, kind) {
+            if !self.tasks_to_be_aborted.insert(id) {
+                return; // The task is already scheduled for drop
+            }
+        }
+        self.push_event(ResourceEvent { resource_id, kind });
     }
 
     fn resource_events(events: &[Event]) -> impl Iterator<Item = &ResourceEvent> {
