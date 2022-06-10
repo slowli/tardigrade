@@ -49,7 +49,10 @@ pub enum ExecutedFunction {
     },
     /// Waking up a waker.
     #[non_exhaustive]
-    Waker { waker_id: WakerId },
+    Waker {
+        waker_id: WakerId,
+        wake_up_cause: WakeUpCause,
+    },
     /// Dropping a completed task.
     #[non_exhaustive]
     TaskDrop { task_id: TaskId },
@@ -62,7 +65,7 @@ impl ExecutedFunction {
             Self::Task { task_id, .. } => {
                 write!(formatter, "polling task {}", task_id)
             }
-            Self::Waker { waker_id } => {
+            Self::Waker { waker_id, .. } => {
                 write!(formatter, "waking up waker {}", waker_id)
             }
             Self::TaskDrop { task_id } => {

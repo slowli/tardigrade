@@ -64,17 +64,52 @@ impl<W> Workflow<W> {
         Ok(())
     }
 
-    fn wrap_execution<T>(
+    fn do_execute(&mut self, function: &mut ExecutedFunction) -> Result<(), Trap> {
+        match function {
+            ExecutedFunction::Task {
+                task_id,
+                poll_result,
+                ..
+            } => {
+                let exports = self.store.data().exports();
+                let exec_result = exports.poll_task(&mut self.store, *task_id);
+                if let Ok(Poll::Ready(())) = exec_result {
+                    self.store.data_mut().complete_current_task();
+                }
+                exec_result.map(|poll| {
+                    *poll_result = poll;
+                })
+            }
+
+            ExecutedFunction::Waker {
+                waker_id,
+                wake_up_cause,
+            } => {
+                crate::trace!(
+                    "Waking up waker {} with cause {:?}",
+                    waker_id,
+                    wake_up_cause
+                );
+                State::wake(&mut self.store, *waker_id, wake_up_cause.clone())
+            }
+            ExecutedFunction::TaskDrop { task_id } => {
+                let exports = self.store.data().exports();
+                exports.drop_task(&mut self.store, *task_id)
+            }
+            ExecutedFunction::Entry => unreachable!(),
+        }
+    }
+
+    fn execute(
         &mut self,
-        function: ExecutedFunction,
+        mut function: ExecutedFunction,
         receipt: &mut Receipt,
-        action: impl FnOnce(&mut Self) -> Result<T, Trap>,
-    ) -> Result<T, Trap> {
+    ) -> Result<(), Trap> {
         self.store
             .data_mut()
             .set_current_execution(function.clone());
 
-        let output = action(self);
+        let output = self.do_execute(&mut function);
         let resource_events = self
             .store
             .data_mut()
@@ -90,10 +125,7 @@ impl<W> Workflow<W> {
 
         for task_id in dropped_tasks {
             let function = ExecutedFunction::TaskDrop { task_id };
-            let exports = self.store.data().exports();
-            self.wrap_execution(function, receipt, |this| {
-                exports.drop_task(&mut this.store, task_id)
-            })?;
+            self.execute(function, receipt)?;
         }
         Ok(output)
     }
@@ -111,15 +143,7 @@ impl<W> Workflow<W> {
             wake_up_cause,
             poll_result: Poll::Pending,
         };
-        let poll_result = self.wrap_execution(function, receipt, |this| {
-            let exports = this.store.data().exports();
-            let poll_result = exports.poll_task(&mut this.store, task_id);
-            if let Ok(Poll::Ready(())) = &poll_result {
-                this.store.data_mut().complete_current_task();
-            }
-            poll_result
-        });
-
+        let poll_result = self.execute(function, receipt);
         crate::log_result!(poll_result, "Finished polling task {}", task_id).map(drop)
     }
 
@@ -129,12 +153,12 @@ impl<W> Workflow<W> {
 
     fn wake_tasks(&mut self, receipt: &mut Receipt) -> Result<(), Trap> {
         let wakers = self.store.data_mut().take_wakers();
-        for (waker_id, cause) in wakers {
-            let function = ExecutedFunction::Waker { waker_id };
-            self.wrap_execution(function, receipt, |this| {
-                crate::trace!("Waking up waker {} with cause {:?}", waker_id, cause);
-                State::wake(&mut this.store, waker_id, cause)
-            })?;
+        for (waker_id, wake_up_cause) in wakers {
+            let function = ExecutedFunction::Waker {
+                waker_id,
+                wake_up_cause,
+            };
+            self.execute(function, receipt)?;
         }
         Ok(())
     }
