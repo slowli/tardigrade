@@ -18,9 +18,4 @@ pub use crate::{
     workflow::{DataPeeker, MessageReceiver, MessageSender, Workflow, WorkflowHandle},
 };
 
-/// ID of a task.
-pub type TaskId = i64;
-/// ID of a timer.
-pub type TimerId = u64;
-/// WASM waker ID. Equal to a pointer to the waker instance.
-pub type WakerId = u32;
+pub use tardigrade_shared::{TaskId, TimerId, WakerId};

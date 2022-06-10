@@ -4,9 +4,9 @@ use tardigrade_shared::workflow::{InputsBuilder, ProvideInterface, PutHandle, Ta
 
 #[cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))]
 mod imp {
-    use crate::task::imp::TaskPointer;
+    use crate::task::imp::RawTaskHandle;
 
-    pub(super) type TaskHandle = TaskPointer;
+    pub(super) type TaskHandle = RawTaskHandle;
 }
 
 #[cfg(not(all(target_arch = "wasm32", not(target_os = "emscripten"))))]

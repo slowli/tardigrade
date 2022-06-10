@@ -11,6 +11,13 @@ pub type PollMessage = Poll<Option<Vec<u8>>>;
 /// Result of polling a task.
 pub type PollTask = Poll<Result<(), JoinError>>;
 
+/// ID of a waker.
+pub type WakerId = u64;
+/// ID of a task.
+pub type TaskId = u64;
+/// ID of a timer.
+pub type TimerId = u64;
+
 /// Errors that can occur when joining a task.
 #[derive(Debug, Clone)]
 pub enum JoinError {

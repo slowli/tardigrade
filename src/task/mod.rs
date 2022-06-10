@@ -8,14 +8,14 @@ use std::{
     task::{Context, Poll},
 };
 
+use tardigrade_shared::JoinError;
+
 #[cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))]
 #[path = "imp_wasm32.rs"]
 pub(crate) mod imp;
 #[cfg(not(all(target_arch = "wasm32", not(target_os = "emscripten"))))]
 #[path = "imp_mock.rs"]
 mod imp;
-
-use tardigrade_shared::JoinError;
 
 pin_project! {
     /// Handle to a spawned task.
