@@ -17,7 +17,7 @@ pub use crate::{
     codec::{Decoder, Encoder},
     context::{SpawnWorkflow, TaskHandle, Wasm},
     data::Data,
-    task::{spawn, JoinHandle},
+    task::{spawn, yield_now, JoinHandle},
     time::sleep,
 };
 
