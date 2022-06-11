@@ -3,7 +3,7 @@
 use wasmtime::{Caller, Trap};
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     mem,
     task::Poll,
 };
@@ -22,7 +22,8 @@ use tardigrade_shared::{IntoAbi, JoinError};
 /// Priority queue for tasks.
 #[derive(Debug, Default)]
 pub(super) struct TaskQueue {
-    inner: HashMap<TaskId, WakeUpCause>,
+    inner: VecDeque<TaskId>,
+    causes: HashMap<TaskId, WakeUpCause>,
 }
 
 impl TaskQueue {
@@ -31,12 +32,15 @@ impl TaskQueue {
     }
 
     pub fn insert_task(&mut self, task: TaskId, cause: &WakeUpCause) {
-        self.inner.entry(task).or_insert_with(|| cause.clone());
+        self.causes.entry(task).or_insert_with(|| {
+            self.inner.push_back(task);
+            cause.clone()
+        });
     }
 
     fn take_task(&mut self) -> Option<(TaskId, WakeUpCause)> {
-        let key = *self.inner.keys().next()?;
-        let value = self.inner.remove(&key)?;
+        let key = self.inner.pop_front()?;
+        let value = self.causes.remove(&key).unwrap();
         Some((key, value))
     }
 }
