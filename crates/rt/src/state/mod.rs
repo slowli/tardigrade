@@ -9,6 +9,7 @@ mod helpers;
 mod persistence;
 mod task;
 mod time;
+mod traced;
 
 pub(crate) use self::helpers::WasmContextPtr;
 pub use self::{
@@ -16,6 +17,7 @@ pub use self::{
     persistence::{PersistError, WorkflowState},
     task::TaskState,
     time::TimerState,
+    traced::{TracedFutureStage, TracedFutureState},
 };
 
 use self::{
@@ -23,6 +25,7 @@ use self::{
     helpers::{CurrentExecution, Message, Wakers},
     task::TaskQueue,
     time::Timers,
+    traced::TracedFutures,
 };
 use crate::{
     module::ModuleExports,
@@ -44,6 +47,8 @@ pub(crate) struct State {
 
     /// All tasks together with relevant info.
     tasks: HashMap<TaskId, TaskState>,
+    /// Traced futures together with state.
+    traced_futures: TracedFutures,
     /// Data related to the currently executing WASM call.
     current_execution: Option<CurrentExecution>,
     /// Tasks that should be polled after `current_task`.
@@ -91,6 +96,7 @@ impl State {
             data_inputs,
             timers: Timers::new(),
             tasks: HashMap::new(),
+            traced_futures: TracedFutures::default(),
             current_execution: None,
             task_queue: TaskQueue::default(),
             waker_queue: Vec::new(),

@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 
 use std::{error, fmt, task::Poll};
 
-use crate::{FromAbi, IntoAbiOnStack};
+use crate::{FromAbi, FromAbiError, IntoAbiOnStack, TryFromAbi};
 
 /// Result of polling a receiver end of a channel.
 pub type PollMessage = Poll<Option<Vec<u8>>>;
@@ -17,6 +17,8 @@ pub type WakerId = u64;
 pub type TaskId = u64;
 /// ID of a timer.
 pub type TimerId = u64;
+/// ID of a (traced) future.
+pub type FutureId = u64;
 
 /// Errors that can occur when joining a task.
 #[derive(Debug, Clone)]
@@ -200,4 +202,36 @@ impl TryFrom<i32> for TimerKind {
 #[derive(Debug, Clone, Copy)]
 pub struct TimerDefinition {
     pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum TracedFutureUpdate {
+    Polling,
+    Polled(Poll<()>),
+    Dropped,
+}
+
+impl IntoAbiOnStack for TracedFutureUpdate {
+    type Output = i32;
+
+    fn into_abi(self) -> Self::Output {
+        match self {
+            Self::Polling => 0,
+            Self::Polled(Poll::Ready(())) => 1,
+            Self::Dropped => 2,
+            Self::Polled(Poll::Pending) => -1,
+        }
+    }
+}
+
+impl TryFromAbi for TracedFutureUpdate {
+    fn try_from_abi(abi: i32) -> Result<Self, FromAbiError> {
+        Ok(match abi {
+            0 => Self::Polling,
+            1 => Self::Polled(Poll::Ready(())),
+            2 => Self::Dropped,
+            -1 => Self::Polled(Poll::Pending),
+            _ => return Err(FromAbiError::new("invalid value for traced future event")),
+        })
+    }
 }

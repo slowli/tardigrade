@@ -212,6 +212,9 @@ impl CurrentExecution {
                 (Dropped, ResourceId::Timer(timer_id)) => {
                     state.timers.remove(timer_id);
                 }
+                (Dropped, ResourceId::TracedFuture(future_id)) => {
+                    state.traced_futures.remove(future_id);
+                }
                 _ => { /* Do nothing */ }
             }
         }
@@ -236,6 +239,9 @@ impl CurrentExecution {
                 }
                 (Created, ResourceId::Timer(timer_id)) => {
                     state.timers.remove(timer_id);
+                }
+                (Created, ResourceId::TracedFuture(future_id)) => {
+                    state.traced_futures.remove(future_id);
                 }
                 _ => { /* Do nothing */ }
             }

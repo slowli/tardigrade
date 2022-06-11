@@ -1,6 +1,6 @@
 //! ABI.
 
-use std::{error, task::Poll};
+use std::{error, fmt, task::Poll};
 
 use crate::types::{JoinError, PollMessage, PollTask};
 
@@ -18,7 +18,7 @@ pub trait AllocateBytes {
     fn copy_to_wasm(&mut self, bytes: &[u8]) -> Result<(u32, u32), Self::Error>;
 }
 
-/// Value convertible into WASM-compatible presentation.
+/// Value convertible into WASM-compatible presentation, either on host or in WASM code.
 pub trait IntoAbi {
     /// Output of the transformation.
     type Output: AbiValue;
@@ -40,7 +40,7 @@ impl<T: IntoAbiOnStack> IntoAbi for T {
     }
 }
 
-/// Value convertible from WASM-compatible presentation.
+/// Value convertible from WASM-compatible presentation in WASM code.
 pub trait FromAbi: IntoAbi {
     /// Performs the conversion.
     ///
@@ -51,6 +51,39 @@ pub trait FromAbi: IntoAbi {
     /// is only called on the output of [`IntoAbi::into_abi()`].
     unsafe fn from_abi(abi: <Self as IntoAbi>::Output) -> Self;
 }
+
+/// Value fallibly convertible from WASM-compatible presentation on host.
+pub trait TryFromAbi: IntoAbi + Sized {
+    /// Tries to perform the conversion; fails if the value is incorrect.
+    fn try_from_abi(abi: <Self as IntoAbi>::Output) -> Result<Self, FromAbiError>;
+}
+
+#[derive(Debug)]
+pub struct FromAbiError {
+    message: String,
+}
+
+impl FromAbiError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for FromAbiError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "failed ABI conversion: {}", self.message)
+    }
+}
+
+impl From<FromAbiError> for String {
+    fn from(err: FromAbiError) -> Self {
+        err.message
+    }
+}
+
+impl error::Error for FromAbiError {}
 
 impl IntoAbiOnStack for Poll<()> {
     type Output = i32;

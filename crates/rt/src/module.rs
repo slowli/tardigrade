@@ -10,7 +10,7 @@ use std::{fmt, task::Poll};
 
 use crate::{
     state::{State, StateFunctions, WasmContextPtr},
-    TaskId, TimerId, WakerId,
+    FutureId, TaskId, TimerId, WakerId,
 };
 use tardigrade_shared::workflow::{Interface, ValidateInterface};
 
@@ -307,9 +307,12 @@ impl ModuleImports {
             }
             "mpsc_sender_start_send" => ensure_func_ty::<(u32, u32, u32, u32), ()>(ty, fn_name),
 
-            "timer_new" => ensure_func_ty::<(u32, u32, i32, i64), TimerId>(ty, fn_name),
+            "timer_new" => ensure_func_ty::<(i32, i64), TimerId>(ty, fn_name),
             "timer_drop" => ensure_func_ty::<TimerId, ()>(ty, fn_name),
             "timer_poll" => ensure_func_ty::<(TimerId, WasmContextPtr), i32>(ty, fn_name),
+
+            "traced_future_new" => ensure_func_ty::<(u32, u32), FutureId>(ty, fn_name),
+            "traced_future_update" => ensure_func_ty::<(FutureId, i32), ()>(ty, fn_name),
 
             other => {
                 bail!(
@@ -328,6 +331,7 @@ impl ModuleImports {
         Self::import_task_functions(store, linker)?;
         Self::import_channel_functions(store, linker)?;
         Self::import_timer_functions(store, linker)?;
+        Self::import_tracing_functions(store, linker)?;
 
         let data_input_get = Func::wrap(&mut *store, StateFunctions::data_input);
         linker.define(Self::RT_MODULE, "data_input_get", data_input_get)?;
@@ -401,6 +405,17 @@ impl ModuleImports {
         linker.define(Self::RT_MODULE, "timer_drop", drop_timer)?;
         let poll_timer = Func::wrap(&mut *store, StateFunctions::poll_timer);
         linker.define(Self::RT_MODULE, "timer_poll", poll_timer)?;
+        Ok(())
+    }
+
+    fn import_tracing_functions(
+        store: &mut Store<State>,
+        linker: &mut Linker<State>,
+    ) -> anyhow::Result<()> {
+        let create_future = Func::wrap(&mut *store, StateFunctions::create_traced_future);
+        linker.define(Self::RT_MODULE, "traced_future_new", create_future)?;
+        let update_future = Func::wrap(&mut *store, StateFunctions::update_traced_future);
+        linker.define(Self::RT_MODULE, "traced_future_update", update_future)?;
         Ok(())
     }
 }

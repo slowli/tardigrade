@@ -10,10 +10,10 @@ use std::{
 
 use tardigrade_shared::JoinError;
 
-#[cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))]
+#[cfg(target_arch = "wasm32")]
 #[path = "imp_wasm32.rs"]
 pub(crate) mod imp;
-#[cfg(not(all(target_arch = "wasm32", not(target_os = "emscripten"))))]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "imp_mock.rs"]
 mod imp;
 

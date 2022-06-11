@@ -4,7 +4,7 @@ use wasmtime::Trap;
 
 use std::{error, fmt, ops::Range, task::Poll};
 
-use crate::{TaskId, TimerId, WakerId};
+use crate::{FutureId, TaskId, TimerId, WakerId};
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -80,6 +80,7 @@ impl ExecutedFunction {
 pub enum ResourceId {
     Timer(TimerId),
     Task(TaskId),
+    TracedFuture(FutureId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -14,8 +14,10 @@ use crate::{
         Event, ExecutedFunction, Execution, ExecutionError, Receipt, ResourceEventKind, ResourceId,
         WakeUpCause,
     },
-    state::{ConsumeError, PersistError, State, TaskState, TimerState, WorkflowState},
-    TaskId, TimerId,
+    state::{
+        ConsumeError, PersistError, State, TaskState, TimerState, TracedFutureState, WorkflowState,
+    },
+    FutureId, TaskId, TimerId,
 };
 use tardigrade_shared::workflow::{InputsBuilder, PutHandle, TakeHandle};
 
@@ -73,6 +75,10 @@ impl<W> Workflow<W> {
 
     pub fn tasks(&self) -> impl Iterator<Item = (TaskId, &TaskState)> + '_ {
         self.store.data().tasks()
+    }
+
+    pub fn traced_futures(&self) -> impl Iterator<Item = (FutureId, &TracedFutureState)> + '_ {
+        self.store.data().traced_futures()
     }
 
     fn do_execute(&mut self, function: &mut ExecutedFunction) -> Result<(), Trap> {

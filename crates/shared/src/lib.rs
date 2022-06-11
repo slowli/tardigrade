@@ -5,9 +5,9 @@ mod types;
 pub mod workflow;
 
 pub use crate::{
-    abi::{AbiValue, AllocateBytes, FromAbi, IntoAbi, IntoAbiOnStack},
+    abi::{AbiValue, AllocateBytes, FromAbi, FromAbiError, IntoAbi, IntoAbiOnStack, TryFromAbi},
     types::{
-        ChannelError, ChannelErrorKind, ChannelKind, JoinError, PollMessage, PollTask,
-        RawChannelResult, TaskId, TimerDefinition, TimerId, TimerKind, WakerId,
+        ChannelError, ChannelErrorKind, ChannelKind, FutureId, JoinError, PollMessage, PollTask,
+        RawChannelResult, TaskId, TimerDefinition, TimerId, TimerKind, TracedFutureUpdate, WakerId,
     },
 };

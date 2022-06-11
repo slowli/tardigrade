@@ -2,14 +2,14 @@ use std::future::Future;
 
 use tardigrade_shared::workflow::{InputsBuilder, ProvideInterface, PutHandle, TakeHandle};
 
-#[cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))]
+#[cfg(target_arch = "wasm32")]
 mod imp {
     use crate::task::imp::RawTaskHandle;
 
     pub(super) type TaskHandle = RawTaskHandle;
 }
 
-#[cfg(not(all(target_arch = "wasm32", not(target_os = "emscripten"))))]
+#[cfg(not(target_arch = "wasm32"))]
 mod imp {
     use std::{fmt, future::Future, pin::Pin};
 
@@ -50,7 +50,7 @@ impl TaskHandle {
         Self(imp::TaskHandle::new(future))
     }
 
-    #[cfg(not(all(target_arch = "wasm32", not(target_os = "emscripten"))))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn into_inner(self) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         self.0 .0
     }

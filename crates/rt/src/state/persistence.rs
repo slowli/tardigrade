@@ -9,6 +9,7 @@ use super::{
     helpers::Message,
     task::{TaskQueue, TaskState},
     time::Timers,
+    traced::TracedFutures,
     State,
 };
 use crate::{TaskId, WakerId};
@@ -113,6 +114,7 @@ pub struct WorkflowState {
     timers: Timers,
     data_inputs: HashMap<String, Message>,
     tasks: HashMap<TaskId, TaskState>,
+    traced_futures: TracedFutures,
 }
 
 impl WorkflowState {
@@ -136,6 +138,7 @@ impl From<WorkflowState> for State {
             timers: persisted.timers,
             data_inputs: persisted.data_inputs,
             tasks: persisted.tasks,
+            traced_futures: persisted.traced_futures,
             current_execution: None,
             task_queue: TaskQueue::default(),
             waker_queue: Vec::new(),
@@ -174,6 +177,7 @@ impl State {
             timers: self.timers.clone(),
             data_inputs: self.data_inputs.clone(),
             tasks: self.tasks.clone(),
+            traced_futures: self.traced_futures.clone(),
         })
     }
 }

@@ -15,7 +15,7 @@ use super::{
 };
 use crate::{
     receipt::{ResourceEventKind, ResourceId, WakeUpCause},
-    utils::{copy_string_from_wasm, WasmAllocator},
+    utils::WasmAllocator,
     TimerId, WakerId,
 };
 use tardigrade_shared::{IntoAbi, TimerDefinition, TimerKind};
@@ -79,12 +79,12 @@ impl Timers {
         self.timers.iter().map(|(id, state)| (*id, state))
     }
 
-    fn insert(&mut self, name: String, definition: TimerDefinition) -> TimerId {
+    fn insert(&mut self, definition: TimerDefinition) -> TimerId {
         let id = self.next_timer_id;
         self.timers.insert(
             id,
             TimerState {
-                name,
+                name: String::new(), // FIXME remove field
                 definition,
                 is_completed: false,
                 wakes_on_completion: HashSet::new(),
@@ -147,8 +147,8 @@ impl State {
         &self.timers
     }
 
-    fn create_timer(&mut self, name: String, definition: TimerDefinition) -> TimerId {
-        let timer_id = self.timers.insert(name, definition);
+    fn create_timer(&mut self, definition: TimerDefinition) -> TimerId {
+        let timer_id = self.timers.insert(definition);
         self.current_execution()
             .push_resource_event(ResourceId::Timer(timer_id), ResourceEventKind::Created);
         timer_id
@@ -187,26 +187,18 @@ impl State {
 impl StateFunctions {
     pub fn create_timer(
         mut caller: Caller<'_, State>,
-        timer_name_ptr: u32,
-        timer_name_len: u32,
         timer_kind: i32,
         timer_value: i64,
     ) -> Result<TimerId, Trap> {
         let timer_kind = TimerKind::try_from(timer_kind).map_err(|err| Trap::new(err.to_string()));
         let timer_kind = crate::log_result!(timer_kind, "Parsed `TimerKind`")?;
 
-        let memory = caller.data().exports().memory;
-        let timer_name = copy_string_from_wasm(&caller, &memory, timer_name_ptr, timer_name_len)?;
-
         let definition = caller.data().timer_definition(timer_kind, timer_value);
-        let timer_id = caller
-            .data_mut()
-            .create_timer(timer_name.clone(), definition);
+        let timer_id = caller.data_mut().create_timer(definition);
         crate::trace!(
-            "Created timer {} with definition {:?} and name `{}`",
+            "Created timer {} with definition {:?}",
             timer_id,
-            definition,
-            timer_name
+            definition
         );
         Ok(timer_id)
     }

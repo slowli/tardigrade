@@ -4,19 +4,21 @@ pub mod channel;
 mod codec;
 mod context;
 mod data;
-#[cfg(not(all(target_arch = "wasm32", not(target_os = "emscripten"))))]
+mod ext;
+#[cfg(not(target_arch = "wasm32"))]
 mod mock;
 mod task;
 mod time;
 
 #[cfg(feature = "serde_json")]
 pub use crate::codec::Json;
-#[cfg(not(all(target_arch = "wasm32", not(target_os = "emscripten"))))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use crate::mock::{TestHandle, TestHost, TestWorkflow, TimersHandle};
 pub use crate::{
     codec::{Decoder, Encoder},
     context::{SpawnWorkflow, TaskHandle, Wasm},
     data::Data,
+    ext::FutureExt,
     task::{spawn, yield_now, JoinHandle},
     time::sleep,
 };

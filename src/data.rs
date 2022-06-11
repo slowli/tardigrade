@@ -10,7 +10,7 @@ use tardigrade_shared::workflow::{
     InputsBuilder, Interface, PutHandle, TakeHandle, ValidateInterface, WithHandle,
 };
 
-#[cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))]
+#[cfg(target_arch = "wasm32")]
 mod imp {
     use tardigrade_shared::FromAbi;
 
@@ -27,7 +27,7 @@ mod imp {
     }
 }
 
-#[cfg(not(all(target_arch = "wasm32", not(target_os = "emscripten"))))]
+#[cfg(not(target_arch = "wasm32"))]
 mod imp {
     use crate::mock::Runtime;
 

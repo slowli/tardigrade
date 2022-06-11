@@ -8,8 +8,11 @@ mod workflow;
 
 pub use crate::{
     module::WorkflowModule,
-    state::{ConsumeError, ConsumeErrorKind},
+    state::{
+        ConsumeError, ConsumeErrorKind, PersistError, TaskState, TimerState, TracedFutureStage,
+        TracedFutureState, WorkflowState,
+    },
     workflow::{DataPeeker, MessageReceiver, MessageSender, Workflow, WorkflowHandle},
 };
 
-pub use tardigrade_shared::{TaskId, TimerId, WakerId};
+pub use tardigrade_shared::{FutureId, TaskId, TimerId, WakerId};

@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-#[cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))]
+#[cfg(target_arch = "wasm32")]
 mod imp {
     use std::{
         future::Future,
@@ -18,10 +18,10 @@ mod imp {
         time::Duration,
     };
 
-    use tardigrade_shared::{FromAbi, TimerKind};
+    use tardigrade_shared::{FromAbi, TimerId, TimerKind};
 
     #[derive(Debug)]
-    pub struct Sleep(i64);
+    pub struct Sleep(TimerId);
 
     impl Future for Sleep {
         type Output = ();
@@ -30,7 +30,7 @@ mod imp {
             #[link(wasm_import_module = "tardigrade_rt")]
             #[allow(improper_ctypes)]
             extern "C" {
-                fn timer_poll(timer_ptr: i64, cx: *mut Context<'_>) -> i32;
+                fn timer_poll(timer_id: TimerId, cx: *mut Context<'_>) -> i32;
             }
 
             unsafe {
@@ -44,28 +44,21 @@ mod imp {
         fn drop(&mut self) {
             #[link(wasm_import_module = "tardigrade_rt")]
             extern "C" {
-                fn timer_drop(timer_ptr: i64);
+                fn timer_drop(timer_id: TimerId);
             }
 
             unsafe { timer_drop(self.0) }
         }
     }
 
-    pub fn sleep(timer_name: &str, duration: Duration) -> Sleep {
+    pub fn sleep(duration: Duration) -> Sleep {
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
-            fn timer_new(
-                timer_name_ptr: *const u8,
-                timer_name_len: usize,
-                timer_kind: TimerKind,
-                timer_value: i64,
-            ) -> i64;
+            fn timer_new(timer_kind: TimerKind, timer_value: i64) -> TimerId;
         }
 
         Sleep(unsafe {
             timer_new(
-                timer_name.as_ptr(),
-                timer_name.len(),
                 TimerKind::Duration,
                 i64::try_from(duration.as_millis()).expect("duration is too large"),
             )
@@ -73,7 +66,7 @@ mod imp {
     }
 }
 
-#[cfg(not(all(target_arch = "wasm32", not(target_os = "emscripten"))))]
+#[cfg(not(target_arch = "wasm32"))]
 mod imp {
     use futures::channel::oneshot;
     use pin_project_lite::pin_project;
@@ -107,7 +100,7 @@ mod imp {
         }
     }
 
-    pub fn sleep(_timer_name: &str, duration: Duration) -> Sleep {
+    pub fn sleep(duration: Duration) -> Sleep {
         Runtime::with_mut(|rt| Sleep {
             inner: rt.insert_timer(duration),
         })
@@ -131,8 +124,8 @@ impl Future for Sleep {
     }
 }
 
-pub fn sleep(timer_name: &str, duration: Duration) -> Sleep {
+pub fn sleep(duration: Duration) -> Sleep {
     Sleep {
-        inner: imp::sleep(timer_name, duration),
+        inner: imp::sleep(duration),
     }
 }
