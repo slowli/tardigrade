@@ -30,6 +30,7 @@ mod imp {
             #[link(wasm_import_module = "tardigrade_rt")]
             #[allow(improper_ctypes)]
             extern "C" {
+                #[link_name = "timer::poll"]
                 fn timer_poll(timer_id: TimerId, cx: *mut Context<'_>) -> i32;
             }
 
@@ -44,6 +45,7 @@ mod imp {
         fn drop(&mut self) {
             #[link(wasm_import_module = "tardigrade_rt")]
             extern "C" {
+                #[link_name = "timer::drop"]
                 fn timer_drop(timer_id: TimerId);
             }
 
@@ -54,6 +56,7 @@ mod imp {
     pub fn sleep(duration: Duration) -> Sleep {
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
+            #[link_name = "timer::new"]
             fn timer_new(timer_kind: TimerKind, timer_value: i64) -> TimerId;
         }
 

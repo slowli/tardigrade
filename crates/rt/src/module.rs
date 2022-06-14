@@ -2,15 +2,15 @@
 
 use anyhow::{anyhow, bail, ensure, Context};
 use wasmtime::{
-    AsContextMut, Engine, ExternType, Func, Instance, Linker, Memory, Store, Trap, TypedFunc,
-    WasmParams, WasmResults,
+    AsContextMut, Engine, ExternType, Func, Instance, Linker, Memory, Module, Store, Trap,
+    TypedFunc, WasmParams, WasmResults,
 };
 
 use std::{fmt, task::Poll};
 
 use crate::{
-    state::{State, StateFunctions, WasmContextPtr},
-    FutureId, TaskId, TimerId, WakerId,
+    data::{WasmContextPtr, WorkflowData, WorkflowFunctions},
+    TaskId, TimerId, WakerId,
 };
 use tardigrade_shared::{
     workflow::{Interface, ValidateInterface},
@@ -32,16 +32,52 @@ where
         .with_context(|| format!("`{}` function has incorrect return types", fn_name))
 }
 
+pub trait ExtendLinker: 'static {
+    const MODULE_NAME: &'static str;
+
+    type Functions: IntoIterator<Item = (&'static str, Func)>;
+
+    fn functions(&self, store: &mut Store<WorkflowData>) -> Self::Functions;
+}
+
+/// Object-safe version of `ExtendLinker`.
+trait LowLevelExtendLinker {
+    fn extend_linker(
+        &self,
+        store: &mut Store<WorkflowData>,
+        linker: &mut Linker<WorkflowData>,
+    ) -> anyhow::Result<()>;
+}
+
+impl<T: ExtendLinker> LowLevelExtendLinker for T {
+    fn extend_linker(
+        &self,
+        store: &mut Store<WorkflowData>,
+        linker: &mut Linker<WorkflowData>,
+    ) -> anyhow::Result<()> {
+        for (name, function) in self.functions(store) {
+            linker.define(Self::MODULE_NAME, name, function)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct WorkflowEngine {
+    inner: Engine,
+}
+
 pub struct WorkflowModule<W> {
-    pub(crate) inner: wasmtime::Module,
+    pub(crate) inner: Module,
     interface: Interface<W>,
+    linker_extensions: Vec<Box<dyn LowLevelExtendLinker>>,
 }
 
 impl<W> fmt::Debug for WorkflowModule<W> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("WorkflowModule")
-            .field("module", &"_")
+            .field("interface", &self.interface)
             .finish()
     }
 }
@@ -102,7 +138,7 @@ impl WorkflowModule<()> {
         Ok(())
     }
 
-    fn validate_module(module: &wasmtime::Module) -> anyhow::Result<()> {
+    fn validate_module(module: &Module) -> anyhow::Result<()> {
         ModuleExports::validate_module(module)?;
         ModuleImports::validate_module(module)?;
         Ok(())
@@ -113,17 +149,34 @@ impl<W> WorkflowModule<W> {
     pub fn interface(&self) -> &Interface<W> {
         &self.interface
     }
+
+    pub fn insert_imports(&mut self, imports: impl ExtendLinker) -> &mut Self {
+        self.linker_extensions.push(Box::new(imports));
+        self
+    }
+
+    pub(crate) fn extend_linker(
+        &self,
+        store: &mut Store<WorkflowData>,
+        linker: &mut Linker<WorkflowData>,
+    ) -> anyhow::Result<()> {
+        for extension in &self.linker_extensions {
+            extension.extend_linker(store, linker)?;
+        }
+        Ok(())
+    }
 }
 
 impl<W: ValidateInterface<()>> WorkflowModule<W> {
     /// Validates the provided module and wraps it.
-    pub fn new(engine: &Engine, module_bytes: &[u8]) -> anyhow::Result<Self> {
-        let module = wasmtime::Module::from_binary(engine, module_bytes)?;
+    pub fn new(engine: &WorkflowEngine, module_bytes: &[u8]) -> anyhow::Result<Self> {
+        let module = wasmtime::Module::from_binary(&engine.inner, module_bytes)?;
         WorkflowModule::validate_module(&module)?;
         let interface = WorkflowModule::interface_from_wasm(module_bytes)?;
         Ok(Self {
             inner: module,
             interface: interface.downcast()?,
+            linker_extensions: vec![Box::new(WorkflowFunctions)],
         })
     }
 }
@@ -188,7 +241,7 @@ impl fmt::Debug for ModuleExports {
 }
 
 impl ModuleExports {
-    fn validate_module(module: &wasmtime::Module) -> anyhow::Result<()> {
+    fn validate_module(module: &Module) -> anyhow::Result<()> {
         let memory_ty = module
             .get_export("memory")
             .ok_or_else(|| anyhow!("module does not export memory"))?;
@@ -197,20 +250,17 @@ impl ModuleExports {
             "`memory` export is not a memory"
         );
 
-        Self::ensure_export_ty::<(), TaskId>(module, "__tardigrade_rt__main")?;
-        Self::ensure_export_ty::<(TaskId, TaskId), i32>(module, "__tardigrade_rt__poll_task")?;
-        Self::ensure_export_ty::<TaskId, ()>(module, "__tardigrade_rt__drop_task")?;
-        Self::ensure_export_ty::<u32, u32>(module, "__tardigrade_rt__alloc_bytes")?;
-        Self::ensure_export_ty::<WasmContextPtr, WakerId>(
-            module,
-            "__tardigrade_rt__context_create_waker",
-        )?;
-        Self::ensure_export_ty::<WakerId, ()>(module, "__tardigrade_rt__waker_wake")?;
+        Self::ensure_export_ty::<(), TaskId>(module, "tardigrade_rt::main")?;
+        Self::ensure_export_ty::<(TaskId, TaskId), i32>(module, "tardigrade_rt::poll_task")?;
+        Self::ensure_export_ty::<TaskId, ()>(module, "tardigrade_rt::drop_task")?;
+        Self::ensure_export_ty::<u32, u32>(module, "tardigrade_rt::alloc_bytes")?;
+        Self::ensure_export_ty::<WasmContextPtr, WakerId>(module, "tardigrade_rt::create_waker")?;
+        Self::ensure_export_ty::<WakerId, ()>(module, "tardigrade_rt::wake_waker")?;
 
         Ok(())
     }
 
-    fn ensure_export_ty<Args, Out>(module: &wasmtime::Module, fn_name: &str) -> anyhow::Result<()>
+    fn ensure_export_ty<Args, Out>(module: &Module, fn_name: &str) -> anyhow::Result<()>
     where
         Args: WasmParams,
         Out: WasmResults,
@@ -221,34 +271,26 @@ impl ModuleExports {
         ensure_func_ty::<Args, Out>(&ty, fn_name)
     }
 
-    pub fn new(store: &mut Store<State>, instance: &Instance) -> Self {
+    pub fn new(store: &mut Store<WorkflowData>, instance: &Instance) -> Self {
         let memory = instance.get_memory(&mut *store, "memory").unwrap();
 
         Self {
             memory,
-            create_main_task: Self::extract_function(
-                &mut *store,
-                instance,
-                "__tardigrade_rt__main",
-            ),
-            poll_task: Self::extract_function(&mut *store, instance, "__tardigrade_rt__poll_task"),
-            drop_task: Self::extract_function(&mut *store, instance, "__tardigrade_rt__drop_task"),
+            create_main_task: Self::extract_function(&mut *store, instance, "tardigrade_rt::main"),
+            poll_task: Self::extract_function(&mut *store, instance, "tardigrade_rt::poll_task"),
+            drop_task: Self::extract_function(&mut *store, instance, "tardigrade_rt::drop_task"),
             alloc_bytes: Self::extract_function(
                 &mut *store,
                 instance,
-                "__tardigrade_rt__alloc_bytes",
+                "tardigrade_rt::alloc_bytes",
             ),
-            create_waker: Self::extract_function(
-                store,
-                instance,
-                "__tardigrade_rt__context_create_waker",
-            ),
-            wake_waker: Self::extract_function(store, instance, "__tardigrade_rt__waker_wake"),
+            create_waker: Self::extract_function(store, instance, "tardigrade_rt::create_waker"),
+            wake_waker: Self::extract_function(store, instance, "tardigrade_rt::wake_waker"),
         }
     }
 
     fn extract_function<Args, Out>(
-        store: &mut Store<State>,
+        store: &mut Store<WorkflowData>,
         instance: &Instance,
         fn_name: &str,
     ) -> TypedFunc<Args, Out>
@@ -271,7 +313,7 @@ pub(crate) struct ModuleImports;
 impl ModuleImports {
     const RT_MODULE: &'static str = "tardigrade_rt";
 
-    fn validate_module(module: &wasmtime::Module) -> anyhow::Result<()> {
+    fn validate_module(module: &Module) -> anyhow::Result<()> {
         let rt_imports = module
             .imports()
             .filter(|import| import.module() == Self::RT_MODULE);
@@ -287,31 +329,28 @@ impl ModuleImports {
 
     fn validate_import(ty: &ExternType, fn_name: &str) -> anyhow::Result<()> {
         match fn_name {
-            "task_poll_completion" => ensure_func_ty::<(TaskId, WasmContextPtr), i64>(ty, fn_name),
-            "task_spawn" => ensure_func_ty::<(u32, u32, TaskId), ()>(ty, fn_name),
-            "task_wake" | "task_schedule_abortion" => ensure_func_ty::<TaskId, ()>(ty, fn_name),
+            "task::poll_completion" => ensure_func_ty::<(TaskId, WasmContextPtr), i64>(ty, fn_name),
+            "task::spawn" => ensure_func_ty::<(u32, u32, TaskId), ()>(ty, fn_name),
+            "task::wake" | "task::abort" => ensure_func_ty::<TaskId, ()>(ty, fn_name),
 
-            "data_input_get" => ensure_func_ty::<(u32, u32), i64>(ty, fn_name),
+            "data_input::get" => ensure_func_ty::<(u32, u32), i64>(ty, fn_name),
 
-            "mpsc_receiver_get" | "mpsc_sender_get" => {
+            "mpsc_receiver::get" | "mpsc_sender::get" => {
                 ensure_func_ty::<(u32, u32), i32>(ty, fn_name)
             }
 
-            "mpsc_receiver_poll_next" => {
+            "mpsc_receiver::poll_next" => {
                 ensure_func_ty::<(u32, u32, WasmContextPtr), i64>(ty, fn_name)
             }
 
-            "mpsc_sender_poll_ready" | "mpsc_sender_poll_flush" => {
+            "mpsc_sender::poll_ready" | "mpsc_sender::poll_flush" => {
                 ensure_func_ty::<(u32, u32, WasmContextPtr), i32>(ty, fn_name)
             }
-            "mpsc_sender_start_send" => ensure_func_ty::<(u32, u32, u32, u32), ()>(ty, fn_name),
+            "mpsc_sender::start_send" => ensure_func_ty::<(u32, u32, u32, u32), ()>(ty, fn_name),
 
-            "timer_new" => ensure_func_ty::<(i32, i64), TimerId>(ty, fn_name),
-            "timer_drop" => ensure_func_ty::<TimerId, ()>(ty, fn_name),
-            "timer_poll" => ensure_func_ty::<(TimerId, WasmContextPtr), i32>(ty, fn_name),
-
-            "traced_future_new" => ensure_func_ty::<(u32, u32), FutureId>(ty, fn_name),
-            "traced_future_update" => ensure_func_ty::<(FutureId, i32), ()>(ty, fn_name),
+            "timer::new" => ensure_func_ty::<(i32, i64), TimerId>(ty, fn_name),
+            "timer::drop" => ensure_func_ty::<TimerId, ()>(ty, fn_name),
+            "timer::poll" => ensure_func_ty::<(TimerId, WasmContextPtr), i32>(ty, fn_name),
 
             other => {
                 bail!(
@@ -322,100 +361,61 @@ impl ModuleImports {
             }
         }
     }
+}
 
-    pub fn extend_linker(
-        store: &mut Store<State>,
-        linker: &mut Linker<State>,
-    ) -> anyhow::Result<()> {
-        Self::import_task_functions(store, linker)?;
-        Self::import_channel_functions(store, linker)?;
-        Self::import_timer_functions(store, linker)?;
-        Self::import_tracing_functions(store, linker)?;
+impl ExtendLinker for WorkflowFunctions {
+    const MODULE_NAME: &'static str = "tardigrade_rt";
 
-        let data_input_get = Func::wrap(&mut *store, StateFunctions::data_input);
-        linker.define(Self::RT_MODULE, "data_input_get", data_input_get)?;
-        Ok(())
-    }
+    type Functions = [(&'static str, Func); 14];
 
-    fn import_task_functions(
-        store: &mut Store<State>,
-        linker: &mut Linker<State>,
-    ) -> anyhow::Result<()> {
-        let poll_task_completion = Func::wrap(&mut *store, StateFunctions::poll_task_completion);
-        linker.define(
-            Self::RT_MODULE,
-            "task_poll_completion",
-            poll_task_completion,
-        )?;
-        let spawn_task = Func::wrap(&mut *store, StateFunctions::spawn_task);
-        linker.define(Self::RT_MODULE, "task_spawn", spawn_task)?;
-        let wake_task = Func::wrap(&mut *store, StateFunctions::wake_task);
-        linker.define(Self::RT_MODULE, "task_wake", wake_task)?;
-        let schedule_task_abortion = Func::wrap(store, StateFunctions::schedule_task_abortion);
-        linker.define(
-            Self::RT_MODULE,
-            "task_schedule_abortion",
-            schedule_task_abortion,
-        )?;
-
-        Ok(())
-    }
-
-    fn import_channel_functions(
-        store: &mut Store<State>,
-        linker: &mut Linker<State>,
-    ) -> anyhow::Result<()> {
-        let receiver = Func::wrap(&mut *store, StateFunctions::receiver);
-        linker.define(Self::RT_MODULE, "mpsc_receiver_get", receiver)?;
-        let poll_next_for_receiver =
-            Func::wrap(&mut *store, StateFunctions::poll_next_for_receiver);
-        linker.define(
-            Self::RT_MODULE,
-            "mpsc_receiver_poll_next",
-            poll_next_for_receiver,
-        )?;
-
-        let sender = Func::wrap(&mut *store, StateFunctions::sender);
-        linker.define(Self::RT_MODULE, "mpsc_sender_get", sender)?;
-        let poll_ready_for_sender = Func::wrap(&mut *store, StateFunctions::poll_ready_for_sender);
-        linker.define(
-            Self::RT_MODULE,
-            "mpsc_sender_poll_ready",
-            poll_ready_for_sender,
-        )?;
-        let start_send = Func::wrap(&mut *store, StateFunctions::start_send);
-        linker.define(Self::RT_MODULE, "mpsc_sender_start_send", start_send)?;
-        let poll_flush_for_sender = Func::wrap(store, StateFunctions::poll_flush_for_sender);
-        linker.define(
-            Self::RT_MODULE,
-            "mpsc_sender_poll_flush",
-            poll_flush_for_sender,
-        )?;
-        Ok(())
-    }
-
-    fn import_timer_functions(
-        store: &mut Store<State>,
-        linker: &mut Linker<State>,
-    ) -> anyhow::Result<()> {
-        let create_timer = Func::wrap(&mut *store, StateFunctions::create_timer);
-        linker.define(Self::RT_MODULE, "timer_new", create_timer)?;
-        let drop_timer = Func::wrap(&mut *store, StateFunctions::drop_timer);
-        linker.define(Self::RT_MODULE, "timer_drop", drop_timer)?;
-        let poll_timer = Func::wrap(&mut *store, StateFunctions::poll_timer);
-        linker.define(Self::RT_MODULE, "timer_poll", poll_timer)?;
-        Ok(())
-    }
-
-    fn import_tracing_functions(
-        store: &mut Store<State>,
-        linker: &mut Linker<State>,
-    ) -> anyhow::Result<()> {
-        let create_future = Func::wrap(&mut *store, StateFunctions::create_traced_future);
-        linker.define(Self::RT_MODULE, "traced_future_new", create_future)?;
-        let update_future = Func::wrap(&mut *store, StateFunctions::update_traced_future);
-        linker.define(Self::RT_MODULE, "traced_future_update", update_future)?;
-        Ok(())
+    fn functions(&self, store: &mut Store<WorkflowData>) -> Self::Functions {
+        [
+            // Task functions
+            (
+                "task::poll_completion",
+                Func::wrap(&mut *store, Self::poll_task_completion),
+            ),
+            ("task::spawn", Func::wrap(&mut *store, Self::spawn_task)),
+            ("task::wake", Func::wrap(&mut *store, Self::wake_task)),
+            (
+                "task::abort",
+                Func::wrap(&mut *store, Self::schedule_task_abortion),
+            ),
+            // Data input functions
+            (
+                "data_input::get",
+                Func::wrap(&mut *store, Self::get_data_input),
+            ),
+            // Channel functions
+            (
+                "mpsc_receiver::get",
+                Func::wrap(&mut *store, Self::get_receiver),
+            ),
+            (
+                "mpsc_receiver::poll_next",
+                Func::wrap(&mut *store, Self::poll_next_for_receiver),
+            ),
+            (
+                "mpsc_sender::get",
+                Func::wrap(&mut *store, Self::get_sender),
+            ),
+            (
+                "mpsc_sender::poll_ready",
+                Func::wrap(&mut *store, Self::poll_ready_for_sender),
+            ),
+            (
+                "mpsc_sender::start_send",
+                Func::wrap(&mut *store, Self::start_send),
+            ),
+            (
+                "mpsc_sender::poll_flush",
+                Func::wrap(&mut *store, Self::poll_flush_for_sender),
+            ),
+            // Timer functions
+            ("timer::new", Func::wrap(&mut *store, Self::create_timer)),
+            ("timer::drop", Func::wrap(&mut *store, Self::drop_timer)),
+            ("timer::poll", Func::wrap(&mut *store, Self::poll_timer)),
+        ]
     }
 }
 
@@ -428,12 +428,14 @@ mod tests {
     #[test]
     fn import_checks_are_consistent() {
         let interface = Interface::default();
-        let state = State::from_interface(&interface, HashMap::new());
+        let state = WorkflowData::from_interface(&interface, HashMap::new());
         let engine = Engine::default();
         let mut store = Store::new(&engine, state);
         let mut linker = Linker::new(&engine);
 
-        ModuleImports::extend_linker(&mut store, &mut linker).unwrap();
+        WorkflowFunctions
+            .extend_linker(&mut store, &mut linker)
+            .unwrap();
         let linker_contents: Vec<_> = linker.iter(&mut store).collect();
         for (module, name, value) in linker_contents {
             assert_eq!(module, ModuleImports::RT_MODULE);

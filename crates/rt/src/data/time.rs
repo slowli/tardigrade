@@ -11,7 +11,7 @@ use std::{
 
 use super::{
     helpers::{WakeIfPending, WakerPlacement, Wakers, WasmContext, WasmContextPtr},
-    State, StateFunctions,
+    WorkflowData, WorkflowFunctions,
 };
 use crate::{
     receipt::{ResourceEventKind, ResourceId, WakeUpCause},
@@ -134,7 +134,7 @@ impl Timers {
     }
 }
 
-impl State {
+impl WorkflowData {
     fn timer_definition(&self, kind: TimerKind, value: i64) -> TimerDefinition {
         let expires_at = match kind {
             TimerKind::Duration => self.timers.current_time + Duration::milliseconds(value),
@@ -143,7 +143,7 @@ impl State {
         TimerDefinition { expires_at }
     }
 
-    pub fn timers(&self) -> &Timers {
+    pub(crate) fn timers(&self) -> &Timers {
         &self.timers
     }
 
@@ -164,7 +164,7 @@ impl State {
         Ok(())
     }
 
-    pub fn set_current_time(&mut self, time: DateTime<Utc>) {
+    pub(crate) fn set_current_time(&mut self, time: DateTime<Utc>) {
         let wakers_by_timer = self.timers.set_current_time(time);
         for (id, wakers) in wakers_by_timer {
             let cause = WakeUpCause::Timer { id };
@@ -184,9 +184,9 @@ impl State {
 }
 
 /// Timer-related functions exported to WASM.
-impl StateFunctions {
+impl WorkflowFunctions {
     pub fn create_timer(
-        mut caller: Caller<'_, State>,
+        mut caller: Caller<'_, WorkflowData>,
         timer_kind: i32,
         timer_value: i64,
     ) -> Result<TimerId, Trap> {
@@ -204,13 +204,13 @@ impl StateFunctions {
         Ok(timer_id)
     }
 
-    pub fn drop_timer(mut caller: Caller<'_, State>, timer_id: TimerId) -> Result<(), Trap> {
+    pub fn drop_timer(mut caller: Caller<'_, WorkflowData>, timer_id: TimerId) -> Result<(), Trap> {
         let result = caller.data_mut().drop_timer(timer_id);
         crate::log_result!(result, "Dropped timer {}", timer_id)
     }
 
     pub fn poll_timer(
-        mut caller: Caller<'_, State>,
+        mut caller: Caller<'_, WorkflowData>,
         timer_id: TimerId,
         cx: WasmContextPtr,
     ) -> Result<i32, Trap> {

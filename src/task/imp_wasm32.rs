@@ -71,6 +71,7 @@ impl Wake for HostContext {
     fn wake_by_ref(self: &Arc<Self>) {
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
+            #[link_name = "task::wake"]
             fn task_wake(task: TaskId);
         }
 
@@ -111,10 +112,11 @@ impl RawTaskHandle {
     fn abort(&self) {
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
-            fn task_schedule_abortion(task: TaskId);
+            #[link_name = "task::abort"]
+            fn task_abort(task: TaskId);
         }
 
-        unsafe { task_schedule_abortion(self.0) }
+        unsafe { task_abort(self.0) }
     }
 }
 
@@ -125,6 +127,7 @@ impl Future for RawTaskHandle {
         #[link(wasm_import_module = "tardigrade_rt")]
         #[allow(improper_ctypes)]
         extern "C" {
+            #[link_name = "task::poll_completion"]
             fn task_poll_completion(task: TaskId, cx: *mut Context<'_>) -> i64;
         }
 
@@ -138,6 +141,7 @@ impl Future for RawTaskHandle {
 fn spawn_raw(task_name: &str, task: impl Future<Output = ()> + 'static) -> RawTaskHandle {
     #[link(wasm_import_module = "tardigrade_rt")]
     extern "C" {
+        #[link_name = "task::spawn"]
         fn task_spawn(task_name_ptr: *const u8, task_name_len: usize, task: TaskId);
     }
 
@@ -198,6 +202,7 @@ pub(super) fn spawn<T: 'static>(
 ///
 /// Calls to this method and `__drop_task` must be linearly ordered (no recursion).
 #[no_mangle]
+#[export_name = "tardigrade_rt::poll_task"]
 pub extern "C" fn __tardigrade_rt__poll_task(task: RawTaskHandle, cx: HostContext) -> i32 {
     let waker = Waker::from(Arc::new(cx));
     let mut cx = Context::from_waker(&waker);
@@ -210,6 +215,7 @@ pub extern "C" fn __tardigrade_rt__poll_task(task: RawTaskHandle, cx: HostContex
 ///
 /// Calls to this method and `__poll_task` must be linearly ordered (no recursion).
 #[no_mangle]
+#[export_name = "tardigrade_rt::drop_task"]
 pub extern "C" fn __tardigrade_rt__drop_task(task: RawTaskHandle) {
     task.drop_ref();
 }
@@ -221,7 +227,8 @@ static mut WAKERS: Lazy<Registry<Waker>> = Lazy::new(|| {
 
 /// Equivalent of `cx.waker().clone()`.
 #[no_mangle]
-pub extern "C" fn __tardigrade_rt__context_create_waker(cx: *mut Context<'_>) -> WakerId {
+#[export_name = "tardigrade_rt::create_waker"]
+pub extern "C" fn __tardigrade_rt__create_waker(cx: *mut Context<'_>) -> WakerId {
     let cx = unsafe { &mut *cx };
     let waker = cx.waker().clone();
     unsafe { WAKERS.insert(waker) }
@@ -229,7 +236,8 @@ pub extern "C" fn __tardigrade_rt__context_create_waker(cx: *mut Context<'_>) ->
 
 /// Equivalent of `waker.wake()`.
 #[no_mangle]
-pub extern "C" fn __tardigrade_rt__waker_wake(waker: WakerId) {
+#[export_name = "tardigrade_rt::wake_waker"]
+pub extern "C" fn __tardigrade_rt__wake_waker(waker: WakerId) {
     let waker = unsafe { WAKERS.remove(waker) };
     waker.wake();
 }

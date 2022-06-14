@@ -31,7 +31,7 @@ pub struct DataInputSpec {
     // TODO: options?
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct Interface<W: ?Sized> {
     #[serde(rename = "v")]
     version: u32,
@@ -43,6 +43,18 @@ pub struct Interface<W: ?Sized> {
     data_inputs: HashMap<String, DataInputSpec>,
     #[serde(skip, default)]
     _workflow: PhantomData<*const W>,
+}
+
+impl<W: ?Sized> fmt::Debug for Interface<W> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Interface")
+            .field("version", &self.version)
+            .field("inbound_channels", &self.inbound_channels)
+            .field("outbound_channels", &self.outbound_channels)
+            .field("data_inputs", &self.data_inputs)
+            .finish()
+    }
 }
 
 impl Default for Interface<()> {

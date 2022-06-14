@@ -1,5 +1,6 @@
 //! `Workflow` and tightly related types.
 
+use anyhow::Context;
 use chrono::{DateTime, Utc};
 use wasmtime::{Linker, Store, Trap};
 
@@ -9,29 +10,27 @@ mod env;
 pub use self::env::{DataPeeker, MessageReceiver, MessageSender, WorkflowEnv, WorkflowHandle};
 
 use crate::{
-    module::{ModuleExports, ModuleImports, WorkflowModule},
+    data::{ConsumeError, PersistError, TaskState, TimerState, WorkflowData, WorkflowState},
+    module::{ModuleExports, WorkflowModule},
     receipt::{
         Event, ExecutedFunction, Execution, ExecutionError, Receipt, ResourceEventKind, ResourceId,
         WakeUpCause,
     },
-    state::{
-        ConsumeError, PersistError, State, TaskState, TimerState, TracedFutureState, WorkflowState,
-    },
-    FutureId, TaskId, TimerId,
+    TaskId, TimerId,
 };
 use tardigrade_shared::workflow::{InputsBuilder, PutHandle, TakeHandle};
 
 /// Workflow instance.
 #[derive(Debug)]
 pub struct Workflow<W> {
-    store: Store<State>,
+    store: Store<WorkflowData>,
     _interface: PhantomData<*const W>,
 }
 
 impl<W: PutHandle<InputsBuilder, ()>> Workflow<W> {
     pub fn new(module: &WorkflowModule<W>, inputs: W::Handle) -> anyhow::Result<(Self, Receipt)> {
         let raw_inputs = module.interface().create_inputs(inputs);
-        let state = State::from_interface(module.interface(), raw_inputs.into_inner());
+        let state = WorkflowData::from_interface(module.interface(), raw_inputs.into_inner());
         let mut this = Self::from_state(module, state)?;
         this.spawn_main_task()?;
         let receipt = this.tick();
@@ -49,11 +48,16 @@ where
 }
 
 impl<W> Workflow<W> {
-    fn from_state(module: &WorkflowModule<W>, state: State) -> anyhow::Result<Self> {
+    fn from_state(module: &WorkflowModule<W>, state: WorkflowData) -> anyhow::Result<Self> {
         let mut linker = Linker::new(module.inner.engine());
         let mut store = Store::new(linker.engine(), state);
-        ModuleImports::extend_linker(&mut store, &mut linker)?;
-        let instance = linker.instantiate(&mut store, &module.inner)?;
+        module
+            .extend_linker(&mut store, &mut linker)
+            .context("failed extending `Linker` for module")?;
+
+        let instance = linker
+            .instantiate(&mut store, &module.inner)
+            .context("failed instantiating module")?;
         let exports = ModuleExports::new(&mut store, &instance);
         store.data_mut().set_exports(exports);
         Ok(Self {
@@ -75,10 +79,6 @@ impl<W> Workflow<W> {
 
     pub fn tasks(&self) -> impl Iterator<Item = (TaskId, &TaskState)> + '_ {
         self.store.data().tasks()
-    }
-
-    pub fn traced_futures(&self) -> impl Iterator<Item = (FutureId, &TracedFutureState)> + '_ {
-        self.store.data().traced_futures()
     }
 
     fn do_execute(&mut self, function: &mut ExecutedFunction) -> Result<(), Trap> {
@@ -107,7 +107,7 @@ impl<W> Workflow<W> {
                     waker_id,
                     wake_up_cause
                 );
-                State::wake(&mut self.store, *waker_id, wake_up_cause.clone())
+                WorkflowData::wake(&mut self.store, *waker_id, wake_up_cause.clone())
             }
             ExecutedFunction::TaskDrop { task_id } => {
                 let exports = self.store.data().exports();
@@ -269,7 +269,7 @@ impl<W> Workflow<W> {
         memory_contents: &[u8],
     ) -> anyhow::Result<Self> {
         // FIXME: check state / interface agreement
-        let mut this = Self::from_state(module, State::from(state))?;
+        let mut this = Self::from_state(module, WorkflowData::from(state))?;
         this.copy_memory(memory_contents)?;
         Ok(this)
     }

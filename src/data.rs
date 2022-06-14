@@ -16,6 +16,7 @@ mod imp {
 
     #[link(wasm_import_module = "tardigrade_rt")]
     extern "C" {
+        #[link_name = "data_input::get"]
         fn data_input_get(input_name_ptr: *const u8, input_name_len: usize) -> i64;
     }
 

@@ -4,7 +4,7 @@ use wasmtime::{Caller, Trap};
 
 use std::{collections::HashMap, task::Poll};
 
-use super::{State, StateFunctions};
+use super::{WorkflowData, WorkflowFunctions};
 use crate::{
     receipt::{ExecutedFunction, ResourceEventKind, ResourceId},
     utils::copy_string_from_wasm,
@@ -95,7 +95,7 @@ impl TracedFutures {
     }
 }
 
-impl State {
+impl WorkflowData {
     fn create_traced_future(&mut self, name: String) -> FutureId {
         let executed_function = self.current_execution().function.clone();
         let future_id = self.traced_futures.push(name, executed_function);
@@ -139,9 +139,9 @@ impl State {
     }
 }
 
-impl StateFunctions {
+impl WorkflowFunctions {
     pub fn create_traced_future(
-        mut caller: Caller<'_, State>,
+        mut caller: Caller<'_, WorkflowData>,
         future_name_ptr: u32,
         future_name_len: u32,
     ) -> Result<FutureId, Trap> {
@@ -152,7 +152,7 @@ impl StateFunctions {
     }
 
     pub fn update_traced_future(
-        mut caller: Caller<'_, State>,
+        mut caller: Caller<'_, WorkflowData>,
         future_id: FutureId,
         update: i32,
     ) -> Result<(), Trap> {

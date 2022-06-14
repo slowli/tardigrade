@@ -6,7 +6,7 @@ use std::{collections::HashSet, error, fmt, mem, ops::Range, task::Poll};
 
 use super::{
     helpers::{Message, WakeIfPending, WakerPlacement, WasmContext, WasmContextPtr},
-    State, StateFunctions,
+    WorkflowData, WorkflowFunctions,
 };
 use crate::{
     receipt::WakeUpCause,
@@ -103,8 +103,8 @@ pub(super) struct OutboundChannelState {
     pub wakes_on_flush: HashSet<WakerId>,
 }
 
-impl State {
-    pub fn push_inbound_message(
+impl WorkflowData {
+    pub(crate) fn push_inbound_message(
         &mut self,
         channel_name: &str,
         message: Vec<u8>,
@@ -171,14 +171,14 @@ impl State {
         })
     }
 
-    pub fn outbound_message_indices(&self, channel_name: &str) -> Range<usize> {
+    pub(crate) fn outbound_message_indices(&self, channel_name: &str) -> Range<usize> {
         let channel_state = &self.outbound_channels[channel_name];
         let start = channel_state.flushed_messages;
         let end = start + channel_state.messages.len();
         start..end
     }
 
-    pub fn push_outbound_message(
+    pub(crate) fn push_outbound_message(
         &mut self,
         channel_name: &str,
         message: Vec<u8>,
@@ -230,7 +230,7 @@ impl State {
             .any(|channel_state| !channel_state.wakes_on_flush.is_empty())
     }
 
-    pub fn take_outbound_messages(&mut self, channel_name: &str) -> Vec<Vec<u8>> {
+    pub(crate) fn take_outbound_messages(&mut self, channel_name: &str) -> Vec<Vec<u8>> {
         let channel_state = self
             .outbound_channels
             .get_mut(channel_name)
@@ -253,9 +253,9 @@ impl State {
 }
 
 /// Channel-related functions exported to WASM.
-impl StateFunctions {
-    pub fn receiver(
-        mut caller: Caller<'_, State>,
+impl WorkflowFunctions {
+    pub fn get_receiver(
+        mut caller: Caller<'_, WorkflowData>,
         channel_name_ptr: u32,
         channel_name_len: u32,
     ) -> Result<i32, Trap> {
@@ -269,7 +269,7 @@ impl StateFunctions {
     }
 
     pub fn poll_next_for_receiver(
-        mut caller: Caller<'_, State>,
+        mut caller: Caller<'_, WorkflowData>,
         channel_name_ptr: u32,
         channel_name_len: u32,
         cx: WasmContextPtr,
@@ -293,8 +293,8 @@ impl StateFunctions {
         poll_result.into_wasm(&mut WasmAllocator::new(caller))
     }
 
-    pub fn sender(
-        caller: Caller<'_, State>,
+    pub fn get_sender(
+        caller: Caller<'_, WorkflowData>,
         channel_name_ptr: u32,
         channel_name_len: u32,
     ) -> Result<i32, Trap> {
@@ -311,7 +311,7 @@ impl StateFunctions {
     }
 
     pub fn poll_ready_for_sender(
-        mut caller: Caller<'_, State>,
+        mut caller: Caller<'_, WorkflowData>,
         channel_name_ptr: u32,
         channel_name_len: u32,
         cx: WasmContextPtr,
@@ -335,7 +335,7 @@ impl StateFunctions {
     }
 
     pub fn start_send(
-        mut caller: Caller<'_, State>,
+        mut caller: Caller<'_, WorkflowData>,
         channel_name_ptr: u32,
         channel_name_len: u32,
         message_ptr: u32,
@@ -358,7 +358,7 @@ impl StateFunctions {
     }
 
     pub fn poll_flush_for_sender(
-        mut caller: Caller<'_, State>,
+        mut caller: Caller<'_, WorkflowData>,
         channel_name_ptr: u32,
         channel_name_len: u32,
         cx: WasmContextPtr,

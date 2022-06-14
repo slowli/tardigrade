@@ -9,7 +9,6 @@ mod helpers;
 mod persistence;
 mod task;
 mod time;
-mod traced;
 
 pub(crate) use self::helpers::WasmContextPtr;
 pub use self::{
@@ -17,7 +16,6 @@ pub use self::{
     persistence::{PersistError, WorkflowState},
     task::TaskState,
     time::TimerState,
-    traced::{TracedFutureStage, TracedFutureState},
 };
 
 use self::{
@@ -25,7 +23,6 @@ use self::{
     helpers::{CurrentExecution, Message, Wakers},
     task::TaskQueue,
     time::Timers,
-    traced::TracedFutures,
 };
 use crate::{
     module::ModuleExports,
@@ -36,19 +33,15 @@ use crate::{
 use tardigrade_shared::{workflow::Interface, IntoWasm};
 
 #[derive(Debug)]
-pub(crate) struct State {
+pub struct WorkflowData {
     /// Functions exported by the `Instance`. Instantiated immediately after instance.
     exports: Option<ModuleExports>,
-
     inbound_channels: HashMap<String, InboundChannelState>,
     outbound_channels: HashMap<String, OutboundChannelState>,
     data_inputs: HashMap<String, Message>,
     timers: Timers,
-
     /// All tasks together with relevant info.
     tasks: HashMap<TaskId, TaskState>,
-    /// Traced futures together with state.
-    traced_futures: TracedFutures,
     /// Data related to the currently executing WASM call.
     current_execution: Option<CurrentExecution>,
     /// Tasks that should be polled after `current_task`.
@@ -59,8 +52,8 @@ pub(crate) struct State {
     current_wakeup_cause: Option<WakeUpCause>,
 }
 
-impl State {
-    pub fn from_interface<W>(
+impl WorkflowData {
+    pub(crate) fn from_interface<W>(
         interface: &Interface<W>,
         data_inputs: HashMap<String, Vec<u8>>,
     ) -> Self {
@@ -96,7 +89,6 @@ impl State {
             data_inputs,
             timers: Timers::new(),
             tasks: HashMap::new(),
-            traced_futures: TracedFutures::default(),
             current_execution: None,
             task_queue: TaskQueue::default(),
             waker_queue: Vec::new(),
@@ -104,26 +96,26 @@ impl State {
         }
     }
 
-    pub fn exports(&self) -> ModuleExports {
+    pub(crate) fn exports(&self) -> ModuleExports {
         self.exports
             .expect("exports accessed before `State` is fully initialized")
     }
 
-    pub fn set_exports(&mut self, exports: ModuleExports) {
+    pub(crate) fn set_exports(&mut self, exports: ModuleExports) {
         self.exports = Some(exports);
     }
 
-    pub fn data_input(&self, input_name: &str) -> Option<Vec<u8>> {
+    pub(crate) fn data_input(&self, input_name: &str) -> Option<Vec<u8>> {
         self.data_inputs.get(input_name).map(|data| data.to_vec())
     }
 }
 
-/// Functions operating on `State` exported to WASM.
-pub(crate) struct StateFunctions(());
+/// Functions operating on `WorkflowData` exported to WASM.
+pub(crate) struct WorkflowFunctions;
 
-impl StateFunctions {
-    pub fn data_input(
-        caller: Caller<'_, State>,
+impl WorkflowFunctions {
+    pub fn get_data_input(
+        caller: Caller<'_, WorkflowData>,
         input_name_ptr: u32,
         input_name_len: u32,
     ) -> Result<i64, Trap> {

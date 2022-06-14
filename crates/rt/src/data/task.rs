@@ -10,7 +10,7 @@ use std::{
 
 use super::{
     helpers::{CurrentExecution, WakeIfPending, WakerPlacement, WasmContext, WasmContextPtr},
-    State, StateFunctions,
+    WorkflowData, WorkflowFunctions,
 };
 use crate::{
     receipt::{Event, ExecutedFunction, ResourceEventKind, ResourceId, WakeUpCause},
@@ -83,19 +83,19 @@ impl TaskState {
     }
 }
 
-impl State {
+impl WorkflowData {
     pub(super) fn current_execution(&mut self) -> &mut CurrentExecution {
         self.current_execution
             .as_mut()
             .expect("called outside event loop")
     }
 
-    pub fn set_current_execution(&mut self, function: ExecutedFunction) {
+    pub(crate) fn set_current_execution(&mut self, function: ExecutedFunction) {
         self.current_execution = Some(CurrentExecution::new(function));
     }
 
     /// Returns tasks that need to be dropped.
-    pub fn remove_current_execution(&mut self, revert: bool) -> Vec<Event> {
+    pub(crate) fn remove_current_execution(&mut self, revert: bool) -> Vec<Event> {
         let current_execution = self.current_execution.take().unwrap();
         if revert {
             current_execution.revert(self)
@@ -104,7 +104,7 @@ impl State {
         }
     }
 
-    pub fn complete_current_task(&mut self) {
+    pub(crate) fn complete_current_task(&mut self) {
         let current_execution = self.current_execution();
         let task_id = if let ExecutedFunction::Task { task_id, .. } = current_execution.function {
             task_id
@@ -129,7 +129,7 @@ impl State {
         Ok(())
     }
 
-    pub fn spawn_main_task(&mut self, task_id: TaskId) {
+    pub(crate) fn spawn_main_task(&mut self, task_id: TaskId) {
         debug_assert!(self.tasks.is_empty());
         debug_assert!(self.task_queue.is_empty());
         debug_assert!(self.current_execution.is_none());
@@ -184,15 +184,15 @@ impl State {
         Ok(())
     }
 
-    pub fn task(&self, task_id: TaskId) -> Option<&TaskState> {
+    pub(crate) fn task(&self, task_id: TaskId) -> Option<&TaskState> {
         self.tasks.get(&task_id)
     }
 
-    pub fn tasks(&self) -> impl Iterator<Item = (TaskId, &TaskState)> + '_ {
+    pub(crate) fn tasks(&self) -> impl Iterator<Item = (TaskId, &TaskState)> + '_ {
         self.tasks.iter().map(|(id, state)| (*id, state))
     }
 
-    pub fn take_next_task(&mut self) -> Option<(TaskId, WakeUpCause)> {
+    pub(crate) fn take_next_task(&mut self) -> Option<(TaskId, WakeUpCause)> {
         loop {
             let (task, wake_up_cause) = self.task_queue.take_task()?;
             if self.tasks[&task].completion_result.is_pending() {
@@ -201,20 +201,19 @@ impl State {
         }
     }
 
-    pub fn complete_task(&mut self, task_id: TaskId, result: Result<(), JoinError>) {
+    pub(crate) fn complete_task(&mut self, task_id: TaskId, result: Result<(), JoinError>) {
         let result = crate::log_result!(result, "Completed task {}", task_id);
         let task_state = self.tasks.get_mut(&task_id).unwrap();
         task_state.completion_result = Poll::Ready(result);
-
         let wakers = mem::take(&mut task_state.wakes_on_completion);
         self.schedule_wakers(wakers, WakeUpCause::CompletedTask(task_id));
     }
 }
 
 /// Task-related functions exported to WASM.
-impl StateFunctions {
+impl WorkflowFunctions {
     pub fn poll_task_completion(
-        mut caller: Caller<'_, State>,
+        mut caller: Caller<'_, WorkflowData>,
         task_id: TaskId,
         cx: WasmContextPtr,
     ) -> Result<i64, Trap> {
@@ -231,7 +230,7 @@ impl StateFunctions {
     }
 
     pub fn spawn_task(
-        mut caller: Caller<'_, State>,
+        mut caller: Caller<'_, WorkflowData>,
         task_name_ptr: u32,
         task_name_len: u32,
         task_id: TaskId,
@@ -242,13 +241,13 @@ impl StateFunctions {
         crate::log_result!(result, "Spawned task {} with name `{}`", task_id, task_name)
     }
 
-    pub fn wake_task(mut caller: Caller<'_, State>, task_id: TaskId) -> Result<(), Trap> {
+    pub fn wake_task(mut caller: Caller<'_, WorkflowData>, task_id: TaskId) -> Result<(), Trap> {
         let result = caller.data_mut().schedule_task_wakeup(task_id);
         crate::log_result!(result, "Scheduled task {} wakeup", task_id)
     }
 
     pub fn schedule_task_abortion(
-        mut caller: Caller<'_, State>,
+        mut caller: Caller<'_, WorkflowData>,
         task_id: TaskId,
     ) -> Result<(), Trap> {
         let result = caller.data_mut().schedule_task_abortion(task_id);

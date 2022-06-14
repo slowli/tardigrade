@@ -5,11 +5,11 @@ use wasmtime::{Caller, Store, Trap};
 use std::{collections::HashSet, fmt, mem, task::Poll};
 
 use crate::{
+    data::WorkflowData,
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, ResourceEvent, ResourceEventKind,
         ResourceId, WakeUpCause,
     },
-    state::State,
     utils::drop_value,
     TaskId, TimerId, WakerId,
 };
@@ -72,7 +72,7 @@ impl WasmContext {
         }
     }
 
-    pub fn save_waker(self, caller: &mut Caller<'_, State>) -> Result<(), Trap> {
+    pub fn save_waker(self, caller: &mut Caller<'_, WorkflowData>) -> Result<(), Trap> {
         if let Some(placement) = &self.placement {
             let waker_id = caller
                 .data()
@@ -199,7 +199,7 @@ impl CurrentExecution {
         events.iter().filter_map(Event::as_resource_event)
     }
 
-    pub fn commit(self, state: &mut State) -> Vec<Event> {
+    pub fn commit(self, state: &mut WorkflowData) -> Vec<Event> {
         use self::ResourceEventKind::*;
 
         crate::trace!("Committing {:?} onto {:?}", self, state);
@@ -212,9 +212,6 @@ impl CurrentExecution {
                 (Dropped, ResourceId::Timer(timer_id)) => {
                     state.timers.remove(timer_id);
                 }
-                (Dropped, ResourceId::TracedFuture(future_id)) => {
-                    state.traced_futures.remove(future_id);
-                }
                 _ => { /* Do nothing */ }
             }
         }
@@ -226,7 +223,7 @@ impl CurrentExecution {
         self.events
     }
 
-    pub fn revert(self, state: &mut State) -> Vec<Event> {
+    pub fn revert(self, state: &mut WorkflowData) -> Vec<Event> {
         use self::ResourceEventKind::*;
 
         crate::trace!("Reverting {:?} from {:?}", self, state);
@@ -240,9 +237,6 @@ impl CurrentExecution {
                 (Created, ResourceId::Timer(timer_id)) => {
                     state.timers.remove(timer_id);
                 }
-                (Created, ResourceId::TracedFuture(future_id)) => {
-                    state.traced_futures.remove(future_id);
-                }
                 _ => { /* Do nothing */ }
             }
         }
@@ -252,7 +246,7 @@ impl CurrentExecution {
 }
 
 /// Waker-related `State` functionality.
-impl State {
+impl WorkflowData {
     fn place_waker(&mut self, placement: &WakerPlacement, waker: WakerId) {
         crate::trace!("Placing waker {} in {:?}", waker, placement);
         match placement {
@@ -278,12 +272,12 @@ impl State {
         self.waker_queue.push(Wakers::new(wakers, cause));
     }
 
-    pub fn take_wakers(&mut self) -> impl Iterator<Item = (WakerId, WakeUpCause)> {
+    pub(crate) fn take_wakers(&mut self) -> impl Iterator<Item = (WakerId, WakeUpCause)> {
         let wakers = mem::take(&mut self.waker_queue);
         wakers.into_iter().flat_map(Wakers::into_iter)
     }
 
-    pub fn wake(
+    pub(crate) fn wake(
         store: &mut Store<Self>,
         waker_id: WakerId,
         cause: WakeUpCause,

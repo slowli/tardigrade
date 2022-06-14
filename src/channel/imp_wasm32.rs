@@ -28,6 +28,7 @@ impl TakeHandle<Wasm, &'static str> for MpscReceiver {
     fn take_handle(_env: &mut Wasm, id: &'static str) -> Self {
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
+            #[link_name = "mpsc_receiver::get"]
             fn mpsc_receiver_get(channel_name_ptr: *const u8, channel_name_len: usize) -> i32;
         }
 
@@ -48,6 +49,7 @@ impl Stream for MpscReceiver {
         #[link(wasm_import_module = "tardigrade_rt")]
         #[allow(improper_ctypes)]
         extern "C" {
+            #[link_name = "mpsc_receiver::poll_next"]
             fn mpsc_receiver_poll_next(
                 channel_name_ptr: *const u8,
                 channel_name_len: usize,
@@ -77,6 +79,7 @@ impl TakeHandle<Wasm, &'static str> for MpscSender {
     fn take_handle(_env: &mut Wasm, id: &'static str) -> Self {
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
+            #[link_name = "mpsc_sender::get"]
             fn mpsc_sender_get(channel_name_ptr: *const u8, channel_name_len: usize) -> i32;
         }
 
@@ -94,6 +97,7 @@ impl MpscSender {
     fn do_send(&self, message: &[u8]) {
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
+            #[link_name = "mpsc_sender::start_send"]
             fn mpsc_sender_start_send(
                 channel_name_ptr: *const u8,
                 channel_name_len: usize,
@@ -120,6 +124,7 @@ impl Sink<&[u8]> for MpscSender {
         #[link(wasm_import_module = "tardigrade_rt")]
         #[allow(improper_ctypes)]
         extern "C" {
+            #[link_name = "mpsc_sender::poll_ready"]
             fn mpsc_sender_poll_ready(
                 channel_name_ptr: *const u8,
                 channel_name_len: usize,
@@ -143,6 +148,7 @@ impl Sink<&[u8]> for MpscSender {
         #[link(wasm_import_module = "tardigrade_rt")]
         #[allow(improper_ctypes)]
         extern "C" {
+            #[link_name = "mpsc_sender::poll_flush"]
             fn mpsc_sender_poll_flush(
                 channel_name_ptr: *const u8,
                 channel_name_len: usize,
@@ -164,6 +170,7 @@ impl Sink<&[u8]> for MpscSender {
 }
 
 #[no_mangle]
+#[export_name = "tardigrade_rt::alloc_bytes"]
 pub extern "C" fn __tardigrade_rt__alloc_bytes(capacity: usize) -> *mut u8 {
     let bytes = Vec::<u8>::with_capacity(capacity);
     let mut bytes = ManuallyDrop::new(bytes);

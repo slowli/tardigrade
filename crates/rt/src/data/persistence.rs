@@ -9,8 +9,7 @@ use super::{
     helpers::Message,
     task::{TaskQueue, TaskState},
     time::Timers,
-    traced::TracedFutures,
-    State,
+    WorkflowData,
 };
 use crate::{TaskId, WakerId};
 
@@ -114,7 +113,6 @@ pub struct WorkflowState {
     timers: Timers,
     data_inputs: HashMap<String, Message>,
     tasks: HashMap<TaskId, TaskState>,
-    traced_futures: TracedFutures,
 }
 
 impl WorkflowState {
@@ -126,7 +124,8 @@ impl WorkflowState {
     }
 }
 
-impl From<WorkflowState> for State {
+// FIXME: should this be public?
+impl From<WorkflowState> for WorkflowData {
     fn from(persisted: WorkflowState) -> Self {
         let inbound_channels = WorkflowState::convert_channels(persisted.inbound_channels);
         let outbound_channels = WorkflowState::convert_channels(persisted.outbound_channels);
@@ -138,7 +137,6 @@ impl From<WorkflowState> for State {
             timers: persisted.timers,
             data_inputs: persisted.data_inputs,
             tasks: persisted.tasks,
-            traced_futures: persisted.traced_futures,
             current_execution: None,
             task_queue: TaskQueue::default(),
             waker_queue: Vec::new(),
@@ -147,8 +145,8 @@ impl From<WorkflowState> for State {
     }
 }
 
-impl State {
-    pub fn persist(&self) -> Result<WorkflowState, PersistError> {
+impl WorkflowData {
+    pub(crate) fn persist(&self) -> Result<WorkflowState, PersistError> {
         // Check that we're not losing info.
         if self.current_execution.is_some()
             || !self.task_queue.is_empty()
@@ -177,7 +175,6 @@ impl State {
             timers: self.timers.clone(),
             data_inputs: self.data_inputs.clone(),
             tasks: self.tasks.clone(),
-            traced_futures: self.traced_futures.clone(),
         })
     }
 }
