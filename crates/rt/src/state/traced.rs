@@ -9,7 +9,7 @@ use crate::{
     receipt::{ExecutedFunction, ResourceEventKind, ResourceId},
     utils::copy_string_from_wasm,
 };
-use tardigrade_shared::{FutureId, TracedFutureUpdate, TryFromAbi};
+use tardigrade_shared::{FutureId, TracedFutureUpdate, TryFromWasm};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -156,7 +156,7 @@ impl StateFunctions {
         future_id: FutureId,
         update: i32,
     ) -> Result<(), Trap> {
-        let update = TracedFutureUpdate::try_from_abi(update).map_err(Trap::new)?;
+        let update = TracedFutureUpdate::try_from_wasm(update).map_err(Trap::new)?;
         caller.data_mut().update_traced_future(future_id, update)
     }
 }

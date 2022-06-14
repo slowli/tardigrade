@@ -12,7 +12,7 @@ use tardigrade_shared::workflow::{
 
 #[cfg(target_arch = "wasm32")]
 mod imp {
-    use tardigrade_shared::FromAbi;
+    use tardigrade_shared::IntoWasm;
 
     #[link(wasm_import_module = "tardigrade_rt")]
     extern "C" {
@@ -22,7 +22,7 @@ mod imp {
     pub fn try_get_raw_data(id: &'static str) -> Option<Vec<u8>> {
         unsafe {
             let result = data_input_get(id.as_ptr(), id.len());
-            FromAbi::from_abi(result)
+            IntoWasm::from_abi_in_wasm(result)
         }
     }
 }

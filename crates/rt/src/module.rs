@@ -12,7 +12,10 @@ use crate::{
     state::{State, StateFunctions, WasmContextPtr},
     FutureId, TaskId, TimerId, WakerId,
 };
-use tardigrade_shared::workflow::{Interface, ValidateInterface};
+use tardigrade_shared::{
+    workflow::{Interface, ValidateInterface},
+    TryFromWasm,
+};
 
 fn ensure_func_ty<Args, Out>(ty: &ExternType, fn_name: &str) -> anyhow::Result<()>
 where
@@ -146,11 +149,7 @@ impl ModuleExports {
         let result = self
             .poll_task
             .call(cx, (task_id, task_id))
-            .and_then(|raw| match raw {
-                0 => Ok(Poll::Pending),
-                1 => Ok(Poll::Ready(())),
-                _ => Err(Trap::new("unexpected value returned by task polling")),
-            });
+            .and_then(|res| <Poll<()>>::try_from_wasm(res).map_err(Trap::new));
         crate::log_result!(result, "Polled task {}", task_id)
     }
 

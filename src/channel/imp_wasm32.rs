@@ -12,7 +12,7 @@ use std::{
 use crate::context::Wasm;
 use tardigrade_shared::{
     workflow::{TakeHandle, WithHandle},
-    ChannelKind, FromAbi, RawChannelResult,
+    ChannelKind, IntoWasm, RawChannelResult,
 };
 
 #[derive(Debug)]
@@ -33,7 +33,7 @@ impl TakeHandle<Wasm, &'static str> for MpscReceiver {
 
         let result = unsafe {
             let result = mpsc_receiver_get(id.as_ptr(), id.len());
-            RawChannelResult::from_abi(result)
+            RawChannelResult::from_abi_in_wasm(result)
                 .map(|()| Self { channel_name: id })
                 .map_err(|kind| kind.for_channel(ChannelKind::Inbound, id))
         };
@@ -58,7 +58,7 @@ impl Stream for MpscReceiver {
         unsafe {
             let result =
                 mpsc_receiver_poll_next(self.channel_name.as_ptr(), self.channel_name.len(), cx);
-            FromAbi::from_abi(result)
+            IntoWasm::from_abi_in_wasm(result)
         }
     }
 }
@@ -82,7 +82,7 @@ impl TakeHandle<Wasm, &'static str> for MpscSender {
 
         let result = unsafe {
             let result = mpsc_sender_get(id.as_ptr(), id.len());
-            RawChannelResult::from_abi(result)
+            RawChannelResult::from_abi_in_wasm(result)
                 .map(|()| Self { channel_name: id })
                 .map_err(|kind| kind.for_channel(ChannelKind::Outbound, id))
         };
@@ -130,7 +130,7 @@ impl Sink<&[u8]> for MpscSender {
         unsafe {
             let poll_result =
                 mpsc_sender_poll_ready(self.channel_name.as_ptr(), self.channel_name.len(), cx);
-            Poll::<()>::from_abi(poll_result).map(Ok)
+            Poll::<()>::from_abi_in_wasm(poll_result).map(Ok)
         }
     }
 
@@ -153,7 +153,7 @@ impl Sink<&[u8]> for MpscSender {
         unsafe {
             let poll_result =
                 mpsc_sender_poll_flush(self.channel_name.as_ptr(), self.channel_name.len(), cx);
-            Poll::<()>::from_abi(poll_result).map(Ok)
+            Poll::<()>::from_abi_in_wasm(poll_result).map(Ok)
         }
     }
 

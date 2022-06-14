@@ -18,7 +18,7 @@ use crate::{
     utils::WasmAllocator,
     TimerId, WakerId,
 };
-use tardigrade_shared::{IntoAbi, TimerDefinition, TimerKind};
+use tardigrade_shared::{IntoWasm, TimerDefinition, TimerKind, TryFromWasm};
 
 #[derive(Debug, Clone)]
 pub struct TimerState {
@@ -190,7 +190,8 @@ impl StateFunctions {
         timer_kind: i32,
         timer_value: i64,
     ) -> Result<TimerId, Trap> {
-        let timer_kind = TimerKind::try_from(timer_kind).map_err(|err| Trap::new(err.to_string()));
+        let timer_kind =
+            TimerKind::try_from_wasm(timer_kind).map_err(|err| Trap::new(err.to_string()));
         let timer_kind = crate::log_result!(timer_kind, "Parsed `TimerKind`")?;
 
         let definition = caller.data().timer_definition(timer_kind, timer_value);
@@ -222,6 +223,6 @@ impl StateFunctions {
             cx
         )?;
         cx.save_waker(&mut caller)?;
-        poll_result.into_abi(&mut WasmAllocator::new(caller))
+        poll_result.into_wasm(&mut WasmAllocator::new(caller))
     }
 }

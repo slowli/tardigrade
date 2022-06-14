@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 
 use std::{error, fmt, task::Poll};
 
-use crate::{FromAbi, FromAbiError, IntoAbiOnStack, TryFromAbi};
+use crate::{AllocateBytes, FromWasmError, IntoWasm, TryFromWasm};
 
 /// Result of polling a receiver end of a channel.
 pub type PollMessage = Poll<Option<Vec<u8>>>;
@@ -138,20 +138,18 @@ impl ChannelError {
 
 pub type RawChannelResult = Result<(), ChannelErrorKind>;
 
-impl IntoAbiOnStack for RawChannelResult {
-    type Output = i32;
+impl IntoWasm for RawChannelResult {
+    type Abi = i32;
 
-    fn into_abi(self) -> Self::Output {
-        match self {
+    fn into_wasm<A: AllocateBytes>(self, _: &mut A) -> Result<Self::Abi, A::Error> {
+        Ok(match self {
             Ok(()) => 0,
             Err(ChannelErrorKind::Unknown) => -1,
             Err(ChannelErrorKind::AlreadyAcquired) => -2,
-        }
+        })
     }
-}
 
-impl FromAbi for RawChannelResult {
-    unsafe fn from_abi(abi: i32) -> Self {
+    unsafe fn from_abi_in_wasm(abi: i32) -> Self {
         Err(match abi {
             0 => return Ok(()),
             -1 => ChannelErrorKind::Unknown,
@@ -161,23 +159,6 @@ impl FromAbi for RawChannelResult {
     }
 }
 
-#[derive(Debug)]
-pub struct TimeoutKindError {
-    invalid_value: i32,
-}
-
-impl fmt::Display for TimeoutKindError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "invalid value for timer kind: {}",
-            self.invalid_value
-        )
-    }
-}
-
-impl error::Error for TimeoutKindError {}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(i32)]
 pub enum TimerKind {
@@ -185,16 +166,18 @@ pub enum TimerKind {
     Instant = 1,
 }
 
-impl TryFrom<i32> for TimerKind {
-    type Error = TimeoutKindError;
+impl TryFromWasm for TimerKind {
+    type Abi = i32;
 
-    fn try_from(value: i32) -> Result<Self, Self::Error> {
+    fn into_abi_in_wasm(self) -> Self::Abi {
+        self as i32
+    }
+
+    fn try_from_wasm(value: i32) -> Result<Self, FromWasmError> {
         match value {
             0 => Ok(Self::Duration),
             1 => Ok(Self::Instant),
-            _ => Err(TimeoutKindError {
-                invalid_value: value,
-            }),
+            _ => Err(FromWasmError::new("invalid `TimerKind` value")),
         }
     }
 }
@@ -211,10 +194,10 @@ pub enum TracedFutureUpdate {
     Dropped,
 }
 
-impl IntoAbiOnStack for TracedFutureUpdate {
-    type Output = i32;
+impl TryFromWasm for TracedFutureUpdate {
+    type Abi = i32;
 
-    fn into_abi(self) -> Self::Output {
+    fn into_abi_in_wasm(self) -> Self::Abi {
         match self {
             Self::Polling => 0,
             Self::Polled(Poll::Ready(())) => 1,
@@ -222,16 +205,14 @@ impl IntoAbiOnStack for TracedFutureUpdate {
             Self::Polled(Poll::Pending) => -1,
         }
     }
-}
 
-impl TryFromAbi for TracedFutureUpdate {
-    fn try_from_abi(abi: i32) -> Result<Self, FromAbiError> {
+    fn try_from_wasm(abi: i32) -> Result<Self, FromWasmError> {
         Ok(match abi {
             0 => Self::Polling,
             1 => Self::Polled(Poll::Ready(())),
             2 => Self::Dropped,
             -1 => Self::Polled(Poll::Pending),
-            _ => return Err(FromAbiError::new("invalid value for traced future event")),
+            _ => return Err(FromWasmError::new("invalid value for traced future event")),
         })
     }
 }

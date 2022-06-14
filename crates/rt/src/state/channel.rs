@@ -13,7 +13,7 @@ use crate::{
     utils::{copy_bytes_from_wasm, copy_string_from_wasm, WasmAllocator},
     WakerId,
 };
-use tardigrade_shared::{ChannelErrorKind, IntoAbi, PollMessage};
+use tardigrade_shared::{ChannelErrorKind, IntoWasm, PollMessage};
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -265,7 +265,7 @@ impl StateFunctions {
         let result = caller.data_mut().acquire_inbound_channel(&channel_name);
 
         crate::log_result!(result, "Acquired inbound channel `{}`", channel_name)
-            .into_abi(&mut WasmAllocator::new(caller))
+            .into_wasm(&mut WasmAllocator::new(caller))
     }
 
     pub fn poll_next_for_receiver(
@@ -290,7 +290,7 @@ impl StateFunctions {
         )?;
 
         cx.save_waker(&mut caller)?;
-        poll_result.into_abi(&mut WasmAllocator::new(caller))
+        poll_result.into_wasm(&mut WasmAllocator::new(caller))
     }
 
     pub fn sender(
@@ -307,7 +307,7 @@ impl StateFunctions {
             Err(ChannelErrorKind::Unknown)
         };
         crate::log_result!(result, "Acquired outbound channel `{}`", channel_name)
-            .into_abi(&mut WasmAllocator::new(caller))
+            .into_wasm(&mut WasmAllocator::new(caller))
     }
 
     pub fn poll_ready_for_sender(
@@ -331,7 +331,7 @@ impl StateFunctions {
         )?;
 
         cx.save_waker(&mut caller)?;
-        poll_result.into_abi(&mut WasmAllocator::new(caller))
+        poll_result.into_wasm(&mut WasmAllocator::new(caller))
     }
 
     pub fn start_send(
@@ -378,6 +378,6 @@ impl StateFunctions {
         )?;
 
         cx.save_waker(&mut caller)?;
-        poll_result.into_abi(&mut WasmAllocator::new(caller))
+        poll_result.into_wasm(&mut WasmAllocator::new(caller))
     }
 }

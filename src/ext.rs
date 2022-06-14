@@ -8,7 +8,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use tardigrade_shared::{FutureId, IntoAbiOnStack, TracedFutureUpdate};
+use tardigrade_shared::{FutureId, TracedFutureUpdate, TryFromWasm};
 
 pub trait FutureExt: Sized {
     fn trace(self, description: impl AsRef<str>) -> Traced<Self>;
@@ -56,7 +56,7 @@ impl TracedFutureHandle {
 
     pub fn trace_polling(&self, update: TracedFutureUpdate) {
         unsafe {
-            traced_future_update(self.0, update.into_abi());
+            traced_future_update(self.0, update.into_abi_in_wasm());
         }
     }
 }
@@ -64,7 +64,7 @@ impl TracedFutureHandle {
 impl Drop for TracedFutureHandle {
     fn drop(&mut self) {
         unsafe {
-            traced_future_update(self.0, TracedFutureUpdate::Dropped.into_abi());
+            traced_future_update(self.0, TracedFutureUpdate::Dropped.into_abi_in_wasm());
         }
     }
 }

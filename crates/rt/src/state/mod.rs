@@ -33,7 +33,7 @@ use crate::{
     utils::{copy_string_from_wasm, WasmAllocator},
     TaskId,
 };
-use tardigrade_shared::{workflow::Interface, IntoAbi};
+use tardigrade_shared::{workflow::Interface, IntoWasm};
 
 #[derive(Debug)]
 pub(crate) struct State {
@@ -139,6 +139,6 @@ impl StateFunctions {
                 .map(|bytes| format!("{} bytes", bytes.len()))
                 .unwrap_or_else(|| "(no data)".to_owned())
         );
-        maybe_data.into_abi(&mut WasmAllocator::new(caller))
+        maybe_data.into_wasm(&mut WasmAllocator::new(caller))
     }
 }

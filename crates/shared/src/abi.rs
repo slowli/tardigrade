@@ -5,10 +5,10 @@ use std::{error, fmt, task::Poll};
 use crate::types::{JoinError, PollMessage, PollTask};
 
 /// Value directly representable in WASM ABI, e.g., `i64`.
-pub trait AbiValue {}
+pub trait WasmValue {}
 
-impl AbiValue for i32 {}
-impl AbiValue for i64 {}
+impl WasmValue for i32 {}
+impl WasmValue for i64 {}
 
 /// Simplest allocator interface.
 pub trait AllocateBytes {
@@ -18,30 +18,12 @@ pub trait AllocateBytes {
     fn copy_to_wasm(&mut self, bytes: &[u8]) -> Result<(u32, u32), Self::Error>;
 }
 
-/// Value convertible into WASM-compatible presentation, either on host or in WASM code.
-pub trait IntoAbi {
+/// Value that can be transferred from host to WASM.
+pub trait IntoWasm: Sized {
     /// Output of the transformation.
-    type Output: AbiValue;
-    /// Performs the conversion.
-    fn into_abi<A: AllocateBytes>(self, alloc: &mut A) -> Result<Self::Output, A::Error>;
-}
-
-pub trait IntoAbiOnStack {
-    type Output: AbiValue;
-
-    fn into_abi(self) -> Self::Output;
-}
-
-impl<T: IntoAbiOnStack> IntoAbi for T {
-    type Output = <Self as IntoAbiOnStack>::Output;
-
-    fn into_abi<A: AllocateBytes>(self, _: &mut A) -> Result<Self::Output, A::Error> {
-        Ok(<Self as IntoAbiOnStack>::into_abi(self))
-    }
-}
-
-/// Value convertible from WASM-compatible presentation in WASM code.
-pub trait FromAbi: IntoAbi {
+    type Abi: WasmValue;
+    /// Converts a host value into WASM presentation.
+    fn into_wasm<A: AllocateBytes>(self, alloc: &mut A) -> Result<Self::Abi, A::Error>;
     /// Performs the conversion.
     ///
     /// # Safety
@@ -49,21 +31,25 @@ pub trait FromAbi: IntoAbi {
     /// This function is marked as unsafe because transformation from `abi` may involve
     /// transmutations, pointer casts etc. The caller is responsible that the function
     /// is only called on the output of [`IntoAbi::into_abi()`].
-    unsafe fn from_abi(abi: <Self as IntoAbi>::Output) -> Self;
+    unsafe fn from_abi_in_wasm(abi: Self::Abi) -> Self;
 }
 
-/// Value fallibly convertible from WASM-compatible presentation on host.
-pub trait TryFromAbi: IntoAbi + Sized {
-    /// Tries to perform the conversion; fails if the value is incorrect.
-    fn try_from_abi(abi: <Self as IntoAbi>::Output) -> Result<Self, FromAbiError>;
+/// Value that can be transferred from WASM to host.
+pub trait TryFromWasm: Sized {
+    /// Output of the transformation.
+    type Abi: WasmValue;
+    /// Converts WASM value into transferable presentation.
+    fn into_abi_in_wasm(self) -> Self::Abi;
+    /// Tries to read the value on host; fails if the value is invalid.
+    fn try_from_wasm(abi: Self::Abi) -> Result<Self, FromWasmError>;
 }
 
 #[derive(Debug)]
-pub struct FromAbiError {
+pub struct FromWasmError {
     message: String,
 }
 
-impl FromAbiError {
+impl FromWasmError {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
@@ -71,33 +57,28 @@ impl FromAbiError {
     }
 }
 
-impl fmt::Display for FromAbiError {
+impl fmt::Display for FromWasmError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "failed ABI conversion: {}", self.message)
     }
 }
 
-impl From<FromAbiError> for String {
-    fn from(err: FromAbiError) -> Self {
+impl From<FromWasmError> for String {
+    fn from(err: FromWasmError) -> Self {
         err.message
     }
 }
 
-impl error::Error for FromAbiError {}
+impl error::Error for FromWasmError {}
 
-impl IntoAbiOnStack for Poll<()> {
-    type Output = i32;
+impl IntoWasm for Poll<()> {
+    type Abi = i32;
 
-    fn into_abi(self) -> Self::Output {
-        match self {
-            Self::Pending => -1,
-            Self::Ready(()) => 0,
-        }
+    fn into_wasm<A: AllocateBytes>(self, _: &mut A) -> Result<Self::Abi, A::Error> {
+        Ok(TryFromWasm::into_abi_in_wasm(self))
     }
-}
 
-impl FromAbi for Poll<()> {
-    unsafe fn from_abi(abi: i32) -> Self {
+    unsafe fn from_abi_in_wasm(abi: i32) -> Self {
         match abi {
             -1 => Self::Pending,
             0 => Self::Ready(()),
@@ -106,21 +87,38 @@ impl FromAbi for Poll<()> {
     }
 }
 
-impl IntoAbiOnStack for PollTask {
-    type Output = i64;
+impl TryFromWasm for Poll<()> {
+    type Abi = i32;
 
-    fn into_abi(self) -> Self::Output {
+    fn into_abi_in_wasm(self) -> Self::Abi {
         match self {
+            Self::Pending => -1,
+            Self::Ready(()) => 0,
+        }
+    }
+
+    fn try_from_wasm(abi: Self::Abi) -> Result<Self, FromWasmError> {
+        Ok(match abi {
+            -1 => Self::Pending,
+            0 => Self::Ready(()),
+            _ => return Err(FromWasmError::new("unexpected `Poll<()>` value")),
+        })
+    }
+}
+
+impl IntoWasm for PollTask {
+    type Abi = i64;
+
+    fn into_wasm<A: AllocateBytes>(self, _: &mut A) -> Result<Self::Abi, A::Error> {
+        Ok(match self {
             Self::Pending => -1,
             Self::Ready(Ok(())) => -2,
             Self::Ready(Err(JoinError::Aborted)) => -3,
             Self::Ready(Err(JoinError::Trapped)) => 0,
-        }
+        })
     }
-}
 
-impl FromAbi for PollTask {
-    unsafe fn from_abi(abi: i64) -> Self {
+    unsafe fn from_abi_in_wasm(abi: i64) -> Self {
         match abi {
             -1 => Self::Pending,
             -2 => Self::Ready(Ok(())),
@@ -131,10 +129,10 @@ impl FromAbi for PollTask {
     }
 }
 
-impl IntoAbi for Option<Vec<u8>> {
-    type Output = i64;
+impl IntoWasm for Option<Vec<u8>> {
+    type Abi = i64;
 
-    fn into_abi<A: AllocateBytes>(self, alloc: &mut A) -> Result<i64, A::Error> {
+    fn into_wasm<A: AllocateBytes>(self, alloc: &mut A) -> Result<i64, A::Error> {
         Ok(if let Some(bytes) = self {
             let (ptr, len) = alloc.copy_to_wasm(&bytes)?;
             assert!(ptr < u32::MAX, "Pointer is too large");
@@ -143,10 +141,8 @@ impl IntoAbi for Option<Vec<u8>> {
             -1
         })
     }
-}
 
-impl FromAbi for Option<Vec<u8>> {
-    unsafe fn from_abi(abi: i64) -> Self {
+    unsafe fn from_abi_in_wasm(abi: i64) -> Self {
         match abi {
             -1 => None,
             _ => Some({
@@ -158,10 +154,10 @@ impl FromAbi for Option<Vec<u8>> {
     }
 }
 
-impl IntoAbi for PollMessage {
-    type Output = i64;
+impl IntoWasm for PollMessage {
+    type Abi = i64;
 
-    fn into_abi<A: AllocateBytes>(self, alloc: &mut A) -> Result<Self::Output, A::Error> {
+    fn into_wasm<A: AllocateBytes>(self, alloc: &mut A) -> Result<Self::Abi, A::Error> {
         Ok(match self {
             Self::Pending => -1,
             Self::Ready(None) => -2,
@@ -172,10 +168,8 @@ impl IntoAbi for PollMessage {
             }
         })
     }
-}
 
-impl FromAbi for PollMessage {
-    unsafe fn from_abi(abi: i64) -> Self {
+    unsafe fn from_abi_in_wasm(abi: i64) -> Self {
         match abi {
             -1 => Self::Pending,
             -2 => Self::Ready(None),

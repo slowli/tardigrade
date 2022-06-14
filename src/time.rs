@@ -18,7 +18,7 @@ mod imp {
         time::Duration,
     };
 
-    use tardigrade_shared::{FromAbi, TimerId, TimerKind};
+    use tardigrade_shared::{IntoWasm, TimerId, TimerKind};
 
     #[derive(Debug)]
     pub struct Sleep(TimerId);
@@ -35,7 +35,7 @@ mod imp {
 
             unsafe {
                 let result = timer_poll(self.0, cx);
-                FromAbi::from_abi(result)
+                IntoWasm::from_abi_in_wasm(result)
             }
         }
     }

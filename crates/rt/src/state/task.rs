@@ -17,7 +17,7 @@ use crate::{
     utils::{copy_string_from_wasm, drop_value, WasmAllocator},
     TaskId, WakerId,
 };
-use tardigrade_shared::{IntoAbi, JoinError};
+use tardigrade_shared::{IntoWasm, JoinError};
 
 /// Priority queue for tasks.
 #[derive(Debug, Default)]
@@ -227,7 +227,7 @@ impl StateFunctions {
             poll_result
         );
         cx.save_waker(&mut caller)?;
-        poll_result.into_abi(&mut WasmAllocator::new(caller))
+        poll_result.into_wasm(&mut WasmAllocator::new(caller))
     }
 
     pub fn spawn_task(

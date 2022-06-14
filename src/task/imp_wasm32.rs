@@ -12,7 +12,7 @@ use std::{
     task::{Context, Poll, Wake, Waker},
 };
 
-use tardigrade_shared::{FromAbi, JoinError, TaskId, WakerId};
+use tardigrade_shared::{IntoWasm, JoinError, TaskId, TryFromWasm, WakerId};
 
 /// Container similar to `Slab`, but with guarantee that returned item keys are never reused.
 #[derive(Debug)]
@@ -130,7 +130,7 @@ impl Future for RawTaskHandle {
 
         unsafe {
             let poll_result = task_poll_completion(self.0, cx);
-            FromAbi::from_abi(poll_result)
+            IntoWasm::from_abi_in_wasm(poll_result)
         }
     }
 }
@@ -198,13 +198,10 @@ pub(super) fn spawn<T: 'static>(
 ///
 /// Calls to this method and `__drop_task` must be linearly ordered (no recursion).
 #[no_mangle]
-pub extern "C" fn __tardigrade_rt__poll_task(task: RawTaskHandle, cx: HostContext) -> bool {
+pub extern "C" fn __tardigrade_rt__poll_task(task: RawTaskHandle, cx: HostContext) -> i32 {
     let waker = Waker::from(Arc::new(cx));
     let mut cx = Context::from_waker(&waker);
-    match task.deref_and_poll(&mut cx) {
-        Poll::Pending => false,
-        Poll::Ready(()) => true,
-    }
+    TryFromWasm::into_abi_in_wasm(task.deref_and_poll(&mut cx))
 }
 
 /// Drops the specified task.
