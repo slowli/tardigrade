@@ -20,12 +20,15 @@ use tardigrade_shared::{
     ChannelError, ChannelErrorKind, ChannelKind,
 };
 
+mod broadcast;
 #[cfg(target_arch = "wasm32")]
 #[path = "imp_wasm32.rs"]
 mod imp;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "imp_mock.rs"]
 pub(crate) mod imp;
+
+pub use self::broadcast::{BroadcastError, BroadcastPublisher, BroadcastSubscriber};
 
 pin_project! {
     #[derive(Debug)]
