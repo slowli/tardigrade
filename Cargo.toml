@@ -14,6 +14,10 @@ slab = "0.4.6"
 
 tardigrade-shared = { version = "0.1.0", path = "crates/shared" }
 
+[dev-dependencies]
+async-io = "1.7.0"
+rand = "0.8.5"
+
 [features]
 default = ["serde_json"]
 
