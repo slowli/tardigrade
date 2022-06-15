@@ -1,6 +1,7 @@
 //! Types shared between host and client envs.
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use std::{error, fmt, task::Poll};
 
@@ -187,32 +188,17 @@ pub struct TimerDefinition {
     pub expires_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum TracedFutureUpdate {
-    Polling,
-    Polled(Poll<()>),
-    Dropped,
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TracedFutureUpdate {
+    pub id: FutureId,
+    pub kind: TracedFutureUpdateKind,
 }
 
-impl TryFromWasm for TracedFutureUpdate {
-    type Abi = i32;
-
-    fn into_abi_in_wasm(self) -> Self::Abi {
-        match self {
-            Self::Polling => 0,
-            Self::Polled(Poll::Ready(())) => 1,
-            Self::Dropped => 2,
-            Self::Polled(Poll::Pending) => -1,
-        }
-    }
-
-    fn try_from_wasm(abi: i32) -> Result<Self, FromWasmError> {
-        Ok(match abi {
-            0 => Self::Polling,
-            1 => Self::Polled(Poll::Ready(())),
-            2 => Self::Dropped,
-            -1 => Self::Polled(Poll::Pending),
-            _ => return Err(FromWasmError::new("invalid value for traced future event")),
-        })
-    }
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TracedFutureUpdateKind {
+    Created { name: String },
+    Polling,
+    Polled { is_ready: bool },
+    Dropped,
 }

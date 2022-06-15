@@ -4,6 +4,7 @@ pub mod channel;
 mod codec;
 mod context;
 mod data;
+mod ext;
 #[cfg(not(target_arch = "wasm32"))]
 mod mock;
 mod task;
@@ -17,6 +18,7 @@ pub use crate::{
     codec::{Decoder, Encoder},
     context::{SpawnWorkflow, TaskHandle, Wasm},
     data::Data,
+    ext::{FutureExt, Traced, Tracer},
     task::{spawn, yield_now, JoinHandle},
     time::sleep,
 };

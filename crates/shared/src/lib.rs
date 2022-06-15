@@ -4,10 +4,12 @@ mod abi;
 mod types;
 pub mod workflow;
 
+// FIXME: modularize types
 pub use crate::{
     abi::{AllocateBytes, FromWasmError, IntoWasm, TryFromWasm, WasmValue},
     types::{
         ChannelError, ChannelErrorKind, ChannelKind, FutureId, JoinError, PollMessage, PollTask,
-        RawChannelResult, TaskId, TimerDefinition, TimerId, TimerKind, TracedFutureUpdate, WakerId,
+        RawChannelResult, TaskId, TimerDefinition, TimerId, TimerKind, TracedFutureUpdate,
+        TracedFutureUpdateKind, WakerId,
     },
 };
