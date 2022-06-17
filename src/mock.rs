@@ -23,11 +23,11 @@ use std::{
 
 use crate::{
     channel::{imp as channel_imp, RawReceiver, RawSender, Receiver, Sender},
-    Data, Decoder, Encoder, SpawnWorkflow, TaskHandle, Wasm,
+    Data, Decoder, Encoder, SpawnWorkflow, Tracer, Wasm,
 };
 use tardigrade_shared::{
-    workflow::{InputsBuilder, Interface, TakeHandle, WithHandle},
-    ChannelError, ChannelErrorKind, ChannelKind,
+    workflow::{Interface, TakeHandle},
+    ChannelError, ChannelErrorKind, ChannelKind, TracedFutureUpdate,
 };
 
 #[derive(Debug)]
@@ -273,7 +273,7 @@ impl Drop for RuntimeGuard {
 
 #[non_exhaustive]
 pub struct TestHandle<W: TestWorkflow> {
-    pub interface: <W as WithHandle<TestHost>>::Handle,
+    pub interface: <W as TakeHandle<TestHost, ()>>::Handle,
     pub timers: TimersHandle,
 }
 
@@ -288,7 +288,7 @@ impl<W: TestWorkflow> TestHandle<W> {
     }
 }
 
-fn test<W, F, Fut, E>(inputs: <W as WithHandle<InputsBuilder>>::Handle, test_fn: F) -> Result<(), E>
+fn test<W, F, Fut, E>(inputs: W::Init, test_fn: F) -> Result<(), E>
 where
     W: TestWorkflow,
     F: FnOnce(TestHandle<W>) -> Fut,
@@ -306,17 +306,15 @@ where
 
     local_pool
         .spawner()
-        .spawn_local(Into::<TaskHandle>::into(workflow).into_inner())
+        .spawn_local(W::spawn(workflow).into_inner())
         .expect("cannot spawn workflow");
     local_pool.run_until(test_fn(test_handle))
 }
 
 /// Extension trait for testing.
 pub trait TestWorkflow: Sized + SpawnWorkflow + TakeHandle<TestHost, ()> {
-    fn test<F>(
-        inputs: <Self as WithHandle<InputsBuilder>>::Handle,
-        test_fn: impl FnOnce(TestHandle<Self>) -> F,
-    ) where
+    fn test<F>(inputs: Self::Init, test_fn: impl FnOnce(TestHandle<Self>) -> F)
+    where
         F: Future<Output = ()> + 'static,
     {
         test::<Self, _, _, _>(inputs, |handle| async {
@@ -339,51 +337,41 @@ impl TestHost {
     }
 }
 
-impl WithHandle<TestHost> for RawReceiver {
-    type Handle = RawSender;
-}
-
 impl TakeHandle<TestHost, &'static str> for RawReceiver {
+    type Handle = RawSender;
+
     fn take_handle(env: &mut TestHost, id: &'static str) -> Self::Handle {
         RawSender::new(channel_imp::MpscReceiver::take_handle(env, id))
     }
 }
 
-impl<T, C: Encoder<T> + Default> WithHandle<TestHost> for Receiver<T, C> {
-    type Handle = Sender<T, C>;
-}
-
 impl<T, C: Encoder<T> + Default> TakeHandle<TestHost, &'static str> for Receiver<T, C> {
+    type Handle = Sender<T, C>;
+
     fn take_handle(env: &mut TestHost, id: &'static str) -> Self::Handle {
         Sender::new(RawReceiver::take_handle(env, id), C::default())
     }
 }
 
-impl WithHandle<TestHost> for RawSender {
-    type Handle = RawReceiver;
-}
-
 impl TakeHandle<TestHost, &'static str> for RawSender {
+    type Handle = RawReceiver;
+
     fn take_handle(env: &mut TestHost, id: &'static str) -> Self::Handle {
         RawReceiver::new(channel_imp::MpscSender::take_handle(env, id))
     }
 }
 
-impl<T, C: Decoder<T> + Default> WithHandle<TestHost> for Sender<T, C> {
-    type Handle = Receiver<T, C>;
-}
-
 impl<T, C: Decoder<T> + Default> TakeHandle<TestHost, &'static str> for Sender<T, C> {
+    type Handle = Receiver<T, C>;
+
     fn take_handle(env: &mut TestHost, id: &'static str) -> Self::Handle {
         Receiver::new(RawSender::take_handle(env, id), C::default())
     }
 }
 
-impl<T, C: Decoder<T> + Default> WithHandle<TestHost> for Data<T, C> {
-    type Handle = Self;
-}
-
 impl<T, C: Decoder<T> + Default> TakeHandle<TestHost, &'static str> for Data<T, C> {
+    type Handle = Self;
+
     fn take_handle(_env: &mut TestHost, id: &'static str) -> Self {
         Self::from_env(id)
     }

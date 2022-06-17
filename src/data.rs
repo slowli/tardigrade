@@ -7,7 +7,7 @@ use crate::{
     context::Wasm,
 };
 use tardigrade_shared::workflow::{
-    InputsBuilder, Interface, PutHandle, TakeHandle, ValidateInterface, WithHandle,
+    Initialize, InputsBuilder, Interface, InterfaceErrors, TakeHandle, ValidateInterface,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -69,28 +69,21 @@ impl<T, C: Decoder<T> + Default> From<T> for Data<T, C> {
     }
 }
 
-impl<T, C> WithHandle<Wasm> for Data<T, C>
-where
-    C: Decoder<T> + Default,
-{
-    type Handle = Self;
-}
-
 impl<T, C> TakeHandle<Wasm, &'static str> for Data<T, C>
 where
     C: Decoder<T> + Default,
 {
+    type Handle = Self;
+
     fn take_handle(_env: &mut Wasm, id: &'static str) -> Self {
         Self::from_env(id)
     }
 }
 
-impl<T, C: Encoder<T> + Default> WithHandle<InputsBuilder> for Data<T, C> {
-    type Handle = T;
-}
+impl<T, C: Encoder<T> + Default> Initialize<InputsBuilder, &str> for Data<T, C> {
+    type Init = T;
 
-impl<T, C: Encoder<T> + Default> PutHandle<InputsBuilder, &str> for Data<T, C> {
-    fn put_handle(env: &mut InputsBuilder, id: &str, handle: Self::Handle) {
+    fn initialize(env: &mut InputsBuilder, id: &str, handle: Self::Init) {
         let raw_data = C::default().encode_value(handle);
         env.set_raw_input(id, raw_data);
     }
@@ -117,14 +110,11 @@ impl<T, C> ValidateInterface<&str> for Data<T, C>
 where
     C: Encoder<T> + Decoder<T>,
 {
-    type Error = DataValidationError;
-
-    fn validate_interface(interface: &Interface<()>, id: &str) -> Result<(), Self::Error> {
-        interface
-            .data_input(id)
-            .map(drop)
-            .ok_or_else(|| DataValidationError {
+    fn validate_interface(errors: &mut InterfaceErrors, interface: &Interface<()>, id: &str) {
+        if interface.data_input(id).is_none() {
+            errors.insert_error(DataValidationError {
                 name: id.to_owned(),
-            })
+            });
+        }
     }
 }

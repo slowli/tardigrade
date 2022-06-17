@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use tardigrade_shared::workflow::{InputsBuilder, ProvideInterface, PutHandle, TakeHandle};
+use tardigrade_shared::workflow::{GetInterface, Initialize, InputsBuilder, TakeHandle};
 
 #[cfg(target_arch = "wasm32")]
 mod imp {
@@ -34,9 +34,9 @@ mod imp {
 pub struct Wasm(());
 
 pub trait SpawnWorkflow:
-    TakeHandle<Wasm, (), Handle = Self::Wasm> + PutHandle<InputsBuilder, ()> + ProvideInterface
+    GetInterface + TakeHandle<Wasm, ()> + Initialize<InputsBuilder, ()>
 {
-    type Wasm: Into<TaskHandle>;
+    fn spawn(handle: Self::Handle) -> TaskHandle;
 }
 
 /// Handle to a task.

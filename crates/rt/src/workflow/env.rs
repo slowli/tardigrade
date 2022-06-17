@@ -8,9 +8,9 @@ use crate::{
 };
 use tardigrade::{
     channel::{Receiver, Sender},
-    Data, Decoder, Encoder,
+    Data, Decoder, Encoder, Tracer,
 };
-use tardigrade_shared::workflow::{TakeHandle, WithHandle};
+use tardigrade_shared::{workflow::TakeHandle, TracedFutureUpdate};
 
 #[derive(Debug)]
 pub struct WorkflowEnv<'a, W> {
@@ -54,17 +54,12 @@ impl<T, C: Encoder<T>, W> MessageSender<'_, T, C, W> {
     }
 }
 
-impl<'a, T, C, W> WithHandle<WorkflowEnv<'a, W>> for Receiver<T, C>
-where
-    C: Encoder<T> + Default,
-{
-    type Handle = MessageSender<'a, T, C, W>;
-}
-
 impl<'a, T, C, W> TakeHandle<WorkflowEnv<'a, W>, &str> for Receiver<T, C>
 where
     C: Encoder<T> + Default,
 {
+    type Handle = MessageSender<'a, T, C, W>;
+
     fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Self::Handle {
         MessageSender {
             env: env.clone(),
@@ -111,17 +106,12 @@ impl<T, C: Decoder<T>, W> MessageReceiver<'_, T, C, W> {
     }
 }
 
-impl<'a, T, C, W> WithHandle<WorkflowEnv<'a, W>> for Sender<T, C>
-where
-    C: Decoder<T> + Default,
-{
-    type Handle = MessageReceiver<'a, T, C, W>;
-}
-
 impl<'a, T, C, W> TakeHandle<WorkflowEnv<'a, W>, &str> for Sender<T, C>
 where
     C: Decoder<T> + Default,
 {
+    type Handle = MessageReceiver<'a, T, C, W>;
+
     fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Self::Handle {
         MessageReceiver {
             env: env.clone(),
@@ -150,17 +140,12 @@ impl<T, C: Decoder<T>, W> DataPeeker<'_, T, C, W> {
     }
 }
 
-impl<'a, T, C, W> WithHandle<WorkflowEnv<'a, W>> for Data<T, C>
-where
-    C: Decoder<T> + Default,
-{
-    type Handle = DataPeeker<'a, T, C, W>;
-}
-
 impl<'a, T, C, W> TakeHandle<WorkflowEnv<'a, W>, &str> for Data<T, C>
 where
     C: Decoder<T> + Default,
 {
+    type Handle = DataPeeker<'a, T, C, W>;
+
     fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Self::Handle {
         DataPeeker {
             env: env.clone(),
@@ -173,9 +158,9 @@ where
 
 pub struct WorkflowHandle<'a, W>
 where
-    W: WithHandle<WorkflowEnv<'a, W>> + 'a,
+    W: TakeHandle<WorkflowEnv<'a, W>, ()> + 'a,
 {
-    pub interface: <W as WithHandle<WorkflowEnv<'a, W>>>::Handle,
+    pub interface: <W as TakeHandle<WorkflowEnv<'a, W>, ()>>::Handle,
     env: WorkflowEnv<'a, W>,
 }
 

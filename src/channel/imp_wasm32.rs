@@ -10,21 +10,16 @@ use std::{
 };
 
 use crate::context::Wasm;
-use tardigrade_shared::{
-    workflow::{TakeHandle, WithHandle},
-    ChannelKind, IntoWasm, RawChannelResult,
-};
+use tardigrade_shared::{workflow::TakeHandle, ChannelKind, IntoWasm, RawChannelResult};
 
 #[derive(Debug)]
 pub struct MpscReceiver {
     channel_name: &'static str,
 }
 
-impl WithHandle<Wasm> for MpscReceiver {
-    type Handle = Self;
-}
-
 impl TakeHandle<Wasm, &'static str> for MpscReceiver {
+    type Handle = Self;
+
     fn take_handle(_env: &mut Wasm, id: &'static str) -> Self {
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
@@ -71,11 +66,9 @@ pub struct MpscSender {
     channel_name: &'static str,
 }
 
-impl WithHandle<Wasm> for MpscSender {
-    type Handle = Self;
-}
-
 impl TakeHandle<Wasm, &'static str> for MpscSender {
+    type Handle = Self;
+
     fn take_handle(_env: &mut Wasm, id: &'static str) -> Self {
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {

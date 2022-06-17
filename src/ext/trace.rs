@@ -11,8 +11,8 @@ use std::{
 
 use crate::{channel::Sender, Encoder, Wasm};
 use tardigrade_shared::{
-    workflow::{TakeHandle, WithHandle},
-    FutureId, TracedFutureUpdate, TracedFutureUpdateKind,
+    workflow::{Interface, InterfaceErrors, TakeHandle, ValidateInterface},
+    ChannelErrorKind, ChannelKind, FutureId, TracedFutureUpdate, TracedFutureUpdateKind,
 };
 
 #[derive(Debug)]
@@ -38,17 +38,12 @@ impl<C: Encoder<TracedFutureUpdate>> Tracer<C> {
     }
 }
 
-impl<C> WithHandle<Wasm> for Tracer<C>
-where
-    C: Encoder<TracedFutureUpdate> + Default,
-{
-    type Handle = Self;
-}
-
 impl<C> TakeHandle<Wasm, &'static str> for Tracer<C>
 where
     C: Encoder<TracedFutureUpdate> + Default,
 {
+    type Handle = Self;
+
     fn take_handle(env: &mut Wasm, id: &'static str) -> Self::Handle {
         Self {
             sender: Sender::take_handle(env, id),

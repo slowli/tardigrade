@@ -1,27 +1,28 @@
 //! Workflow-related types.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use std::{collections::HashMap, error, fmt, marker::PhantomData};
 
-pub trait WithHandle<Env> {
+pub trait TakeHandle<Env, Id> {
     type Handle;
-}
 
-pub trait TakeHandle<Env, Id>: WithHandle<Env> {
     fn take_handle(env: &mut Env, id: Id) -> Self::Handle;
 }
 
-pub trait PutHandle<Env, Id>: WithHandle<Env> {
-    fn put_handle(env: &mut Env, id: Id, handle: Self::Handle);
+pub trait Initialize<Env, Id> {
+    type Init;
+
+    fn initialize(env: &mut Env, id: Id, init: Self::Init);
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct InboundChannelSpec {
     // TODO: options?
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct OutboundChannelSpec {
     /// Channel capacity, i.e., number of elements that can be buffered locally before
     /// the channel needs to be flushed. `None` means unbounded capacity.
@@ -40,7 +41,7 @@ pub struct DataInputSpec {
     // TODO: options?
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Interface<W: ?Sized> {
     #[serde(rename = "v")]
     version: u32,
@@ -130,12 +131,13 @@ impl Interface<()> {
             .unwrap_or_else(|err| panic!("Cannot deserialize spec: {}", err))
     }
 
-    pub fn downcast<W>(self) -> Result<Interface<W>, W::Error>
+    pub fn downcast<W>(self) -> Result<Interface<W>, InterfaceErrors>
     where
         W: ValidateInterface<()>,
     {
-        let result = W::validate_interface(&self, ());
-        result.map(|()| Interface {
+        let mut errors = InterfaceErrors::default();
+        W::validate_interface(&mut errors, &self, ());
+        errors.into_result().map(|()| Interface {
             version: self.version,
             inbound_channels: self.inbound_channels,
             outbound_channels: self.outbound_channels,
@@ -145,25 +147,25 @@ impl Interface<()> {
     }
 }
 
-impl<W: PutHandle<InputsBuilder, ()>> Interface<W> {
-    pub fn create_inputs(&self, inputs: W::Handle) -> Inputs {
+impl<W: Initialize<InputsBuilder, ()>> Interface<W> {
+    pub fn create_inputs(&self, inputs: W::Init) -> Inputs {
         let mut builder = self.inputs_builder();
-        W::put_handle(&mut builder, (), inputs);
+        W::initialize(&mut builder, (), inputs);
         builder.build()
     }
 }
 
 #[derive(Debug, Default)]
-pub struct ValidationErrors {
-    errors: HashMap<String, Box<dyn error::Error + Send + Sync>>,
+pub struct InterfaceErrors {
+    errors: Vec<Box<dyn error::Error + Send + Sync>>,
 }
 
-impl ValidationErrors {
-    pub fn insert_error<E>(&mut self, name: &str, error: E)
+impl InterfaceErrors {
+    pub fn insert_error<E>(&mut self, error: E)
     where
         E: error::Error + Send + Sync + 'static,
     {
-        self.errors.insert(name.to_owned(), Box::new(error));
+        self.errors.push(Box::new(error));
     }
 
     pub fn into_result(self) -> Result<(), Self> {
@@ -175,33 +177,33 @@ impl ValidationErrors {
     }
 }
 
-impl fmt::Display for ValidationErrors {
+impl fmt::Display for InterfaceErrors {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.errors.is_empty() {
             formatter.write_str("(no errors)")
         } else {
             formatter.write_str("error validating workflow interface: [")?;
-            for (field_name, error) in &self.errors {
-                write!(formatter, "{}: {},", field_name, error)?;
+            for (i, error) in self.errors.iter().enumerate() {
+                fmt::Display::fmt(error, formatter)?;
+                if i + 1 < self.errors.len() {
+                    formatter.write_str(", ")?;
+                }
             }
             formatter.write_str("]")
         }
     }
 }
 
-impl error::Error for ValidationErrors {
+impl error::Error for InterfaceErrors {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         self.errors
-            .values()
-            .next()
+            .get(0)
             .map(|err| err.as_ref() as &(dyn error::Error + 'static))
     }
 }
 
 pub trait ValidateInterface<Id> {
-    type Error: error::Error + Send + Sync + 'static;
-
-    fn validate_interface(interface: &Interface<()>, id: Id) -> Result<(), Self::Error>;
+    fn validate_interface(errors: &mut InterfaceErrors, interface: &Interface<()>, id: Id);
 }
 
 #[derive(Debug, Clone)]
@@ -245,7 +247,7 @@ impl InputsBuilder {
     }
 }
 
-pub trait ProvideInterface {
+pub trait GetInterface {
     fn interface() -> Interface<Self>;
 }
 

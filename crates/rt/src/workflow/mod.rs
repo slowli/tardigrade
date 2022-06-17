@@ -18,7 +18,7 @@ use crate::{
     },
     TaskId, TimerId,
 };
-use tardigrade_shared::workflow::{InputsBuilder, PutHandle, TakeHandle};
+use tardigrade_shared::workflow::{Initialize, InputsBuilder, TakeHandle};
 
 /// Workflow instance.
 #[derive(Debug)]
@@ -27,8 +27,8 @@ pub struct Workflow<W> {
     _interface: PhantomData<*const W>,
 }
 
-impl<W: PutHandle<InputsBuilder, ()>> Workflow<W> {
-    pub fn new(module: &WorkflowModule<W>, inputs: W::Handle) -> anyhow::Result<(Self, Receipt)> {
+impl<W: Initialize<InputsBuilder, ()>> Workflow<W> {
+    pub fn new(module: &WorkflowModule<W>, inputs: W::Init) -> anyhow::Result<(Self, Receipt)> {
         let raw_inputs = module.interface().create_inputs(inputs);
         let state = WorkflowData::from_interface(module.interface(), raw_inputs.into_inner());
         let mut this = Self::from_state(module, state)?;

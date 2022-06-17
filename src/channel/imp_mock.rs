@@ -13,25 +13,21 @@ use crate::{
     mock::{Runtime, TestHost},
     Wasm,
 };
-use tardigrade_shared::workflow::{TakeHandle, WithHandle};
+use tardigrade_shared::workflow::TakeHandle;
 
 pub type MpscReceiver = mpsc::UnboundedReceiver<Vec<u8>>;
 
-impl WithHandle<Wasm> for MpscReceiver {
-    type Handle = Self;
-}
-
 impl TakeHandle<Wasm, &'static str> for MpscReceiver {
+    type Handle = Self;
+
     fn take_handle(_env: &mut Wasm, id: &'static str) -> Self {
         Runtime::with_mut(|rt| rt.take_inbound_channel(id)).unwrap()
     }
 }
 
-impl WithHandle<TestHost> for MpscReceiver {
-    type Handle = MpscSender;
-}
-
 impl TakeHandle<TestHost, &'static str> for MpscReceiver {
+    type Handle = MpscSender;
+
     fn take_handle(_env: &mut TestHost, id: &'static str) -> Self::Handle {
         let inner = Runtime::with_mut(|rt| rt.sender_for_inbound_channel(id)).unwrap();
         MpscSender { inner }
@@ -47,22 +43,18 @@ pin_project! {
     }
 }
 
-impl WithHandle<Wasm> for MpscSender {
-    type Handle = Self;
-}
-
 impl TakeHandle<Wasm, &'static str> for MpscSender {
+    type Handle = Self;
+
     fn take_handle(_env: &mut Wasm, id: &'static str) -> Self {
         let inner = Runtime::with_mut(|rt| rt.outbound_channel(id)).unwrap();
         Self { inner }
     }
 }
 
-impl WithHandle<TestHost> for MpscSender {
-    type Handle = MpscReceiver;
-}
-
 impl TakeHandle<TestHost, &'static str> for MpscSender {
+    type Handle = MpscReceiver;
+
     fn take_handle(_env: &mut TestHost, id: &'static str) -> Self::Handle {
         Runtime::with_mut(|rt| rt.take_receiver_for_outbound_channel(id)).unwrap()
     }
