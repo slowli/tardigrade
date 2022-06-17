@@ -56,25 +56,34 @@ impl fmt::Display for ChannelKind {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[non_exhaustive]
 pub enum ChannelErrorKind {
     /// Channel was not registered in the workflow interface.
     Unknown,
     /// An inbound channel was already acquired by the workflow.
     AlreadyAcquired,
+    /// Custom error.
+    Custom(Box<dyn error::Error + Send + Sync>),
 }
 
 impl fmt::Display for ChannelErrorKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::Unknown => "channel was not registered in the workflow interface",
-            Self::AlreadyAcquired => "inbound channel was already acquired",
-        })
+        match self {
+            Self::Unknown => {
+                formatter.write_str("channel was not registered in the workflow interface")
+            }
+            Self::AlreadyAcquired => formatter.write_str("inbound channel was already acquired"),
+            Self::Custom(err) => fmt::Display::fmt(err, formatter),
+        }
     }
 }
 
 impl ChannelErrorKind {
+    pub fn custom(err: impl Into<String>) -> Self {
+        Self::Custom(err.into().into())
+    }
+
     #[doc(hidden)]
     pub fn for_channel(
         self,
@@ -108,7 +117,7 @@ impl ChannelError {
 
 impl fmt::Display for ChannelError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.kind {
+        match &self.kind {
             ChannelErrorKind::Unknown => {
                 formatter.write_str("unknown ")?;
                 self.fmt_channel(formatter)
@@ -117,11 +126,23 @@ impl fmt::Display for ChannelError {
                 self.fmt_channel(formatter)?;
                 formatter.write_str(" already acquired")
             }
+            ChannelErrorKind::Custom(err) => {
+                formatter.write_str("error for ")?;
+                self.fmt_channel(formatter)?;
+                write!(formatter, ": {}", err)
+            }
         }
     }
 }
 
-impl error::Error for ChannelError {}
+impl error::Error for ChannelError {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        match &self.kind {
+            ChannelErrorKind::Custom(err) => Some(err.as_ref()),
+            _ => None,
+        }
+    }
+}
 
 impl ChannelError {
     pub fn kind(&self) -> &ChannelErrorKind {
@@ -147,6 +168,7 @@ impl IntoWasm for RawChannelResult {
             Ok(()) => 0,
             Err(ChannelErrorKind::Unknown) => -1,
             Err(ChannelErrorKind::AlreadyAcquired) => -2,
+            Err(_) => unreachable!(), // FIXME
         })
     }
 

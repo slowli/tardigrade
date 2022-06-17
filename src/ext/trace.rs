@@ -51,6 +51,27 @@ where
     }
 }
 
+impl<C> ValidateInterface<&str> for Tracer<C>
+where
+    C: Encoder<TracedFutureUpdate> + Default,
+{
+    fn validate_interface(errors: &mut InterfaceErrors, interface: &Interface<()>, id: &str) {
+        if let Some(spec) = interface.outbound_channel(id) {
+            if spec.capacity != None {
+                let err = format!(
+                    "unexpected channel capacity: {:?}, expected infinite capacity (`None`)",
+                    spec.capacity
+                );
+                let err = ChannelErrorKind::custom(err).for_channel(ChannelKind::Outbound, id);
+                errors.insert_error(err);
+            }
+        } else {
+            let err = ChannelErrorKind::Unknown.for_channel(ChannelKind::Outbound, id);
+            errors.insert_error(err);
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Traced<F, C: Encoder<TracedFutureUpdate>> {
     id: FutureId,
