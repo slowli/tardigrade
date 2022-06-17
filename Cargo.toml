@@ -13,6 +13,7 @@ serde_json = { version = "1", optional = true }
 slab = "0.4.6"
 
 tardigrade-shared = { version = "0.1.0", path = "crates/shared" }
+tardigrade-derive = { version = "0.1.0", path = "crates/derive", optional = true }
 
 [dev-dependencies]
 async-io = "1.7.0"
@@ -20,6 +21,7 @@ rand = "0.8.5"
 
 [features]
 default = ["serde_json"]
+derive = ["tardigrade-derive"]
 
 # FIXME: make complete, ensure it works
 [profile.wasm]

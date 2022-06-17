@@ -23,5 +23,23 @@ pub use crate::{
     time::sleep,
 };
 
-// Re-export some types from the shared crate for convenience.
-pub use tardigrade_shared::workflow;
+pub mod workflow {
+    // Re-export some types from the shared crate for convenience.
+    pub use tardigrade_shared::workflow::*;
+
+    #[cfg(feature = "derive")]
+    pub use tardigrade_derive::{GetInterface, Initialize, TakeHandle, ValidateInterface};
+}
+
+#[macro_export]
+macro_rules! workflow_entry {
+    ($workflow:ty) => {
+        #[cfg(target_arch = "wasm32")]
+        #[no_mangle]
+        #[export_name = "tardigrade_rt::main"]
+        #[doc(hidden)]
+        pub extern "C" fn __tardigrade_rt__main() -> $crate::TaskHandle {
+            $crate::TaskHandle::from_workflow::<$workflow>()
+        }
+    };
+}

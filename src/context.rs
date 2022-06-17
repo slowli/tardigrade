@@ -50,6 +50,13 @@ impl TaskHandle {
         Self(imp::TaskHandle::new(future))
     }
 
+    /// Creates a handle from the specified workflow definition.
+    pub fn from_workflow<W: SpawnWorkflow>() -> Self {
+        let mut wasm = Wasm::default();
+        let handle = <W as TakeHandle<Wasm, ()>>::take_handle(&mut wasm, ());
+        W::spawn(handle)
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn into_inner(self) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         self.0 .0
