@@ -13,7 +13,7 @@ use crate::{
     utils::{copy_bytes_from_wasm, copy_string_from_wasm, WasmAllocator},
     WakerId,
 };
-use tardigrade_shared::{ChannelErrorKind, IntoWasm, PollMessage};
+use tardigrade_shared::{workflow::OutboundChannelSpec, ChannelErrorKind, IntoWasm, PollMessage};
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -96,11 +96,28 @@ impl InboundChannelState {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct OutboundChannelState {
+    pub capacity: Option<usize>,
     pub flushed_messages: usize,
     pub messages: Vec<Message>,
     pub wakes_on_flush: HashSet<WakerId>,
+}
+
+impl OutboundChannelState {
+    pub(super) fn new(spec: &OutboundChannelSpec) -> Self {
+        Self {
+            capacity: spec.capacity,
+            flushed_messages: 0,
+            messages: Vec::new(),
+            wakes_on_flush: HashSet::new(),
+        }
+    }
+
+    /// Is this channel ready to receive another message?
+    fn is_ready(&self) -> bool {
+        self.capacity.map_or(true, |cap| self.messages.len() < cap)
+    }
 }
 
 impl WorkflowData {
@@ -208,9 +225,10 @@ impl WorkflowData {
         flush: bool,
         cx: &mut WasmContext,
     ) -> Result<Poll<()>, Trap> {
-        let needs_flushing = self.needs_flushing();
         let channel_state = self.outbound_channel_mut(channel_name)?;
-        let poll_result = if needs_flushing || (flush && !channel_state.messages.is_empty()) {
+        let should_block =
+            !channel_state.is_ready() || (flush && !channel_state.messages.is_empty());
+        let poll_result = if should_block {
             Poll::Pending
         } else {
             Poll::Ready(())
@@ -221,13 +239,6 @@ impl WorkflowData {
         Ok(poll_result.wake_if_pending(cx, || {
             WakerPlacement::OutboundChannel(channel_name.to_owned())
         }))
-    }
-
-    // FIXME: use channel-local logic?
-    fn needs_flushing(&self) -> bool {
-        self.outbound_channels
-            .values()
-            .any(|channel_state| !channel_state.wakes_on_flush.is_empty())
     }
 
     pub(crate) fn take_outbound_messages(&mut self, channel_name: &str) -> Vec<Vec<u8>> {

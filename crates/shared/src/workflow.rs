@@ -23,10 +23,19 @@ pub struct InboundChannelSpec {
 
 #[derive(Debug, Default, Deserialize)]
 pub struct OutboundChannelSpec {
-    // TODO: options?
+    /// Channel capacity, i.e., number of elements that can be buffered locally before
+    /// the channel needs to be flushed. `None` means unbounded capacity.
+    #[serde(default = "OutboundChannelSpec::default_capacity")]
+    pub capacity: Option<usize>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+impl OutboundChannelSpec {
+    const fn default_capacity() -> Option<usize> {
+        Some(1)
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct DataInputSpec {
     // TODO: options?
 }

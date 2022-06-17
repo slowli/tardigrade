@@ -98,6 +98,7 @@ impl OutboundChannelState {
 impl From<OutboundChannelState> for super::OutboundChannelState {
     fn from(persisted: OutboundChannelState) -> Self {
         Self {
+            capacity: None, // FIXME: restore from interface
             flushed_messages: persisted.flushed_messages,
             messages: Vec::new(),
             wakes_on_flush: persisted.wakes_on_flush,

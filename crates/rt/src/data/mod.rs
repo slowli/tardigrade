@@ -75,7 +75,7 @@ impl WorkflowData {
             .collect();
         let outbound_channels = interface
             .outbound_channels()
-            .map(|(name, _)| (name.to_owned(), OutboundChannelState::default()))
+            .map(|(name, spec)| (name.to_owned(), OutboundChannelState::new(spec)))
             .collect();
         let data_inputs = data_inputs
             .into_iter()
