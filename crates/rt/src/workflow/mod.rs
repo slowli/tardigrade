@@ -274,9 +274,13 @@ impl<W> Workflow<W> {
         module: &WorkflowModule<W>,
         persisted: PersistedWorkflow,
     ) -> anyhow::Result<Self> {
-        // FIXME: check state / interface agreement
-        let mut this = Self::from_state(module, WorkflowData::from(persisted.state))?;
-        this.copy_memory(&persisted.memory)?;
+        let data = persisted
+            .state
+            .restore(module.interface())
+            .context("failed restoring workflow state")?;
+        let mut this = Self::from_state(module, data)?;
+        this.copy_memory(&persisted.memory)
+            .context("failed restoring workflow memory")?;
         Ok(this)
     }
 

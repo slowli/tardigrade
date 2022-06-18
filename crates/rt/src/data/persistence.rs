@@ -1,5 +1,7 @@
 //! Persistence for `State`.
 
+use anyhow::{anyhow, bail, ensure};
+
 use std::{
     collections::{HashMap, HashSet},
     error, fmt,
@@ -12,6 +14,7 @@ use super::{
     WorkflowData,
 };
 use crate::{TaskId, WakerId};
+use tardigrade_shared::workflow::Interface;
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -61,16 +64,26 @@ impl InboundChannelState {
             wakes_on_next_element: state.wakes_on_next_element.clone(),
         }
     }
-}
 
-impl From<InboundChannelState> for super::InboundChannelState {
-    fn from(persisted: InboundChannelState) -> Self {
-        Self {
-            is_acquired: persisted.is_acquired,
-            received_messages: persisted.received_messages,
+    fn restore<W>(
+        self,
+        interface: &Interface<W>,
+        channel_name: &str,
+    ) -> anyhow::Result<super::InboundChannelState> {
+        interface.inbound_channel(channel_name).ok_or_else(|| {
+            anyhow!(
+                "inbound channel `{}` is present in persisted state, but not \
+                 in workflow interface",
+                channel_name
+            )
+        })?;
+
+        Ok(super::InboundChannelState {
+            is_acquired: self.is_acquired,
+            received_messages: self.received_messages,
             pending_message: None,
-            wakes_on_next_element: persisted.wakes_on_next_element,
-        }
+            wakes_on_next_element: self.wakes_on_next_element,
+        })
     }
 }
 
@@ -93,16 +106,26 @@ impl OutboundChannelState {
             })
         }
     }
-}
 
-impl From<OutboundChannelState> for super::OutboundChannelState {
-    fn from(persisted: OutboundChannelState) -> Self {
-        Self {
-            capacity: None, // FIXME: restore from interface
-            flushed_messages: persisted.flushed_messages,
+    fn restore<W>(
+        self,
+        interface: &Interface<W>,
+        channel_name: &str,
+    ) -> anyhow::Result<super::OutboundChannelState> {
+        let spec = interface.outbound_channel(channel_name).ok_or_else(|| {
+            anyhow!(
+                "outbound channel `{}` is present in persisted state, but not \
+                 in workflow interface",
+                channel_name
+            )
+        })?;
+
+        Ok(super::OutboundChannelState {
+            capacity: spec.capacity,
+            flushed_messages: self.flushed_messages,
             messages: Vec::new(),
-            wakes_on_flush: persisted.wakes_on_flush,
-        }
+            wakes_on_flush: self.wakes_on_flush,
+        })
     }
 }
 
@@ -117,31 +140,65 @@ pub(crate) struct WorkflowState {
 }
 
 impl WorkflowState {
-    fn convert_channels<T, U: From<T>>(channels: HashMap<String, T>) -> HashMap<String, U> {
-        channels
-            .into_iter()
-            .map(|(name, channel_state)| (name, channel_state.into()))
-            .collect()
-    }
-}
+    pub fn restore<W>(self, interface: &Interface<W>) -> anyhow::Result<WorkflowData> {
+        let maybe_missing_data_input = interface
+            .data_inputs()
+            .find(|&(name, _)| !self.data_inputs.contains_key(name));
+        if let Some((name, _)) = maybe_missing_data_input {
+            bail!(
+                "data input `{}` is present in persisted state, but not in workflow interface",
+                name
+            );
+        }
+        let data_inputs_len = interface.data_inputs().len();
+        ensure!(
+            data_inputs_len == self.data_inputs.len(),
+            "mismatch between number of data inputs in workflow interface ({}) \
+             and in persisted state ({})",
+            data_inputs_len,
+            self.data_inputs.len()
+        );
 
-impl From<WorkflowState> for WorkflowData {
-    fn from(persisted: WorkflowState) -> Self {
-        let inbound_channels = WorkflowState::convert_channels(persisted.inbound_channels);
-        let outbound_channels = WorkflowState::convert_channels(persisted.outbound_channels);
+        let inbound_channels_len = interface.inbound_channels().len();
+        ensure!(
+            inbound_channels_len == self.inbound_channels.len(),
+            "mismatch between number of inbound channels in workflow interface ({}) \
+             and in persisted state ({})",
+            inbound_channels_len,
+            self.inbound_channels.len()
+        );
+        let inbound_channels = self.inbound_channels.into_iter().map(|(name, state)| {
+            let restored = state.restore(interface, &name)?;
+            Ok((name, restored))
+        });
+        let inbound_channels = inbound_channels.collect::<anyhow::Result<_>>()?;
 
-        Self {
+        let outbound_channels_len = interface.outbound_channels().len();
+        ensure!(
+            outbound_channels_len == self.outbound_channels.len(),
+            "mismatch between number of outbound channels in workflow interface ({}) \
+             and in persisted state ({})",
+            outbound_channels_len,
+            self.outbound_channels.len()
+        );
+        let outbound_channels = self.outbound_channels.into_iter().map(|(name, state)| {
+            let restored = state.restore(interface, &name)?;
+            Ok((name, restored))
+        });
+        let outbound_channels = outbound_channels.collect::<anyhow::Result<_>>()?;
+
+        Ok(WorkflowData {
             exports: None,
             inbound_channels,
             outbound_channels,
-            timers: persisted.timers,
-            data_inputs: persisted.data_inputs,
-            tasks: persisted.tasks,
+            timers: self.timers,
+            data_inputs: self.data_inputs,
+            tasks: self.tasks,
             current_execution: None,
             task_queue: TaskQueue::default(),
             waker_queue: Vec::new(),
             current_wakeup_cause: None,
-        }
+        })
     }
 }
 

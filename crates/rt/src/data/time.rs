@@ -25,17 +25,12 @@ use tardigrade_shared::{
 
 #[derive(Debug, Clone)]
 pub struct TimerState {
-    name: String,
     definition: TimerDefinition,
     is_completed: bool,
     wakes_on_completion: HashSet<WakerId>,
 }
 
 impl TimerState {
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
     pub fn definition(&self) -> TimerDefinition {
         self.definition
     }
@@ -87,7 +82,6 @@ impl Timers {
         self.timers.insert(
             id,
             TimerState {
-                name: String::new(), // FIXME remove field
                 definition,
                 is_completed: false,
                 wakes_on_completion: HashSet::new(),

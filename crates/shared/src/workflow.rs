@@ -88,7 +88,9 @@ impl<W> Interface<W> {
         self.inbound_channels.get(name)
     }
 
-    pub fn inbound_channels(&self) -> impl Iterator<Item = (&str, &InboundChannelSpec)> + '_ {
+    pub fn inbound_channels(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (&str, &InboundChannelSpec)> + '_ {
         self.inbound_channels
             .iter()
             .map(|(name, spec)| (name.as_str(), spec))
@@ -98,7 +100,9 @@ impl<W> Interface<W> {
         self.outbound_channels.get(name)
     }
 
-    pub fn outbound_channels(&self) -> impl Iterator<Item = (&str, &OutboundChannelSpec)> + '_ {
+    pub fn outbound_channels(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (&str, &OutboundChannelSpec)> + '_ {
         self.outbound_channels
             .iter()
             .map(|(name, spec)| (name.as_str(), spec))
@@ -108,7 +112,7 @@ impl<W> Interface<W> {
         self.data_inputs.get(name)
     }
 
-    pub fn data_inputs(&self) -> impl Iterator<Item = (&str, &DataInputSpec)> + '_ {
+    pub fn data_inputs(&self) -> impl ExactSizeIterator<Item = (&str, &DataInputSpec)> + '_ {
         self.data_inputs
             .iter()
             .map(|(name, spec)| (name.as_str(), spec))
