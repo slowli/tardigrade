@@ -81,7 +81,7 @@ mod imp {
         time::Duration,
     };
 
-    use crate::mock::Runtime;
+    use crate::test::Runtime;
 
     pin_project! {
         #[derive(Debug)]

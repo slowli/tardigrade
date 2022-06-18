@@ -30,7 +30,7 @@ mod imp {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod imp {
-    use crate::mock::Runtime;
+    use crate::test::Runtime;
 
     pub fn try_get_raw_data(id: &'static str) -> Option<Vec<u8>> {
         Runtime::with_mut(|rt| rt.data_input(id))

@@ -9,7 +9,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::mock::Runtime;
+use crate::test::Runtime;
 use tardigrade_shared::JoinError;
 
 #[derive(Debug)]

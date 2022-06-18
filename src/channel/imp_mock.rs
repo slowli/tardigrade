@@ -10,7 +10,7 @@ use std::{
 };
 
 use crate::{
-    mock::{Runtime, TestHost},
+    test::{Runtime, TestHost},
     Wasm,
 };
 use tardigrade_shared::workflow::TakeHandle;

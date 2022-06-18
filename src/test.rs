@@ -8,7 +8,9 @@ use futures::{
     },
     executor::{LocalPool, LocalSpawner},
     future::RemoteHandle,
+    stream::{Fuse, FusedStream},
     task::LocalSpawnExt,
+    FutureExt, StreamExt,
 };
 
 use std::{
@@ -23,11 +25,13 @@ use std::{
 
 use crate::{
     channel::{imp as channel_imp, RawReceiver, RawSender, Receiver, Sender},
-    Data, Decoder, Encoder, SpawnWorkflow, Tracer, Wasm,
+    trace::Tracer,
+    Data, Decoder, Encoder, SpawnWorkflow, Wasm,
 };
 use tardigrade_shared::{
+    trace::{FutureUpdate, TracedFuture, TracedFutures},
     workflow::{Interface, TakeHandle},
-    ChannelError, ChannelErrorKind, ChannelKind, TracedFutureUpdate,
+    ChannelError, ChannelErrorKind, ChannelKind, FutureId,
 };
 
 #[derive(Debug)]
@@ -374,5 +378,48 @@ impl<T, C: Decoder<T> + Default> TakeHandle<TestHost, &'static str> for Data<T, 
 
     fn take_handle(_env: &mut TestHost, id: &'static str) -> Self {
         Self::from_env(id)
+    }
+}
+
+#[derive(Debug)]
+pub struct TracerHandle<C> {
+    receiver: Fuse<Receiver<FutureUpdate, C>>,
+    futures: TracedFutures,
+}
+
+impl<C> TracerHandle<C>
+where
+    C: Decoder<FutureUpdate> + Default,
+{
+    pub fn update(&mut self) {
+        if self.receiver.is_terminated() {
+            return;
+        }
+        while let Some(Some(update)) = self.receiver.next().now_or_never() {
+            TracedFuture::update(&mut self.futures, update).unwrap();
+            // `unwrap()` is intentional: it's to catch bugs in library code
+        }
+    }
+
+    pub fn future(&self, id: FutureId) -> Option<&TracedFuture> {
+        self.futures.get(&id)
+    }
+
+    pub fn futures(&self) -> impl Iterator<Item = (FutureId, &TracedFuture)> + '_ {
+        self.futures.iter().map(|(id, state)| (*id, state))
+    }
+}
+
+impl<C> TakeHandle<TestHost, &'static str> for Tracer<C>
+where
+    C: Decoder<FutureUpdate> + Default,
+{
+    type Handle = TracerHandle<C>;
+
+    fn take_handle(env: &mut TestHost, id: &'static str) -> Self::Handle {
+        TracerHandle {
+            receiver: Sender::take_handle(env, id).fuse(),
+            futures: TracedFutures::default(),
+        }
     }
 }
