@@ -3,6 +3,7 @@
 mod data;
 mod module;
 pub mod receipt;
+pub mod test;
 mod utils;
 mod workflow;
 
