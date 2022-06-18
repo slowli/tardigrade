@@ -43,6 +43,16 @@ pin_project! {
     }
 }
 
+impl MpscSender {
+    fn drop_err(_: Result<(), mpsc::SendError>) -> Result<(), Infallible> {
+        // We can have the receiver dropped in tests (implicitly when the test is finished,
+        // or explicitly in the test code). Since we cannot observe channel state after this,
+        // we just drop upstream errors to emulate WASM sandbox, in which channels
+        // are never dropped.
+        Ok(())
+    }
+}
+
 impl TakeHandle<Wasm, &'static str> for MpscSender {
     type Handle = Self;
 
@@ -64,30 +74,19 @@ impl Sink<&[u8]> for MpscSender {
     type Error = Infallible;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.project()
-            .inner
-            .poll_ready(cx)
-            .map_err(|err| panic!("Error while polling `Sender` readiness: {}", err))
+        self.project().inner.poll_ready(cx).map(Self::drop_err)
     }
 
     fn start_send(self: Pin<&mut Self>, item: &[u8]) -> Result<(), Self::Error> {
-        self.project()
-            .inner
-            .start_send(item.to_vec())
-            .map_err(|err| panic!("Error sending item via `Sender`: {}", err))
+        let res = self.project().inner.start_send(item.to_vec());
+        Self::drop_err(res)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.project()
-            .inner
-            .poll_flush(cx)
-            .map_err(|err| panic!("Error while flushing `Sender`: {}", err))
+        self.project().inner.poll_flush(cx).map(Self::drop_err)
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.project()
-            .inner
-            .poll_flush(cx)
-            .map_err(|err| panic!("Error while closing `Sender`: {}", err))
+        self.project().inner.poll_close(cx).map(Self::drop_err)
     }
 }
