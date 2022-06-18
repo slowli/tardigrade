@@ -9,6 +9,7 @@ mod ext;
 mod mock;
 mod task;
 mod time;
+pub mod trace;
 
 #[cfg(feature = "serde_json")]
 pub use crate::codec::Json;
@@ -18,7 +19,7 @@ pub use crate::{
     codec::{Decoder, Encoder},
     context::{SpawnWorkflow, TaskHandle, Wasm},
     data::Data,
-    ext::{FutureExt, Traced, Tracer},
+    ext::FutureExt,
     task::{spawn, yield_now, JoinHandle},
     time::sleep,
 };

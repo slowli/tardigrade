@@ -13,8 +13,8 @@ use crate::{
     TaskId, TimerId, WakerId,
 };
 use tardigrade_shared::{
+    abi::TryFromWasm,
     workflow::{Interface, ValidateInterface},
-    TryFromWasm,
 };
 
 fn ensure_func_ty<Args, Out>(ty: &ExternType, fn_name: &str) -> anyhow::Result<()>

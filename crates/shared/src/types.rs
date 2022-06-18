@@ -1,11 +1,10 @@
 //! Types shared between host and client envs.
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 
 use std::{error, fmt, task::Poll};
 
-use crate::{AllocateBytes, FromWasmError, IntoWasm, TryFromWasm};
+use crate::abi::{AllocateBytes, FromWasmError, IntoWasm, TryFromWasm};
 
 /// Result of polling a receiver end of a channel.
 pub type PollMessage = Poll<Option<Vec<u8>>>;
@@ -158,9 +157,7 @@ impl ChannelError {
     }
 }
 
-pub type RawChannelResult = Result<(), ChannelErrorKind>;
-
-impl IntoWasm for RawChannelResult {
+impl IntoWasm for Result<(), ChannelErrorKind> {
     type Abi = i32;
 
     fn into_wasm<A: AllocateBytes>(self, _: &mut A) -> Result<Self::Abi, A::Error> {
@@ -208,19 +205,4 @@ impl TryFromWasm for TimerKind {
 #[derive(Debug, Clone, Copy)]
 pub struct TimerDefinition {
     pub expires_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TracedFutureUpdate {
-    pub id: FutureId,
-    pub kind: TracedFutureUpdateKind,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum TracedFutureUpdateKind {
-    Created { name: String },
-    Polling,
-    Polled { is_ready: bool },
-    Dropped,
 }

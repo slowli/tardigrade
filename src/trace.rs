@@ -7,20 +7,25 @@ use std::{
     pin::Pin,
     sync::atomic::{AtomicU64, Ordering},
     task::{Context, Poll},
+    thread,
+};
+
+pub use tardigrade_shared::trace::{
+    FutureState, FutureUpdate, FutureUpdateError, FutureUpdateKind, TracedFuture, TracedFutures,
 };
 
 use crate::{channel::Sender, Encoder, Wasm};
 use tardigrade_shared::{
     workflow::{Interface, InterfaceErrors, TakeHandle, ValidateInterface},
-    ChannelErrorKind, ChannelKind, FutureId, TracedFutureUpdate, TracedFutureUpdateKind,
+    ChannelErrorKind, ChannelKind, FutureId,
 };
 
 #[derive(Debug)]
 pub struct Tracer<C> {
-    sender: Sender<TracedFutureUpdate, C>,
+    sender: Sender<FutureUpdate, C>,
 }
 
-impl<C: Encoder<TracedFutureUpdate> + Clone> Clone for Tracer<C> {
+impl<C: Encoder<FutureUpdate> + Clone> Clone for Tracer<C> {
     fn clone(&self) -> Self {
         Self {
             sender: self.sender.clone(),
@@ -28,19 +33,19 @@ impl<C: Encoder<TracedFutureUpdate> + Clone> Clone for Tracer<C> {
     }
 }
 
-impl<C: Encoder<TracedFutureUpdate>> Tracer<C> {
-    fn trace(&mut self, update: TracedFutureUpdate) {
+impl<C: Encoder<FutureUpdate>> Tracer<C> {
+    fn trace(&mut self, update: FutureUpdate) {
         self.sender
             .feed(update)
             .now_or_never()
             .expect("tracing channel not ready")
-            .unwrap(); // the sink is infallible
+            .ok(); // we don't have a recourse if the tracing channel is gone
     }
 }
 
 impl<C> TakeHandle<Wasm, &'static str> for Tracer<C>
 where
-    C: Encoder<TracedFutureUpdate> + Default,
+    C: Encoder<FutureUpdate> + Default,
 {
     type Handle = Self;
 
@@ -53,7 +58,7 @@ where
 
 impl<C> ValidateInterface<&str> for Tracer<C>
 where
-    C: Encoder<TracedFutureUpdate> + Default,
+    C: Encoder<FutureUpdate> + Default,
 {
     fn validate_interface(errors: &mut InterfaceErrors, interface: &Interface<()>, id: &str) {
         if let Some(spec) = interface.outbound_channel(id) {
@@ -73,29 +78,33 @@ where
 }
 
 #[derive(Debug)]
-pub struct Traced<F, C: Encoder<TracedFutureUpdate>> {
+pub struct Traced<F, C: Encoder<FutureUpdate>> {
     id: FutureId,
     tracer: Tracer<C>,
     inner: F,
 }
 
-impl<F, C: Encoder<TracedFutureUpdate>> Drop for Traced<F, C> {
+impl<F, C: Encoder<FutureUpdate>> Drop for Traced<F, C> {
     fn drop(&mut self) {
-        self.tracer.trace(TracedFutureUpdate {
+        if thread::panicking() {
+            return; // If we're in a panicking thread, the trace receiver may be gone.
+        }
+
+        self.tracer.trace(FutureUpdate {
             id: self.id,
-            kind: TracedFutureUpdateKind::Dropped,
+            kind: FutureUpdateKind::Dropped,
         });
     }
 }
 
-impl<F: Future, C: Encoder<TracedFutureUpdate>> Traced<F, C> {
+impl<F: Future, C: Encoder<FutureUpdate>> Traced<F, C> {
     pub(crate) fn new(inner: F, mut tracer: Tracer<C>, name: String) -> Self {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
 
         let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        tracer.trace(TracedFutureUpdate {
+        tracer.trace(FutureUpdate {
             id,
-            kind: TracedFutureUpdateKind::Created { name },
+            kind: FutureUpdateKind::Created { name },
         });
         Self { id, tracer, inner }
     }
@@ -114,20 +123,20 @@ impl<F: Future, C: Encoder<TracedFutureUpdate>> Traced<F, C> {
     }
 }
 
-impl<F: Future, C: Encoder<TracedFutureUpdate>> Future for Traced<F, C> {
+impl<F: Future, C: Encoder<FutureUpdate>> Future for Traced<F, C> {
     type Output = F::Output;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let id = self.id;
-        self.as_mut().project_tracer().trace(TracedFutureUpdate {
+        self.as_mut().project_tracer().trace(FutureUpdate {
             id,
-            kind: TracedFutureUpdateKind::Polling,
+            kind: FutureUpdateKind::Polling,
         });
 
         let poll_result = self.as_mut().project_inner().poll(cx);
-        self.project_tracer().trace(TracedFutureUpdate {
+        self.project_tracer().trace(FutureUpdate {
             id,
-            kind: TracedFutureUpdateKind::Polled {
+            kind: FutureUpdateKind::Polled {
                 is_ready: poll_result.is_ready(),
             },
         });

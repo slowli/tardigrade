@@ -13,7 +13,9 @@ use crate::{
     utils::{copy_bytes_from_wasm, copy_string_from_wasm, WasmAllocator},
     WakerId,
 };
-use tardigrade_shared::{workflow::OutboundChannelSpec, ChannelErrorKind, IntoWasm, PollMessage};
+use tardigrade_shared::{
+    abi::IntoWasm, workflow::OutboundChannelSpec, ChannelErrorKind, PollMessage,
+};
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]

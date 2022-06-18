@@ -18,7 +18,10 @@ use crate::{
     utils::WasmAllocator,
     TimerId, WakerId,
 };
-use tardigrade_shared::{IntoWasm, TimerDefinition, TimerKind, TryFromWasm};
+use tardigrade_shared::{
+    abi::{IntoWasm, TryFromWasm},
+    TimerDefinition, TimerKind,
+};
 
 #[derive(Debug, Clone)]
 pub struct TimerState {

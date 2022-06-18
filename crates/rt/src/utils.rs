@@ -5,7 +5,7 @@ use wasmtime::{AsContext, Caller, Memory, Trap};
 use std::{fmt, task::Poll};
 
 use crate::data::WorkflowData;
-use tardigrade_shared::AllocateBytes;
+use tardigrade_shared::abi::AllocateBytes;
 
 #[macro_export]
 macro_rules! trace {

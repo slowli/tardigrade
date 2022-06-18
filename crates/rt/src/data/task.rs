@@ -17,7 +17,7 @@ use crate::{
     utils::{copy_string_from_wasm, drop_value, WasmAllocator},
     TaskId, WakerId,
 };
-use tardigrade_shared::{IntoWasm, JoinError};
+use tardigrade_shared::{abi::IntoWasm, JoinError};
 
 /// Priority queue for tasks.
 #[derive(Debug, Default)]

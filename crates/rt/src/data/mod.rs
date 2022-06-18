@@ -30,7 +30,7 @@ use crate::{
     utils::{copy_string_from_wasm, WasmAllocator},
     TaskId,
 };
-use tardigrade_shared::{workflow::Interface, IntoWasm};
+use tardigrade_shared::{abi::IntoWasm, workflow::Interface};
 
 #[derive(Debug)]
 pub struct WorkflowData {
