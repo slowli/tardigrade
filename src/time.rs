@@ -18,7 +18,7 @@ mod imp {
         time::Duration,
     };
 
-    use tardigrade_shared::{IntoWasm, TimerId, TimerKind};
+    use tardigrade_shared::{abi::IntoWasm, TimerId, TimerKind};
 
     #[derive(Debug)]
     pub struct Sleep(TimerId);

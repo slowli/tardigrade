@@ -10,7 +10,7 @@ use std::{
 };
 
 use crate::context::Wasm;
-use tardigrade_shared::{workflow::TakeHandle, ChannelKind, IntoWasm, RawChannelResult};
+use tardigrade_shared::{abi::IntoWasm, workflow::TakeHandle, ChannelErrorKind, ChannelKind};
 
 #[derive(Debug)]
 pub struct MpscReceiver {
@@ -29,7 +29,7 @@ impl TakeHandle<Wasm, &'static str> for MpscReceiver {
 
         let result = unsafe {
             let result = mpsc_receiver_get(id.as_ptr(), id.len());
-            RawChannelResult::from_abi_in_wasm(result)
+            Result::<(), ChannelErrorKind>::from_abi_in_wasm(result)
                 .map(|()| Self { channel_name: id })
                 .map_err(|kind| kind.for_channel(ChannelKind::Inbound, id))
         };
@@ -78,7 +78,7 @@ impl TakeHandle<Wasm, &'static str> for MpscSender {
 
         let result = unsafe {
             let result = mpsc_sender_get(id.as_ptr(), id.len());
-            RawChannelResult::from_abi_in_wasm(result)
+            Result::<(), ChannelErrorKind>::from_abi_in_wasm(result)
                 .map(|()| Self { channel_name: id })
                 .map_err(|kind| kind.for_channel(ChannelKind::Outbound, id))
         };

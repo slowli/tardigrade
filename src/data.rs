@@ -12,7 +12,7 @@ use tardigrade_shared::workflow::{
 
 #[cfg(target_arch = "wasm32")]
 mod imp {
-    use tardigrade_shared::IntoWasm;
+    use tardigrade_shared::abi::IntoWasm;
 
     #[link(wasm_import_module = "tardigrade_rt")]
     extern "C" {
