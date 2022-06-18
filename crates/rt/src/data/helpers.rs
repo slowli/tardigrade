@@ -216,8 +216,9 @@ impl CurrentExecution {
             }
         }
 
+        let cause = WakeUpCause::Function(Box::new(self.function));
         for task_id in self.tasks_to_be_awoken {
-            state.task_queue.insert_task(task_id, &WakeUpCause::Task(0)); // FIXME: ???
+            state.task_queue.insert_task(task_id, &cause);
         }
         crate::trace!("Committed CurrentTask onto {:?}", state);
         self.events

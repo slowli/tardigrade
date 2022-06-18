@@ -23,8 +23,9 @@ pub enum WakeUpCause {
 
     /// Initial task enqueuing after it was spawned.
     Spawned(Box<ExecutedFunction>),
-    /// Woken up by another task (e.g., due to internal channels or other sync primitives).
-    Task(TaskId),
+    /// Woken up by an executed function, such as another task (e.g., due to internal channels
+    /// or other sync primitives).
+    Function(Box<ExecutedFunction>),
     /// Woken up by task completion.
     CompletedTask(TaskId),
     /// Woken up by a timer.
