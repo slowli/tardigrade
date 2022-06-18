@@ -8,9 +8,10 @@ use crate::{
 };
 use tardigrade::{
     channel::{Receiver, Sender},
-    Data, Decoder, Encoder, Tracer,
+    trace::{FutureUpdate, TracedFuture, TracedFutures, Tracer},
+    workflow::TakeHandle,
+    Data, Decoder, Encoder,
 };
-use tardigrade_shared::{workflow::TakeHandle, TracedFutureUpdate};
 
 #[derive(Debug)]
 pub struct WorkflowEnv<'a, W> {
@@ -92,17 +93,18 @@ impl<T, C: Decoder<T>, W> MessageReceiver<'_, T, C, W> {
         self.message_indices().is_empty()
     }
 
-    pub fn flush_messages(&mut self) -> (Vec<T>, Result<Receipt, ExecutionError>) {
-        let (raw_messages, receipt) = self.env.with(|workflow| {
+    pub fn flush_messages(&mut self) -> Result<Receipt<Vec<T>>, ExecutionError> {
+        let (raw_messages, exec_result) = self.env.with(|workflow| {
             let messages = workflow.take_outbound_messages(&self.channel_name);
             (messages, workflow.tick())
         });
 
+        // FIXME: use fallible decoding
         let messages = raw_messages
             .into_iter()
             .map(|message| self.codec.decode_bytes(message))
             .collect();
-        (messages, receipt)
+        exec_result.map(|receipt| receipt.map(|()| messages))
     }
 }
 
@@ -152,6 +154,48 @@ where
             input_name: id.to_owned(),
             codec: C::default(),
             _item: PhantomData,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct TracerHandle<'a, C, W> {
+    receiver: MessageReceiver<'a, FutureUpdate, C, W>,
+    futures: TracedFutures,
+}
+
+impl<'a, C, W> TracerHandle<'a, C, W>
+where
+    C: Decoder<FutureUpdate>,
+{
+    pub fn flush(&mut self) -> Result<Receipt, ExecutionError> {
+        let receipt = self.receiver.flush_messages()?;
+        let receipt = receipt.map(|updates| {
+            for update in updates {
+                if let Err(err) = TracedFuture::update(&mut self.futures, update) {
+                    log::warn!(
+                        target: "tardigrade_rt",
+                        "Error tracing futures: {}. This shouldn't happen normally \
+                         (is workflow module produced properly?)",
+                        err
+                    );
+                }
+            }
+        });
+        Ok(receipt)
+    }
+}
+
+impl<'a, C, W> TakeHandle<WorkflowEnv<'a, W>, &str> for Tracer<C>
+where
+    C: Decoder<FutureUpdate> + Default,
+{
+    type Handle = TracerHandle<'a, C, W>;
+
+    fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Self::Handle {
+        TracerHandle {
+            receiver: Sender::<FutureUpdate, C>::take_handle(env, id),
+            futures: TracedFutures::new(),
         }
     }
 }

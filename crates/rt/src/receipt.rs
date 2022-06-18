@@ -153,19 +153,38 @@ pub struct Execution {
 }
 
 #[derive(Debug)]
-pub struct Receipt {
+pub struct Receipt<T = ()> {
     pub(crate) executions: Vec<Execution>,
+    output: T,
 }
 
-impl Receipt {
+impl Receipt<()> {
     pub(crate) fn new() -> Self {
         Self {
             executions: Vec::new(),
+            output: (),
+        }
+    }
+}
+
+impl<T> Receipt<T> {
+    pub(crate) fn map<U>(self, map_fn: impl FnOnce(T) -> U) -> Receipt<U> {
+        Receipt {
+            executions: self.executions,
+            output: map_fn(self.output),
         }
     }
 
     pub fn executions(&self) -> &[Execution] {
         &self.executions
+    }
+
+    pub fn output(&self) -> &T {
+        &self.output
+    }
+
+    pub fn into_output(self) -> T {
+        self.output
     }
 }
 
