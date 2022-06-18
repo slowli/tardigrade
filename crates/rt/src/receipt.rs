@@ -183,7 +183,7 @@ impl<T> Receipt<T> {
         &self.output
     }
 
-    pub fn into_output(self) -> T {
+    pub fn into_inner(self) -> T {
         self.output
     }
 }

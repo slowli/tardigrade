@@ -34,14 +34,14 @@ pub struct Workflow<W> {
 }
 
 impl<W: Initialize<InputsBuilder, ()>> Workflow<W> {
-    // FIXME: use `Receipt` wrapper; add context for errors
-    pub fn new(module: &WorkflowModule<W>, inputs: W::Init) -> anyhow::Result<(Self, Receipt)> {
+    pub fn new(module: &WorkflowModule<W>, inputs: W::Init) -> anyhow::Result<Receipt<Self>> {
         let raw_inputs = module.interface().create_inputs(inputs);
         let state = WorkflowData::from_interface(module.interface(), raw_inputs.into_inner());
         let mut this = Self::from_state(module, state)?;
-        this.spawn_main_task()?;
-        let receipt = this.tick();
-        Ok((this, receipt?))
+        this.spawn_main_task()
+            .context("failed spawning main task")?;
+        let receipt = this.tick().context("failed polling main task")?;
+        Ok(receipt.map(|()| this))
     }
 }
 

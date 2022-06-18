@@ -31,7 +31,7 @@ fn basic_workflow() -> Result<(), Box<dyn error::Error>> {
         oven_count: 1,
         deliverer_count: 1,
     };
-    let (mut workflow, receipt) = Workflow::new(&module, inputs.into())?;
+    let receipt = Workflow::new(&module, inputs.into())?;
 
     assert_eq!(receipt.executions().len(), 1);
     let execution = &receipt.executions()[0];
@@ -55,6 +55,7 @@ fn basic_workflow() -> Result<(), Box<dyn error::Error>> {
         }) if channel_name == "orders"
     );
 
+    let mut workflow = receipt.into_inner();
     let mut tasks: Vec<_> = workflow.tasks().collect();
     assert_eq!(tasks.len(), 1);
     let (_, main_task) = tasks.pop().unwrap();
@@ -73,9 +74,10 @@ fn basic_workflow() -> Result<(), Box<dyn error::Error>> {
 
     assert_eq!(handle.interface.shared.events.message_indices(), 0..1);
     let events = handle.interface.shared.events.flush_messages()?;
-    let events = events.into_output();
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0], DomainEvent::OrderTaken { index: 1, order });
+    assert_eq!(
+        events.into_inner(),
+        [DomainEvent::OrderTaken { index: 1, order }]
+    );
 
     let receipt = handle.with(|workflow| {
         let timers: Vec<_> = workflow.timers().collect();
@@ -90,9 +92,10 @@ fn basic_workflow() -> Result<(), Box<dyn error::Error>> {
     dbg!(&receipt); // FIXME: assert on receipt
 
     let events = handle.interface.shared.events.flush_messages()?;
-    let events = events.into_output();
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0], DomainEvent::Baked { index: 1, order });
+    assert_eq!(
+        events.into_inner(),
+        [DomainEvent::Baked { index: 1, order }]
+    );
 
     let tracer_handle = &mut handle.interface.shared.tracer;
     tracer_handle.flush()?;
@@ -115,7 +118,7 @@ fn restoring_workflow() -> Result<(), Box<dyn error::Error>> {
         oven_count: 1,
         deliverer_count: 1,
     };
-    let (mut workflow, _) = Workflow::new(&module, inputs.into())?;
+    let mut workflow = Workflow::new(&module, inputs.into())?.into_inner();
     let mut handle = workflow.handle();
 
     let order = PizzaOrder {
@@ -130,7 +133,7 @@ fn restoring_workflow() -> Result<(), Box<dyn error::Error>> {
 
     let events = handle.interface.shared.events.flush_messages()?;
     assert_eq!(
-        events.into_output(),
+        events.into_inner(),
         [DomainEvent::OrderTaken { index: 1, order }]
     );
 
@@ -153,13 +156,13 @@ fn restoring_workflow() -> Result<(), Box<dyn error::Error>> {
     // Check that the pizza is ready now.
     let events = handle.interface.shared.events.flush_messages()?;
     assert_eq!(
-        events.into_output(),
+        events.into_inner(),
         [DomainEvent::Baked { index: 1, order }]
     );
     // We need to flush a second time to get the "started delivering" event.
     let events = handle.interface.shared.events.flush_messages()?;
     assert_eq!(
-        events.into_output(),
+        events.into_inner(),
         [DomainEvent::StartedDelivering { index: 1, order }]
     );
 
