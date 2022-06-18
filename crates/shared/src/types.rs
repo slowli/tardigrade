@@ -158,23 +158,32 @@ impl ChannelError {
 }
 
 impl IntoWasm for Result<(), ChannelErrorKind> {
-    type Abi = i32;
+    type Abi = i64;
 
-    fn into_wasm<A: AllocateBytes>(self, _: &mut A) -> Result<Self::Abi, A::Error> {
+    fn into_wasm<A: AllocateBytes>(self, alloc: &mut A) -> Result<Self::Abi, A::Error> {
         Ok(match self {
             Ok(()) => 0,
             Err(ChannelErrorKind::Unknown) => -1,
             Err(ChannelErrorKind::AlreadyAcquired) => -2,
-            Err(_) => unreachable!(), // FIXME
+            Err(ChannelErrorKind::Custom(err)) => {
+                let message = err.to_string();
+                let (ptr, len) = alloc.copy_to_wasm(message.as_bytes())?;
+                (i64::from(ptr) << 32) + i64::from(len)
+            }
         })
     }
 
-    unsafe fn from_abi_in_wasm(abi: i32) -> Self {
+    unsafe fn from_abi_in_wasm(abi: i64) -> Self {
         Err(match abi {
             0 => return Ok(()),
             -1 => ChannelErrorKind::Unknown,
             -2 => ChannelErrorKind::AlreadyAcquired,
-            _ => panic!("Unexpected ABI value"),
+            _ => {
+                let ptr = (abi >> 32) as *mut u8;
+                let len = (abi & 0xffff_ffff) as usize;
+                let message = String::from_raw_parts(ptr, len, len);
+                ChannelErrorKind::Custom(message.into())
+            }
         })
     }
 }

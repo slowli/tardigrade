@@ -271,7 +271,7 @@ impl WorkflowFunctions {
         mut caller: Caller<'_, WorkflowData>,
         channel_name_ptr: u32,
         channel_name_len: u32,
-    ) -> Result<i32, Trap> {
+    ) -> Result<i64, Trap> {
         let memory = caller.data().exports().memory;
         let channel_name =
             copy_string_from_wasm(&caller, &memory, channel_name_ptr, channel_name_len)?;
@@ -310,7 +310,7 @@ impl WorkflowFunctions {
         caller: Caller<'_, WorkflowData>,
         channel_name_ptr: u32,
         channel_name_len: u32,
-    ) -> Result<i32, Trap> {
+    ) -> Result<i64, Trap> {
         let memory = caller.data().exports().memory;
         let channel_name =
             copy_string_from_wasm(&caller, &memory, channel_name_ptr, channel_name_len)?;

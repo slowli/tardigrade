@@ -336,7 +336,7 @@ impl ModuleImports {
             "data_input::get" => ensure_func_ty::<(u32, u32), i64>(ty, fn_name),
 
             "mpsc_receiver::get" | "mpsc_sender::get" => {
-                ensure_func_ty::<(u32, u32), i32>(ty, fn_name)
+                ensure_func_ty::<(u32, u32), i64>(ty, fn_name)
             }
 
             "mpsc_receiver::poll_next" => {
