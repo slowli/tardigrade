@@ -1,130 +1,176 @@
+use assert_matches::assert_matches;
 use chrono::Duration;
-use tardigrade_rt::{Workflow, WorkflowHandle, WorkflowModule};
-use wasmtime::Engine;
+use once_cell::sync::Lazy;
 
-use tardigrade_test::{DomainEvent, Inputs, PizzaDelivery, PizzaKind, PizzaOrder};
+use std::{error, task::Poll};
 
-fn compile_module(_optimize: bool) -> Vec<u8> {
-    use std::{
-        env, fs,
-        path::PathBuf,
-        process::{Command, Stdio},
-    };
+use tardigrade::trace::FutureState;
+use tardigrade_rt::{
+    receipt::{ChannelEvent, ChannelEventKind, Event, ExecutedFunction, WakeUpCause},
+    test::{ModuleCompiler, WasmOpt},
+    PersistError, Workflow, WorkflowEngine, WorkflowModule,
+};
+use tardigrade_test_basic::{DomainEvent, Inputs, PizzaDelivery, PizzaKind, PizzaOrder};
 
-    const TARGET: &str = "wasm32-unknown-unknown";
-
-    fn target_dir() -> PathBuf {
-        let mut path = env::current_exe().expect("Cannot get path to executing test");
-        path.pop();
-        if path.ends_with("deps") {
-            path.pop();
-        }
-        path
-    }
-
-    fn wasm_target_dir(target_dir: PathBuf) -> PathBuf {
-        let mut root_dir = target_dir;
-        while !root_dir.join(TARGET).is_dir() {
-            if !root_dir.pop() {
-                panic!("Cannot find dir for the `{}` target", TARGET);
-            }
-        }
-        root_dir.join(TARGET).join("wasm")
-    }
-
-    let mut command = Command::new("cargo")
-        .args(["build", "--lib", "--target", TARGET, "--profile=wasm"])
-        .env("RUSTFLAGS", "-C link-arg=-zstack-size=32768")
-        .stdin(Stdio::null())
-        .spawn()
-        .expect("cannot run cargo");
-    let exit_status = command.wait().expect("failed waiting for cargo");
-    if !exit_status.success() {
-        panic!("Compiling WASM module finished abnormally: {}", exit_status);
-    }
-
-    let wasm_dir = wasm_target_dir(target_dir());
-    let mut wasm_file = env!("CARGO_PKG_NAME").replace('-', "_");
-    wasm_file.push_str(".wasm");
-    let wasm_file = wasm_dir.join(wasm_file);
-
-    /*if optimize {
-        let command = Command::new("wasm-opt")
-            .args(["-Os", "--enable-mutable-globals", "--strip-debug", "-o"])
-            .args([&wasm_file, &wasm_file])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("cannot run wasm-opt");
-
-        let output = command.wait_with_output().expect("failed waiting for wasm-opt");
-        if !output.status.success() {
-            panic!(
-                "Optimizing WASM module finished abnormally: {}\nStderr: {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-    }*/
-
-    fs::read(wasm_dir.join(&wasm_file)).unwrap_or_else(|err| panic!("Cannot read WASM: {}", err))
-}
+static COMPILER: Lazy<ModuleCompiler> = Lazy::new(|| {
+    let mut compiler = ModuleCompiler::new(env!("CARGO_PKG_NAME"));
+    compiler
+        .set_profile("wasm")
+        .set_stack_size(32_768)
+        .set_wasm_opt(WasmOpt::default());
+    compiler
+});
 
 #[test]
-fn basic_workflow() {
-    let module_bytes = compile_module(false);
-    let engine = Engine::default();
-    let module = WorkflowModule::<PizzaDelivery>::new(&engine, &module_bytes).unwrap();
+fn basic_workflow() -> Result<(), Box<dyn error::Error>> {
+    let module_bytes = COMPILER.compile();
+    let engine = WorkflowEngine::default();
+    let module = WorkflowModule::<PizzaDelivery>::new(&engine, &module_bytes)?;
 
     let inputs = Inputs {
         oven_count: 1,
         deliverer_count: 1,
     };
-    let (mut workflow, receipt) = Workflow::new(&module, inputs.into()).unwrap();
-    dbg!(&receipt);
-    // FIXME: assert on receipt / workflow
+    let (mut workflow, receipt) = Workflow::new(&module, inputs.into())?;
 
-    let WorkflowHandle {
-        mut interface,
-        mut timers,
-        ..
-    } = workflow.handle();
+    assert_eq!(receipt.executions().len(), 1);
+    let execution = &receipt.executions()[0];
+    assert_matches!(
+        &execution.function,
+        ExecutedFunction::Task {
+            wake_up_cause: WakeUpCause::Spawned(inner_fn),
+            poll_result: Poll::Pending,
+            ..
+        } if matches!(inner_fn.as_ref(), ExecutedFunction::Entry)
+    );
+
+    assert_eq!(execution.events.len(), 1);
+    assert_matches!(
+        &execution.events[0],
+        Event::Channel(ChannelEvent {
+            kind: ChannelEventKind::InboundChannelPolled,
+            result: Poll::Pending,
+            channel_name,
+            ..
+        }) if channel_name == "orders"
+    );
+
+    let mut tasks: Vec<_> = workflow.tasks().collect();
+    assert_eq!(tasks.len(), 1);
+    let (_, main_task) = tasks.pop().unwrap();
+    assert_matches!(main_task.spawned_by(), ExecutedFunction::Entry);
+    assert_eq!(workflow.timers().count(), 0);
+
+    let mut handle = workflow.handle();
 
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,
         delivery_distance: 10,
     };
-    let receipt = interface.orders.send(order).unwrap();
-    dbg!(&receipt);
+    handle.interface.orders.send(order)?;
+    let receipt = handle.with(Workflow::tick)?;
+    dbg!(&receipt); // FIXME: assert on receipt
 
-    let (events, receipt) = interface.events.flush_messages();
+    assert_eq!(handle.interface.shared.events.message_indices(), 0..1);
+    let events = handle.interface.shared.events.flush_messages()?;
+    let events = events.into_output();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0], DomainEvent::OrderTaken { index: 1, order });
-    dbg!(&receipt);
 
-    dbg!("!!!");
-    let new_time = timers.current_time() + Duration::milliseconds(100);
-    let receipt = timers.set_current_time(new_time);
-    dbg!(&receipt);
+    let receipt = handle.with(|workflow| {
+        let timers: Vec<_> = workflow.timers().collect();
+        assert_eq!(timers.len(), 1);
+        let (_, timer) = timers[0];
+        assert!(!timer.is_completed());
+        assert!(timer.definition().expires_at > workflow.current_time());
 
-    dbg!("???");
-    let (events, receipt) = interface.events.flush_messages();
+        let new_time = workflow.current_time() + Duration::milliseconds(100);
+        workflow.set_current_time(new_time)
+    })?;
+    dbg!(&receipt); // FIXME: assert on receipt
+
+    let events = handle.interface.shared.events.flush_messages()?;
+    let events = events.into_output();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0], DomainEvent::Baked { index: 1, order });
-    dbg!(&receipt);
 
-    /*
+    let tracer_handle = &mut handle.interface.shared.tracer;
+    tracer_handle.flush()?;
+    let mut futures = tracer_handle.futures().map(|(_, state)| state);
+    let baking_future = futures
+        .find(|&future| future.name() == "baking_timer")
+        .unwrap();
+    assert_matches!(baking_future.state(), FutureState::Dropped);
+
+    Ok(())
+}
+
+#[test]
+fn restoring_workflow() -> Result<(), Box<dyn error::Error>> {
+    let module_bytes = COMPILER.compile();
+    let engine = WorkflowEngine::default();
+    let module = WorkflowModule::<PizzaDelivery>::new(&engine, &module_bytes)?;
+
+    let inputs = Inputs {
+        oven_count: 1,
+        deliverer_count: 1,
+    };
+    let (mut workflow, _) = Workflow::new(&module, inputs.into())?;
     let mut handle = workflow.handle();
-    let timers = handle.timers.timers();
-    dbg!(&timers);
-    assert_eq!(timers.len(), 1);
-    assert_eq!(timers[&0].name(), "baking");
 
-    let timer_expiration = timers[&0].definition().expires_at;
-    assert!(timer_expiration > handle.timers.current_time());
-    handle.timers.set_current_time(timer_expiration);
-    let receipt = workflow.tick();
-    dbg!(&receipt);
-     */
+    let order = PizzaOrder {
+        kind: PizzaKind::Pepperoni,
+        delivery_distance: 10,
+    };
+    handle.interface.orders.send(order)?;
+    handle.with(Workflow::tick)?;
+
+    let err = handle.with(|workflow| workflow.persist().unwrap_err());
+    assert_matches!(err, PersistError::PendingOutboundMessage { .. });
+
+    let events = handle.interface.shared.events.flush_messages()?;
+    assert_eq!(
+        events.into_output(),
+        [DomainEvent::OrderTaken { index: 1, order }]
+    );
+
+    let err = handle.with(|workflow| workflow.persist().unwrap_err());
+    assert_matches!(
+        err,
+        PersistError::PendingOutboundMessage { channel_name } if channel_name == "traces"
+    );
+
+    handle.interface.shared.tracer.flush()?;
+    let persisted = workflow.persist()?;
+    let mut workflow = Workflow::restored(&module, persisted)?;
+    let mut handle = workflow.handle();
+
+    handle.with(|workflow| {
+        let new_time = workflow.current_time() + Duration::milliseconds(100);
+        workflow.set_current_time(new_time)
+    })?;
+
+    // Check that the pizza is ready now.
+    let events = handle.interface.shared.events.flush_messages()?;
+    assert_eq!(
+        events.into_output(),
+        [DomainEvent::Baked { index: 1, order }]
+    );
+    // We need to flush a second time to get the "started delivering" event.
+    let events = handle.interface.shared.events.flush_messages()?;
+    assert_eq!(
+        events.into_output(),
+        [DomainEvent::StartedDelivering { index: 1, order }]
+    );
+
+    // Check that the delivery timer is now active.
+    let tracer_handle = &mut handle.interface.shared.tracer;
+    tracer_handle.flush()?;
+    let mut futures = tracer_handle.futures().map(|(_, state)| state);
+    let delivery_future = futures
+        .find(|&future| future.name() == "delivery_timer")
+        .unwrap();
+    assert_matches!(delivery_future.state(), FutureState::Polling);
+
+    Ok(())
 }

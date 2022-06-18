@@ -1,6 +1,6 @@
 [package]
-name = "tardigrade-test"
-version = "0.1.0"
+name = "tardigrade-test-basic"
+version = "0.0.0"
 edition = "2021"
 publish = false
 
@@ -11,9 +11,11 @@ crate-type = ["cdylib", "rlib"]
 futures = "0.3.21"
 serde = { version = "1", features = ["derive"] }
 
-tardigrade = { version = "0.1.0", path = "../.." }
+tardigrade = { version = "0.1.0", path = "../..", features = ["derive"] }
 
 [dev-dependencies]
+assert_matches = "1.5.0"
 chrono = "0.4.19"
+once_cell = "1.12.0"
 wasmtime = "0.37.0"
 tardigrade-rt = { version = "0.1.0", path = "../../crates/rt" }
