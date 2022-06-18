@@ -108,7 +108,7 @@ impl From<OutboundChannelState> for super::OutboundChannelState {
 
 /// `Workflow` state that can be persisted between workflow invocations.
 #[derive(Debug)]
-pub struct WorkflowState {
+pub(crate) struct WorkflowState {
     inbound_channels: HashMap<String, InboundChannelState>,
     outbound_channels: HashMap<String, OutboundChannelState>,
     timers: Timers,
@@ -125,7 +125,6 @@ impl WorkflowState {
     }
 }
 
-// FIXME: should this be public?
 impl From<WorkflowState> for WorkflowData {
     fn from(persisted: WorkflowState) -> Self {
         let inbound_channels = WorkflowState::convert_channels(persisted.inbound_channels);

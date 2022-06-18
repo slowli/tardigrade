@@ -20,6 +20,12 @@ use crate::{
 };
 use tardigrade_shared::workflow::{Initialize, InputsBuilder, TakeHandle};
 
+#[derive(Debug)]
+pub struct PersistedWorkflow {
+    state: WorkflowState,
+    memory: Vec<u8>,
+}
+
 /// Workflow instance.
 #[derive(Debug)]
 pub struct Workflow<W> {
@@ -28,6 +34,7 @@ pub struct Workflow<W> {
 }
 
 impl<W: Initialize<InputsBuilder, ()>> Workflow<W> {
+    // FIXME: use `Receipt` wrapper; add context for errors
     pub fn new(module: &WorkflowModule<W>, inputs: W::Init) -> anyhow::Result<(Self, Receipt)> {
         let raw_inputs = module.interface().create_inputs(inputs);
         let state = WorkflowData::from_interface(module.interface(), raw_inputs.into_inner());
@@ -256,21 +263,20 @@ impl<W> Workflow<W> {
         self.store.data().timers().iter()
     }
 
-    pub fn persist_state(&self) -> Result<(WorkflowState, Vec<u8>), PersistError> {
+    pub fn persist(&self) -> Result<PersistedWorkflow, PersistError> {
         let state = self.store.data().persist()?;
         let memory = self.store.data().exports().memory;
         let memory = memory.data(&self.store).to_vec();
-        Ok((state, memory))
+        Ok(PersistedWorkflow { state, memory })
     }
 
     pub fn restored(
         module: &WorkflowModule<W>,
-        state: WorkflowState,
-        memory_contents: &[u8],
+        persisted: PersistedWorkflow,
     ) -> anyhow::Result<Self> {
         // FIXME: check state / interface agreement
-        let mut this = Self::from_state(module, WorkflowData::from(state))?;
-        this.copy_memory(memory_contents)?;
+        let mut this = Self::from_state(module, WorkflowData::from(persisted.state))?;
+        this.copy_memory(&persisted.memory)?;
         Ok(this)
     }
 

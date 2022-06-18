@@ -1,10 +1,12 @@
 //! Workflow environment.
 
+// FIXME: state of traced futures is lost across saves!
+
 use std::{cell::RefCell, marker::PhantomData, ops::Range, rc::Rc};
 
 use crate::{
     receipt::{ExecutionError, Receipt},
-    ConsumeError, Workflow,
+    ConsumeError, FutureId, Workflow,
 };
 use tardigrade::{
     channel::{Receiver, Sender},
@@ -54,6 +56,8 @@ impl<T, C: Encoder<T>, W> MessageSender<'_, T, C, W> {
             .with(|workflow| workflow.push_inbound_message(&self.channel_name, raw_message))
     }
 }
+
+// FIXME: Use additional struct to tick afterwards: `sx.send(message)?.flush()?`
 
 impl<'a, T, C, W> TakeHandle<WorkflowEnv<'a, W>, &str> for Receiver<T, C>
 where
@@ -168,6 +172,14 @@ impl<'a, C, W> TracerHandle<'a, C, W>
 where
     C: Decoder<FutureUpdate>,
 {
+    pub fn future(&self, id: FutureId) -> Option<&TracedFuture> {
+        self.futures.get(&id)
+    }
+
+    pub fn futures(&self) -> impl Iterator<Item = (FutureId, &TracedFuture)> + '_ {
+        self.futures.iter().map(|(id, state)| (*id, state))
+    }
+
     pub fn flush(&mut self) -> Result<Receipt, ExecutionError> {
         let receipt = self.receiver.flush_messages()?;
         let receipt = receipt.map(|updates| {

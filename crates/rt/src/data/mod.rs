@@ -10,13 +10,13 @@ mod persistence;
 mod task;
 mod time;
 
-pub(crate) use self::helpers::WasmContextPtr;
 pub use self::{
     channel::{ConsumeError, ConsumeErrorKind},
-    persistence::{PersistError, WorkflowState},
+    persistence::PersistError,
     task::TaskState,
     time::TimerState,
 };
+pub(crate) use self::{helpers::WasmContextPtr, persistence::WorkflowState};
 
 use self::{
     channel::{InboundChannelState, OutboundChannelState},
