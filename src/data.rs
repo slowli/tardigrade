@@ -6,7 +6,7 @@ use crate::{
     codec::{Decoder, Encoder},
     context::Wasm,
 };
-use tardigrade_shared::workflow::{ExtendInputs, InputsBuilder, InterfaceValidation, TakeHandle};
+use tardigrade_shared::workflow::{Initialize, InputsBuilder, InterfaceValidation, TakeHandle};
 
 #[cfg(target_arch = "wasm32")]
 mod imp {
@@ -79,12 +79,13 @@ where
     }
 }
 
-impl<T, C: Encoder<T> + Default> ExtendInputs<T> for Data<T, C> {
+impl<T, C: Encoder<T> + Default> Initialize for Data<T, C> {
+    type Init = T;
     type Id = str;
 
-    fn extend_inputs(init: T, env: &mut InputsBuilder, id: &str) {
+    fn initialize(builder: &mut InputsBuilder, init: T, id: &str) {
         let raw_data = C::default().encode_value(init);
-        env.set_raw_input(id, raw_data);
+        builder.set_raw_input(id, raw_data);
     }
 }
 

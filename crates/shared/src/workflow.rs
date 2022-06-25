@@ -13,13 +13,14 @@ pub trait TakeHandle<Env> {
 
 pub type Handle<T, Env> = <T as TakeHandle<Env>>::Handle;
 
-pub trait ExtendInputs<Init> {
+pub trait Initialize {
+    type Init;
     type Id: ?Sized;
 
-    fn extend_inputs(init: Init, env: &mut InputsBuilder, id: &Self::Id);
+    fn initialize(builder: &mut InputsBuilder, init: Self::Init, id: &Self::Id);
 }
 
-pub trait Initialize<Init>: ExtendInputs<Init, Id = ()> {}
+pub type Init<T> = <T as Initialize>::Init;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct InboundChannelSpec {
@@ -132,13 +133,12 @@ impl<W> Interface<W> {
                 .collect(),
         }
     }
+}
 
-    pub fn create_inputs<Init>(&self, inputs: Init) -> Inputs
-    where
-        W: Initialize<Init>,
-    {
+impl<W: Initialize<Id = ()>> Interface<W> {
+    pub fn create_inputs(&self, inputs: W::Init) -> Inputs {
         let mut builder = self.inputs_builder();
-        W::extend_inputs(inputs, &mut builder, &());
+        W::initialize(&mut builder, inputs, &());
         builder.build()
     }
 }

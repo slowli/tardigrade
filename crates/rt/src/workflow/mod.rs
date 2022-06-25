@@ -18,7 +18,7 @@ use crate::{
     },
     TaskId, TimerId,
 };
-use tardigrade_shared::workflow::{Initialize, InputsBuilder, TakeHandle};
+use tardigrade_shared::workflow::{Initialize, TakeHandle};
 
 #[derive(Debug)]
 pub struct PersistedWorkflow {
@@ -33,11 +33,8 @@ pub struct Workflow<W> {
     _interface: PhantomData<*const W>,
 }
 
-impl<W> Workflow<W> {
-    pub fn new<In>(module: &WorkflowModule<W>, inputs: In) -> anyhow::Result<Receipt<Self>>
-    where
-        In: Initialize<W, Id = ()>,
-    {
+impl<W: Initialize<Id = ()>> Workflow<W> {
+    pub fn new(module: &WorkflowModule<W>, inputs: W::Init) -> anyhow::Result<Receipt<Self>> {
         let raw_inputs = module.interface().create_inputs(inputs);
         let state = WorkflowData::from_interface(module.interface(), raw_inputs.into_inner());
         let mut this = Self::from_state(module, state)?;

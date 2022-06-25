@@ -30,7 +30,7 @@ use crate::{
 };
 use tardigrade_shared::{
     trace::{FutureUpdate, TracedFuture, TracedFutures},
-    workflow::{Initialize, Interface, TakeHandle},
+    workflow::{Interface, TakeHandle},
     ChannelError, ChannelErrorKind, ChannelKind, FutureId,
 };
 
@@ -289,9 +289,9 @@ impl<W: TestWorkflow> TestHandle<W> {
     }
 }
 
-fn test<W, Init, F, Fut, E>(inputs: Init, test_fn: F) -> Result<(), E>
+fn test<W, F, Fut, E>(inputs: W::Init, test_fn: F) -> Result<(), E>
 where
-    W: TestWorkflow + Initialize<Init>,
+    W: TestWorkflow,
     F: FnOnce(TestHandle<W>) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
@@ -314,12 +314,11 @@ where
 
 /// Extension trait for testing.
 pub trait TestWorkflow: Sized + SpawnWorkflow + TakeHandle<TestHost, Id = ()> {
-    fn test<F, Init>(inputs: Init, test_fn: impl FnOnce(TestHandle<Self>) -> F)
+    fn test<F>(inputs: Self::Init, test_fn: impl FnOnce(TestHandle<Self>) -> F)
     where
-        Self: Initialize<Init>,
         F: Future<Output = ()> + 'static,
     {
-        test::<Self, _, _, _, _>(inputs, |handle| async {
+        test::<Self, _, _, _>(inputs, |handle| async {
             test_fn(handle).await;
             Ok::<_, ()>(())
         })
