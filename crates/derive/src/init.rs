@@ -2,7 +2,7 @@ use proc_macro::TokenStream;
 use quote::{quote, ToTokens};
 use syn::{DeriveInput, Path};
 
-use crate::shared::{MacroAttrs, TargetField, TargetStruct};
+use crate::utils::{MacroAttrs, TargetField, TargetStruct};
 
 #[derive(Debug)]
 struct Initialize {

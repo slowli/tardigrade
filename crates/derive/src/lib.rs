@@ -6,8 +6,8 @@ use proc_macro::TokenStream;
 
 mod init;
 mod interface;
-mod shared;
 mod take_handle;
+mod utils;
 
 #[proc_macro_attribute]
 pub fn handle(attr: TokenStream, input: TokenStream) -> TokenStream {

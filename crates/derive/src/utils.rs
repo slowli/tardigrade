@@ -5,8 +5,8 @@ use proc_macro::TokenStream;
 use proc_macro2::{Ident, Span};
 use quote::{quote, ToTokens};
 use syn::{
-    parse::Parser, punctuated::Punctuated, spanned::Spanned, Attribute, Data, DataStruct,
-    DeriveInput, NestedMeta, Path, Token, Type,
+    parse::Parser, parse_quote, punctuated::Punctuated, spanned::Spanned, Attribute, Data,
+    DataStruct, DeriveInput, Generics, Meta, NestedMeta, Path, Token, Type,
 };
 
 use std::collections::HashSet;
@@ -22,6 +22,52 @@ fn take_meta_attr(name: &str, attrs: &mut Vec<Attribute>) -> Option<NestedMeta> 
     })?;
     attrs.remove(i);
     Some(meta)
+}
+
+pub(crate) fn take_derive(attrs: &mut Vec<syn::Attribute>, name: &str) -> bool {
+    let idx = attrs.iter_mut().enumerate().find_map(|(i, attr)| {
+        if attr.path.is_ident("derive") {
+            if let Ok(Meta::List(mut list)) = attr.parse_meta() {
+                let trait_pos = list.nested.iter().position(|tr| {
+                    if let NestedMeta::Meta(Meta::Path(path)) = tr {
+                        path.is_ident(name)
+                    } else {
+                        false
+                    }
+                });
+
+                if let Some(trait_pos) = trait_pos {
+                    remove_nested(&mut list.nested, trait_pos);
+                    *attr = parse_quote!(#[ #list ]);
+                    return Some((i, list.nested.is_empty()));
+                }
+            }
+        }
+        None
+    });
+
+    if let Some((idx, needs_removal)) = idx {
+        if needs_removal {
+            attrs.remove(idx);
+        }
+        true
+    } else {
+        false
+    }
+}
+
+fn remove_nested(list: &mut Punctuated<NestedMeta, Token![,]>, idx: usize) {
+    debug_assert!(idx < list.len());
+    let tail_len = list.len() - idx - 1;
+    let mut popped_items: Vec<_> = (0..tail_len)
+        .map(|_| list.pop().unwrap().into_value())
+        .collect();
+    popped_items.reverse();
+
+    list.pop(); // Remove the target item
+    for item in popped_items {
+        list.push(item);
+    }
 }
 
 #[derive(Debug)]
@@ -70,7 +116,7 @@ pub(crate) struct TargetField {
     pub ident: Option<Ident>,
     /// Name of the field considering a potential `#[_(rename = "...")]` override.
     pub name: Option<String>,
-    pub _ty: Type,
+    pub ty: Type,
     pub flatten: bool,
     pub wrapper: Option<FieldWrapper>,
 }
@@ -91,7 +137,7 @@ impl TargetField {
             span: field.span(),
             ident,
             name,
-            _ty: field.ty.clone(),
+            ty: field.ty.clone(),
             flatten: attrs.flatten,
             wrapper: FieldWrapper::new(&field.ty),
         })
@@ -122,6 +168,22 @@ impl TargetField {
             quote!(#name)
         }
     }
+
+    fn init_by_cloning(&self, field_index: usize) -> impl ToTokens {
+        let ty = &self.ty;
+        let field = self.ident(field_index);
+        quote!(#field: <#ty as core::clone::Clone>::clone(&self.#field))
+    }
+
+    fn debug_in_handle(&self, field_index: usize) -> impl ToTokens {
+        if let Some(ident) = &self.ident {
+            let name = ident.to_string();
+            quote!(.field(#name, &self.#ident))
+        } else {
+            let field_index = syn::Index::from(field_index);
+            quote!(.field(&self.#field_index))
+        }
+    }
 }
 
 /// Attributes for `TargetField`.
@@ -138,6 +200,7 @@ pub(crate) struct TargetStruct {
     pub ident: Ident,
     pub style: Style,
     pub fields: Vec<TargetField>,
+    pub generics: Generics,
 }
 
 impl TargetStruct {
@@ -160,6 +223,7 @@ impl TargetStruct {
             ident: input.ident.clone(),
             style,
             fields,
+            generics: input.generics.clone(),
         };
 
         let mut field_names = HashSet::with_capacity(this.fields.len());
@@ -177,6 +241,54 @@ impl TargetStruct {
         }
         Ok(this)
     }
+
+    fn impl_std_trait(&self, tr: impl ToTokens, methods: impl ToTokens) -> impl ToTokens {
+        let handle = &self.ident;
+        let (impl_generics, ty_generics, where_clause) = self.generics.split_for_impl();
+        let mut where_clause = where_clause.unwrap().clone();
+        for field in &self.fields {
+            let ty = &field.ty;
+            where_clause.predicates.push(parse_quote!(#ty: #tr));
+        }
+
+        quote! {
+            impl #impl_generics #tr for #handle #ty_generics #where_clause {
+                #methods
+            }
+        }
+    }
+
+    pub(crate) fn impl_clone(&self) -> impl ToTokens {
+        let fields = self.fields.iter().enumerate();
+        let fields = fields.map(|(idx, field)| field.init_by_cloning(idx));
+        let fields = match self.style {
+            Style::Struct => quote!({ #(#fields,)* }),
+            Style::Tuple | Style::Unit => quote!(( #(#fields,)* )),
+        };
+
+        let methods = quote! {
+            fn clone(&self) -> Self {
+                Self #fields
+            }
+        };
+        self.impl_std_trait(quote!(core::clone::Clone), methods)
+    }
+
+    pub(crate) fn impl_debug(&self) -> impl ToTokens {
+        let name = self.ident.to_string();
+        let fields = self.fields.iter().enumerate();
+        let debug_fields = fields.map(|(idx, field)| field.debug_in_handle(idx));
+        let debug_start = match self.style {
+            Style::Struct => quote!(.debug_struct(#name)),
+            Style::Tuple | Style::Unit => quote!(.debug_tuple(#name)),
+        };
+        let methods = quote! {
+            fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                formatter #debug_start #(#debug_fields)* .finish()
+            }
+        };
+        self.impl_std_trait(quote!(core::fmt::Debug), methods)
+    }
 }
 
 #[derive(Debug, FromMeta)]
@@ -190,5 +302,35 @@ impl MacroAttrs {
         let meta = Punctuated::<NestedMeta, Token![,]>::parse_terminated.parse(tokens)?;
         let meta: Vec<_> = meta.into_iter().collect();
         Self::from_list(&meta)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn taking_derive() {
+        let mut input: DeriveInput = parse_quote! {
+            #[derive(Debug, PartialEq)]
+            #[derive(Clone)]
+            struct Foo;
+        };
+        take_derive(&mut input.attrs, "Debug");
+
+        let expected: DeriveInput = parse_quote! {
+            #[derive(PartialEq)]
+            #[derive(Clone)]
+            struct Foo;
+        };
+        assert_eq!(input, expected);
+
+        take_derive(&mut input.attrs, "Clone");
+
+        let expected: DeriveInput = parse_quote! {
+            #[derive(PartialEq)]
+            struct Foo;
+        };
+        assert_eq!(input, expected);
     }
 }
