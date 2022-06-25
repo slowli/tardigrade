@@ -27,8 +27,11 @@ pub mod workflow {
     pub use tardigrade_shared::workflow::*;
 
     #[cfg(feature = "derive")]
-    pub use tardigrade_derive::{GetInterface, Initialize, TakeHandle, ValidateInterface};
+    pub use tardigrade_derive::GetInterface;
 }
+
+#[cfg(feature = "derive")]
+pub use tardigrade_derive::{handle, init};
 
 #[macro_export]
 macro_rules! workflow_entry {

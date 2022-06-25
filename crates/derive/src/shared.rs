@@ -1,24 +1,66 @@
 //! Types / logic shared across multiple derive macros.
 
-use darling::{
-    ast::{Fields, Style},
-    FromDeriveInput, FromField, FromMeta,
-};
+use darling::{ast::Style, FromMeta};
+use proc_macro::TokenStream;
 use proc_macro2::{Ident, Span};
 use quote::{quote, ToTokens};
 use syn::{
-    spanned::Spanned, Attribute, Data, DataStruct, DeriveInput, Generics, NestedMeta, Type,
-    Visibility,
+    parse::Parser, punctuated::Punctuated, spanned::Spanned, Attribute, Data, DataStruct,
+    DeriveInput, NestedMeta, Path, Token, Type,
 };
 
 use std::collections::HashSet;
 
-pub(crate) fn find_meta_attrs(name: &str, args: &[Attribute]) -> Option<NestedMeta> {
-    args.as_ref()
-        .iter()
-        .filter_map(|a| a.parse_meta().ok())
-        .find(|m| m.path().is_ident(name))
-        .map(NestedMeta::from)
+fn take_meta_attr(name: &str, attrs: &mut Vec<Attribute>) -> Option<NestedMeta> {
+    let (i, meta) = attrs.iter().enumerate().find_map(|(i, attr)| {
+        if let Ok(meta) = attr.parse_meta() {
+            if meta.path().is_ident(name) {
+                return Some((i, NestedMeta::from(meta)));
+            }
+        }
+        None
+    })?;
+    attrs.remove(i);
+    Some(meta)
+}
+
+#[derive(Debug)]
+pub(crate) struct FieldWrapper {
+    pub ident: Ident,
+    pub inner_types: Vec<Type>,
+}
+
+impl FieldWrapper {
+    const MAX_INNER_TYPES: usize = 2;
+
+    fn new(ty: &Type) -> Option<Self> {
+        if let Type::Path(syn::TypePath { path, .. }) = ty {
+            let last_segment = path.segments.last().unwrap();
+            let args = match &last_segment.arguments {
+                syn::PathArguments::AngleBracketed(args) => &args.args,
+                _ => return None,
+            };
+
+            if args.is_empty() || args.len() > Self::MAX_INNER_TYPES {
+                return None;
+            }
+            let inner_types = args.iter().filter_map(|arg| match arg {
+                syn::GenericArgument::Type(ty) => Some(ty.clone()),
+                _ => None,
+            });
+            let inner_types: Vec<_> = inner_types.collect();
+            if inner_types.len() != args.len() {
+                None
+            } else {
+                Some(Self {
+                    ident: last_segment.ident.clone(),
+                    inner_types,
+                })
+            }
+        } else {
+            None
+        }
+    }
 }
 
 /// Field of a struct for which one of traits needs to be derived.
@@ -28,24 +70,31 @@ pub(crate) struct TargetField {
     pub ident: Option<Ident>,
     /// Name of the field considering a potential `#[_(rename = "...")]` override.
     pub name: Option<String>,
-    pub ty: Type,
+    pub _ty: Type,
     pub flatten: bool,
-    /// Whether to include field into init struct.
-    pub init: bool,
+    pub wrapper: Option<FieldWrapper>,
 }
 
 impl TargetField {
-    fn detect_init(field_ty: &Type) -> bool {
-        if let Type::Path(path) = field_ty {
-            let last_segment = if let Some(segment) = path.path.segments.last() {
-                segment
-            } else {
-                return false;
-            };
-            last_segment.ident == "Data"
-        } else {
-            false
-        }
+    fn new(field: &mut syn::Field) -> darling::Result<Self> {
+        let ident = field.ident.clone();
+
+        let attrs = take_meta_attr("tardigrade", &mut field.attrs)
+            .map(|meta| TargetFieldAttrs::from_nested_meta(&meta))
+            .unwrap_or_else(|| Ok(TargetFieldAttrs::default()))?;
+
+        let name = attrs
+            .rename
+            .or_else(|| ident.as_ref().map(ToString::to_string));
+
+        Ok(Self {
+            span: field.span(),
+            ident,
+            name,
+            _ty: field.ty.clone(),
+            flatten: attrs.flatten,
+            wrapper: FieldWrapper::new(&field.ty),
+        })
     }
 
     pub(crate) fn ident(&self, field_index: usize) -> impl ToTokens {
@@ -61,42 +110,17 @@ impl TargetField {
         if self.flatten {
             quote!(())
         } else {
-            quote!(&'static str)
+            quote!(str)
         }
     }
 
     pub(crate) fn id(&self) -> impl ToTokens {
         if self.flatten {
-            quote!(())
+            quote!(&())
         } else {
             let name = self.name.as_ref().unwrap(); // Safe because of previous validation
             quote!(#name)
         }
-    }
-}
-
-impl FromField for TargetField {
-    fn from_field(field: &syn::Field) -> darling::Result<Self> {
-        let ident = field.ident.clone();
-
-        let attrs = find_meta_attrs("tardigrade", &field.attrs)
-            .map(|meta| TargetFieldAttrs::from_nested_meta(&meta))
-            .unwrap_or_else(|| Ok(TargetFieldAttrs::default()))?;
-
-        let name = attrs
-            .rename
-            .or_else(|| ident.as_ref().map(ToString::to_string));
-
-        let init = attrs.init.unwrap_or_else(|| Self::detect_init(&field.ty));
-
-        Ok(Self {
-            span: field.span(),
-            ident,
-            name,
-            ty: field.ty.clone(),
-            flatten: attrs.flatten,
-            init,
-        })
     }
 }
 
@@ -107,37 +131,35 @@ pub(crate) struct TargetFieldAttrs {
     pub rename: Option<String>,
     #[darling(default)]
     pub flatten: bool,
-    #[darling(default)]
-    pub init: Option<bool>,
 }
 
 #[derive(Debug)]
 pub(crate) struct TargetStruct {
-    pub vis: Visibility,
     pub ident: Ident,
-    pub generics: Generics,
     pub style: Style,
     pub fields: Vec<TargetField>,
 }
 
-impl FromDeriveInput for TargetStruct {
-    fn from_derive_input(input: &DeriveInput) -> darling::Result<Self> {
-        let fields = match &input.data {
+impl TargetStruct {
+    pub fn new(input: &mut DeriveInput) -> darling::Result<Self> {
+        let fields = match &mut input.data {
             Data::Struct(DataStruct { fields, .. }) => fields,
             _ => {
                 return Err(darling::Error::unsupported_shape(
-                    "`WithHandle` can be only implemented for structs",
+                    "can be only implemented for structs",
                 ))
             }
         };
-        let fields = Fields::try_from(fields)?;
+        let style = Style::from(&*fields);
+        let fields = fields
+            .iter_mut()
+            .map(TargetField::new)
+            .collect::<Result<_, _>>()?;
 
         let this = Self {
-            vis: input.vis.clone(),
             ident: input.ident.clone(),
-            generics: input.generics.clone(),
-            style: fields.style,
-            fields: fields.fields,
+            style,
+            fields,
         };
 
         let mut field_names = HashSet::with_capacity(this.fields.len());
@@ -154,5 +176,19 @@ impl FromDeriveInput for TargetStruct {
             }
         }
         Ok(this)
+    }
+}
+
+#[derive(Debug, FromMeta)]
+pub(crate) struct MacroAttrs {
+    #[darling(rename = "for")]
+    pub target: Path,
+}
+
+impl MacroAttrs {
+    pub fn parse(tokens: TokenStream) -> darling::Result<Self> {
+        let meta = Punctuated::<NestedMeta, Token![,]>::parse_terminated.parse(tokens)?;
+        let meta: Vec<_> = meta.into_iter().collect();
+        Self::from_list(&meta)
     }
 }

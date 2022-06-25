@@ -5,75 +5,7 @@ use syn::{spanned::Spanned, DeriveInput};
 
 use std::{env, fs, path::Path};
 
-use crate::shared::{TargetField, TargetStruct};
 use tardigrade_shared::workflow::Interface;
-
-impl TargetField {
-    fn validate_interface(&self) -> impl ToTokens {
-        let ty = &self.ty;
-        let id_ty = self.id_ty();
-        let id = self.id();
-        let tr = quote!(tardigrade::workflow::ValidateInterface<#id_ty>);
-        quote! {
-            <#ty as #tr>::validate_interface(&mut *errors, interface, #id);
-        }
-    }
-}
-
-#[derive(Debug)]
-struct ValidateInterface {
-    base: TargetStruct,
-}
-
-impl ValidateInterface {
-    fn validation_method(&self) -> impl ToTokens {
-        let fields = self.base.fields.iter();
-        let validations = fields.map(TargetField::validate_interface);
-
-        quote! {
-            fn validate_interface(
-                errors: &mut tardigrade::workflow::InterfaceErrors,
-                interface: &tardigrade::workflow::Interface<()>,
-                _id: (),
-            ) {
-                #(#validations)*
-            }
-        }
-    }
-}
-
-impl FromDeriveInput for ValidateInterface {
-    fn from_derive_input(input: &DeriveInput) -> darling::Result<Self> {
-        Ok(Self {
-            base: TargetStruct::from_derive_input(input)?,
-        })
-    }
-}
-
-impl ToTokens for ValidateInterface {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        let name = &self.base.ident;
-        let (impl_generics, ty_generics, where_clause) = self.base.generics.split_for_impl();
-        let tr = quote!(tardigrade::workflow::ValidateInterface<()>);
-        let validation_method = self.validation_method();
-
-        tokens.extend(quote! {
-            impl #impl_generics #tr for #name #ty_generics #where_clause {
-                #validation_method
-            }
-        })
-    }
-}
-
-pub(crate) fn impl_validate_interface(input: TokenStream) -> TokenStream {
-    let input: DeriveInput = syn::parse(input).unwrap();
-    let interface = match ValidateInterface::from_derive_input(&input) {
-        Ok(interface) => interface,
-        Err(err) => return err.write_errors().into(),
-    };
-    let tokens = quote!(#interface);
-    tokens.into()
-}
 
 #[derive(Debug)]
 struct GetInterface {

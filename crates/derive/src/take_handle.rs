@@ -1,45 +1,55 @@
 //! Deriving `WithHandle` and related traits.
 
-use darling::{ast::Style, FromDeriveInput};
+use darling::ast::Style;
 use proc_macro::TokenStream;
 use proc_macro2::Ident;
 use quote::{quote, ToTokens};
-use syn::{parse_quote, DeriveInput, Generics};
+use syn::{parse_quote, DeriveInput, Generics, Path, Type};
 
-use crate::shared::{TargetField, TargetStruct};
+use crate::shared::{MacroAttrs, TargetField, TargetStruct};
 
 impl TargetField {
-    fn handle_field_ty(&self) -> impl ToTokens {
-        let ty = &self.ty;
-        let id_ty = self.id_ty();
-        let tr = quote!(tardigrade::workflow::TakeHandle<Env, #id_ty>);
-        quote!(<#ty as #tr>::Handle)
-    }
+    fn check_for_handle(&self, env_ident: &Ident) -> darling::Result<()> {
+        const MSG: &str = "fields in handle struct must be wrapped in `Handle<_, _>`";
 
-    fn handle_field_spec(&self) -> impl ToTokens {
-        let ty = self.handle_field_ty();
-        if let Some(ident) = &self.ident {
-            quote!(pub #ident: #ty)
+        let wrapper = self
+            .wrapper
+            .as_ref()
+            .ok_or_else(|| darling::Error::custom(MSG).with_span(&self.span))?;
+
+        if wrapper.ident != "Handle" || wrapper.inner_types.len() != 2 {
+            return Err(darling::Error::custom(MSG).with_span(&self.span));
+        }
+
+        let is_valid = if let Type::Path(syn::TypePath { path, .. }) = &wrapper.inner_types[1] {
+            path.get_ident().map_or(false, |id| id == env_ident)
         } else {
-            quote!(pub #ty)
+            false
+        };
+        if is_valid {
+            Ok(())
+        } else {
+            Err(darling::Error::custom(MSG).with_span(&self.span))
         }
     }
 
+    /*
     fn init_by_cloning(&self, field_index: usize) -> impl ToTokens {
-        let ty = self.handle_field_ty();
+        let ty = &self.ty;
         let field = self.ident(field_index);
         quote!(#field: <#ty as core::clone::Clone>::clone(&self.#field))
     }
+     */
 
     fn init_by_take_handle(&self, field_index: usize) -> impl ToTokens {
-        let ty = &self.ty;
+        let unwrapped_ty = &self.wrapper.as_ref().unwrap().inner_types[0];
         let id = self.id();
-        let id_ty = self.id_ty();
-        let tr = quote!(tardigrade::workflow::TakeHandle<Env, #id_ty>);
+        let tr = quote!(tardigrade::workflow::TakeHandle<Env>);
         let field = self.ident(field_index);
-        quote!(#field: <#ty as #tr>::take_handle(&mut *env, #id))
+        quote!(#field: <#unwrapped_ty as #tr>::take_handle(&mut *env, #id))
     }
 
+    /*
     fn debug_in_handle(&self, field_index: usize) -> impl ToTokens {
         if let Some(ident) = &self.ident {
             let name = ident.to_string();
@@ -49,55 +59,78 @@ impl TargetField {
             quote!(.field(&self.#field_index))
         }
     }
+    */
 }
 
 #[derive(Debug)]
 struct TakeHandle {
     base: TargetStruct,
-    handle_ident: Ident,
-    handle_generics: Generics,
+    env: Ident,
+    generics: Generics,
+    target: Path,
 }
 
 impl TakeHandle {
-    fn create_handle_ident(ty_ident: &Ident) -> Ident {
-        let name = format!("{}Handle", ty_ident);
-        Ident::new(&name, ty_ident.span())
+    fn new(input: &mut DeriveInput, attrs: MacroAttrs) -> darling::Result<Self> {
+        let env = Self::env_generic(&input.generics)?;
+        let base = TargetStruct::new(input)?;
+        for field in &base.fields {
+            field.check_for_handle(&env)?;
+        }
+
+        let fields = match &mut input.data {
+            syn::Data::Struct(syn::DataStruct { fields, .. }) => fields,
+            _ => {
+                return Err(darling::Error::unsupported_shape(
+                    "can be only implemented for structs",
+                ))
+            }
+        };
+        for field in fields {
+            field.attrs.clear();
+        }
+
+        Self::extend_handle_generics(&mut input.generics, &base.fields);
+        Ok(Self {
+            base,
+            env,
+            generics: input.generics.clone(),
+            target: attrs.target,
+        })
     }
 
-    fn create_handle_generics(ty_generics: &Generics, fields: &[TargetField]) -> Generics {
-        let mut generics = ty_generics.clone();
-        generics.params.push(parse_quote!(Env));
+    fn env_generic(generics: &Generics) -> darling::Result<Ident> {
+        const MSG: &str = "Handle struct must have single type generic";
+
+        if generics.params.len() != 1 {
+            return Err(darling::Error::custom(MSG).with_span(generics));
+        }
+        let generic = generics.params.first().unwrap();
+        if let syn::GenericParam::Type(ty_param) = generic {
+            Ok(ty_param.ident.clone())
+        } else {
+            Err(darling::Error::custom(MSG).with_span(generics))
+        }
+    }
+
+    fn extend_handle_generics(generics: &mut Generics, fields: &[TargetField]) {
         let mut where_clause = generics
             .where_clause
             .take()
             .unwrap_or_else(|| parse_quote!(where));
 
         for field in fields {
-            let ty = &field.ty;
+            let wrapper = field.wrapper.as_ref().unwrap();
+            let ty = &wrapper.inner_types[0];
+            let env = &wrapper.inner_types[1];
             let id_ty = field.id_ty();
-            let tr = quote!(tardigrade::workflow::TakeHandle<Env, #id_ty>);
+            let tr = quote!(tardigrade::workflow::TakeHandle<#env, Id = #id_ty>);
             where_clause.predicates.push(parse_quote!(#ty: #tr));
         }
         generics.where_clause = Some(where_clause);
-        generics
     }
 
-    fn define_handle_struct(&self) -> impl ToTokens {
-        let vis = &self.base.vis;
-        let handle = &self.handle_ident;
-        let (_, ty_generics, where_clause) = self.handle_generics.split_for_impl();
-
-        let fields = self.base.fields.iter().map(TargetField::handle_field_spec);
-        let fields = match self.base.style {
-            Style::Struct => quote!({ #(#fields,)* }),
-            Style::Tuple | Style::Unit => quote!(( #(#fields,)* )),
-        };
-
-        quote! {
-            #vis struct #handle #ty_generics #where_clause #fields
-        }
-    }
-
+    /*
     fn impl_std_trait_for_handle(
         &self,
         tr: impl ToTokens,
@@ -151,14 +184,14 @@ impl TakeHandle {
         };
         self.impl_std_trait_for_handle(quote!(core::fmt::Debug), methods)
     }
+    */
 
     fn impl_take_handle(&self) -> impl ToTokens {
-        let name = &self.base.ident;
-        let handle = &self.handle_ident;
+        let handle = &self.base.ident;
+        let target = &self.target;
+        let env = &self.env;
         let tr = quote!(tardigrade::workflow::TakeHandle);
-        let (_, ty_generics, _) = self.base.generics.split_for_impl();
-        let (impl_generics, handle_ty_generics, where_clause) =
-            self.handle_generics.split_for_impl();
+        let (impl_generics, ty_generics, where_clause) = self.generics.split_for_impl();
 
         let handle_fields = self.base.fields.iter().enumerate();
         let handle_fields = handle_fields.map(|(idx, field)| field.init_by_take_handle(idx));
@@ -168,10 +201,11 @@ impl TakeHandle {
         };
 
         quote! {
-            impl #impl_generics #tr<Env, ()> for #name #ty_generics #where_clause {
-                type Handle = #handle #handle_ty_generics;
+            impl #impl_generics #tr<#env> for #target #where_clause {
+                type Id = ();
+                type Handle = #handle #ty_generics;
 
-                fn take_handle(env: &mut Env, _id: ()) -> Self::Handle {
+                fn take_handle(env: &mut #env, _id: &()) -> Self::Handle {
                     #handle #handle_fields
                 }
             }
@@ -179,42 +213,32 @@ impl TakeHandle {
     }
 }
 
-impl FromDeriveInput for TakeHandle {
-    fn from_derive_input(input: &DeriveInput) -> darling::Result<Self> {
-        let base = TargetStruct::from_derive_input(input)?;
-        // TODO: support ident override
-        let handle_ident = Self::create_handle_ident(&input.ident);
-
-        Ok(Self {
-            handle_generics: Self::create_handle_generics(&input.generics, &base.fields),
-            base,
-            handle_ident,
-        })
-    }
-}
-
 impl ToTokens for TakeHandle {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        let handle_struct = self.define_handle_struct();
-        let clone_impl_for_handle = self.impl_clone_for_handle();
-        let debug_impl_for_handle = self.impl_debug_for_handle();
+        //let clone_impl_for_handle = self.impl_clone_for_handle();
+        //let debug_impl_for_handle = self.impl_debug_for_handle();
         let take_handle_impl = self.impl_take_handle();
 
         tokens.extend(quote! {
-            #handle_struct
-            #clone_impl_for_handle
-            #debug_impl_for_handle
             #take_handle_impl
         });
     }
 }
 
-pub(crate) fn impl_take_handle(input: TokenStream) -> TokenStream {
-    let input: DeriveInput = syn::parse(input).unwrap();
-    let take_handle = match TakeHandle::from_derive_input(&input) {
-        Ok(take_handle) => take_handle,
+pub(crate) fn impl_take_handle(attr: TokenStream, input: TokenStream) -> TokenStream {
+    let attrs = match MacroAttrs::parse(attr) {
+        Ok(attrs) => attrs,
         Err(err) => return err.write_errors().into(),
     };
-    let tokens = quote!(#take_handle);
+    let mut input: syn::DeriveInput = match syn::parse(input) {
+        Ok(input) => input,
+        Err(err) => return err.into_compile_error().into(),
+    };
+
+    let init = match TakeHandle::new(&mut input, attrs) {
+        Ok(init) => init,
+        Err(err) => return err.write_errors().into(),
+    };
+    let tokens = quote!(#input #init);
     tokens.into()
 }

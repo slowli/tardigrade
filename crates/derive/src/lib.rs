@@ -9,19 +9,14 @@ mod interface;
 mod shared;
 mod take_handle;
 
-#[proc_macro_derive(TakeHandle, attributes(tardigrade))]
-pub fn take_handle(input: TokenStream) -> TokenStream {
-    take_handle::impl_take_handle(input)
+#[proc_macro_attribute]
+pub fn handle(attr: TokenStream, input: TokenStream) -> TokenStream {
+    take_handle::impl_take_handle(attr, input)
 }
 
-#[proc_macro_derive(Initialize, attributes(tardigrade))]
-pub fn initialize(input: TokenStream) -> TokenStream {
-    init::impl_initialize(input)
-}
-
-#[proc_macro_derive(ValidateInterface, attributes(tardigrade))]
-pub fn validate_interface(input: TokenStream) -> TokenStream {
-    interface::impl_validate_interface(input)
+#[proc_macro_attribute]
+pub fn init(attr: TokenStream, input: TokenStream) -> TokenStream {
+    init::impl_initialize(attr, input)
 }
 
 #[proc_macro_derive(GetInterface, attributes(tardigrade))]
