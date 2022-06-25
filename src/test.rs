@@ -30,7 +30,7 @@ use crate::{
 };
 use tardigrade_shared::{
     trace::{FutureUpdate, TracedFuture, TracedFutures},
-    workflow::{Interface, TakeHandle},
+    workflow::{Initialize, Interface, TakeHandle},
     ChannelError, ChannelErrorKind, ChannelKind, FutureId,
 };
 
@@ -202,13 +202,13 @@ impl Runtime {
         })
     }
 
-    pub fn data_input(&self, name: &'static str) -> Option<Vec<u8>> {
+    pub fn data_input(&self, name: &str) -> Option<Vec<u8>> {
         self.data_inputs.get(name).cloned()
     }
 
     pub fn take_inbound_channel(
         &mut self,
-        name: &'static str,
+        name: &str,
     ) -> Result<UnboundedReceiver<Vec<u8>>, ChannelError> {
         let channel_place = self
             .inbound_channels
@@ -221,7 +221,7 @@ impl Runtime {
 
     pub fn sender_for_inbound_channel(
         &self,
-        name: &'static str,
+        name: &str,
     ) -> Result<UnboundedSender<Vec<u8>>, ChannelError> {
         self.inbound_channels
             .get(name)
@@ -229,10 +229,7 @@ impl Runtime {
             .ok_or_else(|| ChannelErrorKind::Unknown.for_channel(ChannelKind::Inbound, name))
     }
 
-    pub fn outbound_channel(
-        &self,
-        name: &'static str,
-    ) -> Result<UnboundedSender<Vec<u8>>, ChannelError> {
+    pub fn outbound_channel(&self, name: &str) -> Result<UnboundedSender<Vec<u8>>, ChannelError> {
         self.outbound_channels
             .get(name)
             .map(ChannelPair::clone_sx)
@@ -241,7 +238,7 @@ impl Runtime {
 
     pub fn take_receiver_for_outbound_channel(
         &mut self,
-        name: &'static str,
+        name: &str,
     ) -> Result<UnboundedReceiver<Vec<u8>>, ChannelError> {
         let channel_place = self
             .outbound_channels
@@ -277,14 +274,14 @@ impl Drop for RuntimeGuard {
 
 #[non_exhaustive]
 pub struct TestHandle<W: TestWorkflow> {
-    pub interface: <W as TakeHandle<TestHost, ()>>::Handle,
+    pub interface: <W as TakeHandle<TestHost>>::Handle,
     pub timers: TimersHandle,
 }
 
 impl<W: TestWorkflow> TestHandle<W> {
     fn new() -> Self {
         let mut host = TestHost::new();
-        let interface = W::take_handle(&mut host, ());
+        let interface = W::take_handle(&mut host, &());
         Self {
             interface,
             timers: TimersHandle { inner: PhantomData },
@@ -292,9 +289,9 @@ impl<W: TestWorkflow> TestHandle<W> {
     }
 }
 
-fn test<W, F, Fut, E>(inputs: W::Init, test_fn: F) -> Result<(), E>
+fn test<W, Init, F, Fut, E>(inputs: Init, test_fn: F) -> Result<(), E>
 where
-    W: TestWorkflow,
+    W: TestWorkflow + Initialize<Init>,
     F: FnOnce(TestHandle<W>) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
@@ -305,7 +302,7 @@ where
     // (which will drop `Runtime`, including the clock)
     let (_guard, mut local_pool) = Runtime::initialize(&interface, workflow_inputs.into_inner());
     let mut wasm = Wasm::default();
-    let workflow = W::take_handle(&mut wasm, ());
+    let workflow = W::take_handle(&mut wasm, &());
     let test_handle = TestHandle::new();
 
     local_pool
@@ -316,12 +313,13 @@ where
 }
 
 /// Extension trait for testing.
-pub trait TestWorkflow: Sized + SpawnWorkflow + TakeHandle<TestHost, ()> {
-    fn test<F>(inputs: Self::Init, test_fn: impl FnOnce(TestHandle<Self>) -> F)
+pub trait TestWorkflow: Sized + SpawnWorkflow + TakeHandle<TestHost, Id = ()> {
+    fn test<F, Init>(inputs: Init, test_fn: impl FnOnce(TestHandle<Self>) -> F)
     where
+        Self: Initialize<Init>,
         F: Future<Output = ()> + 'static,
     {
-        test::<Self, _, _, _>(inputs, |handle| async {
+        test::<Self, _, _, _, _>(inputs, |handle| async {
             test_fn(handle).await;
             Ok::<_, ()>(())
         })
@@ -329,7 +327,7 @@ pub trait TestWorkflow: Sized + SpawnWorkflow + TakeHandle<TestHost, ()> {
     }
 }
 
-impl<W> TestWorkflow for W where W: SpawnWorkflow + TakeHandle<TestHost, ()> {}
+impl<W> TestWorkflow for W where W: SpawnWorkflow + TakeHandle<TestHost, Id = ()> {}
 
 /// Host part of the test env.
 #[derive(Debug)]
@@ -341,42 +339,47 @@ impl TestHost {
     }
 }
 
-impl TakeHandle<TestHost, &'static str> for RawReceiver {
+impl TakeHandle<TestHost> for RawReceiver {
+    type Id = str;
     type Handle = RawSender;
 
-    fn take_handle(env: &mut TestHost, id: &'static str) -> Self::Handle {
+    fn take_handle(env: &mut TestHost, id: &str) -> Self::Handle {
         RawSender::new(channel_imp::MpscReceiver::take_handle(env, id))
     }
 }
 
-impl<T, C: Encoder<T> + Default> TakeHandle<TestHost, &'static str> for Receiver<T, C> {
+impl<T, C: Encoder<T> + Default> TakeHandle<TestHost> for Receiver<T, C> {
+    type Id = str;
     type Handle = Sender<T, C>;
 
-    fn take_handle(env: &mut TestHost, id: &'static str) -> Self::Handle {
+    fn take_handle(env: &mut TestHost, id: &str) -> Self::Handle {
         Sender::new(RawReceiver::take_handle(env, id), C::default())
     }
 }
 
-impl TakeHandle<TestHost, &'static str> for RawSender {
+impl TakeHandle<TestHost> for RawSender {
+    type Id = str;
     type Handle = RawReceiver;
 
-    fn take_handle(env: &mut TestHost, id: &'static str) -> Self::Handle {
+    fn take_handle(env: &mut TestHost, id: &str) -> Self::Handle {
         RawReceiver::new(channel_imp::MpscSender::take_handle(env, id))
     }
 }
 
-impl<T, C: Decoder<T> + Default> TakeHandle<TestHost, &'static str> for Sender<T, C> {
+impl<T, C: Decoder<T> + Default> TakeHandle<TestHost> for Sender<T, C> {
+    type Id = str;
     type Handle = Receiver<T, C>;
 
-    fn take_handle(env: &mut TestHost, id: &'static str) -> Self::Handle {
+    fn take_handle(env: &mut TestHost, id: &str) -> Self::Handle {
         Receiver::new(RawSender::take_handle(env, id), C::default())
     }
 }
 
-impl<T, C: Decoder<T> + Default> TakeHandle<TestHost, &'static str> for Data<T, C> {
+impl<T, C: Decoder<T> + Default> TakeHandle<TestHost> for Data<T, C> {
+    type Id = str;
     type Handle = Self;
 
-    fn take_handle(_env: &mut TestHost, id: &'static str) -> Self {
+    fn take_handle(_env: &mut TestHost, id: &str) -> Self {
         Self::from_env(id)
     }
 }
@@ -410,13 +413,14 @@ where
     }
 }
 
-impl<C> TakeHandle<TestHost, &'static str> for Tracer<C>
+impl<C> TakeHandle<TestHost> for Tracer<C>
 where
     C: Decoder<FutureUpdate> + Default,
 {
+    type Id = str;
     type Handle = TracerHandle<C>;
 
-    fn take_handle(env: &mut TestHost, id: &'static str) -> Self::Handle {
+    fn take_handle(env: &mut TestHost, id: &str) -> Self::Handle {
         TracerHandle {
             receiver: Sender::take_handle(env, id).fuse(),
             futures: TracedFutures::default(),

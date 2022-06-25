@@ -4,17 +4,22 @@ use serde::{Deserialize, Serialize};
 
 use std::{collections::HashMap, error, fmt, marker::PhantomData};
 
-pub trait TakeHandle<Env, Id> {
+pub trait TakeHandle<Env> {
+    type Id: ?Sized;
     type Handle;
 
-    fn take_handle(env: &mut Env, id: Id) -> Self::Handle;
+    fn take_handle(env: &mut Env, id: &Self::Id) -> Self::Handle;
 }
 
-pub trait Initialize<Env, Id> {
-    type Init;
+pub type Handle<T, Env> = <T as TakeHandle<Env>>::Handle;
 
-    fn initialize(env: &mut Env, id: Id, init: Self::Init);
+pub trait ExtendInputs<Init> {
+    type Id: ?Sized;
+
+    fn extend_inputs(init: Init, env: &mut InputsBuilder, id: &Self::Id);
 }
+
+pub trait Initialize<Init>: ExtendInputs<Init, Id = ()> {}
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct InboundChannelSpec {
@@ -127,6 +132,15 @@ impl<W> Interface<W> {
                 .collect(),
         }
     }
+
+    pub fn create_inputs<Init>(&self, inputs: Init) -> Inputs
+    where
+        W: Initialize<Init>,
+    {
+        let mut builder = self.inputs_builder();
+        W::extend_inputs(inputs, &mut builder, &());
+        builder.build()
+    }
 }
 
 impl Interface<()> {
@@ -137,11 +151,11 @@ impl Interface<()> {
 
     pub fn downcast<W>(self) -> Result<Interface<W>, InterfaceErrors>
     where
-        W: ValidateInterface<()>,
+        W: for<'a> TakeHandle<InterfaceValidation<'a>, Id = ()>,
     {
-        let mut errors = InterfaceErrors::default();
-        W::validate_interface(&mut errors, &self, ());
-        errors.into_result().map(|()| Interface {
+        let mut validation = InterfaceValidation::new(&self);
+        W::take_handle(&mut validation, &());
+        validation.errors.into_result().map(|()| Interface {
             version: self.version,
             inbound_channels: self.inbound_channels,
             outbound_channels: self.outbound_channels,
@@ -151,27 +165,12 @@ impl Interface<()> {
     }
 }
 
-impl<W: Initialize<InputsBuilder, ()>> Interface<W> {
-    pub fn create_inputs(&self, inputs: W::Init) -> Inputs {
-        let mut builder = self.inputs_builder();
-        W::initialize(&mut builder, (), inputs);
-        builder.build()
-    }
-}
-
 #[derive(Debug, Default)]
 pub struct InterfaceErrors {
     errors: Vec<Box<dyn error::Error + Send + Sync>>,
 }
 
 impl InterfaceErrors {
-    pub fn insert_error<E>(&mut self, error: E)
-    where
-        E: error::Error + Send + Sync + 'static,
-    {
-        self.errors.push(Box::new(error));
-    }
-
     pub fn into_result(self) -> Result<(), Self> {
         if self.errors.is_empty() {
             Ok(())
@@ -206,8 +205,30 @@ impl error::Error for InterfaceErrors {
     }
 }
 
-pub trait ValidateInterface<Id> {
-    fn validate_interface(errors: &mut InterfaceErrors, interface: &Interface<()>, id: Id);
+#[derive(Debug)]
+pub struct InterfaceValidation<'a> {
+    interface: &'a Interface<()>,
+    errors: InterfaceErrors,
+}
+
+impl<'a> InterfaceValidation<'a> {
+    fn new(interface: &'a Interface<()>) -> Self {
+        Self {
+            interface,
+            errors: InterfaceErrors::default(),
+        }
+    }
+
+    pub fn interface(&self) -> &'a Interface<()> {
+        self.interface
+    }
+
+    pub fn insert_error<E>(&mut self, error: E)
+    where
+        E: error::Error + Send + Sync + 'static,
+    {
+        self.errors.errors.push(Box::new(error));
+    }
 }
 
 #[derive(Debug, Clone)]

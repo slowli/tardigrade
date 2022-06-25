@@ -59,10 +59,11 @@ impl<T, C: Encoder<T>, W> MessageSender<'_, T, C, W> {
 
 // FIXME: Use additional struct to tick afterwards: `sx.send(message)?.flush()?`
 
-impl<'a, T, C, W> TakeHandle<WorkflowEnv<'a, W>, &str> for Receiver<T, C>
+impl<'a, T, C, W> TakeHandle<WorkflowEnv<'a, W>> for Receiver<T, C>
 where
     C: Encoder<T> + Default,
 {
+    type Id = str;
     type Handle = MessageSender<'a, T, C, W>;
 
     fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Self::Handle {
@@ -112,10 +113,11 @@ impl<T, C: Decoder<T>, W> MessageReceiver<'_, T, C, W> {
     }
 }
 
-impl<'a, T, C, W> TakeHandle<WorkflowEnv<'a, W>, &str> for Sender<T, C>
+impl<'a, T, C, W> TakeHandle<WorkflowEnv<'a, W>> for Sender<T, C>
 where
     C: Decoder<T> + Default,
 {
+    type Id = str;
     type Handle = MessageReceiver<'a, T, C, W>;
 
     fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Self::Handle {
@@ -146,10 +148,11 @@ impl<T, C: Decoder<T>, W> DataPeeker<'_, T, C, W> {
     }
 }
 
-impl<'a, T, C, W> TakeHandle<WorkflowEnv<'a, W>, &str> for Data<T, C>
+impl<'a, T, C, W> TakeHandle<WorkflowEnv<'a, W>> for Data<T, C>
 where
     C: Decoder<T> + Default,
 {
+    type Id = str;
     type Handle = DataPeeker<'a, T, C, W>;
 
     fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Self::Handle {
@@ -198,10 +201,11 @@ where
     }
 }
 
-impl<'a, C, W> TakeHandle<WorkflowEnv<'a, W>, &str> for Tracer<C>
+impl<'a, C, W> TakeHandle<WorkflowEnv<'a, W>> for Tracer<C>
 where
     C: Decoder<FutureUpdate> + Default,
 {
+    type Id = str;
     type Handle = TracerHandle<'a, C, W>;
 
     fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Self::Handle {
@@ -214,20 +218,20 @@ where
 
 pub struct WorkflowHandle<'a, W>
 where
-    W: TakeHandle<WorkflowEnv<'a, W>, ()> + 'a,
+    W: TakeHandle<WorkflowEnv<'a, W>, Id = ()> + 'a,
 {
-    pub interface: <W as TakeHandle<WorkflowEnv<'a, W>, ()>>::Handle,
+    pub interface: <W as TakeHandle<WorkflowEnv<'a, W>>>::Handle,
     env: WorkflowEnv<'a, W>,
 }
 
 impl<'a, W> WorkflowHandle<'a, W>
 where
-    W: TakeHandle<WorkflowEnv<'a, W>, ()> + 'a,
+    W: TakeHandle<WorkflowEnv<'a, W>, Id = ()> + 'a,
 {
     pub(super) fn new(workflow: &'a mut Workflow<W>) -> Self {
         let mut env = WorkflowEnv::new(workflow);
         Self {
-            interface: W::take_handle(&mut env, ()),
+            interface: W::take_handle(&mut env, &()),
             env,
         }
     }

@@ -33,8 +33,11 @@ pub struct Workflow<W> {
     _interface: PhantomData<*const W>,
 }
 
-impl<W: Initialize<InputsBuilder, ()>> Workflow<W> {
-    pub fn new(module: &WorkflowModule<W>, inputs: W::Init) -> anyhow::Result<Receipt<Self>> {
+impl<W> Workflow<W> {
+    pub fn new<In>(module: &WorkflowModule<W>, inputs: In) -> anyhow::Result<Receipt<Self>>
+    where
+        In: Initialize<W, Id = ()>,
+    {
         let raw_inputs = module.interface().create_inputs(inputs);
         let state = WorkflowData::from_interface(module.interface(), raw_inputs.into_inner());
         let mut this = Self::from_state(module, state)?;
@@ -47,7 +50,7 @@ impl<W: Initialize<InputsBuilder, ()>> Workflow<W> {
 
 impl<'a, W> Workflow<W>
 where
-    W: TakeHandle<WorkflowEnv<'a, W>, ()> + 'a,
+    W: TakeHandle<WorkflowEnv<'a, W>, Id = ()> + 'a,
 {
     pub fn handle(&'a mut self) -> WorkflowHandle<'a, W> {
         WorkflowHandle::new(self)

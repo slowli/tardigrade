@@ -6,9 +6,7 @@ use crate::{
     codec::{Decoder, Encoder},
     context::Wasm,
 };
-use tardigrade_shared::workflow::{
-    Initialize, InputsBuilder, Interface, InterfaceErrors, TakeHandle, ValidateInterface,
-};
+use tardigrade_shared::workflow::{ExtendInputs, InputsBuilder, InterfaceValidation, TakeHandle};
 
 #[cfg(target_arch = "wasm32")]
 mod imp {
@@ -20,7 +18,7 @@ mod imp {
         fn data_input_get(input_name_ptr: *const u8, input_name_len: usize) -> i64;
     }
 
-    pub fn try_get_raw_data(id: &'static str) -> Option<Vec<u8>> {
+    pub fn try_get_raw_data(id: &str) -> Option<Vec<u8>> {
         unsafe {
             let result = data_input_get(id.as_ptr(), id.len());
             IntoWasm::from_abi_in_wasm(result)
@@ -32,7 +30,7 @@ mod imp {
 mod imp {
     use crate::test::Runtime;
 
-    pub fn try_get_raw_data(id: &'static str) -> Option<Vec<u8>> {
+    pub fn try_get_raw_data(id: &str) -> Option<Vec<u8>> {
         Runtime::with_mut(|rt| rt.data_input(id))
     }
 }
@@ -50,7 +48,7 @@ impl<T, C> Data<T, C> {
 }
 
 impl<T, C: Decoder<T> + Default> Data<T, C> {
-    pub(crate) fn from_env(id: &'static str) -> Self {
+    pub(crate) fn from_env(id: &str) -> Self {
         let raw = imp::try_get_raw_data(id)
             .unwrap_or_else(|| panic!("data input `{}` not defined in workflow interface", id));
         C::default()
@@ -69,22 +67,23 @@ impl<T, C: Decoder<T> + Default> From<T> for Data<T, C> {
     }
 }
 
-impl<T, C> TakeHandle<Wasm, &'static str> for Data<T, C>
+impl<T, C> TakeHandle<Wasm> for Data<T, C>
 where
     C: Decoder<T> + Default,
 {
+    type Id = str;
     type Handle = Self;
 
-    fn take_handle(_env: &mut Wasm, id: &'static str) -> Self {
+    fn take_handle(_env: &mut Wasm, id: &str) -> Self {
         Self::from_env(id)
     }
 }
 
-impl<T, C: Encoder<T> + Default> Initialize<InputsBuilder, &str> for Data<T, C> {
-    type Init = T;
+impl<T, C: Encoder<T> + Default> ExtendInputs<T> for Data<T, C> {
+    type Id = str;
 
-    fn initialize(env: &mut InputsBuilder, id: &str, handle: Self::Init) {
-        let raw_data = C::default().encode_value(handle);
+    fn extend_inputs(init: T, env: &mut InputsBuilder, id: &str) {
+        let raw_data = C::default().encode_value(init);
         env.set_raw_input(id, raw_data);
     }
 }
@@ -106,13 +105,16 @@ impl fmt::Display for DataValidationError {
 
 impl error::Error for DataValidationError {}
 
-impl<T, C> ValidateInterface<&str> for Data<T, C>
+impl<T, C> TakeHandle<InterfaceValidation<'_>> for Data<T, C>
 where
     C: Encoder<T> + Decoder<T>,
 {
-    fn validate_interface(errors: &mut InterfaceErrors, interface: &Interface<()>, id: &str) {
-        if interface.data_input(id).is_none() {
-            errors.insert_error(DataValidationError {
+    type Id = str;
+    type Handle = ();
+
+    fn take_handle(env: &mut InterfaceValidation<'_>, id: &str) {
+        if env.interface().data_input(id).is_none() {
+            env.insert_error(DataValidationError {
                 name: id.to_owned(),
             });
         }

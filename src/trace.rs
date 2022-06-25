@@ -16,7 +16,7 @@ pub use tardigrade_shared::trace::{
 
 use crate::{channel::Sender, Encoder, Wasm};
 use tardigrade_shared::{
-    workflow::{Interface, InterfaceErrors, TakeHandle, ValidateInterface},
+    workflow::{InterfaceValidation, TakeHandle},
     ChannelErrorKind, ChannelKind, FutureId,
 };
 
@@ -43,36 +43,40 @@ impl<C: Encoder<FutureUpdate>> Tracer<C> {
     }
 }
 
-impl<C> TakeHandle<Wasm, &'static str> for Tracer<C>
+impl<C> TakeHandle<Wasm> for Tracer<C>
 where
     C: Encoder<FutureUpdate> + Default,
 {
+    type Id = str;
     type Handle = Self;
 
-    fn take_handle(env: &mut Wasm, id: &'static str) -> Self::Handle {
+    fn take_handle(env: &mut Wasm, id: &str) -> Self::Handle {
         Self {
             sender: Sender::take_handle(env, id),
         }
     }
 }
 
-impl<C> ValidateInterface<&str> for Tracer<C>
+impl<C> TakeHandle<InterfaceValidation<'_>> for Tracer<C>
 where
     C: Encoder<FutureUpdate> + Default,
 {
-    fn validate_interface(errors: &mut InterfaceErrors, interface: &Interface<()>, id: &str) {
-        if let Some(spec) = interface.outbound_channel(id) {
+    type Id = str;
+    type Handle = ();
+
+    fn take_handle(env: &mut InterfaceValidation<'_>, id: &str) {
+        if let Some(spec) = env.interface().outbound_channel(id) {
             if spec.capacity != None {
                 let err = format!(
                     "unexpected channel capacity: {:?}, expected infinite capacity (`None`)",
                     spec.capacity
                 );
                 let err = ChannelErrorKind::custom(err).for_channel(ChannelKind::Outbound, id);
-                errors.insert_error(err);
+                env.insert_error(err);
             }
         } else {
             let err = ChannelErrorKind::Unknown.for_channel(ChannelKind::Outbound, id);
-            errors.insert_error(err);
+            env.insert_error(err);
         }
     }
 }

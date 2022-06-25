@@ -14,7 +14,7 @@ use crate::{
 };
 use tardigrade_shared::{
     abi::TryFromWasm,
-    workflow::{Interface, ValidateInterface},
+    workflow::{Interface, InterfaceValidation, TakeHandle},
 };
 
 fn ensure_func_ty<Args, Out>(ty: &ExternType, fn_name: &str) -> anyhow::Result<()>
@@ -118,6 +118,7 @@ impl WorkflowModule<()> {
         bail!("WASM lacks `{}` custom section", INTERFACE_SECTION);
     }
 
+    // TODO: multiple sections?
     fn read_section(mut bytes: &[u8]) -> anyhow::Result<(&[u8], &[u8])> {
         let name_len = leb128::read::unsigned(&mut bytes)
             .context("cannot read WASM custom section name length")?;
@@ -167,7 +168,10 @@ impl<W> WorkflowModule<W> {
     }
 }
 
-impl<W: ValidateInterface<()>> WorkflowModule<W> {
+impl<W> WorkflowModule<W>
+where
+    W: for<'a> TakeHandle<InterfaceValidation<'a>, Id = ()>,
+{
     /// Validates the provided module and wraps it.
     pub fn new(engine: &WorkflowEngine, module_bytes: &[u8]) -> anyhow::Result<Self> {
         let module = wasmtime::Module::from_binary(&engine.inner, module_bytes)?;

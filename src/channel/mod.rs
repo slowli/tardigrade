@@ -16,7 +16,7 @@ use crate::{
     Wasm,
 };
 use tardigrade_shared::{
-    workflow::{Interface, InterfaceErrors, TakeHandle, ValidateInterface},
+    workflow::{InterfaceValidation, TakeHandle},
     ChannelErrorKind, ChannelKind,
 };
 
@@ -57,10 +57,11 @@ impl Stream for RawReceiver {
     }
 }
 
-impl TakeHandle<Wasm, &'static str> for RawReceiver {
+impl TakeHandle<Wasm> for RawReceiver {
+    type Id = str;
     type Handle = Self;
 
-    fn take_handle(env: &mut Wasm, id: &'static str) -> Self::Handle {
+    fn take_handle(env: &mut Wasm, id: &str) -> Self::Handle {
         Self::new(imp::MpscReceiver::take_handle(env, id))
     }
 }
@@ -111,25 +112,29 @@ impl<T, C: Decoder<T>> Stream for Receiver<T, C> {
     }
 }
 
-impl<T, C> TakeHandle<Wasm, &'static str> for Receiver<T, C>
+impl<T, C> TakeHandle<Wasm> for Receiver<T, C>
 where
     C: Decoder<T> + Default,
 {
+    type Id = str;
     type Handle = Self;
 
-    fn take_handle(env: &mut Wasm, id: &'static str) -> Self::Handle {
+    fn take_handle(env: &mut Wasm, id: &str) -> Self::Handle {
         Self::new(RawReceiver::take_handle(env, id), C::default())
     }
 }
 
-impl<T, C> ValidateInterface<&str> for Receiver<T, C>
+impl<T, C> TakeHandle<InterfaceValidation<'_>> for Receiver<T, C>
 where
     C: Encoder<T> + Decoder<T>,
 {
-    fn validate_interface(errors: &mut InterfaceErrors, interface: &Interface<()>, id: &str) {
-        if interface.inbound_channel(id).is_none() {
+    type Id = str;
+    type Handle = ();
+
+    fn take_handle(env: &mut InterfaceValidation<'_>, id: &str) {
+        if env.interface().inbound_channel(id).is_none() {
             let err = ChannelErrorKind::Unknown.for_channel(ChannelKind::Inbound, id);
-            errors.insert_error(err);
+            env.insert_error(err);
         }
     }
 }
@@ -149,10 +154,11 @@ impl RawSender {
     }
 }
 
-impl TakeHandle<Wasm, &'static str> for RawSender {
+impl TakeHandle<Wasm> for RawSender {
+    type Id = str;
     type Handle = Self;
 
-    fn take_handle(env: &mut Wasm, id: &'static str) -> Self::Handle {
+    fn take_handle(env: &mut Wasm, id: &str) -> Self::Handle {
         Self::new(imp::MpscSender::take_handle(env, id))
     }
 }
@@ -221,13 +227,14 @@ impl<T, C: Encoder<T>> Sender<T, C> {
     }
 }
 
-impl<T, C> TakeHandle<Wasm, &'static str> for Sender<T, C>
+impl<T, C> TakeHandle<Wasm> for Sender<T, C>
 where
     C: Encoder<T> + Default,
 {
+    type Id = str;
     type Handle = Self;
 
-    fn take_handle(env: &mut Wasm, id: &'static str) -> Self::Handle {
+    fn take_handle(env: &mut Wasm, id: &str) -> Self::Handle {
         Self::new(RawSender::take_handle(env, id), C::default())
     }
 }
@@ -254,14 +261,17 @@ impl<T, C: Encoder<T>> Sink<T> for Sender<T, C> {
     }
 }
 
-impl<T, C> ValidateInterface<&str> for Sender<T, C>
+impl<T, C> TakeHandle<InterfaceValidation<'_>> for Sender<T, C>
 where
     C: Encoder<T> + Decoder<T>,
 {
-    fn validate_interface(errors: &mut InterfaceErrors, interface: &Interface<()>, id: &str) {
-        if interface.outbound_channel(id).is_none() {
+    type Id = str;
+    type Handle = ();
+
+    fn take_handle(env: &mut InterfaceValidation<'_>, id: &str) {
+        if env.interface().outbound_channel(id).is_none() {
             let err = ChannelErrorKind::Unknown.for_channel(ChannelKind::Outbound, id);
-            errors.insert_error(err);
+            env.insert_error(err);
         }
     }
 }
