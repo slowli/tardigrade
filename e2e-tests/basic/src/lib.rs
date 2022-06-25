@@ -7,7 +7,7 @@ use tardigrade::{
     channel::{Receiver, Sender},
     sleep,
     trace::Tracer,
-    workflow::{GetInterface, Initialize, InputsBuilder, TakeHandle, ValidateInterface},
+    workflow::{GetInterface, Handle, Init},
     Data, FutureExt as _, Json, SpawnWorkflow, TaskHandle, Wasm,
 };
 
@@ -45,28 +45,42 @@ pub enum DomainEvent {
     Delivered { index: usize, order: PizzaOrder },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Inputs {
     pub oven_count: usize,
     pub deliverer_count: usize,
 }
 
-#[derive(Debug, TakeHandle, ValidateInterface)]
-pub struct Shared {
-    pub events: Sender<DomainEvent, Json>,
+#[derive(Debug)]
+pub struct Shared(());
+
+#[tardigrade::handle(for = "Shared")]
+#[derive(Debug, Clone)]
+pub struct SharedHandle<Env> {
+    pub events: Handle<Sender<DomainEvent, Json>, Env>,
     #[tardigrade(rename = "traces")]
-    pub tracer: Tracer<Json>,
+    pub tracer: Handle<Tracer<Json>, Env>,
 }
 
-#[derive(Debug, TakeHandle, Initialize, ValidateInterface, GetInterface)]
-pub struct PizzaDelivery {
-    pub inputs: Data<Inputs, Json>,
-    pub orders: Receiver<PizzaOrder, Json>,
+#[derive(Debug, GetInterface)]
+pub struct PizzaDelivery(());
+
+#[tardigrade::handle(for = "PizzaDelivery")]
+#[derive(Debug)]
+pub struct PizzaDeliveryHandle<Env = Wasm> {
+    pub inputs: Handle<Data<Inputs, Json>, Env>,
+    pub orders: Handle<Receiver<PizzaOrder, Json>, Env>,
     #[tardigrade(flatten)]
-    pub shared: Shared,
+    pub shared: Handle<Shared, Env>,
 }
 
-impl From<Inputs> for PizzaDeliveryInit<InputsBuilder> {
+#[tardigrade::init(for = "PizzaDelivery")]
+#[derive(Debug, Clone)]
+pub struct PizzaDeliveryInit {
+    inputs: Init<Data<Inputs, Json>>,
+}
+
+impl From<Inputs> for PizzaDeliveryInit {
     fn from(inputs: Inputs) -> Self {
         Self { inputs }
     }
