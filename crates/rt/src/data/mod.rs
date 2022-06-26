@@ -1,6 +1,6 @@
 //! Workflow state.
 
-use wasmtime::{Caller, Trap};
+use wasmtime::{StoreContextMut, Trap};
 
 use std::collections::{HashMap, HashSet};
 
@@ -115,13 +115,13 @@ pub(crate) struct WorkflowFunctions;
 
 impl WorkflowFunctions {
     pub fn get_data_input(
-        caller: Caller<'_, WorkflowData>,
+        ctx: StoreContextMut<'_, WorkflowData>,
         input_name_ptr: u32,
         input_name_len: u32,
     ) -> Result<i64, Trap> {
-        let memory = caller.data().exports().memory;
-        let input_name = copy_string_from_wasm(&caller, &memory, input_name_ptr, input_name_len)?;
-        let maybe_data = caller.data().data_input(&input_name);
+        let memory = ctx.data().exports().memory;
+        let input_name = copy_string_from_wasm(&ctx, &memory, input_name_ptr, input_name_len)?;
+        let maybe_data = ctx.data().data_input(&input_name);
 
         crate::trace!(
             "Acquired data input `{}`: {}",
@@ -131,6 +131,6 @@ impl WorkflowFunctions {
                 .map(|bytes| format!("{} bytes", bytes.len()))
                 .unwrap_or_else(|| "(no data)".to_owned())
         );
-        maybe_data.into_wasm(&mut WasmAllocator::new(caller))
+        maybe_data.into_wasm(&mut WasmAllocator::new(ctx))
     }
 }

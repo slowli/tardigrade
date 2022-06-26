@@ -1,6 +1,6 @@
 //! Functionality to manage channel state.
 
-use wasmtime::{Caller, Trap};
+use wasmtime::{AsContextMut, StoreContextMut, Trap};
 
 use std::{collections::HashSet, error, fmt, mem, ops::Range, task::Poll};
 
@@ -268,73 +268,74 @@ impl WorkflowData {
 /// Channel-related functions exported to WASM.
 impl WorkflowFunctions {
     pub fn get_receiver(
-        mut caller: Caller<'_, WorkflowData>,
+        mut ctx: StoreContextMut<'_, WorkflowData>,
         channel_name_ptr: u32,
         channel_name_len: u32,
     ) -> Result<i64, Trap> {
-        let memory = caller.data().exports().memory;
+        let mut ctx = ctx.as_context_mut();
+        let memory = ctx.data().exports().memory;
         let channel_name =
-            copy_string_from_wasm(&caller, &memory, channel_name_ptr, channel_name_len)?;
-        let result = caller.data_mut().acquire_inbound_channel(&channel_name);
+            copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
+        let result = ctx.data_mut().acquire_inbound_channel(&channel_name);
 
         crate::log_result!(result, "Acquired inbound channel `{}`", channel_name)
-            .into_wasm(&mut WasmAllocator::new(caller))
+            .into_wasm(&mut WasmAllocator::new(ctx))
     }
 
     pub fn poll_next_for_receiver(
-        mut caller: Caller<'_, WorkflowData>,
+        mut ctx: StoreContextMut<'_, WorkflowData>,
         channel_name_ptr: u32,
         channel_name_len: u32,
-        cx: WasmContextPtr,
+        poll_cx: WasmContextPtr,
     ) -> Result<i64, Trap> {
-        let memory = caller.data().exports().memory;
+        let memory = ctx.data().exports().memory;
         let channel_name =
-            copy_string_from_wasm(&caller, &memory, channel_name_ptr, channel_name_len)?;
+            copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
 
-        let mut cx = WasmContext::new(cx);
-        let poll_result = caller
+        let mut poll_cx = WasmContext::new(poll_cx);
+        let poll_result = ctx
             .data_mut()
-            .poll_inbound_channel(&channel_name, &mut cx);
+            .poll_inbound_channel(&channel_name, &mut poll_cx);
         let poll_result = crate::log_result!(
             poll_result,
             "Polled inbound channel `{}` with context {:?}",
             channel_name,
-            cx
+            poll_cx
         )?;
 
-        cx.save_waker(&mut caller)?;
-        poll_result.into_wasm(&mut WasmAllocator::new(caller))
+        poll_cx.save_waker(&mut ctx)?;
+        poll_result.into_wasm(&mut WasmAllocator::new(ctx))
     }
 
     pub fn get_sender(
-        caller: Caller<'_, WorkflowData>,
+        ctx: StoreContextMut<'_, WorkflowData>,
         channel_name_ptr: u32,
         channel_name_len: u32,
     ) -> Result<i64, Trap> {
-        let memory = caller.data().exports().memory;
+        let memory = ctx.data().exports().memory;
         let channel_name =
-            copy_string_from_wasm(&caller, &memory, channel_name_ptr, channel_name_len)?;
-        let result = if caller.data().outbound_channels.contains_key(&channel_name) {
+            copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
+        let result = if ctx.data().outbound_channels.contains_key(&channel_name) {
             Ok(())
         } else {
             Err(ChannelErrorKind::Unknown)
         };
         crate::log_result!(result, "Acquired outbound channel `{}`", channel_name)
-            .into_wasm(&mut WasmAllocator::new(caller))
+            .into_wasm(&mut WasmAllocator::new(ctx))
     }
 
     pub fn poll_ready_for_sender(
-        mut caller: Caller<'_, WorkflowData>,
+        mut ctx: StoreContextMut<'_, WorkflowData>,
         channel_name_ptr: u32,
         channel_name_len: u32,
         cx: WasmContextPtr,
     ) -> Result<i32, Trap> {
-        let memory = caller.data().exports().memory;
+        let memory = ctx.data().exports().memory;
         let channel_name =
-            copy_string_from_wasm(&caller, &memory, channel_name_ptr, channel_name_len)?;
+            copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
 
         let mut cx = WasmContext::new(cx);
-        let poll_result = caller
+        let poll_result = ctx
             .data_mut()
             .poll_outbound_channel(&channel_name, false, &mut cx);
         let poll_result = crate::log_result!(
@@ -343,25 +344,23 @@ impl WorkflowFunctions {
             channel_name
         )?;
 
-        cx.save_waker(&mut caller)?;
-        poll_result.into_wasm(&mut WasmAllocator::new(caller))
+        cx.save_waker(&mut ctx)?;
+        poll_result.into_wasm(&mut WasmAllocator::new(ctx))
     }
 
     pub fn start_send(
-        mut caller: Caller<'_, WorkflowData>,
+        mut ctx: StoreContextMut<'_, WorkflowData>,
         channel_name_ptr: u32,
         channel_name_len: u32,
         message_ptr: u32,
         message_len: u32,
     ) -> Result<(), Trap> {
-        let memory = caller.data().exports().memory;
+        let memory = ctx.data().exports().memory;
         let channel_name =
-            copy_string_from_wasm(&caller, &memory, channel_name_ptr, channel_name_len)?;
-        let message = copy_bytes_from_wasm(&caller, &memory, message_ptr, message_len)?;
+            copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
+        let message = copy_bytes_from_wasm(&ctx, &memory, message_ptr, message_len)?;
 
-        let result = caller
-            .data_mut()
-            .push_outbound_message(&channel_name, message);
+        let result = ctx.data_mut().push_outbound_message(&channel_name, message);
         crate::log_result!(
             result,
             "Started sending message ({} bytes) over outbound channel `{}`",
@@ -371,26 +370,26 @@ impl WorkflowFunctions {
     }
 
     pub fn poll_flush_for_sender(
-        mut caller: Caller<'_, WorkflowData>,
+        mut ctx: StoreContextMut<'_, WorkflowData>,
         channel_name_ptr: u32,
         channel_name_len: u32,
-        cx: WasmContextPtr,
+        poll_cx: WasmContextPtr,
     ) -> Result<i32, Trap> {
-        let memory = caller.data().exports().memory;
+        let memory = ctx.data().exports().memory;
         let channel_name =
-            copy_string_from_wasm(&caller, &memory, channel_name_ptr, channel_name_len)?;
+            copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
 
-        let mut cx = WasmContext::new(cx);
-        let poll_result = caller
+        let mut poll_cx = WasmContext::new(poll_cx);
+        let poll_result = ctx
             .data_mut()
-            .poll_outbound_channel(&channel_name, true, &mut cx);
+            .poll_outbound_channel(&channel_name, true, &mut poll_cx);
         let poll_result = crate::log_result!(
             poll_result,
             "Polled outbound channel `{}` for flush",
             channel_name
         )?;
 
-        cx.save_waker(&mut caller)?;
-        poll_result.into_wasm(&mut WasmAllocator::new(caller))
+        poll_cx.save_waker(&mut ctx)?;
+        poll_result.into_wasm(&mut WasmAllocator::new(ctx))
     }
 }

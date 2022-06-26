@@ -1,7 +1,7 @@
 //! Time utilities.
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
-use wasmtime::{Caller, Trap};
+use wasmtime::{StoreContextMut, Trap};
 
 use std::{
     collections::{HashMap, HashSet},
@@ -183,7 +183,7 @@ impl WorkflowData {
 /// Timer-related functions exported to WASM.
 impl WorkflowFunctions {
     pub fn create_timer(
-        mut caller: Caller<'_, WorkflowData>,
+        mut ctx: StoreContextMut<'_, WorkflowData>,
         timer_kind: i32,
         timer_value: i64,
     ) -> Result<TimerId, Trap> {
@@ -191,8 +191,8 @@ impl WorkflowFunctions {
             TimerKind::try_from_wasm(timer_kind).map_err(|err| Trap::new(err.to_string()));
         let timer_kind = crate::log_result!(timer_kind, "Parsed `TimerKind`")?;
 
-        let definition = caller.data().timer_definition(timer_kind, timer_value);
-        let timer_id = caller.data_mut().create_timer(definition);
+        let definition = ctx.data().timer_definition(timer_kind, timer_value);
+        let timer_id = ctx.data_mut().create_timer(definition);
         crate::trace!(
             "Created timer {} with definition {:?}",
             timer_id,
@@ -201,25 +201,28 @@ impl WorkflowFunctions {
         Ok(timer_id)
     }
 
-    pub fn drop_timer(mut caller: Caller<'_, WorkflowData>, timer_id: TimerId) -> Result<(), Trap> {
-        let result = caller.data_mut().drop_timer(timer_id);
+    pub fn drop_timer(
+        mut ctx: StoreContextMut<'_, WorkflowData>,
+        timer_id: TimerId,
+    ) -> Result<(), Trap> {
+        let result = ctx.data_mut().drop_timer(timer_id);
         crate::log_result!(result, "Dropped timer {}", timer_id)
     }
 
     pub fn poll_timer(
-        mut caller: Caller<'_, WorkflowData>,
+        mut ctx: StoreContextMut<'_, WorkflowData>,
         timer_id: TimerId,
-        cx: WasmContextPtr,
+        poll_cx: WasmContextPtr,
     ) -> Result<i32, Trap> {
-        let mut cx = WasmContext::new(cx);
-        let poll_result = caller.data_mut().poll_timer(timer_id, &mut cx);
+        let mut poll_cx = WasmContext::new(poll_cx);
+        let poll_result = ctx.data_mut().poll_timer(timer_id, &mut poll_cx);
         let poll_result = crate::log_result!(
             poll_result,
             "Polled timer {} with context {:?}",
             timer_id,
-            cx
+            poll_cx
         )?;
-        cx.save_waker(&mut caller)?;
-        poll_result.into_wasm(&mut WasmAllocator::new(caller))
+        poll_cx.save_waker(&mut ctx)?;
+        poll_result.into_wasm(&mut WasmAllocator::new(ctx))
     }
 }

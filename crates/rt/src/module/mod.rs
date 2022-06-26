@@ -2,8 +2,8 @@
 
 use anyhow::{anyhow, bail, ensure, Context};
 use wasmtime::{
-    AsContextMut, Engine, ExternType, Func, Instance, Linker, Memory, Module, Store, Trap,
-    TypedFunc, WasmParams, WasmResults,
+    AsContextMut, Caller, Engine, ExternType, Func, Instance, Linker, Memory, Module, Store,
+    StoreContextMut, Trap, TypedFunc, WasmParams, WasmResults, WasmRet, WasmTy,
 };
 
 use std::{fmt, task::Poll};
@@ -377,73 +377,103 @@ impl ExtendLinker for WorkflowFunctions {
             // Task functions
             (
                 "task::poll_completion",
-                Func::wrap(&mut *store, Self::poll_task_completion),
+                wrap2(&mut *store, Self::poll_task_completion),
             ),
-            ("task::spawn", Func::wrap(&mut *store, Self::spawn_task)),
-            ("task::wake", Func::wrap(&mut *store, Self::wake_task)),
+            ("task::spawn", wrap3(&mut *store, Self::spawn_task)),
+            ("task::wake", wrap1(&mut *store, Self::wake_task)),
             (
                 "task::abort",
-                Func::wrap(&mut *store, Self::schedule_task_abortion),
+                wrap1(&mut *store, Self::schedule_task_abortion),
             ),
             // Data input functions
-            (
-                "data_input::get",
-                Func::wrap(&mut *store, Self::get_data_input),
-            ),
+            ("data_input::get", wrap2(&mut *store, Self::get_data_input)),
             // Channel functions
-            (
-                "mpsc_receiver::get",
-                Func::wrap(&mut *store, Self::get_receiver),
-            ),
+            ("mpsc_receiver::get", wrap2(&mut *store, Self::get_receiver)),
             (
                 "mpsc_receiver::poll_next",
-                Func::wrap(&mut *store, Self::poll_next_for_receiver),
+                wrap3(&mut *store, Self::poll_next_for_receiver),
             ),
-            (
-                "mpsc_sender::get",
-                Func::wrap(&mut *store, Self::get_sender),
-            ),
+            ("mpsc_sender::get", wrap2(&mut *store, Self::get_sender)),
             (
                 "mpsc_sender::poll_ready",
-                Func::wrap(&mut *store, Self::poll_ready_for_sender),
+                wrap3(&mut *store, Self::poll_ready_for_sender),
             ),
             (
                 "mpsc_sender::start_send",
-                Func::wrap(&mut *store, Self::start_send),
+                wrap4(&mut *store, Self::start_send),
             ),
             (
                 "mpsc_sender::poll_flush",
-                Func::wrap(&mut *store, Self::poll_flush_for_sender),
+                wrap3(&mut *store, Self::poll_flush_for_sender),
             ),
             // Timer functions
-            ("timer::new", Func::wrap(&mut *store, Self::create_timer)),
-            ("timer::drop", Func::wrap(&mut *store, Self::drop_timer)),
-            ("timer::poll", Func::wrap(&mut *store, Self::poll_timer)),
+            ("timer::new", wrap2(&mut *store, Self::create_timer)),
+            ("timer::drop", wrap1(&mut *store, Self::drop_timer)),
+            ("timer::poll", wrap2(&mut *store, Self::poll_timer)),
         ]
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+fn wrap1<R, A>(
+    store: &mut Store<WorkflowData>,
+    function: fn(StoreContextMut<'_, WorkflowData>, A) -> R,
+) -> Func
+where
+    R: 'static + WasmRet,
+    A: 'static + WasmTy,
+{
+    Func::wrap(store, move |mut caller: Caller<'_, WorkflowData>, a| {
+        function(caller.as_context_mut(), a)
+    })
+}
 
-    use std::collections::HashMap;
+fn wrap2<R, A, B>(
+    store: &mut Store<WorkflowData>,
+    function: fn(StoreContextMut<'_, WorkflowData>, A, B) -> R,
+) -> Func
+where
+    R: 'static + WasmRet,
+    A: 'static + WasmTy,
+    B: 'static + WasmTy,
+{
+    Func::wrap(store, move |mut caller: Caller<'_, WorkflowData>, a, b| {
+        function(caller.as_context_mut(), a, b)
+    })
+}
 
-    #[test]
-    fn import_checks_are_consistent() {
-        let interface = Interface::default();
-        let state = WorkflowData::from_interface(&interface, HashMap::new());
-        let engine = Engine::default();
-        let mut store = Store::new(&engine, state);
-        let mut linker = Linker::new(&engine);
+fn wrap3<R, A, B, C>(
+    store: &mut Store<WorkflowData>,
+    function: fn(StoreContextMut<'_, WorkflowData>, A, B, C) -> R,
+) -> Func
+where
+    R: 'static + WasmRet,
+    A: 'static + WasmTy,
+    B: 'static + WasmTy,
+    C: 'static + WasmTy,
+{
+    Func::wrap(
+        store,
+        move |mut caller: Caller<'_, WorkflowData>, a, b, c| {
+            function(caller.as_context_mut(), a, b, c)
+        },
+    )
+}
 
-        WorkflowFunctions
-            .extend_linker(&mut store, &mut linker)
-            .unwrap();
-        let linker_contents: Vec<_> = linker.iter(&mut store).collect();
-        for (module, name, value) in linker_contents {
-            assert_eq!(module, ModuleImports::RT_MODULE);
-            ModuleImports::validate_import(&value.ty(&store), name).unwrap();
-        }
-    }
+fn wrap4<R, A, B, C, D>(
+    store: &mut Store<WorkflowData>,
+    function: fn(StoreContextMut<'_, WorkflowData>, A, B, C, D) -> R,
+) -> Func
+where
+    R: 'static + WasmRet,
+    A: 'static + WasmTy,
+    B: 'static + WasmTy,
+    C: 'static + WasmTy,
+    D: 'static + WasmTy,
+{
+    Func::wrap(
+        store,
+        move |mut caller: Caller<'_, WorkflowData>, a, b, c, d| {
+            function(caller.as_context_mut(), a, b, c, d)
+        },
+    )
 }

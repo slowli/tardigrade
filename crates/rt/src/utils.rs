@@ -1,6 +1,6 @@
 //! Misc utils.
 
-use wasmtime::{AsContext, Caller, Memory, Trap};
+use wasmtime::{AsContext, Memory, StoreContextMut, Trap};
 
 use std::{fmt, task::Poll};
 
@@ -29,7 +29,7 @@ macro_rules! log_result {
     }};
 }
 
-pub(crate) struct WasmAllocator<'a>(Caller<'a, WorkflowData>);
+pub(crate) struct WasmAllocator<'a>(StoreContextMut<'a, WorkflowData>);
 
 impl fmt::Debug for WasmAllocator<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -38,8 +38,8 @@ impl fmt::Debug for WasmAllocator<'_> {
 }
 
 impl<'a> WasmAllocator<'a> {
-    pub fn new(caller: Caller<'a, WorkflowData>) -> Self {
-        Self(caller)
+    pub fn new(ctx: StoreContextMut<'a, WorkflowData>) -> Self {
+        Self(ctx)
     }
 }
 

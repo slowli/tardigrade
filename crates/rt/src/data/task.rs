@@ -1,6 +1,6 @@
 //! Functionality to manage tasks.
 
-use wasmtime::{Caller, Trap};
+use wasmtime::{StoreContextMut, Trap};
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -213,44 +213,47 @@ impl WorkflowData {
 /// Task-related functions exported to WASM.
 impl WorkflowFunctions {
     pub fn poll_task_completion(
-        mut caller: Caller<'_, WorkflowData>,
+        mut ctx: StoreContextMut<'_, WorkflowData>,
         task_id: TaskId,
-        cx: WasmContextPtr,
+        poll_cx: WasmContextPtr,
     ) -> Result<i64, Trap> {
-        let mut cx = WasmContext::new(cx);
-        let poll_result = caller.data_mut().poll_task_completion(task_id, &mut cx);
+        let mut poll_cx = WasmContext::new(poll_cx);
+        let poll_result = ctx.data_mut().poll_task_completion(task_id, &mut poll_cx);
         crate::trace!(
             "Polled completion for task {} with context {:?}: {:?}",
             task_id,
-            cx,
+            poll_cx,
             poll_result
         );
-        cx.save_waker(&mut caller)?;
-        poll_result.into_wasm(&mut WasmAllocator::new(caller))
+        poll_cx.save_waker(&mut ctx)?;
+        poll_result.into_wasm(&mut WasmAllocator::new(ctx))
     }
 
     pub fn spawn_task(
-        mut caller: Caller<'_, WorkflowData>,
+        mut ctx: StoreContextMut<'_, WorkflowData>,
         task_name_ptr: u32,
         task_name_len: u32,
         task_id: TaskId,
     ) -> Result<(), Trap> {
-        let memory = caller.data().exports().memory;
-        let task_name = copy_string_from_wasm(&caller, &memory, task_name_ptr, task_name_len)?;
-        let result = caller.data_mut().spawn_task(task_id, task_name.clone());
+        let memory = ctx.data().exports().memory;
+        let task_name = copy_string_from_wasm(&ctx, &memory, task_name_ptr, task_name_len)?;
+        let result = ctx.data_mut().spawn_task(task_id, task_name.clone());
         crate::log_result!(result, "Spawned task {} with name `{}`", task_id, task_name)
     }
 
-    pub fn wake_task(mut caller: Caller<'_, WorkflowData>, task_id: TaskId) -> Result<(), Trap> {
-        let result = caller.data_mut().schedule_task_wakeup(task_id);
+    pub fn wake_task(
+        mut ctx: StoreContextMut<'_, WorkflowData>,
+        task_id: TaskId,
+    ) -> Result<(), Trap> {
+        let result = ctx.data_mut().schedule_task_wakeup(task_id);
         crate::log_result!(result, "Scheduled task {} wakeup", task_id)
     }
 
     pub fn schedule_task_abortion(
-        mut caller: Caller<'_, WorkflowData>,
+        mut ctx: StoreContextMut<'_, WorkflowData>,
         task_id: TaskId,
     ) -> Result<(), Trap> {
-        let result = caller.data_mut().schedule_task_abortion(task_id);
+        let result = ctx.data_mut().schedule_task_abortion(task_id);
         crate::log_result!(result, "Scheduled task {} to be aborted", task_id)
     }
 }
