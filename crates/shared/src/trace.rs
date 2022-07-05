@@ -6,32 +6,55 @@ use std::{collections::HashMap, error, fmt};
 
 use crate::FutureId;
 
+/// Payload of the traced future update.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum FutureUpdateKind {
-    Created { name: String },
+    /// Future has been created.
+    Created {
+        /// Human-readable future name that can be used for debugging purposes.
+        name: String,
+    },
+    /// Future is being polled.
     Polling,
-    Polled { is_ready: bool },
+    /// Future was polled.
+    Polled {
+        /// `true` if polling resulted in [`Poll::Ready`](std::task::Poll::Ready).
+        is_ready: bool,
+    },
+    /// Future was dropped.
     Dropped,
 }
 
+/// Update for a traced future.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FutureUpdate {
+    /// ID of the future being updated.
     pub id: FutureId,
+    /// Update payload.
     pub kind: FutureUpdateKind,
 }
 
+/// Errors that can occur when updating state of a traced future.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum FutureUpdateError {
+    /// Future with the specified ID is undefined.
     UndefinedFuture {
+        /// ID of the future.
         id: FutureId,
     },
+    /// Future with the specified ID is defined multiple times.
     RedefinedFuture {
+        /// ID of the future.
         id: FutureId,
     },
+    /// [`FutureUpdate`] is invalid w.r.t. the current state of the traced future.
     InvalidUpdate {
+        /// Current future state.
         state: FutureState,
+        /// Invalid update.
         update: FutureUpdateKind,
     },
 }
@@ -54,6 +77,7 @@ impl fmt::Display for FutureUpdateError {
 
 impl error::Error for FutureUpdateError {}
 
+/// State of a traced [`Future`](std::future::Future).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum FutureState {
@@ -70,12 +94,18 @@ pub enum FutureState {
 }
 
 impl FutureState {
+    /// Updates the state.
+    ///
+    /// # Errors
+    ///
+    /// - Returns an error if the update is inconsistent with the state.
     pub fn update(&mut self, update: &FutureUpdateKind) -> Result<(), FutureUpdateError> {
-        use self::FutureState::*;
+        use self::FutureState::{Abandoned, Completed, Created, Dropped, Polling};
 
         *self = match (&*self, update) {
-            (Created | Polling, FutureUpdateKind::Polling) => Polling,
-            (Polling, FutureUpdateKind::Polled { is_ready: false }) => Polling,
+            (Created | Polling, FutureUpdateKind::Polling)
+            | (Polling, FutureUpdateKind::Polled { is_ready: false }) => Polling,
+
             (Polling, FutureUpdateKind::Polled { is_ready: true }) => Completed,
             (Created | Polling, FutureUpdateKind::Dropped) => Abandoned,
             (Completed, FutureUpdateKind::Dropped) => Dropped,
@@ -91,6 +121,7 @@ impl FutureState {
     }
 }
 
+/// Information about a traced [`Future`](std::future::Future).
 #[derive(Debug, Clone)]
 pub struct TracedFuture {
     name: String,
@@ -98,18 +129,27 @@ pub struct TracedFuture {
 }
 
 impl TracedFuture {
+    /// Returns human-readable future name.
     pub fn name(&self) -> &str {
         &self.name
     }
 
+    /// Returns the current state of the future.
     pub fn state(&self) -> FutureState {
         self.state
     }
 }
 
+/// Container for traced futures.
 pub type TracedFutures = HashMap<FutureId, TracedFuture>;
 
 impl TracedFuture {
+    /// Updates traced futures, adding a new future to the `map` if necessary.
+    ///
+    /// # Errors
+    ///
+    /// - Returns an error if the update is inconsistent with the current state of an existing
+    ///   traced future.
     pub fn update(map: &mut TracedFutures, update: FutureUpdate) -> Result<(), FutureUpdateError> {
         if let FutureUpdateKind::Created { name } = update.kind {
             let prev_state = map.insert(

@@ -2,9 +2,12 @@
 
 use std::{error, fmt};
 
+/// Kind of a channel in a workflow interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChannelKind {
+    /// Inbound channel.
     Inbound,
+    /// Outbound channel.
     Outbound,
 }
 
@@ -17,6 +20,7 @@ impl fmt::Display for ChannelKind {
     }
 }
 
+/// Kind of a [`HandleError`].
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum HandleErrorKind {
@@ -39,26 +43,36 @@ impl fmt::Display for HandleErrorKind {
 }
 
 impl HandleErrorKind {
+    /// Creates a custom error with the provided description.
     pub fn custom(err: impl Into<String>) -> Self {
         Self::Custom(err.into().into())
     }
 
-    pub fn for_handle(self, handle_id: impl Into<HandleId>) -> HandleError {
+    /// Adds a location to this error kind, converting it to a [`HandleError`].
+    pub fn for_handle(self, location: impl Into<HandleLocation>) -> HandleError {
         HandleError {
             kind: self,
-            handle_id: Some(handle_id.into()),
+            location: Some(location.into()),
         }
     }
 }
 
+/// Location of handle in a workflow [`Interface`](super::Interface).
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
-pub enum HandleId {
-    Channel { kind: ChannelKind, name: String },
+pub enum HandleLocation {
+    /// Channel in the workflow interface.
+    Channel {
+        /// Channel kind.
+        kind: ChannelKind,
+        /// Channel name.
+        name: String,
+    },
+    /// Data input with the specified name.
     DataInput(String),
 }
 
-impl fmt::Display for HandleId {
+impl fmt::Display for HandleLocation {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Channel { kind, name } => {
@@ -69,15 +83,16 @@ impl fmt::Display for HandleId {
     }
 }
 
+/// Errors that can occur when [taking a handle](TakeHandle) from a certain environment.
 #[derive(Debug)]
 pub struct HandleError {
     kind: HandleErrorKind,
-    handle_id: Option<HandleId>,
+    location: Option<HandleLocation>,
 }
 
 impl fmt::Display for HandleError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(id) = &self.handle_id {
+        if let Some(id) = &self.location {
             write!(formatter, "cannot take handle for {}: {}", id, self.kind)
         } else {
             write!(formatter, "cannot take handle: {}", self.kind)
@@ -95,20 +110,34 @@ impl error::Error for HandleError {
 }
 
 impl HandleError {
+    /// Returns the kind of this error.
     pub fn kind(&self) -> &HandleErrorKind {
         &self.kind
     }
 
-    pub fn handle_id(&self) -> Option<&HandleId> {
-        self.handle_id.as_ref()
+    /// Returns location of this error.
+    pub fn location(&self) -> Option<&HandleLocation> {
+        self.location.as_ref()
     }
 }
 
+/// Signals that a handle can be taken for this type in a certain environment.
+///
+/// This trait is implemented for elements of the workflow interface (channels, data inputs),
+/// and can be derived using the corresponding macro.
 pub trait TakeHandle<Env> {
+    /// ID of the handle, usually a `str` or `()` (for singleton handles).
     type Id: ?Sized;
+    /// Type of the handle in a particular environment.
     type Handle;
 
+    /// Takes a handle from the environment using the specified `id`.
+    ///
+    /// # Errors
+    ///
+    /// - Returns an error if a handle with this ID is missing from the environment.
     fn take_handle(env: &mut Env, id: &Self::Id) -> Result<Self::Handle, HandleError>;
 }
 
+/// Handle in a particular environment.
 pub type Handle<T, Env> = <T as TakeHandle<Env>>::Handle;

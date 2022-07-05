@@ -8,15 +8,24 @@ use std::{collections::HashMap, fmt, marker::PhantomData, ops};
 
 mod handle;
 
-pub use self::handle::{ChannelKind, Handle, HandleError, HandleErrorKind, HandleId, TakeHandle};
+pub use self::handle::{
+    ChannelKind, Handle, HandleError, HandleErrorKind, HandleLocation, TakeHandle,
+};
 
+/// Signals that a type can participate in initializing a workflow.
+///
+/// This trait is sort of dual to [`TakeHandle`].
 pub trait Initialize {
+    /// Type of the initializer.
     type Init;
+    /// ID determining where to put the initializer.
     type Id: ?Sized;
 
+    /// Puts `init` into the `builder` using the provided "location" `id`.
     fn initialize(builder: &mut InputsBuilder, init: Self::Init, id: &Self::Id);
 }
 
+/// Initializing value for a particular type.
 pub type Init<T> = <T as Initialize>::Init;
 
 impl Initialize for () {
@@ -32,14 +41,19 @@ impl Initialize for () {
     }
 }
 
+/// Specification of an inbound channel in the workflow [`Interface`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct InboundChannelSpec {
-    // TODO: options?
+    /// Human-readable channel description.
+    pub description: String,
 }
 
+/// Specification of an outbound workflow channel in the workflow [`Interface`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct OutboundChannelSpec {
+    /// Human-readable channel description.
+    pub description: String,
     /// Channel capacity, i.e., number of elements that can be buffered locally before
     /// the channel needs to be flushed. `None` means unbounded capacity.
     #[serde(default = "OutboundChannelSpec::default_capacity")]
@@ -47,14 +61,17 @@ pub struct OutboundChannelSpec {
 }
 
 impl OutboundChannelSpec {
+    #[allow(clippy::unnecessary_wraps)] // required by `serde`
     const fn default_capacity() -> Option<usize> {
         Some(1)
     }
 }
 
+/// Specification of a data input in the workflow [`Interface`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DataInputSpec {
-    // TODO: options?
+    /// Human-readable data input description.
+    pub description: String,
 }
 
 /// Newtype for indexing data inputs, e.g., in an [`Interface`].
@@ -67,7 +84,7 @@ impl fmt::Display for DataInput<'_> {
     }
 }
 
-impl From<DataInput<'_>> for HandleId {
+impl From<DataInput<'_>> for HandleLocation {
     fn from(data_input: DataInput<'_>) -> Self {
         Self::DataInput(data_input.0.to_owned())
     }
@@ -83,7 +100,7 @@ impl fmt::Display for InboundChannel<'_> {
     }
 }
 
-impl From<InboundChannel<'_>> for HandleId {
+impl From<InboundChannel<'_>> for HandleLocation {
     fn from(channel: InboundChannel<'_>) -> Self {
         Self::Channel {
             kind: ChannelKind::Inbound,
@@ -102,7 +119,7 @@ impl fmt::Display for OutboundChannel<'_> {
     }
 }
 
-impl From<OutboundChannel<'_>> for HandleId {
+impl From<OutboundChannel<'_>> for HandleLocation {
     fn from(channel: OutboundChannel<'_>) -> Self {
         Self::Channel {
             kind: ChannelKind::Outbound,
@@ -111,6 +128,8 @@ impl From<OutboundChannel<'_>> for HandleId {
     }
 }
 
+/// Specification of a workflow interface. Contains info about inbound / outbound channels,
+/// data inputs etc.
 #[derive(Serialize, Deserialize)]
 pub struct Interface<W: ?Sized> {
     #[serde(rename = "v")]
@@ -162,14 +181,18 @@ impl Default for Interface<()> {
 }
 
 impl<W> Interface<W> {
+    /// Returns the version of this interface definition.
     pub fn version(&self) -> u32 {
         self.version
     }
 
+    /// Returns spec for an inbound channel, or `None` if the channel with the specified `name`
+    /// is not present in this interface.
     pub fn inbound_channel(&self, name: &str) -> Option<&InboundChannelSpec> {
         self.inbound_channels.get(name)
     }
 
+    /// Lists all inbound channels in this interface.
     pub fn inbound_channels(
         &self,
     ) -> impl ExactSizeIterator<Item = (&str, &InboundChannelSpec)> + '_ {
@@ -178,10 +201,13 @@ impl<W> Interface<W> {
             .map(|(name, spec)| (name.as_str(), spec))
     }
 
+    /// Returns spec for an outbound channel, or `None` if the channel with the specified `name`
+    /// is not present in this interface.
     pub fn outbound_channel(&self, name: &str) -> Option<&OutboundChannelSpec> {
         self.outbound_channels.get(name)
     }
 
+    /// Lists all outbound channels in this interface.
     pub fn outbound_channels(
         &self,
     ) -> impl ExactSizeIterator<Item = (&str, &OutboundChannelSpec)> + '_ {
@@ -190,16 +216,21 @@ impl<W> Interface<W> {
             .map(|(name, spec)| (name.as_str(), spec))
     }
 
+    /// Returns spec for a data input, or `None` if the data input with the specified `name`
+    /// is not present in this interface.
     pub fn data_input(&self, name: &str) -> Option<&DataInputSpec> {
         self.data_inputs.get(name)
     }
 
+    /// Lists all data inputs in this interface.
     pub fn data_inputs(&self) -> impl ExactSizeIterator<Item = (&str, &DataInputSpec)> + '_ {
         self.data_inputs
             .iter()
             .map(|(name, spec)| (name.as_str(), spec))
     }
 
+    /// Returns an [`InputsBuilder`] that can be used to supply [`Inputs`] to create workflow
+    /// instances.
     pub fn inputs_builder(&self) -> InputsBuilder {
         InputsBuilder {
             inputs: self
@@ -212,6 +243,7 @@ impl<W> Interface<W> {
 }
 
 impl<W: Initialize<Id = ()>> Interface<W> {
+    #[doc(hidden)]
     pub fn create_inputs(&self, inputs: W::Init) -> Inputs {
         let mut builder = self.inputs_builder();
         W::initialize(&mut builder, inputs, &());
@@ -247,11 +279,26 @@ impl<W> ops::Index<OutboundChannel<'_>> for Interface<W> {
 }
 
 impl Interface<()> {
+    /// Parses interface definition from `bytes`.
+    ///
+    /// Currently, this assumes that the definition is JSON-encoded, but this should be considered
+    /// an implementation detail.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if `bytes` do not represent a valid interface definition.
     pub fn from_bytes(bytes: &[u8]) -> Self {
         serde_json::from_slice(bytes)
             .unwrap_or_else(|err| panic!("Cannot deserialize spec: {}", err))
     }
 
+    /// Tries to downcast this interface to a particular workflow.
+    ///
+    /// # Errors
+    ///
+    /// - Returns an error if there is a mismatch between the interface of the workflow type
+    ///   and this interface, e.g., if the workflow type relies on a channel / data input
+    ///   not present in this interface.
     pub fn downcast<W>(self) -> Result<Interface<W>, HandleError>
     where
         W: for<'a> TakeHandle<&'a Interface<()>, Id = ()>,
@@ -276,74 +323,6 @@ impl TakeHandle<&Interface<()>> for () {
     }
 }
 
-/*
-#[derive(Debug, Default)]
-pub struct InterfaceErrors {
-    errors: Vec<Box<dyn error::Error + Send + Sync>>,
-}
-
-impl InterfaceErrors {
-    pub fn into_result(self) -> Result<(), Self> {
-        if self.errors.is_empty() {
-            Ok(())
-        } else {
-            Err(self)
-        }
-    }
-}
-
-impl fmt::Display for InterfaceErrors {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.errors.is_empty() {
-            formatter.write_str("(no errors)")
-        } else {
-            formatter.write_str("error validating workflow interface: [")?;
-            for (i, error) in self.errors.iter().enumerate() {
-                fmt::Display::fmt(error, formatter)?;
-                if i + 1 < self.errors.len() {
-                    formatter.write_str(", ")?;
-                }
-            }
-            formatter.write_str("]")
-        }
-    }
-}
-
-impl error::Error for InterfaceErrors {
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
-        self.errors
-            .get(0)
-            .map(|err| err.as_ref() as &(dyn error::Error + 'static))
-    }
-}
-
-#[derive(Debug)]
-pub struct InterfaceValidation<'a> {
-    interface: &'a Interface<()>,
-    errors: InterfaceErrors,
-}
-
-impl<'a> InterfaceValidation<'a> {
-    fn new(interface: &'a Interface<()>) -> Self {
-        Self {
-            interface,
-            //errors: InterfaceErrors::default(),
-        }
-    }
-
-    pub fn interface(&self) -> &'a Interface<()> {
-        self.interface
-    }
-
-    pub fn insert_error<E>(&mut self, error: E)
-    where
-        E: error::Error + Send + Sync + 'static,
-    {
-        self.errors.errors.push(Box::new(error));
-    }
-}
-*/
-
 /// Builder for workflow [`Inputs`]. Builders can be instantiated using
 /// [`Interface::inputs_builder()`].
 #[derive(Debug, Clone)]
@@ -354,12 +333,22 @@ pub struct InputsBuilder {
 impl InputsBuilder {
     /// Inserts `raw_data` for an input with the specified `name`. It is caller's responsibility
     /// to ensure that raw data has an appropriate format.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if `name` does not correspond to a data input in the workflow interface.
+    ///   This can be checked beforehand using [`Self::requires_input()`].
     pub fn insert(&mut self, name: &str, raw_data: Vec<u8>) {
         let data_entry = self
             .inputs
             .get_mut(name)
             .unwrap_or_else(|| panic!("Workflow does not have data input `{}`", name));
         *data_entry = Some(raw_data);
+    }
+
+    /// Checks whether the builder requires an input with the specified `name`.
+    pub fn requires_input(&self, name: &str) -> bool {
+        self.inputs.get(name).map_or(false, Option::is_none)
     }
 
     /// Returns names of missing inputs.
@@ -403,6 +392,8 @@ impl Inputs {
     }
 }
 
+/// Allows obtaining an interface from the workflow.
 pub trait GetInterface {
+    /// Obtains the workflow interface.
     fn interface() -> Interface<Self>;
 }

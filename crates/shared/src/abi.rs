@@ -15,9 +15,15 @@ impl WasmValue for i64 {}
 
 /// Simplest allocator interface.
 pub trait AllocateBytes {
+    /// Allocation error.
     type Error: error::Error + 'static;
 
     /// Copies `bytes` to WASM and returns a (pointer, length) tuple for the copied slice.
+    ///
+    /// # Errors
+    ///
+    /// - Returns an error on allocation failure (e.g., if the allocator runs out of available
+    ///   memory).
     fn copy_to_wasm(&mut self, bytes: &[u8]) -> Result<(u32, u32), Self::Error>;
 }
 
@@ -25,8 +31,15 @@ pub trait AllocateBytes {
 pub trait IntoWasm: Sized {
     /// Output of the transformation.
     type Abi: WasmValue;
-    /// Converts a host value into WASM presentation.
+
+    /// Converts a host value into WASM presentation. The conversion logic can use the provided
+    /// `alloc`ator.
+    ///
+    /// # Errors
+    ///
+    /// - Returns an allocation error, if any occurs during the conversion.
     fn into_wasm<A: AllocateBytes>(self, alloc: &mut A) -> Result<Self::Abi, A::Error>;
+
     /// Performs the conversion.
     ///
     /// # Safety
@@ -41,18 +54,26 @@ pub trait IntoWasm: Sized {
 pub trait TryFromWasm: Sized {
     /// Output of the transformation.
     type Abi: WasmValue;
+
     /// Converts WASM value into transferable presentation.
     fn into_abi_in_wasm(self) -> Self::Abi;
-    /// Tries to read the value on host; fails if the value is invalid.
+
+    /// Tries to read the value on host.
+    ///
+    /// # Errors
+    ///
+    /// - Returns an error if the WASM value is invalid.
     fn try_from_wasm(abi: Self::Abi) -> Result<Self, FromWasmError>;
 }
 
+/// Errors that can occur when converting a WASM value on host using [`TryFromWasm`] trait.
 #[derive(Debug)]
 pub struct FromWasmError {
     message: String,
 }
 
 impl FromWasmError {
+    /// Creates an error with the specified `message`.
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
@@ -145,6 +166,7 @@ impl IntoWasm for Option<Vec<u8>> {
         })
     }
 
+    #[allow(clippy::cast_sign_loss)] // safe by design
     unsafe fn from_abi_in_wasm(abi: i64) -> Self {
         match abi {
             -1 => None,
@@ -172,6 +194,7 @@ impl IntoWasm for PollMessage {
         })
     }
 
+    #[allow(clippy::cast_sign_loss)] // safe by design
     unsafe fn from_abi_in_wasm(abi: i64) -> Self {
         match abi {
             -1 => Self::Pending,
@@ -202,6 +225,7 @@ impl IntoWasm for Result<(), HandleErrorKind> {
         })
     }
 
+    #[allow(clippy::cast_sign_loss)] // safe by design
     unsafe fn from_abi_in_wasm(abi: i64) -> Self {
         Err(match abi {
             0 => return Ok(()),

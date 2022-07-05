@@ -40,10 +40,13 @@ impl fmt::Display for JoinError {
 
 impl error::Error for JoinError {}
 
+/// Kind of a timer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(i32)]
 pub enum TimerKind {
+    /// Relative timer: one that expires after the specified duration.
     Duration = 0,
+    /// Absolute timer: one that expires at the specified instant.
     Instant = 1,
 }
 
@@ -63,7 +66,9 @@ impl TryFromWasm for TimerKind {
     }
 }
 
+/// Timer definition.
 #[derive(Debug, Clone, Copy)]
 pub struct TimerDefinition {
+    /// Expiration timestamp.
     pub expires_at: DateTime<Utc>,
 }
