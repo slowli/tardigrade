@@ -2,6 +2,8 @@
 
 // FIXME: state of traced futures is lost across saves!
 
+use anyhow::Context;
+
 use std::{cell::RefCell, marker::PhantomData, ops::Range, rc::Rc};
 
 use crate::{
@@ -12,9 +14,10 @@ use tardigrade::{
     channel::{Receiver, Sender},
     trace::{FutureUpdate, TracedFuture, TracedFutures, Tracer},
     workflow::TakeHandle,
-    Data, Decoder, Encoder,
+    Data, Decoder, Encoder, UntypedHandle,
 };
 
+/// Environment for a [`Workflow`].
 #[derive(Debug)]
 pub struct WorkflowEnv<'a, W> {
     inner: Rc<RefCell<&'a mut Workflow<W>>>,
@@ -41,6 +44,8 @@ impl<'a, W> WorkflowEnv<'a, W> {
     }
 }
 
+/// Handle for an [inbound channel](Receiver) that allows sending messages
+/// via the channel.
 #[derive(Debug)]
 pub struct MessageSender<'a, T, C, W> {
     env: WorkflowEnv<'a, W>,
@@ -49,15 +54,35 @@ pub struct MessageSender<'a, T, C, W> {
     _item: PhantomData<*const T>,
 }
 
-impl<T, C: Encoder<T>, W> MessageSender<'_, T, C, W> {
-    pub fn send(&mut self, message: T) -> Result<(), ConsumeError> {
+impl<'a, T, C: Encoder<T>, W> MessageSender<'a, T, C, W> {
+    /// Sends a message.
+    ///
+    /// # Errors
+    ///
+    /// - Returns an error if the workflow is currently not waiting for messages
+    ///   on the associated inbound channel.
+    pub fn send(&mut self, message: T) -> Result<SentMessage<'a, W>, ConsumeError> {
         let raw_message = self.codec.encode_value(message);
         self.env
             .with(|workflow| workflow.push_inbound_message(&self.channel_name, raw_message))
+            .map(|()| SentMessage {
+                env: self.env.clone(),
+            })
     }
 }
 
-// FIXME: Use additional struct to tick afterwards: `sx.send(message)?.flush()?`
+/// Result of sending a message over an inbound channel.
+#[must_use = "must be `flush`ed to progress the workflow"]
+pub struct SentMessage<'a, W> {
+    env: WorkflowEnv<'a, W>,
+}
+
+impl<W> SentMessage<'_, W> {
+    /// Progresses the workflow after an inbound message is consumed.
+    pub fn flush(self) -> Result<Receipt, ExecutionError> {
+        self.env.with(Workflow::tick)
+    }
+}
 
 impl<'a, T, C, W> TakeHandle<WorkflowEnv<'a, W>> for Receiver<T, C>
 where
@@ -77,6 +102,8 @@ where
     }
 }
 
+/// Handle for an [outbound channel](Sender) that allows taking messages
+/// from the channel.
 #[derive(Debug)]
 pub struct MessageReceiver<'a, T, C, W> {
     env: WorkflowEnv<'a, W>,
@@ -86,31 +113,43 @@ pub struct MessageReceiver<'a, T, C, W> {
 }
 
 impl<T, C: Decoder<T>, W> MessageReceiver<'_, T, C, W> {
-    pub fn message_indices(&self) -> Range<usize> {
-        self.env.with(|workflow| {
-            workflow
-                .store
-                .data()
-                .outbound_message_indices(&self.channel_name)
-        })
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.message_indices().is_empty()
-    }
-
-    pub fn flush_messages(&mut self) -> Result<Receipt<Vec<T>>, ExecutionError> {
-        let (raw_messages, exec_result) = self.env.with(|workflow| {
-            let messages = workflow.take_outbound_messages(&self.channel_name);
-            (messages, workflow.tick())
+    /// Takes messages from the channel and progresses the flow marking the channel as flushed.
+    pub fn take_messages(&mut self) -> Result<Receipt<TakenMessages<T, C>>, ExecutionError> {
+        let (start_idx, raw_messages, exec_result) = self.env.with(|workflow| {
+            let (start_idx, messages) = workflow.take_outbound_messages(&self.channel_name);
+            (start_idx, messages, workflow.tick())
         });
-
-        // FIXME: use fallible decoding
-        let messages = raw_messages
-            .into_iter()
-            .map(|message| self.codec.decode_bytes(message))
-            .collect();
+        let messages = TakenMessages {
+            start_idx,
+            raw_messages,
+            codec: &mut self.codec,
+            _item: PhantomData,
+        };
         exec_result.map(|receipt| receipt.map(|()| messages))
+    }
+}
+
+/// Result of taking messages from an outbound channel.
+#[derive(Debug)]
+pub struct TakenMessages<'a, T, C> {
+    start_idx: usize,
+    raw_messages: Vec<Vec<u8>>,
+    codec: &'a mut C,
+    _item: PhantomData<fn() -> T>,
+}
+
+impl<T, C: Decoder<T>> TakenMessages<'_, T, C> {
+    /// Returns zero-based indices of the taken messages.
+    pub fn message_indices(&self) -> Range<usize> {
+        self.start_idx..(self.start_idx + self.raw_messages.len())
+    }
+
+    /// Tries to decode the taken messages.
+    pub fn decode(self) -> Result<Vec<T>, C::Error> {
+        self.raw_messages
+            .into_iter()
+            .map(|bytes| self.codec.try_decode_bytes(bytes))
+            .collect()
     }
 }
 
@@ -131,6 +170,7 @@ where
     }
 }
 
+/// Handle for [`Data`] allowing to read the data.
 #[derive(Debug)]
 pub struct DataPeeker<'a, T, C, W> {
     env: WorkflowEnv<'a, W>,
@@ -140,7 +180,8 @@ pub struct DataPeeker<'a, T, C, W> {
 }
 
 impl<T, C: Decoder<T>, W> DataPeeker<'_, T, C, W> {
-    pub fn peek(&mut self) -> T {
+    /// Retrieves the data input.
+    pub fn get(&mut self) -> T {
         let raw_input = self
             .env
             .with(|workflow| workflow.data_input(&self.input_name))
@@ -184,8 +225,16 @@ where
         self.futures.iter().map(|(id, state)| (*id, state))
     }
 
-    pub fn flush(&mut self) -> Result<Receipt, ExecutionError> {
-        let receipt = self.receiver.flush_messages()?;
+    pub fn flush(&mut self) -> anyhow::Result<Receipt> {
+        let receipt = self
+            .receiver
+            .take_messages()
+            .context("cannot flush trace messages")?;
+        let receipt = receipt
+            .map(TakenMessages::decode)
+            .transpose()
+            .context("cannot decode `FutureUpdate`")?;
+
         let receipt = receipt.map(|updates| {
             for update in updates {
                 if let Err(err) = TracedFuture::update(&mut self.futures, update) {
@@ -217,11 +266,13 @@ where
     }
 }
 
+/// Handle for a [`Workflow`] allowing to access inbound / outbound channels and data inputs.
 pub struct WorkflowHandle<'a, W>
 where
     W: TakeHandle<WorkflowEnv<'a, W>, Id = ()> + 'a,
 {
-    pub interface: <W as TakeHandle<WorkflowEnv<'a, W>>>::Handle,
+    /// API interface of the workflow, e.g. its inbound and outbound channels.
+    pub api: <W as TakeHandle<WorkflowEnv<'a, W>>>::Handle,
     env: WorkflowEnv<'a, W>,
 }
 
@@ -232,12 +283,24 @@ where
     pub(super) fn new(workflow: &'a mut Workflow<W>) -> Self {
         let mut env = WorkflowEnv::new(workflow);
         Self {
-            interface: W::take_handle(&mut env, &()),
+            api: W::take_handle(&mut env, &()),
             env,
         }
     }
 
+    /// Performs an action on the workflow without dropping the handle.
     pub fn with<T>(&mut self, action: impl FnOnce(&mut Workflow<W>) -> T) -> T {
         self.env.with(action)
+    }
+}
+
+impl<'a> TakeHandle<WorkflowEnv<'a, ()>> for () {
+    type Id = ();
+    type Handle = UntypedHandle<WorkflowEnv<'a, ()>>;
+
+    fn take_handle(env: &mut WorkflowEnv<'a, ()>, _id: &Self::Id) -> Self::Handle {
+        // TODO: is it possible to avoid cloning here?
+        let interface = env.with(|workflow| workflow.interface.clone());
+        UntypedHandle::new(env, &interface)
     }
 }

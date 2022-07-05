@@ -2,7 +2,7 @@
 
 use wasmtime::{AsContextMut, StoreContextMut, Trap};
 
-use std::{collections::HashSet, error, fmt, mem, ops::Range, task::Poll};
+use std::{collections::HashSet, error, fmt, mem, task::Poll};
 
 use super::{
     helpers::{Message, WakeIfPending, WakerPlacement, WasmContext, WasmContextPtr},
@@ -190,13 +190,6 @@ impl WorkflowData {
         })
     }
 
-    pub(crate) fn outbound_message_indices(&self, channel_name: &str) -> Range<usize> {
-        let channel_state = &self.outbound_channels[channel_name];
-        let start = channel_state.flushed_messages;
-        let end = start + channel_state.messages.len();
-        start..end
-    }
-
     pub(crate) fn push_outbound_message(
         &mut self,
         channel_name: &str,
@@ -243,7 +236,7 @@ impl WorkflowData {
         }))
     }
 
-    pub(crate) fn take_outbound_messages(&mut self, channel_name: &str) -> Vec<Vec<u8>> {
+    pub(crate) fn take_outbound_messages(&mut self, channel_name: &str) -> (usize, Vec<Vec<u8>>) {
         let channel_state = self
             .outbound_channels
             .get_mut(channel_name)
@@ -261,7 +254,8 @@ impl WorkflowData {
                 message_indexes: start_message_idx..(start_message_idx + messages.len()),
             },
         );
-        messages.into_iter().map(Into::into).collect()
+        let messages = messages.into_iter().map(Into::into).collect();
+        (start_message_idx, messages)
     }
 }
 

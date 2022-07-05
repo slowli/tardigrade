@@ -189,6 +189,18 @@ impl<T> Receipt<T> {
     }
 }
 
+impl<T, E> Receipt<Result<T, E>> {
+    pub(crate) fn transpose(self) -> Result<Receipt<T>, E> {
+        match self.output {
+            Ok(output) => Ok(Receipt {
+                executions: self.executions,
+                output,
+            }),
+            Err(err) => Err(err),
+        }
+    }
+}
+
 /// Error occurring during [`Workflow`] execution.
 #[derive(Debug)]
 pub struct ExecutionError {

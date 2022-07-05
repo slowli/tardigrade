@@ -4,7 +4,7 @@ use anyhow::Context;
 use chrono::{DateTime, Utc};
 use wasmtime::{AsContextMut, Linker, Store, Trap};
 
-use std::{marker::PhantomData, task::Poll};
+use std::task::Poll;
 
 mod env;
 #[cfg(test)]
@@ -21,7 +21,7 @@ use crate::{
     },
     TaskId, TimerId,
 };
-use tardigrade_shared::workflow::{Initialize, TakeHandle};
+use tardigrade_shared::workflow::{Initialize, Interface, TakeHandle};
 
 #[derive(Debug)]
 pub struct PersistedWorkflow {
@@ -33,7 +33,7 @@ pub struct PersistedWorkflow {
 #[derive(Debug)]
 pub struct Workflow<W> {
     store: Store<WorkflowData>,
-    _interface: PhantomData<*const W>,
+    interface: Interface<W>,
 }
 
 impl<W: Initialize<Id = ()>> Workflow<W> {
@@ -72,7 +72,7 @@ impl<W> Workflow<W> {
         store.data_mut().set_exports(exports);
         Ok(Self {
             store,
-            _interface: PhantomData,
+            interface: module.interface().clone(),
         })
     }
 
@@ -238,14 +238,14 @@ impl<W> Workflow<W> {
         )
     }
 
-    fn take_outbound_messages(&mut self, channel_name: &str) -> Vec<Vec<u8>> {
-        let messages = self.store.data_mut().take_outbound_messages(channel_name);
+    fn take_outbound_messages(&mut self, channel_name: &str) -> (usize, Vec<Vec<u8>>) {
+        let (start_idx, messages) = self.store.data_mut().take_outbound_messages(channel_name);
         crate::trace!(
             "Taken messages with lengths {:?} from channel `{}`",
             messages.iter().map(Vec::len).collect::<Vec<_>>(),
             channel_name
         );
-        messages
+        (start_idx, messages)
     }
 
     pub fn current_time(&self) -> DateTime<Utc> {

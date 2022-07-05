@@ -2,7 +2,7 @@ use assert_matches::assert_matches;
 use mimicry::Answers;
 use wasmtime::StoreContextMut;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use super::*;
 use crate::{
@@ -136,9 +136,9 @@ fn starting_workflow() {
 
     let engine = WorkflowEngine::default();
     let module = WorkflowModule::<()>::new(&engine, ExportsMock::MOCK_MODULE_BYTES).unwrap();
-    let mut inputs = HashMap::new();
-    inputs.insert("inputs".to_owned(), b"test_input".to_vec());
-    let receipt = Workflow::new(&module, inputs).unwrap();
+    let mut inputs = module.interface().inputs_builder();
+    inputs.insert("inputs", b"test_input".to_vec());
+    let receipt = Workflow::new(&module, inputs.build()).unwrap();
 
     let exports_mock = exports_guard.into_inner();
     assert!(exports_mock.exports_created);
@@ -174,9 +174,9 @@ fn receiving_inbound_message() {
 
     let engine = WorkflowEngine::default();
     let module = WorkflowModule::<()>::new(&engine, ExportsMock::MOCK_MODULE_BYTES).unwrap();
-    let mut inputs = HashMap::new();
-    inputs.insert("inputs".to_owned(), b"test_input".to_vec());
-    let mut workflow = Workflow::new(&module, inputs).unwrap().into_inner();
+    let mut inputs = module.interface().inputs_builder();
+    inputs.insert("inputs", b"test_input".to_vec());
+    let mut workflow = Workflow::new(&module, inputs.build()).unwrap().into_inner();
 
     workflow
         .push_inbound_message("orders", b"order #1".to_vec())
@@ -190,10 +190,10 @@ fn receiving_inbound_message() {
 
     assert_inbound_message_receipt(&receipt);
 
-    let traces = workflow.take_outbound_messages("traces");
+    let (_, traces) = workflow.take_outbound_messages("traces");
     assert_eq!(traces.len(), 1);
     assert_eq!(&traces[0], b"trace #1");
-    let events = workflow.take_outbound_messages("events");
+    let (_, events) = workflow.take_outbound_messages("events");
     assert_eq!(events.len(), 1);
     assert_eq!(&events[0], b"event #1");
 
