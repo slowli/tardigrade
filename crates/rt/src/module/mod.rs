@@ -8,6 +8,11 @@ use wasmtime::{
 
 use std::{fmt, task::Poll};
 
+#[cfg(test)]
+mod tests;
+#[cfg(test)]
+pub(crate) use self::tests::{ExportsMock, MockPollFn};
+
 use crate::{
     data::{WasmContextPtr, WorkflowData, WorkflowFunctions},
     TaskId, TimerId, WakerId,
@@ -83,6 +88,7 @@ impl<W> fmt::Debug for WorkflowModule<W> {
 }
 
 impl WorkflowModule<()> {
+    #[cfg_attr(test, mimicry::mock(using = "tests::ExportsMock"))]
     fn interface_from_wasm(module_bytes: &[u8]) -> anyhow::Result<Interface<()>> {
         const INTERFACE_SECTION: &str = "__tardigrade_spec";
         const CUSTOM_SECTION_TYPE: u8 = 0;
@@ -139,6 +145,7 @@ impl WorkflowModule<()> {
         Ok(())
     }
 
+    #[cfg_attr(test, mimicry::mock(using = "tests::ExportsMock"))]
     fn validate_module(module: &Module) -> anyhow::Result<()> {
         ModuleExports::validate_module(module)?;
         ModuleImports::validate_module(module)?;
@@ -196,6 +203,7 @@ pub(crate) struct ModuleExports {
     wake_waker: TypedFunc<WakerId, ()>,
 }
 
+#[cfg_attr(test, mimicry::mock(using = "tests::ExportsMock"))]
 impl ModuleExports {
     pub fn create_main_task(&self, ctx: StoreContextMut<'_, WorkflowData>) -> Result<TaskId, Trap> {
         let result = self.create_main_task.call(ctx, ());
@@ -291,6 +299,7 @@ impl ModuleExports {
         ensure_func_ty::<Args, Out>(&ty, fn_name)
     }
 
+    #[cfg_attr(test, mimicry::mock(using = "tests::ExportsMock::mock_new"))]
     pub fn new(store: &mut Store<WorkflowData>, instance: &Instance) -> Self {
         let memory = instance.get_memory(&mut *store, "memory").unwrap();
 

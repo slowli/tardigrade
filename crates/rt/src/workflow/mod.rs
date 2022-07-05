@@ -7,6 +7,9 @@ use wasmtime::{AsContextMut, Linker, Store, Trap};
 use std::{marker::PhantomData, task::Poll};
 
 mod env;
+#[cfg(test)]
+mod tests;
+
 pub use self::env::{DataPeeker, MessageReceiver, MessageSender, WorkflowEnv, WorkflowHandle};
 
 use crate::{
