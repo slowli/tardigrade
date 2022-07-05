@@ -1,6 +1,7 @@
 //! Workflow-related types.
 
 // TODO: use a newtype instead of `()` for untyped workflows?
+// TODO: implement `TakeHandle` for `Interface<()>`
 
 use serde::{Deserialize, Serialize};
 
@@ -26,23 +27,24 @@ pub trait Initialize {
 pub type Init<T> = <T as Initialize>::Init;
 
 impl Initialize for () {
-    type Init = HashMap<String, Vec<u8>>;
+    type Init = Inputs;
     type Id = ();
 
     fn initialize(builder: &mut InputsBuilder, init: Self::Init, _id: &Self::Id) {
         builder.inputs = init
+            .inner
             .into_iter()
             .map(|(name, bytes)| (name, Some(bytes)))
             .collect();
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct InboundChannelSpec {
     // TODO: options?
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct OutboundChannelSpec {
     /// Channel capacity, i.e., number of elements that can be buffered locally before
@@ -57,7 +59,7 @@ impl OutboundChannelSpec {
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DataInputSpec {
     // TODO: options?
 }
@@ -85,6 +87,18 @@ impl<W: ?Sized> fmt::Debug for Interface<W> {
             .field("outbound_channels", &self.outbound_channels)
             .field("data_inputs", &self.data_inputs)
             .finish()
+    }
+}
+
+impl<W: ?Sized> Clone for Interface<W> {
+    fn clone(&self) -> Self {
+        Self {
+            version: self.version,
+            inbound_channels: self.inbound_channels.clone(),
+            outbound_channels: self.outbound_channels.clone(),
+            data_inputs: self.data_inputs.clone(),
+            _workflow: PhantomData,
+        }
     }
 }
 
@@ -139,7 +153,7 @@ impl<W> Interface<W> {
             .map(|(name, spec)| (name.as_str(), spec))
     }
 
-    fn inputs_builder(&self) -> InputsBuilder {
+    pub fn inputs_builder(&self) -> InputsBuilder {
         InputsBuilder {
             inputs: self
                 .data_inputs
@@ -255,14 +269,17 @@ impl<'a> InterfaceValidation<'a> {
     }
 }
 
+/// Builder for workflow [`Inputs`]. Builders can be instantiated using
+/// [`Interface::inputs_builder()`].
 #[derive(Debug, Clone)]
 pub struct InputsBuilder {
     inputs: HashMap<String, Option<Vec<u8>>>,
 }
 
 impl InputsBuilder {
-    #[doc(hidden)]
-    pub fn set_raw_input(&mut self, name: &str, raw_data: Vec<u8>) {
+    /// Inserts `raw_data` for an input with the specified `name`. It is caller's responsibility
+    /// to ensure that raw data has an appropriate format.
+    pub fn insert(&mut self, name: &str, raw_data: Vec<u8>) {
         let data_entry = self
             .inputs
             .get_mut(name)
@@ -281,9 +298,11 @@ impl InputsBuilder {
         })
     }
 
+    /// Create [`Inputs`] from this builder.
+    ///
     /// # Panics
     ///
-    /// Panics if any inputs are not supplied.
+    /// - Panics if any inputs are not supplied.
     pub fn build(self) -> Inputs {
         let inputs = self.inputs.into_iter().map(|(name, maybe_data)| {
             let data =
@@ -296,10 +315,7 @@ impl InputsBuilder {
     }
 }
 
-pub trait GetInterface {
-    fn interface() -> Interface<Self>;
-}
-
+/// Container for workflow inputs.
 #[derive(Debug, Clone)]
 pub struct Inputs {
     inner: HashMap<String, Vec<u8>>,
@@ -310,4 +326,8 @@ impl Inputs {
     pub fn into_inner(self) -> HashMap<String, Vec<u8>> {
         self.inner
     }
+}
+
+pub trait GetInterface {
+    fn interface() -> Interface<Self>;
 }

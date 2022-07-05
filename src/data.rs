@@ -85,7 +85,7 @@ impl<T, C: Encoder<T> + Default> Initialize for Data<T, C> {
 
     fn initialize(builder: &mut InputsBuilder, init: T, id: &str) {
         let raw_data = C::default().encode_value(init);
-        builder.set_raw_input(id, raw_data);
+        builder.insert(id, raw_data);
     }
 }
 
