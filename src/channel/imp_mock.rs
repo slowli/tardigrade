@@ -46,6 +46,7 @@ pin_project! {
 }
 
 impl MpscSender {
+    #[allow(clippy::unnecessary_wraps)] // defined for convenience
     fn drop_err(_: Result<(), mpsc::SendError>) -> Result<(), Infallible> {
         // We can have the receiver dropped in tests (implicitly when the test is finished,
         // or explicitly in the test code). Since we cannot observe channel state after this,

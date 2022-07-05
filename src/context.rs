@@ -1,4 +1,4 @@
-use std::{collections::HashMap, future::Future, ops};
+use std::{collections::HashMap, fmt, future::Future, ops};
 
 use crate::{
     channel::{RawReceiver, RawSender},
@@ -40,11 +40,19 @@ mod imp {
 #[derive(Debug, Default)]
 pub struct Wasm(());
 
+/// Workflow that can be spawned.
+///
+/// As the supertraits imply, the workflow needs to be able to:
+///
+/// - Describe its interface
+/// - Take necessary channel / data input handles from the [`Wasm`] environment
+/// - Initialize from data inputs.
 pub trait SpawnWorkflow: GetInterface + TakeHandle<Wasm, Id = ()> + Initialize<Id = ()> {
+    /// Spawns a workflow instance.
     fn spawn(handle: Self::Handle) -> TaskHandle;
 }
 
-/// Handle to a task.
+/// Handle to a task, essentially equivalent to a boxed [`Future`].
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct TaskHandle(imp::TaskHandle);
@@ -55,7 +63,8 @@ impl TaskHandle {
         Self(imp::TaskHandle::new(future))
     }
 
-    /// Creates a handle from the specified workflow definition.
+    #[cfg(target_arch = "wasm32")]
+    #[doc(hidden)] // only used in the `workflow_entry` macro
     pub fn from_workflow<W: SpawnWorkflow>() -> Result<Self, HandleError> {
         let mut wasm = Wasm::default();
         let handle = <W as TakeHandle<Wasm>>::take_handle(&mut wasm, &())?;
@@ -79,6 +88,26 @@ where
     data_inputs: HashMap<String, <RawData as TakeHandle<Env>>::Handle>,
     inbound_channels: HashMap<String, <RawReceiver as TakeHandle<Env>>::Handle>,
     outbound_channels: HashMap<String, <RawSender as TakeHandle<Env>>::Handle>,
+}
+
+#[allow(clippy::type_repetition_in_bounds)] // false positive
+impl<Env> fmt::Debug for UntypedHandle<Env>
+where
+    RawData: TakeHandle<Env, Id = str>,
+    <RawData as TakeHandle<Env>>::Handle: fmt::Debug,
+    RawReceiver: TakeHandle<Env, Id = str>,
+    <RawReceiver as TakeHandle<Env>>::Handle: fmt::Debug,
+    RawSender: TakeHandle<Env, Id = str>,
+    <RawSender as TakeHandle<Env>>::Handle: fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UntypedHandle")
+            .field("data_inputs", &self.data_inputs)
+            .field("inbound_channels", &self.inbound_channels)
+            .field("outbound_channels", &self.outbound_channels)
+            .finish()
+    }
 }
 
 impl<Env> TakeHandle<Env> for UntypedHandle<Env>

@@ -38,9 +38,10 @@ impl<T: 'static> Future for JoinHandle<T> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if let Some(handle) = self.project() {
-            panic::catch_unwind(AssertUnwindSafe(|| handle.poll(cx)))
-                .map(|poll| poll.map(Ok))
-                .unwrap_or_else(|_| Poll::Ready(Err(JoinError::Trapped)))
+            panic::catch_unwind(AssertUnwindSafe(|| handle.poll(cx))).map_or_else(
+                |_| Poll::Ready(Err(JoinError::Trapped)),
+                |poll| poll.map(Ok),
+            )
         } else {
             Poll::Ready(Err(JoinError::Aborted))
         }

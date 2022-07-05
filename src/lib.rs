@@ -1,4 +1,10 @@
-//! FIXME
+//! Client bindings for Tardigrade workflows.
+//!
+//! This crate should be used by WASM modules defining a workflow.
+
+#![warn(missing_debug_implementations, missing_docs, bare_trait_objects)]
+#![warn(clippy::all, clippy::pedantic)]
+#![allow(clippy::must_use_candidate, clippy::module_name_repetitions)]
 
 pub mod channel;
 mod codec;
@@ -23,6 +29,8 @@ pub use crate::{
 };
 
 pub mod workflow {
+    //! Workflow-related types.
+
     // Re-export some types from the shared crate for convenience.
     pub use tardigrade_shared::workflow::*;
 
@@ -33,6 +41,9 @@ pub mod workflow {
 #[cfg(feature = "derive")]
 pub use tardigrade_derive::{handle, init};
 
+/// Creates an entry point for the specified workflow type.
+///
+/// The specified type must implement [`SpawnWorkflow`].
 #[macro_export]
 macro_rules! workflow_entry {
     ($workflow:ty) => {

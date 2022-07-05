@@ -30,6 +30,7 @@ pub(crate) mod imp;
 pub use self::broadcast::{BroadcastError, BroadcastPublisher, BroadcastSubscriber};
 
 pin_project! {
+    /// Receiver for an inbound channel provided to the workflow.
     pub struct Receiver<T, C> {
         #[pin]
         raw: imp::MpscReceiver,
@@ -38,6 +39,7 @@ pin_project! {
     }
 }
 
+/// [`Receiver`] of raw byte messages.
 pub type RawReceiver = Receiver<Vec<u8>, Raw>;
 
 impl<T, C: fmt::Debug> fmt::Debug for Receiver<T, C> {
@@ -106,6 +108,7 @@ where
 }
 
 pin_project! {
+    /// Sender for an outbound channel provided to the workflow.
     pub struct Sender<T, C> {
         #[pin]
         raw: imp::MpscSender,
@@ -114,6 +117,7 @@ pin_project! {
     }
 }
 
+/// [`Sender`] of raw byte messages.
 pub type RawSender = Sender<Vec<u8>, Raw>;
 
 impl<T, C: fmt::Debug> fmt::Debug for Sender<T, C> {
@@ -146,6 +150,7 @@ impl<T, C: Encoder<T>> Sender<T, C> {
     }
 
     /// Infallible version of [`SinkExt::send()`] to make common invocation more fluent.
+    #[allow(clippy::missing_panics_doc)] // false positive
     pub async fn send(&mut self, message: T) {
         <Self as SinkExt<T>>::send(self, message).await.unwrap();
     }

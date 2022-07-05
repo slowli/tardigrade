@@ -111,6 +111,7 @@ mod imp {
 }
 
 pin_project! {
+    /// Future returned by [`sleep`].
     #[derive(Debug)]
     #[repr(transparent)]
     pub struct Sleep {
@@ -127,6 +128,7 @@ impl Future for Sleep {
     }
 }
 
+/// Sleeps for the specified `duration`.
 pub fn sleep(duration: Duration) -> Sleep {
     Sleep {
         inner: imp::sleep(duration),

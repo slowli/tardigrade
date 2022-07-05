@@ -52,6 +52,7 @@ pub fn spawn<T: 'static>(
     }
 }
 
+/// Yields execution of a task, allowing to switch to other tasks.
 pub async fn yield_now() {
     #[derive(Debug)]
     struct Yield {
@@ -72,5 +73,5 @@ pub async fn yield_now() {
         }
     }
 
-    Yield { yielded: false }.await
+    Yield { yielded: false }.await;
 }

@@ -199,6 +199,11 @@ impl<T: Clone> Drop for BroadcastPublisher<T> {
 }
 
 impl<T: Clone> BroadcastPublisher<T> {
+    /// Creates a new broadcast with the specified `capacity`.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if `capacity` is zero.
     pub fn new(capacity: usize) -> Self {
         assert!(capacity > 0, "Broadcast channel capacity must be positive");
         let state = BroadcastState::new(capacity);
@@ -207,6 +212,7 @@ impl<T: Clone> BroadcastPublisher<T> {
         }
     }
 
+    /// Creates a new subscriber for this broadcast.
     pub fn subscribe(&self) -> BroadcastSubscriber<T> {
         let last_item_idx = self.state.borrow().next_item_idx;
         BroadcastSubscriber {

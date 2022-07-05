@@ -37,6 +37,11 @@ mod imp {
     }
 }
 
+/// Data input for a workflow.
+///
+/// A data input is characterized by data type that it holds, and a codec used to [decode](Decoder)
+/// this data type from raw bytes (in case of the WASM environment), or [encode](Encoder) it
+/// to bytes (in case of usage on host).
 #[derive(Debug, Clone)]
 pub struct Data<T, C> {
     inner: T,
@@ -44,6 +49,7 @@ pub struct Data<T, C> {
 }
 
 impl<T, C> Data<T, C> {
+    /// Returns the enclosed data.
     pub fn into_inner(self) -> T {
         self.inner
     }
@@ -91,6 +97,7 @@ impl<T, C: Encoder<T> + Default> Initialize for Data<T, C> {
     }
 }
 
+/// [`Data`] input of raw bytes.
 pub type RawData = Data<Vec<u8>, Raw>;
 
 impl<T, C> TakeHandle<&Interface<()>> for Data<T, C>

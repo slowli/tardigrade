@@ -20,6 +20,7 @@ use tardigrade_shared::{
     FutureId,
 };
 
+/// Wrapper around [`Sender`] that sends updates for [`Traced`] futures to the host.
 #[derive(Debug)]
 pub struct Tracer<C> {
     sender: Sender<FutureUpdate, C>,
@@ -79,6 +80,7 @@ where
     }
 }
 
+/// Wrapper around a [`Future`] that traces its progress.
 #[derive(Debug)]
 pub struct Traced<F, C: Encoder<FutureUpdate>> {
     id: FutureId,
@@ -112,7 +114,7 @@ impl<F: Future, C: Encoder<FutureUpdate>> Traced<F, C> {
     }
 
     // Because we implement `Drop`, we cannot use `pin_project` macro, so we implement
-    // field projections manually
+    // field projections manually.
     fn project_inner(self: Pin<&mut Self>) -> Pin<&mut F> {
         // SAFETY: map function is simple field access, which satisfies
         // the `map_unchecked_mut` contract

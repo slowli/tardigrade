@@ -17,6 +17,7 @@ use std::{
     cell::RefCell,
     cmp,
     collections::{BinaryHeap, HashMap},
+    fmt,
     future::Future,
     marker::PhantomData,
     thread_local,
@@ -109,17 +110,21 @@ impl RuntimeClock {
     }
 }
 
+/// Handle allowing to manipulate time in the test environment.
 #[derive(Debug)]
 pub struct TimersHandle {
     // Since the handle accesses TLS, it doesn't make sense to send it across threads.
     inner: PhantomData<*mut ()>,
 }
 
+#[allow(clippy::unused_self)] // included for future compatibility
 impl TimersHandle {
+    /// Returns current time.
     pub fn now(&self) -> DateTime<Utc> {
         Runtime::with_mut(|rt| rt.clock.now)
     }
 
+    /// Advances time to the next timer event.
     pub fn advance_time_to_next_event(&self) -> DateTime<Utc> {
         Runtime::with_mut(|rt| rt.clock.advance_time_to_next_event())
     }
@@ -270,14 +275,31 @@ impl Drop for RuntimeGuard {
     fn drop(&mut self) {
         RT.with(|cell| {
             *cell.borrow_mut() = None;
-        })
+        });
     }
 }
 
+/// Workflow handle for the [test environment](TestEnv). Instance of such a handle is provided
+/// to a closure in [`TestWorkflow::test()`].
 #[non_exhaustive]
 pub struct TestHandle<W: TestWorkflow> {
+    /// Handle to the workflow interface (channels, data inputs etc.).
     pub api: <W as TakeHandle<TestHost>>::Handle,
+    /// Handle to manipulate time in the test environment.
     pub timers: TimersHandle,
+}
+
+impl<W: TestWorkflow> fmt::Debug for TestHandle<W>
+where
+    <W as TakeHandle<TestHost>>::Handle: fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TestHandle")
+            .field("api", &self.api)
+            .field("timers", &self.timers)
+            .finish()
+    }
 }
 
 impl<W: TestWorkflow> TestHandle<W> {
@@ -314,8 +336,9 @@ where
     local_pool.run_until(test_fn(test_handle))
 }
 
-/// Extension trait for testing.
+/// Extension trait for testing workflows.
 pub trait TestWorkflow: Sized + SpawnWorkflow + TakeHandle<TestHost, Id = ()> {
+    /// Runs the specified test function for a workflow instantiated from the provided `inputs`.
     fn test<F>(inputs: Self::Init, test_fn: impl FnOnce(TestHandle<Self>) -> F)
     where
         F: Future<Output = ()> + 'static,
@@ -324,7 +347,7 @@ pub trait TestWorkflow: Sized + SpawnWorkflow + TakeHandle<TestHost, Id = ()> {
             test_fn(handle).await;
             Ok::<_, ()>(())
         })
-        .unwrap()
+        .unwrap();
     }
 }
 
@@ -367,6 +390,7 @@ impl<T, C: Decoder<T> + Default> TakeHandle<TestHost> for Data<T, C> {
     }
 }
 
+/// Handle for traced futures in the [test environment](TestEnv).
 #[derive(Debug)]
 pub struct TracerHandle<C> {
     receiver: Fuse<Receiver<FutureUpdate, C>>,
@@ -377,6 +401,8 @@ impl<C> TracerHandle<C>
 where
     C: Decoder<FutureUpdate> + Default,
 {
+    /// Applies all accumulated updates for the traced futures.
+    #[allow(clippy::missing_panics_doc)]
     pub fn update(&mut self) {
         if self.receiver.is_terminated() {
             return;
@@ -387,10 +413,12 @@ where
         }
     }
 
+    /// Returns the current state of a future with the specified ID.
     pub fn future(&self, id: FutureId) -> Option<&TracedFuture> {
         self.futures.get(&id)
     }
 
+    /// Lists all futures together their current state.
     pub fn futures(&self) -> impl Iterator<Item = (FutureId, &TracedFuture)> + '_ {
         self.futures.iter().map(|(id, state)| (*id, state))
     }
