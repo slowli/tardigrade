@@ -38,7 +38,7 @@ impl TargetField {
         let id = self.id();
         let tr = quote!(tardigrade::workflow::TakeHandle<Env>);
         let field = self.ident(field_index);
-        quote!(#field: <#unwrapped_ty as #tr>::take_handle(&mut *env, #id))
+        quote!(#field: <#unwrapped_ty as #tr>::take_handle(&mut *env, #id)?)
     }
 }
 
@@ -135,8 +135,8 @@ impl TakeHandle {
                 type Id = ();
                 type Handle = #handle #ty_generics;
 
-                fn take_handle(env: &mut #env, _id: &()) -> Self::Handle {
-                    #handle #handle_fields
+                fn take_handle(env: &mut #env, _id: &()) -> core::result::Result<Self::Handle, tardigrade::workflow::HandleError> {
+                    core::result::Result::Ok(#handle #handle_fields)
                 }
             }
         }

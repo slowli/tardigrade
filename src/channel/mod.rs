@@ -13,11 +13,10 @@ use std::{
 
 use crate::{
     codec::{Decoder, Encoder, Raw},
+    workflow::{
+        HandleError, HandleErrorKind, InboundChannel, Interface, OutboundChannel, TakeHandle,
+    },
     Wasm,
-};
-use tardigrade_shared::{
-    workflow::{InterfaceValidation, TakeHandle},
-    ChannelErrorKind, ChannelKind,
 };
 
 mod broadcast;
@@ -85,23 +84,24 @@ where
     type Id = str;
     type Handle = Self;
 
-    fn take_handle(env: &mut Wasm, id: &str) -> Self::Handle {
-        Self::new(imp::MpscReceiver::take_handle(env, id), C::default())
+    fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, HandleError> {
+        imp::MpscReceiver::take_handle(env, id).map(|raw| Self::new(raw, C::default()))
     }
 }
 
-impl<T, C> TakeHandle<InterfaceValidation<'_>> for Receiver<T, C>
+impl<T, C> TakeHandle<&Interface<()>> for Receiver<T, C>
 where
     C: Encoder<T> + Decoder<T>,
 {
     type Id = str;
     type Handle = ();
 
-    fn take_handle(env: &mut InterfaceValidation<'_>, id: &str) {
-        if env.interface().inbound_channel(id).is_none() {
-            let err = ChannelErrorKind::Unknown.for_channel(ChannelKind::Inbound, id);
-            env.insert_error(err);
+    fn take_handle(env: &mut &Interface<()>, id: &str) -> Result<(), HandleError> {
+        if env.inbound_channel(id).is_none() {
+            let err = HandleErrorKind::Unknown.for_handle(InboundChannel(id));
+            return Err(err);
         }
+        Ok(())
     }
 }
 
@@ -158,8 +158,8 @@ where
     type Id = str;
     type Handle = Self;
 
-    fn take_handle(env: &mut Wasm, id: &str) -> Self::Handle {
-        Self::new(imp::MpscSender::take_handle(env, id), C::default())
+    fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, HandleError> {
+        imp::MpscSender::take_handle(env, id).map(|raw| Self::new(raw, C::default()))
     }
 }
 
@@ -185,17 +185,19 @@ impl<T, C: Encoder<T>> Sink<T> for Sender<T, C> {
     }
 }
 
-impl<T, C> TakeHandle<InterfaceValidation<'_>> for Sender<T, C>
+impl<T, C> TakeHandle<&Interface<()>> for Sender<T, C>
 where
     C: Encoder<T> + Decoder<T>,
 {
     type Id = str;
     type Handle = ();
 
-    fn take_handle(env: &mut InterfaceValidation<'_>, id: &str) {
-        if env.interface().outbound_channel(id).is_none() {
-            let err = ChannelErrorKind::Unknown.for_channel(ChannelKind::Outbound, id);
-            env.insert_error(err);
+    fn take_handle(env: &mut &Interface<()>, id: &str) -> Result<(), HandleError> {
+        if env.outbound_channel(id).is_none() {
+            let err = HandleErrorKind::Unknown.for_handle(OutboundChannel(id));
+            Err(err)
+        } else {
+            Ok(())
         }
     }
 }

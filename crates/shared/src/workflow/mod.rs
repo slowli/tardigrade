@@ -1,21 +1,14 @@
 //! Workflow-related types.
 
 // TODO: use a newtype instead of `()` for untyped workflows?
-// TODO: implement `TakeHandle` for `Interface<()>`
 
 use serde::{Deserialize, Serialize};
 
-use std::{collections::HashMap, error, fmt, marker::PhantomData, ops};
+use std::{collections::HashMap, fmt, marker::PhantomData, ops};
 
-pub trait TakeHandle<Env> {
-    type Id: ?Sized;
-    type Handle;
+mod handle;
 
-    // FIXME: make fallible?
-    fn take_handle(env: &mut Env, id: &Self::Id) -> Self::Handle;
-}
-
-pub type Handle<T, Env> = <T as TakeHandle<Env>>::Handle;
+pub use self::handle::{ChannelKind, Handle, HandleError, HandleErrorKind, HandleId, TakeHandle};
 
 pub trait Initialize {
     type Init;
@@ -74,23 +67,47 @@ impl fmt::Display for DataInput<'_> {
     }
 }
 
+impl From<DataInput<'_>> for HandleId {
+    fn from(data_input: DataInput<'_>) -> Self {
+        Self::DataInput(data_input.0.to_owned())
+    }
+}
+
 /// Newtype for indexing inbound channels, e.g., in an [`Interface`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Inbound<'a>(pub &'a str);
+pub struct InboundChannel<'a>(pub &'a str);
 
-impl fmt::Display for Inbound<'_> {
+impl fmt::Display for InboundChannel<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "inbound channel `{}`", self.0)
     }
 }
 
+impl From<InboundChannel<'_>> for HandleId {
+    fn from(channel: InboundChannel<'_>) -> Self {
+        Self::Channel {
+            kind: ChannelKind::Inbound,
+            name: channel.0.to_owned(),
+        }
+    }
+}
+
 /// Newtype for indexing outbound channels, e.g., in an [`Interface`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Outbound<'a>(pub &'a str);
+pub struct OutboundChannel<'a>(pub &'a str);
 
-impl fmt::Display for Outbound<'_> {
+impl fmt::Display for OutboundChannel<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "outbound channel `{}`", self.0)
+    }
+}
+
+impl From<OutboundChannel<'_>> for HandleId {
+    fn from(channel: OutboundChannel<'_>) -> Self {
+        Self::Channel {
+            kind: ChannelKind::Outbound,
+            name: channel.0.to_owned(),
+        }
     }
 }
 
@@ -211,19 +228,19 @@ impl<W> ops::Index<DataInput<'_>> for Interface<W> {
     }
 }
 
-impl<W> ops::Index<Inbound<'_>> for Interface<W> {
+impl<W> ops::Index<InboundChannel<'_>> for Interface<W> {
     type Output = InboundChannelSpec;
 
-    fn index(&self, index: Inbound<'_>) -> &Self::Output {
+    fn index(&self, index: InboundChannel<'_>) -> &Self::Output {
         self.inbound_channel(index.0)
             .unwrap_or_else(|| panic!("{} is not defined", index))
     }
 }
 
-impl<W> ops::Index<Outbound<'_>> for Interface<W> {
+impl<W> ops::Index<OutboundChannel<'_>> for Interface<W> {
     type Output = OutboundChannelSpec;
 
-    fn index(&self, index: Outbound<'_>) -> &Self::Output {
+    fn index(&self, index: OutboundChannel<'_>) -> &Self::Output {
         self.outbound_channel(index.0)
             .unwrap_or_else(|| panic!("{} is not defined", index))
     }
@@ -235,13 +252,12 @@ impl Interface<()> {
             .unwrap_or_else(|err| panic!("Cannot deserialize spec: {}", err))
     }
 
-    pub fn downcast<W>(self) -> Result<Interface<W>, InterfaceErrors>
+    pub fn downcast<W>(self) -> Result<Interface<W>, HandleError>
     where
-        W: for<'a> TakeHandle<InterfaceValidation<'a>, Id = ()>,
+        W: for<'a> TakeHandle<&'a Interface<()>, Id = ()>,
     {
-        let mut validation = InterfaceValidation::new(&self);
-        W::take_handle(&mut validation, &());
-        validation.errors.into_result().map(|()| Interface {
+        W::take_handle(&mut &self, &())?;
+        Ok(Interface {
             version: self.version,
             inbound_channels: self.inbound_channels,
             outbound_channels: self.outbound_channels,
@@ -251,15 +267,16 @@ impl Interface<()> {
     }
 }
 
-impl TakeHandle<InterfaceValidation<'_>> for () {
+impl TakeHandle<&Interface<()>> for () {
     type Id = ();
     type Handle = ();
 
-    fn take_handle(_env: &mut InterfaceValidation<'_>, _id: &Self::Id) {
-        // validation always succeeds
+    fn take_handle(_env: &mut &Interface<()>, _id: &Self::Id) -> Result<(), HandleError> {
+        Ok(()) // validation always succeeds
     }
 }
 
+/*
 #[derive(Debug, Default)]
 pub struct InterfaceErrors {
     errors: Vec<Box<dyn error::Error + Send + Sync>>,
@@ -310,7 +327,7 @@ impl<'a> InterfaceValidation<'a> {
     fn new(interface: &'a Interface<()>) -> Self {
         Self {
             interface,
-            errors: InterfaceErrors::default(),
+            //errors: InterfaceErrors::default(),
         }
     }
 
@@ -325,6 +342,7 @@ impl<'a> InterfaceValidation<'a> {
         self.errors.errors.push(Box::new(error));
     }
 }
+*/
 
 /// Builder for workflow [`Inputs`]. Builders can be instantiated using
 /// [`Interface::inputs_builder()`].

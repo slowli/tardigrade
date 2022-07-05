@@ -41,7 +41,7 @@ macro_rules! workflow_entry {
         #[export_name = "tardigrade_rt::main"]
         #[doc(hidden)]
         pub extern "C" fn __tardigrade_rt__main() -> $crate::TaskHandle {
-            $crate::TaskHandle::from_workflow::<$workflow>()
+            $crate::TaskHandle::from_workflow::<$workflow>().unwrap()
         }
     };
 }

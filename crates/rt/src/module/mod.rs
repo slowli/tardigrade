@@ -19,7 +19,7 @@ use crate::{
 };
 use tardigrade_shared::{
     abi::TryFromWasm,
-    workflow::{Interface, InterfaceValidation, TakeHandle},
+    workflow::{Interface, TakeHandle},
 };
 
 fn ensure_func_ty<Args, Out>(ty: &ExternType, fn_name: &str) -> anyhow::Result<()>
@@ -177,16 +177,20 @@ impl<W> WorkflowModule<W> {
 
 impl<W> WorkflowModule<W>
 where
-    W: for<'a> TakeHandle<InterfaceValidation<'a>, Id = ()>,
+    W: for<'a> TakeHandle<&'a Interface<()>, Id = ()>,
 {
     /// Validates the provided module and wraps it.
     pub fn new(engine: &WorkflowEngine, module_bytes: &[u8]) -> anyhow::Result<Self> {
-        let module = Module::from_binary(&engine.inner, module_bytes)?;
+        let module =
+            Module::from_binary(&engine.inner, module_bytes).context("cannot parse WASM module")?;
         WorkflowModule::validate_module(&module)?;
-        let interface = WorkflowModule::interface_from_wasm(module_bytes)?;
+        let interface = WorkflowModule::interface_from_wasm(module_bytes)
+            .context("cannot extract workflow interface from WASM module")?;
         Ok(Self {
             inner: module,
-            interface: interface.downcast()?,
+            interface: interface
+                .downcast()
+                .context("mismatch between declared and actual workflow interface")?,
             linker_extensions: vec![Box::new(WorkflowFunctions)],
         })
     }

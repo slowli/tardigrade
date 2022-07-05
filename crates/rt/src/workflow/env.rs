@@ -13,7 +13,10 @@ use crate::{
 use tardigrade::{
     channel::{Receiver, Sender},
     trace::{FutureUpdate, TracedFuture, TracedFutures, Tracer},
-    workflow::TakeHandle,
+    workflow::{
+        DataInput, HandleError, HandleErrorKind, InboundChannel, Interface, OutboundChannel,
+        TakeHandle,
+    },
     Data, Decoder, Encoder, UntypedHandle,
 };
 
@@ -91,13 +94,17 @@ where
     type Id = str;
     type Handle = MessageSender<'a, T, C, W>;
 
-    // FIXME: check that channel exists
-    fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Self::Handle {
-        MessageSender {
-            env: env.clone(),
-            channel_name: id.to_owned(),
-            codec: C::default(),
-            _item: PhantomData,
+    fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Result<Self::Handle, HandleError> {
+        let channel_exists = env.with(|workflow| workflow.interface.inbound_channel(id).is_some());
+        if channel_exists {
+            Ok(MessageSender {
+                env: env.clone(),
+                channel_name: id.to_owned(),
+                codec: C::default(),
+                _item: PhantomData,
+            })
+        } else {
+            Err(HandleErrorKind::Unknown.for_handle(InboundChannel(id)))
         }
     }
 }
@@ -160,12 +167,17 @@ where
     type Id = str;
     type Handle = MessageReceiver<'a, T, C, W>;
 
-    fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Self::Handle {
-        MessageReceiver {
-            env: env.clone(),
-            channel_name: id.to_owned(),
-            codec: C::default(),
-            _item: PhantomData,
+    fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Result<Self::Handle, HandleError> {
+        let channel_exists = env.with(|workflow| workflow.interface.outbound_channel(id).is_some());
+        if channel_exists {
+            Ok(MessageReceiver {
+                env: env.clone(),
+                channel_name: id.to_owned(),
+                codec: C::default(),
+                _item: PhantomData,
+            })
+        } else {
+            Err(HandleErrorKind::Unknown.for_handle(OutboundChannel(id)))
         }
     }
 }
@@ -197,12 +209,17 @@ where
     type Id = str;
     type Handle = DataPeeker<'a, T, C, W>;
 
-    fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Self::Handle {
-        DataPeeker {
-            env: env.clone(),
-            input_name: id.to_owned(),
-            codec: C::default(),
-            _item: PhantomData,
+    fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Result<Self::Handle, HandleError> {
+        let input_exists = env.with(|workflow| workflow.interface.data_input(id).is_some());
+        if input_exists {
+            Ok(DataPeeker {
+                env: env.clone(),
+                input_name: id.to_owned(),
+                codec: C::default(),
+                _item: PhantomData,
+            })
+        } else {
+            Err(HandleErrorKind::Unknown.for_handle(DataInput(id)))
         }
     }
 }
@@ -258,11 +275,11 @@ where
     type Id = str;
     type Handle = TracerHandle<'a, C, W>;
 
-    fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Self::Handle {
-        TracerHandle {
-            receiver: Sender::<FutureUpdate, C>::take_handle(env, id),
+    fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Result<Self::Handle, HandleError> {
+        Ok(TracerHandle {
+            receiver: Sender::<FutureUpdate, C>::take_handle(env, id)?,
             futures: TracedFutures::new(),
-        }
+        })
     }
 }
 
@@ -280,12 +297,12 @@ impl<'a, W> WorkflowHandle<'a, W>
 where
     W: TakeHandle<WorkflowEnv<'a, W>, Id = ()> + 'a,
 {
-    pub(super) fn new(workflow: &'a mut Workflow<W>) -> Self {
+    pub(super) fn new(workflow: &'a mut Workflow<W>) -> Result<Self, HandleError> {
         let mut env = WorkflowEnv::new(workflow);
-        Self {
-            api: W::take_handle(&mut env, &()),
+        Ok(Self {
+            api: W::take_handle(&mut env, &())?,
             env,
-        }
+        })
     }
 
     /// Performs an action on the workflow without dropping the handle.
@@ -294,13 +311,26 @@ where
     }
 }
 
+impl<'a> TakeHandle<WorkflowEnv<'a, ()>> for Interface<()> {
+    type Id = ();
+    type Handle = Self;
+
+    fn take_handle(
+        env: &mut WorkflowEnv<'a, ()>,
+        _id: &Self::Id,
+    ) -> Result<Self::Handle, HandleError> {
+        Ok(env.with(|workflow| workflow.interface.clone()))
+    }
+}
+
 impl<'a> TakeHandle<WorkflowEnv<'a, ()>> for () {
     type Id = ();
     type Handle = UntypedHandle<WorkflowEnv<'a, ()>>;
 
-    fn take_handle(env: &mut WorkflowEnv<'a, ()>, _id: &Self::Id) -> Self::Handle {
-        // TODO: is it possible to avoid cloning here?
-        let interface = env.with(|workflow| workflow.interface.clone());
-        UntypedHandle::new(env, &interface)
+    fn take_handle(
+        env: &mut WorkflowEnv<'a, ()>,
+        _id: &Self::Id,
+    ) -> Result<Self::Handle, HandleError> {
+        UntypedHandle::take_handle(env, &())
     }
 }

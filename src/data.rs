@@ -1,12 +1,14 @@
 //! Data inputs.
 
-use std::{error, fmt, marker::PhantomData};
+use std::marker::PhantomData;
 
 use crate::{
     codec::{Decoder, Encoder, Raw},
     context::Wasm,
 };
-use tardigrade_shared::workflow::{Initialize, InputsBuilder, InterfaceValidation, TakeHandle};
+use tardigrade_shared::workflow::{
+    DataInput, HandleError, HandleErrorKind, Initialize, InputsBuilder, Interface, TakeHandle,
+};
 
 #[cfg(target_arch = "wasm32")]
 mod imp {
@@ -48,13 +50,13 @@ impl<T, C> Data<T, C> {
 }
 
 impl<T, C: Decoder<T> + Default> Data<T, C> {
-    pub(crate) fn from_env(id: &str) -> Self {
+    pub(crate) fn from_env(id: &str) -> Result<Self, HandleError> {
         let raw = imp::try_get_raw_data(id)
-            .unwrap_or_else(|| panic!("data input `{}` not defined in workflow interface", id));
+            .ok_or_else(|| HandleErrorKind::Unknown.for_handle(DataInput(id)))?;
         C::default()
             .try_decode_bytes(raw)
             .map(Self::from)
-            .unwrap_or_else(|err| panic!("data input `{}` cannot be decoded: {}", id, err))
+            .map_err(|err| HandleErrorKind::Custom(Box::new(err)).for_handle(DataInput(id)))
     }
 }
 
@@ -74,7 +76,7 @@ where
     type Id = str;
     type Handle = Self;
 
-    fn take_handle(_env: &mut Wasm, id: &str) -> Self {
+    fn take_handle(_env: &mut Wasm, id: &str) -> Result<Self, HandleError> {
         Self::from_env(id)
     }
 }
@@ -91,35 +93,18 @@ impl<T, C: Encoder<T> + Default> Initialize for Data<T, C> {
 
 pub type RawData = Data<Vec<u8>, Raw>;
 
-#[derive(Debug)]
-pub struct DataValidationError {
-    name: String,
-}
-
-impl fmt::Display for DataValidationError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.name.is_empty() {
-            formatter.write_str("missing default data input")
-        } else {
-            write!(formatter, "missing data input `{}`", self.name)
-        }
-    }
-}
-
-impl error::Error for DataValidationError {}
-
-impl<T, C> TakeHandle<InterfaceValidation<'_>> for Data<T, C>
+impl<T, C> TakeHandle<&Interface<()>> for Data<T, C>
 where
     C: Encoder<T> + Decoder<T>,
 {
     type Id = str;
     type Handle = ();
 
-    fn take_handle(env: &mut InterfaceValidation<'_>, id: &str) {
-        if env.interface().data_input(id).is_none() {
-            env.insert_error(DataValidationError {
-                name: id.to_owned(),
-            });
+    fn take_handle(env: &mut &Interface<()>, id: &str) -> Result<(), HandleError> {
+        if env.data_input(id).is_none() {
+            Err(HandleErrorKind::Unknown.for_handle(DataInput(id)))
+        } else {
+            Ok(())
         }
     }
 }

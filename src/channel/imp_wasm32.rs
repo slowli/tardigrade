@@ -10,7 +10,10 @@ use std::{
 };
 
 use crate::context::Wasm;
-use tardigrade_shared::{abi::IntoWasm, workflow::TakeHandle, ChannelErrorKind, ChannelKind};
+use tardigrade_shared::{
+    abi::IntoWasm,
+    workflow::{HandleError, HandleErrorKind, InboundChannel, OutboundChannel, TakeHandle},
+};
 
 #[derive(Debug)]
 pub struct MpscReceiver {
@@ -21,22 +24,21 @@ impl TakeHandle<Wasm> for MpscReceiver {
     type Id = str;
     type Handle = Self;
 
-    fn take_handle(_env: &mut Wasm, id: &str) -> Self {
+    fn take_handle(_env: &mut Wasm, id: &str) -> Result<Self, HandleError> {
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
             #[link_name = "mpsc_receiver::get"]
             fn mpsc_receiver_get(channel_name_ptr: *const u8, channel_name_len: usize) -> i64;
         }
 
-        let result = unsafe {
+        unsafe {
             let result = mpsc_receiver_get(id.as_ptr(), id.len());
-            Result::<(), ChannelErrorKind>::from_abi_in_wasm(result)
+            Result::<(), HandleErrorKind>::from_abi_in_wasm(result)
                 .map(|()| Self {
                     channel_name: id.to_owned(),
                 })
-                .map_err(|kind| kind.for_channel(ChannelKind::Inbound, id))
-        };
-        result.unwrap()
+                .map_err(|kind| kind.for_handle(InboundChannel(id)))
+        }
     }
 }
 
@@ -73,22 +75,21 @@ impl TakeHandle<Wasm> for MpscSender {
     type Id = str;
     type Handle = Self;
 
-    fn take_handle(_env: &mut Wasm, id: &str) -> Self {
+    fn take_handle(_env: &mut Wasm, id: &str) -> Result<Self, HandleError> {
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
             #[link_name = "mpsc_sender::get"]
             fn mpsc_sender_get(channel_name_ptr: *const u8, channel_name_len: usize) -> i64;
         }
 
-        let result = unsafe {
+        unsafe {
             let result = mpsc_sender_get(id.as_ptr(), id.len());
-            Result::<(), ChannelErrorKind>::from_abi_in_wasm(result)
+            Result::<(), HandleErrorKind>::from_abi_in_wasm(result)
                 .map(|()| Self {
                     channel_name: id.to_owned(),
                 })
-                .map_err(|kind| kind.for_channel(ChannelKind::Outbound, id))
-        };
-        result.unwrap()
+                .map_err(|kind| kind.for_handle(OutboundChannel(id)))
+        }
     }
 }
 

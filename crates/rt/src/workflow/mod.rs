@@ -21,7 +21,7 @@ use crate::{
     },
     TaskId, TimerId,
 };
-use tardigrade_shared::workflow::{Initialize, Interface, TakeHandle};
+use tardigrade_shared::workflow::{HandleError, Initialize, Interface, TakeHandle};
 
 #[derive(Debug)]
 pub struct PersistedWorkflow {
@@ -52,7 +52,7 @@ impl<'a, W> Workflow<W>
 where
     W: TakeHandle<WorkflowEnv<'a, W>, Id = ()> + 'a,
 {
-    pub fn handle(&'a mut self) -> WorkflowHandle<'a, W> {
+    pub fn handle(&'a mut self) -> Result<WorkflowHandle<'a, W>, HandleError> {
         WorkflowHandle::new(self)
     }
 }

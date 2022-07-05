@@ -5,7 +5,8 @@ use crate::{
     RawData,
 };
 use tardigrade_shared::workflow::{
-    DataInput, GetInterface, Inbound, Initialize, Interface, Outbound, TakeHandle,
+    DataInput, GetInterface, HandleError, InboundChannel, Initialize, Interface, OutboundChannel,
+    TakeHandle,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -55,10 +56,10 @@ impl TaskHandle {
     }
 
     /// Creates a handle from the specified workflow definition.
-    pub fn from_workflow<W: SpawnWorkflow>() -> Self {
+    pub fn from_workflow<W: SpawnWorkflow>() -> Result<Self, HandleError> {
         let mut wasm = Wasm::default();
-        let handle = <W as TakeHandle<Wasm>>::take_handle(&mut wasm, &());
-        W::spawn(handle)
+        let handle = <W as TakeHandle<Wasm>>::take_handle(&mut wasm, &())?;
+        Ok(W::spawn(handle))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -80,31 +81,37 @@ where
     outbound_channels: HashMap<String, <RawSender as TakeHandle<Env>>::Handle>,
 }
 
-impl<Env> UntypedHandle<Env>
+impl<Env> TakeHandle<Env> for UntypedHandle<Env>
 where
     RawData: TakeHandle<Env, Id = str>,
     RawReceiver: TakeHandle<Env, Id = str>,
     RawSender: TakeHandle<Env, Id = str>,
+    Interface<()>: TakeHandle<Env, Id = (), Handle = Interface<()>>,
 {
-    // TODO: replace with `TakeHandle` impl
-    pub fn new(env: &mut Env, interface: &Interface<()>) -> Self {
+    type Id = ();
+    type Handle = Self;
+
+    fn take_handle(env: &mut Env, _id: &()) -> Result<Self, HandleError> {
+        let interface = Interface::<()>::take_handle(env, &())?;
+
         let data_inputs = interface
             .data_inputs()
-            .map(|(name, _)| (name.to_owned(), RawData::take_handle(&mut *env, name)))
-            .collect();
+            .map(|(name, _)| Ok((name.to_owned(), RawData::take_handle(&mut *env, name)?)))
+            .collect::<Result<_, _>>()?;
         let inbound_channels = interface
             .inbound_channels()
-            .map(|(name, _)| (name.to_owned(), RawReceiver::take_handle(&mut *env, name)))
-            .collect();
+            .map(|(name, _)| Ok((name.to_owned(), RawReceiver::take_handle(&mut *env, name)?)))
+            .collect::<Result<_, _>>()?;
         let outbound_channels = interface
             .outbound_channels()
-            .map(|(name, _)| (name.to_owned(), RawSender::take_handle(&mut *env, name)))
-            .collect();
-        Self {
+            .map(|(name, _)| Ok((name.to_owned(), RawSender::take_handle(&mut *env, name)?)))
+            .collect::<Result<_, _>>()?;
+
+        Ok(Self {
             data_inputs,
             inbound_channels,
             outbound_channels,
-        }
+        })
     }
 }
 
@@ -136,7 +143,7 @@ where
     }
 }
 
-impl<Env> ops::Index<Inbound<'_>> for UntypedHandle<Env>
+impl<Env> ops::Index<InboundChannel<'_>> for UntypedHandle<Env>
 where
     RawData: TakeHandle<Env, Id = str>,
     RawReceiver: TakeHandle<Env, Id = str>,
@@ -144,27 +151,27 @@ where
 {
     type Output = <RawReceiver as TakeHandle<Env>>::Handle;
 
-    fn index(&self, index: Inbound<'_>) -> &Self::Output {
+    fn index(&self, index: InboundChannel<'_>) -> &Self::Output {
         self.inbound_channels
             .get(index.0)
             .unwrap_or_else(|| panic!("{} is not defined", index))
     }
 }
 
-impl<Env> ops::IndexMut<Inbound<'_>> for UntypedHandle<Env>
+impl<Env> ops::IndexMut<InboundChannel<'_>> for UntypedHandle<Env>
 where
     RawData: TakeHandle<Env, Id = str>,
     RawReceiver: TakeHandle<Env, Id = str>,
     RawSender: TakeHandle<Env, Id = str>,
 {
-    fn index_mut(&mut self, index: Inbound<'_>) -> &mut Self::Output {
+    fn index_mut(&mut self, index: InboundChannel<'_>) -> &mut Self::Output {
         self.inbound_channels
             .get_mut(index.0)
             .unwrap_or_else(|| panic!("{} is not defined", index))
     }
 }
 
-impl<Env> ops::Index<Outbound<'_>> for UntypedHandle<Env>
+impl<Env> ops::Index<OutboundChannel<'_>> for UntypedHandle<Env>
 where
     RawData: TakeHandle<Env, Id = str>,
     RawReceiver: TakeHandle<Env, Id = str>,
@@ -172,20 +179,20 @@ where
 {
     type Output = <RawSender as TakeHandle<Env>>::Handle;
 
-    fn index(&self, index: Outbound<'_>) -> &Self::Output {
+    fn index(&self, index: OutboundChannel<'_>) -> &Self::Output {
         self.outbound_channels
             .get(index.0)
             .unwrap_or_else(|| panic!("{} is not defined", index))
     }
 }
 
-impl<Env> ops::IndexMut<Outbound<'_>> for UntypedHandle<Env>
+impl<Env> ops::IndexMut<OutboundChannel<'_>> for UntypedHandle<Env>
 where
     RawData: TakeHandle<Env, Id = str>,
     RawReceiver: TakeHandle<Env, Id = str>,
     RawSender: TakeHandle<Env, Id = str>,
 {
-    fn index_mut(&mut self, index: Outbound<'_>) -> &mut Self::Output {
+    fn index_mut(&mut self, index: OutboundChannel<'_>) -> &mut Self::Output {
         self.outbound_channels
             .get_mut(index.0)
             .unwrap_or_else(|| panic!("{} is not defined", index))

@@ -6,6 +6,6 @@ mod types;
 pub mod workflow;
 
 pub use crate::types::{
-    ChannelError, ChannelErrorKind, ChannelKind, FutureId, JoinError, PollMessage, PollTask,
-    TaskId, TimerDefinition, TimerId, TimerKind, WakerId,
+    FutureId, JoinError, PollMessage, PollTask, TaskId, TimerDefinition, TimerId, TimerKind,
+    WakerId,
 };
