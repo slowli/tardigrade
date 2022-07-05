@@ -2,7 +2,7 @@
 
 use anyhow::Context;
 use chrono::{DateTime, Utc};
-use wasmtime::{Linker, Store, Trap};
+use wasmtime::{AsContextMut, Linker, Store, Trap};
 
 use std::{marker::PhantomData, task::Poll};
 
@@ -75,7 +75,7 @@ impl<W> Workflow<W> {
 
     fn spawn_main_task(&mut self) -> Result<(), Trap> {
         let exports = self.store.data().exports();
-        let task_ptr = exports.create_main_task(&mut self.store)?;
+        let task_ptr = exports.create_main_task(self.store.as_context_mut())?;
         self.store.data_mut().spawn_main_task(task_ptr);
         Ok(())
     }
@@ -96,7 +96,7 @@ impl<W> Workflow<W> {
                 ..
             } => {
                 let exports = self.store.data().exports();
-                let exec_result = exports.poll_task(&mut self.store, *task_id);
+                let exec_result = exports.poll_task(self.store.as_context_mut(), *task_id);
                 if let Ok(Poll::Ready(())) = exec_result {
                     self.store.data_mut().complete_current_task();
                 }
@@ -118,7 +118,7 @@ impl<W> Workflow<W> {
             }
             ExecutedFunction::TaskDrop { task_id } => {
                 let exports = self.store.data().exports();
-                exports.drop_task(&mut self.store, *task_id)
+                exports.drop_task(self.store.as_context_mut(), *task_id)
             }
             ExecutedFunction::Entry => unreachable!(),
         }

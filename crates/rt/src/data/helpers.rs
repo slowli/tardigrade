@@ -1,6 +1,6 @@
 //! Various helpers for workflow state.
 
-use wasmtime::{Store, StoreContextMut, Trap};
+use wasmtime::{AsContextMut, Store, StoreContextMut, Trap};
 
 use std::{collections::HashSet, fmt, mem, task::Poll};
 
@@ -74,7 +74,10 @@ impl WasmContext {
 
     pub fn save_waker(self, ctx: &mut StoreContextMut<'_, WorkflowData>) -> Result<(), Trap> {
         if let Some(placement) = &self.placement {
-            let waker_id = ctx.data().exports().create_waker(&mut *ctx, self.ptr)?;
+            let waker_id = ctx
+                .data()
+                .exports()
+                .create_waker(ctx.as_context_mut(), self.ptr)?;
             ctx.data_mut().place_waker(placement, waker_id);
         }
         Ok(())
@@ -281,7 +284,10 @@ impl WorkflowData {
         cause: WakeUpCause,
     ) -> Result<(), Trap> {
         store.data_mut().current_wakeup_cause = Some(cause);
-        let result = store.data().exports().wake_waker(&mut *store, waker_id);
+        let result = store
+            .data()
+            .exports()
+            .wake_waker(store.as_context_mut(), waker_id);
         store.data_mut().current_wakeup_cause = None;
         result
     }

@@ -1,5 +1,7 @@
 //! Workflow-related types.
 
+// TODO: use a newtype instead of `()` for untyped workflows?
+
 use serde::{Deserialize, Serialize};
 
 use std::{collections::HashMap, error, fmt, marker::PhantomData};
@@ -8,6 +10,7 @@ pub trait TakeHandle<Env> {
     type Id: ?Sized;
     type Handle;
 
+    // FIXME: make fallible?
     fn take_handle(env: &mut Env, id: &Self::Id) -> Self::Handle;
 }
 
@@ -21,6 +24,18 @@ pub trait Initialize {
 }
 
 pub type Init<T> = <T as Initialize>::Init;
+
+impl Initialize for () {
+    type Init = HashMap<String, Vec<u8>>;
+    type Id = ();
+
+    fn initialize(builder: &mut InputsBuilder, init: Self::Init, _id: &Self::Id) {
+        builder.inputs = init
+            .into_iter()
+            .map(|(name, bytes)| (name, Some(bytes)))
+            .collect();
+    }
+}
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct InboundChannelSpec {
@@ -162,6 +177,15 @@ impl Interface<()> {
             data_inputs: self.data_inputs,
             _workflow: PhantomData,
         })
+    }
+}
+
+impl TakeHandle<InterfaceValidation<'_>> for () {
+    type Id = ();
+    type Handle = ();
+
+    fn take_handle(_env: &mut InterfaceValidation<'_>, _id: &Self::Id) {
+        // validation always succeeds
     }
 }
 

@@ -66,6 +66,7 @@ where
     type Id = str;
     type Handle = MessageSender<'a, T, C, W>;
 
+    // FIXME: check that channel exists
     fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Self::Handle {
         MessageSender {
             env: env.clone(),

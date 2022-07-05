@@ -174,7 +174,7 @@ where
 {
     /// Validates the provided module and wraps it.
     pub fn new(engine: &WorkflowEngine, module_bytes: &[u8]) -> anyhow::Result<Self> {
-        let module = wasmtime::Module::from_binary(&engine.inner, module_bytes)?;
+        let module = Module::from_binary(&engine.inner, module_bytes)?;
         WorkflowModule::validate_module(&module)?;
         let interface = WorkflowModule::interface_from_wasm(module_bytes)?;
         Ok(Self {
@@ -197,40 +197,56 @@ pub(crate) struct ModuleExports {
 }
 
 impl ModuleExports {
-    pub fn create_main_task(&self, cx: impl AsContextMut) -> Result<TaskId, Trap> {
-        let result = self.create_main_task.call(cx, ());
+    pub fn create_main_task(&self, ctx: StoreContextMut<'_, WorkflowData>) -> Result<TaskId, Trap> {
+        let result = self.create_main_task.call(ctx, ());
         crate::log_result!(result, "Created main task")
     }
 
-    pub fn poll_task(&self, cx: impl AsContextMut, task_id: TaskId) -> Result<Poll<()>, Trap> {
+    pub fn poll_task(
+        &self,
+        ctx: StoreContextMut<'_, WorkflowData>,
+        task_id: TaskId,
+    ) -> Result<Poll<()>, Trap> {
         let result = self
             .poll_task
-            .call(cx, (task_id, task_id))
+            .call(ctx, (task_id, task_id))
             .and_then(|res| <Poll<()>>::try_from_wasm(res).map_err(Trap::new));
         crate::log_result!(result, "Polled task {}", task_id)
     }
 
-    pub fn drop_task(&self, cx: impl AsContextMut, task_id: TaskId) -> Result<(), Trap> {
-        let result = self.drop_task.call(cx, task_id);
+    pub fn drop_task(
+        &self,
+        ctx: StoreContextMut<'_, WorkflowData>,
+        task_id: TaskId,
+    ) -> Result<(), Trap> {
+        let result = self.drop_task.call(ctx, task_id);
         crate::log_result!(result, "Dropped task {}", task_id)
     }
 
-    pub fn alloc_bytes(&self, cx: impl AsContextMut, capacity: u32) -> Result<u32, Trap> {
-        let result = self.alloc_bytes.call(cx, capacity);
+    pub fn alloc_bytes(
+        &self,
+        ctx: StoreContextMut<'_, WorkflowData>,
+        capacity: u32,
+    ) -> Result<u32, Trap> {
+        let result = self.alloc_bytes.call(ctx, capacity);
         crate::log_result!(result, "Allocated {} bytes", capacity)
     }
 
     pub fn create_waker(
         &self,
-        cx: impl AsContextMut,
+        ctx: StoreContextMut<'_, WorkflowData>,
         cx_ptr: WasmContextPtr,
     ) -> Result<WakerId, Trap> {
-        let result = self.create_waker.call(cx, cx_ptr);
+        let result = self.create_waker.call(ctx, cx_ptr);
         crate::log_result!(result, "Created waker from context {}", cx_ptr)
     }
 
-    pub fn wake_waker(&self, cx: impl AsContextMut, waker_id: WakerId) -> Result<(), Trap> {
-        let result = self.wake_waker.call(cx, waker_id);
+    pub fn wake_waker(
+        &self,
+        ctx: StoreContextMut<'_, WorkflowData>,
+        waker_id: WakerId,
+    ) -> Result<(), Trap> {
+        let result = self.wake_waker.call(ctx, waker_id);
         crate::log_result!(result, "Waked waker {}", waker_id)
     }
 }

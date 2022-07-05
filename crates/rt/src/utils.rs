@@ -1,6 +1,6 @@
 //! Misc utils.
 
-use wasmtime::{AsContext, Memory, StoreContextMut, Trap};
+use wasmtime::{AsContext, AsContextMut, Memory, StoreContextMut, Trap};
 
 use std::{fmt, task::Poll};
 
@@ -50,7 +50,7 @@ impl AllocateBytes for WasmAllocator<'_> {
         let bytes_len = u32::try_from(bytes.len())
             .map_err(|_| Trap::new("integer overflow for message length"))?;
         let exports = self.0.data().exports();
-        let ptr = exports.alloc_bytes(&mut self.0, bytes_len)?;
+        let ptr = exports.alloc_bytes(self.0.as_context_mut(), bytes_len)?;
 
         let host_ptr = usize::try_from(ptr).unwrap();
         let memory = self.0.data_mut().exports().memory;
