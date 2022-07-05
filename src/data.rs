@@ -3,7 +3,7 @@
 use std::{error, fmt, marker::PhantomData};
 
 use crate::{
-    codec::{Decoder, Encoder},
+    codec::{Decoder, Encoder, Raw},
     context::Wasm,
 };
 use tardigrade_shared::workflow::{Initialize, InputsBuilder, InterfaceValidation, TakeHandle};
@@ -88,6 +88,8 @@ impl<T, C: Encoder<T> + Default> Initialize for Data<T, C> {
         builder.insert(id, raw_data);
     }
 }
+
+pub type RawData = Data<Vec<u8>, Raw>;
 
 #[derive(Debug)]
 pub struct DataValidationError {

@@ -24,7 +24,7 @@ use std::{
 };
 
 use crate::{
-    channel::{imp as channel_imp, RawReceiver, RawSender, Receiver, Sender},
+    channel::{imp as channel_imp, Receiver, Sender},
     trace::Tracer,
     Data, Decoder, Encoder, SpawnWorkflow, Wasm,
 };
@@ -338,30 +338,15 @@ impl TestHost {
     }
 }
 
-impl TakeHandle<TestHost> for RawReceiver {
-    type Id = str;
-    type Handle = RawSender;
-
-    fn take_handle(env: &mut TestHost, id: &str) -> Self::Handle {
-        RawSender::new(channel_imp::MpscReceiver::take_handle(env, id))
-    }
-}
-
 impl<T, C: Encoder<T> + Default> TakeHandle<TestHost> for Receiver<T, C> {
     type Id = str;
     type Handle = Sender<T, C>;
 
     fn take_handle(env: &mut TestHost, id: &str) -> Self::Handle {
-        Sender::new(RawReceiver::take_handle(env, id), C::default())
-    }
-}
-
-impl TakeHandle<TestHost> for RawSender {
-    type Id = str;
-    type Handle = RawReceiver;
-
-    fn take_handle(env: &mut TestHost, id: &str) -> Self::Handle {
-        RawReceiver::new(channel_imp::MpscSender::take_handle(env, id))
+        Sender::new(
+            channel_imp::MpscReceiver::take_handle(env, id),
+            C::default(),
+        )
     }
 }
 
@@ -370,7 +355,7 @@ impl<T, C: Decoder<T> + Default> TakeHandle<TestHost> for Sender<T, C> {
     type Handle = Receiver<T, C>;
 
     fn take_handle(env: &mut TestHost, id: &str) -> Self::Handle {
-        Receiver::new(RawSender::take_handle(env, id), C::default())
+        Receiver::new(channel_imp::MpscSender::take_handle(env, id), C::default())
     }
 }
 

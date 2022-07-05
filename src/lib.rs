@@ -15,8 +15,8 @@ pub mod trace;
 pub use crate::codec::Json;
 pub use crate::{
     codec::{Decoder, Encoder},
-    context::{SpawnWorkflow, TaskHandle, Wasm},
-    data::Data,
+    context::{SpawnWorkflow, TaskHandle, UntypedHandle, Wasm},
+    data::{Data, RawData},
     ext::FutureExt,
     task::{spawn, yield_now, JoinHandle},
     time::sleep,

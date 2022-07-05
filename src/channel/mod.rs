@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::{
-    codec::{Decoder, Encoder},
+    codec::{Decoder, Encoder, Raw},
     Wasm,
 };
 use tardigrade_shared::{
@@ -31,49 +31,15 @@ pub(crate) mod imp;
 pub use self::broadcast::{BroadcastError, BroadcastPublisher, BroadcastSubscriber};
 
 pin_project! {
-    #[derive(Debug)]
-    #[repr(transparent)]
-    pub struct RawReceiver {
-        #[pin]
-        inner: imp::MpscReceiver,
-    }
-}
-
-impl RawReceiver {
-    pub(crate) fn new(inner: imp::MpscReceiver) -> Self {
-        Self { inner }
-    }
-}
-
-impl Stream for RawReceiver {
-    type Item = Vec<u8>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.project().inner.poll_next(cx)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.inner.size_hint()
-    }
-}
-
-impl TakeHandle<Wasm> for RawReceiver {
-    type Id = str;
-    type Handle = Self;
-
-    fn take_handle(env: &mut Wasm, id: &str) -> Self::Handle {
-        Self::new(imp::MpscReceiver::take_handle(env, id))
-    }
-}
-
-pin_project! {
     pub struct Receiver<T, C> {
         #[pin]
-        raw: RawReceiver,
+        raw: imp::MpscReceiver,
         codec: C,
         _item: PhantomData<T>,
     }
 }
+
+pub type RawReceiver = Receiver<Vec<u8>, Raw>;
 
 impl<T, C: fmt::Debug> fmt::Debug for Receiver<T, C> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -86,7 +52,7 @@ impl<T, C: fmt::Debug> fmt::Debug for Receiver<T, C> {
 }
 
 impl<T, C: Decoder<T>> Receiver<T, C> {
-    pub fn new(raw: RawReceiver, codec: C) -> Self {
+    pub(crate) fn new(raw: imp::MpscReceiver, codec: C) -> Self {
         Self {
             raw,
             codec,
@@ -120,7 +86,7 @@ where
     type Handle = Self;
 
     fn take_handle(env: &mut Wasm, id: &str) -> Self::Handle {
-        Self::new(RawReceiver::take_handle(env, id), C::default())
+        Self::new(imp::MpscReceiver::take_handle(env, id), C::default())
     }
 }
 
@@ -140,57 +106,15 @@ where
 }
 
 pin_project! {
-    #[derive(Debug, Clone)]
-    #[repr(transparent)]
-    pub struct RawSender {
-        #[pin]
-        inner: imp::MpscSender,
-    }
-}
-
-impl RawSender {
-    pub(crate) fn new(inner: imp::MpscSender) -> Self {
-        Self { inner }
-    }
-}
-
-impl TakeHandle<Wasm> for RawSender {
-    type Id = str;
-    type Handle = Self;
-
-    fn take_handle(env: &mut Wasm, id: &str) -> Self::Handle {
-        Self::new(imp::MpscSender::take_handle(env, id))
-    }
-}
-
-impl Sink<&[u8]> for RawSender {
-    type Error = Infallible;
-
-    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.project().inner.poll_ready(cx)
-    }
-
-    fn start_send(self: Pin<&mut Self>, item: &[u8]) -> Result<(), Self::Error> {
-        self.project().inner.start_send(item.as_ref())
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.project().inner.poll_flush(cx)
-    }
-
-    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.project().inner.poll_close(cx)
-    }
-}
-
-pin_project! {
     pub struct Sender<T, C> {
         #[pin]
-        raw: RawSender,
+        raw: imp::MpscSender,
         codec: C,
         _item: PhantomData<T>,
     }
 }
+
+pub type RawSender = Sender<Vec<u8>, Raw>;
 
 impl<T, C: fmt::Debug> fmt::Debug for Sender<T, C> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -213,7 +137,7 @@ impl<T, C: Encoder<T> + Clone> Clone for Sender<T, C> {
 }
 
 impl<T, C: Encoder<T>> Sender<T, C> {
-    pub fn new(raw: RawSender, codec: C) -> Self {
+    pub(crate) fn new(raw: imp::MpscSender, codec: C) -> Self {
         Self {
             raw,
             codec,
@@ -235,7 +159,7 @@ where
     type Handle = Self;
 
     fn take_handle(env: &mut Wasm, id: &str) -> Self::Handle {
-        Self::new(RawSender::take_handle(env, id), C::default())
+        Self::new(imp::MpscSender::take_handle(env, id), C::default())
     }
 }
 

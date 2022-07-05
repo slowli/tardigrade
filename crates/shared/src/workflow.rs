@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use std::{collections::HashMap, error, fmt, marker::PhantomData};
+use std::{collections::HashMap, error, fmt, marker::PhantomData, ops};
 
 pub trait TakeHandle<Env> {
     type Id: ?Sized;
@@ -62,6 +62,36 @@ impl OutboundChannelSpec {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DataInputSpec {
     // TODO: options?
+}
+
+/// Newtype for indexing data inputs, e.g., in an [`Interface`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DataInput<'a>(pub &'a str);
+
+impl fmt::Display for DataInput<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "data input `{}`", self.0)
+    }
+}
+
+/// Newtype for indexing inbound channels, e.g., in an [`Interface`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Inbound<'a>(pub &'a str);
+
+impl fmt::Display for Inbound<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "inbound channel `{}`", self.0)
+    }
+}
+
+/// Newtype for indexing outbound channels, e.g., in an [`Interface`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Outbound<'a>(pub &'a str);
+
+impl fmt::Display for Outbound<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "outbound channel `{}`", self.0)
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -169,6 +199,33 @@ impl<W: Initialize<Id = ()>> Interface<W> {
         let mut builder = self.inputs_builder();
         W::initialize(&mut builder, inputs, &());
         builder.build()
+    }
+}
+
+impl<W> ops::Index<DataInput<'_>> for Interface<W> {
+    type Output = DataInputSpec;
+
+    fn index(&self, index: DataInput<'_>) -> &Self::Output {
+        self.data_input(index.0)
+            .unwrap_or_else(|| panic!("{} is not defined", index))
+    }
+}
+
+impl<W> ops::Index<Inbound<'_>> for Interface<W> {
+    type Output = InboundChannelSpec;
+
+    fn index(&self, index: Inbound<'_>) -> &Self::Output {
+        self.inbound_channel(index.0)
+            .unwrap_or_else(|| panic!("{} is not defined", index))
+    }
+}
+
+impl<W> ops::Index<Outbound<'_>> for Interface<W> {
+    type Output = OutboundChannelSpec;
+
+    fn index(&self, index: Outbound<'_>) -> &Self::Output {
+        self.outbound_channel(index.0)
+            .unwrap_or_else(|| panic!("{} is not defined", index))
     }
 }
 
