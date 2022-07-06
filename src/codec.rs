@@ -11,7 +11,7 @@ pub trait Decoder<T> {
     ///
     /// # Errors
     ///
-    /// - Returns an error if `bytes` do not represent valid data.
+    /// Returns an error if `bytes` do not represent valid data.
     fn try_decode_bytes(&mut self, bytes: Vec<u8>) -> Result<T, Self::Error>;
 
     /// Decodes `bytes`. This is a convenience method that `unwrap()`s the result
@@ -19,7 +19,7 @@ pub trait Decoder<T> {
     ///
     /// # Panics
     ///
-    /// - Panics if `bytes` do not represent valid data.
+    /// Panics if `bytes` do not represent valid data.
     fn decode_bytes(&mut self, bytes: Vec<u8>) -> T {
         self.try_decode_bytes(bytes).expect("Cannot decode bytes")
     }
@@ -34,7 +34,7 @@ pub trait Encoder<T> {
     ///
     /// # Errors
     ///
-    /// - Returns an error if the value cannot be encoded.
+    /// Returns an error if the value cannot be encoded.
     fn try_encode_value(&mut self, value: T) -> Result<Vec<u8>, Self::Error>;
 
     /// Encodes `value`. This is a convenience method that `unwrap()`s the result

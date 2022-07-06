@@ -8,19 +8,19 @@ use crate::abi::{FromWasmError, TryFromWasm};
 
 /// Result of polling a receiver end of a channel.
 pub type PollMessage = Poll<Option<Vec<u8>>>;
-/// Result of polling a task.
+/// Result of polling a workflow task.
 pub type PollTask = Poll<Result<(), JoinError>>;
 
-/// ID of a waker.
+/// ID of a [`Waker`](std::task::Waker) defined by a workflow.
 pub type WakerId = u64;
-/// ID of a task.
+/// ID of a workflow task.
 pub type TaskId = u64;
-/// ID of a timer.
+/// ID of a workflow timer.
 pub type TimerId = u64;
-/// ID of a (traced) future.
+/// ID of a (traced) future defined by a workflow.
 pub type FutureId = u64;
 
-/// Errors that can occur when joining a task.
+/// Errors that can occur when joining a task (i.e., waiting for its completion).
 #[derive(Debug, Clone)]
 pub enum JoinError {
     /// The task was aborted.
@@ -66,9 +66,9 @@ impl TryFromWasm for TimerKind {
     }
 }
 
-/// Timer definition.
+/// Definition of a timer used by a workflow.
 #[derive(Debug, Clone, Copy)]
 pub struct TimerDefinition {
-    /// Expiration timestamp.
+    /// Expiration timestamp of the timer.
     pub expires_at: DateTime<Utc>,
 }

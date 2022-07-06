@@ -1,4 +1,4 @@
-//! Tracing functionality.
+//! Future tracing functionality.
 
 use serde::{Deserialize, Serialize};
 
@@ -98,7 +98,7 @@ impl FutureState {
     ///
     /// # Errors
     ///
-    /// - Returns an error if the update is inconsistent with the state.
+    /// Returns an error if the update is inconsistent with the state.
     pub fn update(&mut self, update: &FutureUpdateKind) -> Result<(), FutureUpdateError> {
         use self::FutureState::{Abandoned, Completed, Created, Dropped, Polling};
 
@@ -148,8 +148,8 @@ impl TracedFuture {
     ///
     /// # Errors
     ///
-    /// - Returns an error if the update is inconsistent with the current state of an existing
-    ///   traced future.
+    /// Returns an error if the update is inconsistent with the current state of an existing
+    /// traced future.
     pub fn update(map: &mut TracedFutures, update: FutureUpdate) -> Result<(), FutureUpdateError> {
         if let FutureUpdateKind::Created { name } = update.kind {
             let prev_state = map.insert(

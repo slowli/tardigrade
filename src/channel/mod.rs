@@ -1,4 +1,16 @@
-//! MPSC channels.
+//! Message channels for workflows.
+//!
+//! Channels have a similar interface to async [channels][future-chan] from the `futures` crate;
+//! their ends implement [`Stream`] / [`Sink`] traits.
+//! A workflow owns a single end of a channel (either an inbound [`Receiver`] or outbound
+//! [`Sender`]s), while the other end is owned by the host environment.
+//!
+//! A `Sender` or `Receiver` can be obtained from the environment using [`TakeHandle`] trait.
+//! This process is usually automated via workflow types. When executed in WASM, channels
+//! are backed by imported functions from the Tardigrade runtime. This is emulated for
+//! the [test environment](crate::test).
+//!
+//! [future-chan]: https://docs.rs/futures/latest/futures/channel/index.html
 
 use futures::{Sink, SinkExt, Stream};
 use pin_project_lite::pin_project;
@@ -31,6 +43,9 @@ pub use self::broadcast::{BroadcastError, BroadcastPublisher, BroadcastSubscribe
 
 pin_project! {
     /// Receiver for an inbound channel provided to the workflow.
+    ///
+    /// A receiver is characterized by the type of messages and the codec used to convert messages
+    /// from / to bytes.
     pub struct Receiver<T, C> {
         #[pin]
         raw: imp::MpscReceiver,
@@ -109,6 +124,14 @@ where
 
 pin_project! {
     /// Sender for an outbound channel provided to the workflow.
+    ///
+    /// A sender is characterized by the type of messages and the codec used to convert messages
+    /// from / to bytes.
+    ///
+    /// Unlike [`Receiver`]s, `Sender` parts of the channel can be cloned. Another difference
+    /// is ability to control readiness / flushing of outbound channels via channel capacity;
+    /// if the outbound channel reaches its capacity of non-flushed messages, it becomes not ready
+    /// to accept more messages.
     pub struct Sender<T, C> {
         #[pin]
         raw: imp::MpscSender,

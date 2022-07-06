@@ -37,6 +37,10 @@ mod imp {
 }
 
 /// WASM environment.
+///
+/// This type is used as a type param for the [`TakeHandle`] trait. The returned handles
+/// are ones provided via Tardigrade runtime imports for the WASM module, or emulated
+/// in case of [tests](crate::test).
 #[derive(Debug, Default)]
 pub struct Wasm(());
 
@@ -47,6 +51,9 @@ pub struct Wasm(());
 /// - Describe its interface
 /// - Take necessary channel / data input handles from the [`Wasm`] environment
 /// - Initialize from data inputs.
+///
+/// The supertraits are usually derived for workflow types using the corresponding macros,
+/// while `SpawnWorkflow` itself is easy to implement manually.
 pub trait SpawnWorkflow: GetInterface + TakeHandle<Wasm, Id = ()> + Initialize<Id = ()> {
     /// Spawns a workflow instance.
     fn spawn(handle: Self::Handle) -> TaskHandle;

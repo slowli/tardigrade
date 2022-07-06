@@ -1,4 +1,10 @@
-//! ABI.
+//! Simple WASM ABI for interaction between the host and the workflow client.
+//!
+//! In the future, this ABI could be replaced with [Canonical ABI] generated with [wit-bindgen].
+//! For now, a hand-written conversions between host and WASM environments are used instead.
+//!
+//! [Canonical ABI]: https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md
+//! [wit-bindgen]: https://github.com/bytecodealliance/wit-bindgen
 
 use std::{error, fmt, task::Poll};
 
@@ -13,7 +19,7 @@ pub trait WasmValue {}
 impl WasmValue for i32 {}
 impl WasmValue for i64 {}
 
-/// Simplest allocator interface.
+/// Simple WASM allocator interface.
 pub trait AllocateBytes {
     /// Allocation error.
     type Error: error::Error + 'static;
@@ -22,8 +28,8 @@ pub trait AllocateBytes {
     ///
     /// # Errors
     ///
-    /// - Returns an error on allocation failure (e.g., if the allocator runs out of available
-    ///   memory).
+    /// Returns an error on allocation failure (e.g., if the allocator runs out of available
+    /// memory).
     fn copy_to_wasm(&mut self, bytes: &[u8]) -> Result<(u32, u32), Self::Error>;
 }
 
@@ -37,7 +43,7 @@ pub trait IntoWasm: Sized {
     ///
     /// # Errors
     ///
-    /// - Returns an allocation error, if any occurs during the conversion.
+    /// Returns an allocation error, if any occurs during the conversion.
     fn into_wasm<A: AllocateBytes>(self, alloc: &mut A) -> Result<Self::Abi, A::Error>;
 
     /// Performs the conversion.
@@ -46,7 +52,7 @@ pub trait IntoWasm: Sized {
     ///
     /// This function is marked as unsafe because transformation from `abi` may involve
     /// transmutations, pointer casts etc. The caller is responsible that the function
-    /// is only called on the output of [`IntoAbi::into_abi()`].
+    /// is only called on the output of [`Self::into_wasm()`].
     unsafe fn from_abi_in_wasm(abi: Self::Abi) -> Self;
 }
 
@@ -62,7 +68,7 @@ pub trait TryFromWasm: Sized {
     ///
     /// # Errors
     ///
-    /// - Returns an error if the WASM value is invalid.
+    /// Returns an error if the WASM value is invalid.
     fn try_from_wasm(abi: Self::Abi) -> Result<Self, FromWasmError>;
 }
 

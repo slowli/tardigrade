@@ -203,7 +203,7 @@ impl<T: Clone> BroadcastPublisher<T> {
     ///
     /// # Panics
     ///
-    /// - Panics if `capacity` is zero.
+    /// Panics if `capacity` is zero.
     pub fn new(capacity: usize) -> Self {
         assert!(capacity > 0, "Broadcast channel capacity must be positive");
         let state = BroadcastState::new(capacity);

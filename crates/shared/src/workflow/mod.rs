@@ -1,4 +1,4 @@
-//! Workflow-related types.
+//! Workflow-related types, such as workflow interface definitions.
 
 // TODO: use a newtype instead of `()` for untyped workflows?
 
@@ -12,16 +12,18 @@ pub use self::handle::{
     ChannelKind, Handle, HandleError, HandleErrorKind, HandleLocation, TakeHandle,
 };
 
-/// Signals that a type can participate in initializing a workflow.
+/// Type that can contribute to initializing a workflow.
 ///
-/// This trait is sort of dual to [`TakeHandle`].
+/// This trait is sort of dual to [`TakeHandle`]. It is implemented for data inputs, and is derived
+/// for workflow types.
 pub trait Initialize {
-    /// Type of the initializer.
+    /// Type of the initializing value. For example, this is actual data for data inputs.
     type Init;
-    /// ID determining where to put the initializer.
+    /// ID determining where to put the initializer, usually a `str` (for named values)
+    /// or `()` (for singleton values).
     type Id: ?Sized;
 
-    /// Puts `init` into the `builder` using the provided "location" `id`.
+    /// Inserts `init`ialization data into `builder` using its "location" `id`.
     fn initialize(builder: &mut InputsBuilder, init: Self::Init, id: &Self::Id);
 }
 
@@ -182,11 +184,12 @@ impl Default for Interface<()> {
 
 impl<W> Interface<W> {
     /// Returns the version of this interface definition.
+    #[doc(hidden)]
     pub fn version(&self) -> u32 {
         self.version
     }
 
-    /// Returns spec for an inbound channel, or `None` if the channel with the specified `name`
+    /// Returns spec for an inbound channel, or `None` if a channel with the specified `name`
     /// is not present in this interface.
     pub fn inbound_channel(&self, name: &str) -> Option<&InboundChannelSpec> {
         self.inbound_channels.get(name)
@@ -201,7 +204,7 @@ impl<W> Interface<W> {
             .map(|(name, spec)| (name.as_str(), spec))
     }
 
-    /// Returns spec for an outbound channel, or `None` if the channel with the specified `name`
+    /// Returns spec for an outbound channel, or `None` if a channel with the specified `name`
     /// is not present in this interface.
     pub fn outbound_channel(&self, name: &str) -> Option<&OutboundChannelSpec> {
         self.outbound_channels.get(name)
@@ -216,7 +219,7 @@ impl<W> Interface<W> {
             .map(|(name, spec)| (name.as_str(), spec))
     }
 
-    /// Returns spec for a data input, or `None` if the data input with the specified `name`
+    /// Returns spec for a data input, or `None` if a data input with the specified `name`
     /// is not present in this interface.
     pub fn data_input(&self, name: &str) -> Option<&DataInputSpec> {
         self.data_inputs.get(name)
@@ -286,7 +289,7 @@ impl Interface<()> {
     ///
     /// # Panics
     ///
-    /// - Panics if `bytes` do not represent a valid interface definition.
+    /// Panics if `bytes` do not represent a valid interface definition.
     pub fn from_bytes(bytes: &[u8]) -> Self {
         serde_json::from_slice(bytes)
             .unwrap_or_else(|err| panic!("Cannot deserialize spec: {}", err))
@@ -296,9 +299,9 @@ impl Interface<()> {
     ///
     /// # Errors
     ///
-    /// - Returns an error if there is a mismatch between the interface of the workflow type
-    ///   and this interface, e.g., if the workflow type relies on a channel / data input
-    ///   not present in this interface.
+    /// Returns an error if there is a mismatch between the interface of the workflow type
+    /// and this interface, e.g., if the workflow type relies on a channel / data input
+    /// not present in this interface.
     pub fn downcast<W>(self) -> Result<Interface<W>, HandleError>
     where
         W: for<'a> TakeHandle<&'a Interface<()>, Id = ()>,
@@ -336,8 +339,8 @@ impl InputsBuilder {
     ///
     /// # Panics
     ///
-    /// - Panics if `name` does not correspond to a data input in the workflow interface.
-    ///   This can be checked beforehand using [`Self::requires_input()`].
+    /// Panics if `name` does not correspond to a data input in the workflow interface.
+    /// This can be checked beforehand using [`Self::requires_input()`].
     pub fn insert(&mut self, name: &str, raw_data: Vec<u8>) {
         let data_entry = self
             .inputs
@@ -366,7 +369,7 @@ impl InputsBuilder {
     ///
     /// # Panics
     ///
-    /// - Panics if any inputs are not supplied.
+    /// Panics if any inputs are not supplied.
     pub fn build(self) -> Inputs {
         let inputs = self.inputs.into_iter().map(|(name, maybe_data)| {
             let data =
@@ -392,7 +395,9 @@ impl Inputs {
     }
 }
 
-/// Allows obtaining an interface from the workflow.
+/// Allows obtaining an [`Interface`] for a workflow.
+///
+/// This trait should be derived for workflow types using the corresponding macro.
 pub trait GetInterface {
     /// Obtains the workflow interface.
     fn interface() -> Interface<Self>;

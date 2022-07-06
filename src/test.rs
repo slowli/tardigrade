@@ -1,4 +1,8 @@
-//! Mock utils.
+//! Utils for workflow testing.
+//!
+//! This emulates imports / exports provided to WASM workflow modules by the Tardigrade runtime,
+//! allowing to test workflow logic without launching a runtime (or even including
+//! the corresponding crate as a dev dependency).
 
 use chrono::{DateTime, Utc};
 use futures::{
@@ -117,7 +121,7 @@ pub struct TimersHandle {
     inner: PhantomData<*mut ()>,
 }
 
-#[allow(clippy::unused_self)] // included for future compatibility
+#[allow(clippy::unused_self)] // `self` included for future compatibility
 impl TimersHandle {
     /// Returns current time.
     pub fn now(&self) -> DateTime<Utc> {
@@ -279,7 +283,7 @@ impl Drop for RuntimeGuard {
     }
 }
 
-/// Workflow handle for the [test environment](TestEnv). Instance of such a handle is provided
+/// Workflow handle for the [test environment](TestHost). Instance of such a handle is provided
 /// to a closure in [`TestWorkflow::test()`].
 #[non_exhaustive]
 pub struct TestHandle<W: TestWorkflow> {
@@ -353,7 +357,11 @@ pub trait TestWorkflow: Sized + SpawnWorkflow + TakeHandle<TestHost, Id = ()> {
 
 impl<W> TestWorkflow for W where W: SpawnWorkflow + TakeHandle<TestHost, Id = ()> {}
 
-/// Host part of the test env.
+/// Host part of the test environment.
+///
+/// This type is used as a type param for the [`TakeHandle`] trait. The returned handles
+/// allow manipulating the workflow from the (emulated) host; for example, a handle
+/// for a [`Sender`] is a complementary [`Receiver`] (to receive emitted messages), and vice versa.
 #[derive(Debug)]
 pub struct TestHost(());
 
@@ -390,7 +398,7 @@ impl<T, C: Decoder<T> + Default> TakeHandle<TestHost> for Data<T, C> {
     }
 }
 
-/// Handle for traced futures in the [test environment](TestEnv).
+/// Handle for traced futures in the [test environment](TestHost).
 #[derive(Debug)]
 pub struct TracerHandle<C> {
     receiver: Fuse<Receiver<FutureUpdate, C>>,

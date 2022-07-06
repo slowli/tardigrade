@@ -19,6 +19,8 @@ mod imp;
 
 pin_project! {
     /// Handle to a spawned task.
+    ///
+    /// The handle can be used to abort the task, or to wait for task completion.
     #[derive(Debug)]
     #[repr(transparent)]
     pub struct JoinHandle<T> {
@@ -42,7 +44,8 @@ impl<T: 'static> Future for JoinHandle<T> {
     }
 }
 
-/// Spawns a new task.
+/// Spawns a new task and returns a handle that can be used to wait for its completion
+/// or abort the task.
 pub fn spawn<T: 'static>(
     task_name: &str,
     task: impl Future<Output = T> + 'static,
@@ -52,7 +55,7 @@ pub fn spawn<T: 'static>(
     }
 }
 
-/// Yields execution of a task, allowing to switch to other tasks.
+/// Yields execution of the current task, allowing to switch to other tasks.
 pub async fn yield_now() {
     #[derive(Debug)]
     struct Yield {

@@ -121,12 +121,12 @@ impl HandleError {
     }
 }
 
-/// Signals that a handle can be taken for this type in a certain environment.
+/// Type a handle of which can be taken in a certain environment.
 ///
 /// This trait is implemented for elements of the workflow interface (channels, data inputs),
-/// and can be derived using the corresponding macro.
+/// and can be derived for workflow types using the corresponding macro.
 pub trait TakeHandle<Env> {
-    /// ID of the handle, usually a `str` or `()` (for singleton handles).
+    /// ID of the handle, usually a `str` (for named handles) or `()` (for singleton handles).
     type Id: ?Sized;
     /// Type of the handle in a particular environment.
     type Handle;
@@ -135,7 +135,7 @@ pub trait TakeHandle<Env> {
     ///
     /// # Errors
     ///
-    /// - Returns an error if a handle with this ID is missing from the environment.
+    /// Returns an error if a handle with this ID is missing from the environment.
     fn take_handle(env: &mut Env, id: &Self::Id) -> Result<Self::Handle, HandleError>;
 }
 
