@@ -106,7 +106,7 @@ impl WorkflowData {
     }
 
     pub(crate) fn data_input(&self, input_name: &str) -> Option<Vec<u8>> {
-        self.data_inputs.get(input_name).map(|data| data.to_vec())
+        self.data_inputs.get(input_name).map(Message::to_vec)
     }
 }
 
@@ -126,10 +126,10 @@ impl WorkflowFunctions {
         crate::trace!(
             "Acquired data input `{}`: {}",
             input_name,
-            maybe_data
-                .as_ref()
-                .map(|bytes| format!("{} bytes", bytes.len()))
-                .unwrap_or_else(|| "(no data)".to_owned())
+            maybe_data.as_ref().map_or_else(
+                || "(no data)".to_owned(),
+                |bytes| format!("{} bytes", bytes.len())
+            )
         );
         maybe_data.into_wasm(&mut WasmAllocator::new(ctx))
     }

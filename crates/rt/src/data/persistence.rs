@@ -16,6 +16,7 @@ use super::{
 use crate::{TaskId, WakerId};
 use tardigrade_shared::workflow::Interface;
 
+/// Error persisting a [`Workflow`](crate::Workflow).
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum PersistError {

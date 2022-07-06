@@ -45,6 +45,7 @@ impl TaskQueue {
     }
 }
 
+/// State of task within a [`Workflow`](crate::Workflow).
 #[derive(Debug, Clone)]
 pub struct TaskState {
     name: String,
@@ -63,14 +64,17 @@ impl TaskState {
         }
     }
 
+    /// Returns human-readable task name that was specified when spawning the task.
     pub fn name(&self) -> &str {
         &self.name
     }
 
+    /// Returns a function (usually, another task) that has spawned this task.
     pub fn spawned_by(&self) -> &ExecutedFunction {
         &self.spawned_by
     }
 
+    /// Returns current poll state of this task.
     pub fn result(&self) -> Poll<Result<(), &JoinError>> {
         match &self.completion_result {
             Poll::Pending => Poll::Pending,

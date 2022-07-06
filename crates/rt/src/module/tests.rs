@@ -42,6 +42,7 @@ pub(crate) struct ExportsMock {
     poll_fns: Answers<MockPollFn>,
 }
 
+#[allow(clippy::unnecessary_wraps)] // required by mock interface
 impl ExportsMock {
     pub const MOCK_MODULE_BYTES: &'static [u8] = b"\0asm\x01\0\0\0";
 

@@ -51,12 +51,14 @@ impl StaticStr {
     }
 }
 
+#[allow(clippy::cast_sign_loss)]
 fn decode_message_poll(poll_res: i64) -> (u32, u32) {
     let ptr = ((poll_res as u64) >> 32) as u32;
     let len = (poll_res & 0x_ffff_ffff) as u32;
     (ptr, len)
 }
 
+#[allow(clippy::unnecessary_wraps)] // more convenient for use with mock `Answers`
 fn initialize_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
     StaticStr::alloc(&mut ctx);
 
@@ -77,6 +79,7 @@ fn initialize_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()
     Ok(Poll::Pending)
 }
 
+#[allow(clippy::unnecessary_wraps)] // more convenient for use with mock `Answers`
 fn consume_message(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
     // Poll the channel again, since we yielded on this previously
     let (ptr, len) = StaticStr::Orders.ptr_and_len();

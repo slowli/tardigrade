@@ -37,12 +37,14 @@ where
         .with_context(|| format!("`{}` function has incorrect return types", fn_name))
 }
 
+/// WASM linker extension allowing to define additional functions (besides ones provided
+/// by the Tardigrade runtime) to be imported into the workflow WASM module.
 pub trait ExtendLinker: 'static {
+    /// Name of the module imported into WASM.
     const MODULE_NAME: &'static str;
 
-    type Functions: IntoIterator<Item = (&'static str, Func)>;
-
-    fn functions(&self, store: &mut Store<WorkflowData>) -> Self::Functions;
+    /// Returns function imports provided by this extension.
+    fn functions(&self, store: &mut Store<WorkflowData>) -> Vec<(&'static str, Func)>;
 }
 
 /// Object-safe version of `ExtendLinker`.
@@ -67,11 +69,22 @@ impl<T: ExtendLinker> LowLevelExtendLinker for T {
     }
 }
 
+/// Workflow engine, essentially a thin wrapper around [`Engine`] from wasmtime.
 #[derive(Default)]
 pub struct WorkflowEngine {
     inner: Engine,
 }
 
+impl fmt::Debug for WorkflowEngine {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WorkflowEngine")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Workflow module that combines a WASM module with the workflow logic and the declared
+/// workflow [`Interface`].
 pub struct WorkflowModule<W> {
     pub(crate) inner: Module,
     interface: Interface<W>,
@@ -83,7 +96,7 @@ impl<W> fmt::Debug for WorkflowModule<W> {
         formatter
             .debug_struct("WorkflowModule")
             .field("interface", &self.interface)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -154,10 +167,13 @@ impl WorkflowModule<()> {
 }
 
 impl<W> WorkflowModule<W> {
+    /// Returns the interface of this module.
     pub fn interface(&self) -> &Interface<W> {
         &self.interface
     }
 
+    /// Inserts imports into the module linker, allowing the workflow in the module depend
+    /// on additional imports besides ones provided by the Tardigrade runtime.
     pub fn insert_imports(&mut self, imports: impl ExtendLinker) -> &mut Self {
         self.linker_extensions.push(Box::new(imports));
         self
@@ -179,7 +195,18 @@ impl<W> WorkflowModule<W>
 where
     W: for<'a> TakeHandle<&'a Interface<()>, Id = ()>,
 {
-    /// Validates the provided module and wraps it.
+    /// Validates the provided WASM module and wraps it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error in any of the following cases:
+    ///
+    /// - `module_bytes` is not a valid WASM module.
+    /// - The module has bogus imports from the `tardigrade_rt` module, such as an unknown function
+    ///   or a known functions with an incorrect signature.
+    /// - The module does not have necessary exports.
+    /// - The module does not have a custom section with the workflow interface definition.
+    /// - The workflow interface definition does not match the interface implied by type param `W`.
     pub fn new(engine: &WorkflowEngine, module_bytes: &[u8]) -> anyhow::Result<Self> {
         let module =
             Module::from_binary(&engine.inner, module_bytes).context("cannot parse WASM module")?;
@@ -399,10 +426,8 @@ impl ModuleImports {
 impl ExtendLinker for WorkflowFunctions {
     const MODULE_NAME: &'static str = "tardigrade_rt";
 
-    type Functions = [(&'static str, Func); 14];
-
-    fn functions(&self, store: &mut Store<WorkflowData>) -> Self::Functions {
-        [
+    fn functions(&self, store: &mut Store<WorkflowData>) -> Vec<(&'static str, Func)> {
+        vec![
             // Task functions
             (
                 "task::poll_completion",

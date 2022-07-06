@@ -4,13 +4,16 @@ use anyhow::Context;
 use chrono::{DateTime, Utc};
 use wasmtime::{AsContextMut, Linker, Store, Trap};
 
-use std::task::Poll;
+use std::{fmt, task::Poll};
 
 mod env;
 #[cfg(test)]
 mod tests;
 
-pub use self::env::{DataPeeker, MessageReceiver, MessageSender, WorkflowEnv, WorkflowHandle};
+pub use self::env::{
+    DataPeeker, MessageReceiver, MessageSender, SentMessage, TakenMessages, WorkflowEnv,
+    WorkflowHandle,
+};
 
 use crate::{
     data::{ConsumeError, PersistError, TaskState, TimerState, WorkflowData, WorkflowState},
@@ -21,22 +24,42 @@ use crate::{
     },
     TaskId, TimerId,
 };
-use tardigrade_shared::workflow::{HandleError, Initialize, Interface, TakeHandle};
+use tardigrade_shared::workflow::{Initialize, Interface, TakeHandle};
 
+/// Persisted version of a [`Workflow`] containing the state of its external dependencies
+/// (channels and timers), and its linear WASM memory.
 #[derive(Debug)]
+// TODO: getters and/or `serde` (de)serialization
 pub struct PersistedWorkflow {
     state: WorkflowState,
     memory: Vec<u8>,
 }
 
 /// Workflow instance.
-#[derive(Debug)]
 pub struct Workflow<W> {
     store: Store<WorkflowData>,
     interface: Interface<W>,
 }
 
+impl<W> fmt::Debug for Workflow<W> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Workflow")
+            .field("store", &self.store)
+            .field("interface", &self.interface)
+            .finish()
+    }
+}
+
 impl<W: Initialize<Id = ()>> Workflow<W> {
+    /// Instantiates a new workflow from the `module` and the provided `inputs`.
+    ///
+    /// # Errors
+    ///
+    /// - Returns an error in case preparations for instantiation (e.g., extending the WASM linker
+    ///   with imports) fails.
+    /// - Returns an error if a trap occurs when spawning the main task for the workflow
+    ///   or polling it.
     pub fn new(module: &WorkflowModule<W>, inputs: W::Init) -> anyhow::Result<Receipt<Self>> {
         let raw_inputs = module.interface().create_inputs(inputs);
         let state = WorkflowData::from_interface(module.interface(), raw_inputs.into_inner());
@@ -52,8 +75,10 @@ impl<'a, W> Workflow<W>
 where
     W: TakeHandle<WorkflowEnv<'a, W>, Id = ()> + 'a,
 {
-    pub fn handle(&'a mut self) -> Result<WorkflowHandle<'a, W>, HandleError> {
-        WorkflowHandle::new(self)
+    /// Gets a handle for this workflow allowing to interact with its channels.
+    #[allow(clippy::missing_panics_doc)] // TODO: is `unwrap()` really safe here?
+    pub fn handle(&'a mut self) -> WorkflowHandle<'a, W> {
+        WorkflowHandle::new(self).unwrap()
     }
 }
 
@@ -83,10 +108,12 @@ impl<W> Workflow<W> {
         Ok(())
     }
 
+    /// Returns the current state of a task with the specified ID.
     pub fn task(&self, task_id: TaskId) -> Option<&TaskState> {
         self.store.data().task(task_id)
     }
 
+    /// Lists all tasks in this workflow.
     pub fn tasks(&self) -> impl Iterator<Item = (TaskId, &TaskState)> + '_ {
         self.store.data().tasks()
     }
@@ -145,13 +172,13 @@ impl<W> Workflow<W> {
         receipt.executions.push(Execution { function, events });
 
         // On error, we don't drop tasks mentioned in `resource_events`.
-        let output = output?;
+        output?;
 
         for task_id in dropped_tasks {
             let function = ExecutedFunction::TaskDrop { task_id };
             self.execute(function, receipt)?;
         }
-        Ok(output)
+        Ok(())
     }
 
     fn dropped_tasks(events: &[Event]) -> Vec<TaskId> {
@@ -198,7 +225,7 @@ impl<W> Workflow<W> {
     }
 
     // FIXME: revert actions (sending messages, spawning tasks) on task panic
-    pub fn tick(&mut self) -> Result<Receipt, ExecutionError> {
+    fn tick(&mut self) -> Result<Receipt, ExecutionError> {
         let mut receipt = Receipt::new();
         match self.do_tick(&mut receipt) {
             Ok(()) => Ok(receipt),
@@ -248,24 +275,38 @@ impl<W> Workflow<W> {
         (start_idx, messages)
     }
 
+    /// Returns the current time for the workflow.
     pub fn current_time(&self) -> DateTime<Utc> {
         self.store.data().timers().current_time()
     }
 
+    /// Sets the current time for the workflow and completes the relevant timers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if workflow execution traps.
     pub fn set_current_time(&mut self, time: DateTime<Utc>) -> Result<Receipt, ExecutionError> {
         self.store.data_mut().set_current_time(time);
         crate::trace!("Set current time to {}", time);
         self.tick()
     }
 
+    /// Returns a timer with the specified `id`.
     pub fn timer(&self, id: TimerId) -> Option<&TimerState> {
         self.store.data().timers().get(id)
     }
 
+    /// Enumerates all timers together with their states.
     pub fn timers(&self) -> impl Iterator<Item = (TimerId, &TimerState)> + '_ {
         self.store.data().timers().iter()
     }
 
+    /// Persists this workflow.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the workflow is in such a state that it cannot be persisted
+    /// right now.
     pub fn persist(&self) -> Result<PersistedWorkflow, PersistError> {
         let state = self.store.data().persist()?;
         let memory = self.store.data().exports().memory;
@@ -273,6 +314,12 @@ impl<W> Workflow<W> {
         Ok(PersistedWorkflow { state, memory })
     }
 
+    /// Restores a workflow from the persisted state and the `module` defining the workflow.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the workflow definition from `module` and the `persisted` state
+    /// do not match (e.g., differ in defined channels / data inputs).
     pub fn restored(
         module: &WorkflowModule<W>,
         persisted: PersistedWorkflow,

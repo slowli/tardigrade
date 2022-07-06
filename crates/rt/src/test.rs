@@ -7,12 +7,15 @@ use std::{
     sync::{Mutex, PoisonError},
 };
 
+/// Options for the `wasm-opt` optimizer.
 #[derive(Debug)]
 pub struct WasmOpt {
     wasm_opt_command: String,
     args: Vec<String>,
 }
 
+/// Provides reasonable defaults: `-Os` optimization level, `--enable-mutable-globals`
+/// (mutable globals are used by Rust, e.g. for the shadow stack pointer), and `--strip-debug`.
 impl Default for WasmOpt {
     fn default() -> Self {
         Self {
@@ -41,16 +44,16 @@ impl WasmOpt {
             .expect("cannot run wasm-opt");
 
         let exit_status = command.wait().expect("failed waiting for wasm-opt");
-        if !exit_status.success() {
-            panic!(
-                "Optimizing WASM module finished abnormally: {}",
-                exit_status
-            );
-        }
+        assert!(
+            exit_status.success(),
+            "Optimizing WASM module finished abnormally: {}",
+            exit_status
+        );
         opt_wasm_file
     }
 }
 
+/// Compiler for WASM modules.
 #[derive(Debug)]
 pub struct ModuleCompiler {
     package_name: &'static str,
@@ -63,6 +66,8 @@ pub struct ModuleCompiler {
 impl ModuleCompiler {
     const TARGET: &'static str = "wasm32-unknown-unknown";
 
+    /// Creates a compiler for the specified package. Usually, this should be
+    /// `env!("CARGO_PKG_NAME")`.
     pub fn new(package_name: &'static str) -> Self {
         Self {
             package_name,
@@ -77,18 +82,24 @@ impl ModuleCompiler {
         *self.cache.get_mut().unwrap_or_else(PoisonError::into_inner) = None;
     }
 
+    /// Sets the build profile. By default, profile is set to `release`, but it may make sense
+    /// to create a separate profile for WASM compilation, e.g., to optimize for size and
+    /// to enable link-time optimization.
     pub fn set_profile(&mut self, profile: &'static str) -> &mut Self {
         self.drop_cache();
         self.profile = profile;
         self
     }
 
+    /// Sets the stack size in bytes, which sets the `-zstack-size` link arg. By default,
+    /// this arg is not set, and stack size defaults to 1 MB.
     pub fn set_stack_size(&mut self, stack_size: usize) -> &mut Self {
         self.drop_cache();
         self.stack_size = Some(stack_size);
         self
     }
 
+    /// Sets WASM optimization options.
     pub fn set_wasm_opt(&mut self, options: WasmOpt) -> &mut Self {
         self.drop_cache();
         self.wasm_opt = Some(options);
@@ -107,9 +118,11 @@ impl ModuleCompiler {
     fn wasm_target_dir(&self, target_dir: PathBuf) -> PathBuf {
         let mut root_dir = target_dir;
         while !root_dir.join(Self::TARGET).is_dir() {
-            if !root_dir.pop() {
-                panic!("Cannot find dir for the `{}` target", Self::TARGET);
-            }
+            assert!(
+                root_dir.pop(),
+                "Cannot find dir for the `{}` target",
+                Self::TARGET
+            );
         }
         root_dir.join(Self::TARGET).join(self.profile)
     }
@@ -136,9 +149,11 @@ impl ModuleCompiler {
             .spawn()
             .expect("cannot run cargo");
         let exit_status = command.wait().expect("failed waiting for cargo");
-        if !exit_status.success() {
-            panic!("Compiling WASM module finished abnormally: {}", exit_status);
-        }
+        assert!(
+            exit_status.success(),
+            "Compiling WASM module finished abnormally: {}",
+            exit_status
+        );
         self.wasm_file()
     }
 
@@ -151,6 +166,12 @@ impl ModuleCompiler {
         }
     }
 
+    /// Compiles the WASM module and returns its bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any error occurs during compilation or optimization. In this case, the output
+    /// of `cargo build` / `wasm-opt` will be available to determine the error cause.
     pub fn compile(&self) -> Vec<u8> {
         let wasm_file = {
             let mut guard = self.cache.lock().unwrap_or_else(PoisonError::into_inner);

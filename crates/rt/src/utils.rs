@@ -8,6 +8,7 @@ use crate::data::WorkflowData;
 use tardigrade_shared::abi::AllocateBytes;
 
 #[macro_export]
+#[doc(hidden)] // not public
 macro_rules! trace {
     ($($arg:tt)*) => {
         log::trace!(target: "tardigrade_rt", $($arg)*);
@@ -15,6 +16,7 @@ macro_rules! trace {
 }
 
 #[macro_export]
+#[doc(hidden)] // not public
 macro_rules! log_result {
     ($result:tt, $($arg:tt)*) => {{
         match &$result {

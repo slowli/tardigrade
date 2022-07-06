@@ -166,7 +166,7 @@ impl CurrentExecution {
             kind: ChannelEventKind::InboundChannelPolled,
             channel_name: channel_name.to_owned(),
             result: drop_value(result),
-        })
+        });
     }
 
     pub fn push_outbound_channel_event(
@@ -200,7 +200,7 @@ impl CurrentExecution {
     }
 
     pub fn commit(self, state: &mut WorkflowData) -> Vec<Event> {
-        use self::ResourceEventKind::*;
+        use self::ResourceEventKind::{Created, Dropped};
 
         crate::trace!("Committing {:?} onto {:?}", self, state);
         for event in Self::resource_events(&self.events) {
@@ -225,7 +225,7 @@ impl CurrentExecution {
     }
 
     pub fn revert(self, state: &mut WorkflowData) -> Vec<Event> {
-        use self::ResourceEventKind::*;
+        use self::ResourceEventKind::Created;
 
         crate::trace!("Reverting {:?} from {:?}", self, state);
         for event in Self::resource_events(&self.events) {

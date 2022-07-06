@@ -23,6 +23,7 @@ use tardigrade_shared::{
     TimerDefinition, TimerKind,
 };
 
+/// State of a [`Workflow`](crate::Workflow) timer.
 #[derive(Debug, Clone)]
 pub struct TimerState {
     definition: TimerDefinition,
@@ -31,10 +32,12 @@ pub struct TimerState {
 }
 
 impl TimerState {
+    /// Returns a copy of the timer definition.
     pub fn definition(&self) -> TimerDefinition {
         self.definition
     }
 
+    /// Returns `true` iff the timer has completed.
     pub fn is_completed(&self) -> bool {
         self.is_completed
     }

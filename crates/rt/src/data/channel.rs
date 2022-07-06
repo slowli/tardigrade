@@ -19,11 +19,10 @@ use tardigrade_shared::{
     PollMessage,
 };
 
+/// Kind of a [`ConsumeError`].
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum ConsumeErrorKind {
-    /// Channel is not registered in the workflow interface.
-    UnknownChannel,
     /// No tasks listen to the channel.
     NotListened,
 }
@@ -41,12 +40,13 @@ impl ConsumeErrorKind {
 impl fmt::Display for ConsumeErrorKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::UnknownChannel => "channel is not registered in the workflow interface",
             Self::NotListened => "channel not currently listened to",
         })
     }
 }
 
+/// Errors that can occur when feeding a message to an inbound
+/// [`Workflow`](crate::Workflow) channel.
 #[derive(Debug)]
 pub struct ConsumeError {
     channel_name: String,
@@ -58,7 +58,7 @@ impl fmt::Display for ConsumeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "cannot push message ({} bytes) into channel `{}`: {}",
+            "cannot push message ({} bytes) into inbound channel `{}`: {}",
             self.message.len(),
             self.channel_name,
             self.kind
@@ -69,14 +69,17 @@ impl fmt::Display for ConsumeError {
 impl error::Error for ConsumeError {}
 
 impl ConsumeError {
+    /// Returns the kind of this error.
     pub fn kind(&self) -> &ConsumeErrorKind {
         &self.kind
     }
 
+    /// Returns the channel name.
     pub fn channel_name(&self) -> &str {
         &self.channel_name
     }
 
+    /// Retrieves message bytes from this error.
     pub fn into_message(self) -> Vec<u8> {
         self.message
     }
@@ -130,12 +133,9 @@ impl WorkflowData {
         channel_name: &str,
         message: Vec<u8>,
     ) -> Result<(), ConsumeError> {
-        let channel_state = match self.inbound_channels.get_mut(channel_name) {
-            Some(state) => state,
-            None => {
-                return Err(ConsumeErrorKind::UnknownChannel.for_message(channel_name, message));
-            }
-        };
+        let channel_state = self.inbound_channels.get_mut(channel_name).unwrap();
+        // ^ `unwrap()` safety is guaranteed by the `WorkflowEnv` shim
+
         if channel_state.wakes_on_next_element.is_empty() {
             return Err(ConsumeErrorKind::NotListened.for_message(channel_name, message));
         }

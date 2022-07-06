@@ -4,7 +4,7 @@
 
 use anyhow::Context;
 
-use std::{cell::RefCell, marker::PhantomData, ops::Range, rc::Rc};
+use std::{cell::RefCell, fmt, marker::PhantomData, ops::Range, rc::Rc};
 
 use crate::{
     receipt::{ExecutionError, Receipt},
@@ -21,9 +21,21 @@ use tardigrade::{
 };
 
 /// Environment for a [`Workflow`].
-#[derive(Debug)]
+///
+/// This type is used as a type param for the [`TakeHandle`] trait. The returned handles
+/// allow interacting with the workflow (e.g., [send messages](MessageSender) via inbound channels
+/// and [take messages](MessageReceiver) from outbound channels).
 pub struct WorkflowEnv<'a, W> {
     inner: Rc<RefCell<&'a mut Workflow<W>>>,
+}
+
+impl<W> fmt::Debug for WorkflowEnv<'_, W> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WorkflowEnv")
+            .field("inner", &self.inner)
+            .finish()
+    }
 }
 
 impl<W> Clone for WorkflowEnv<'_, W> {
@@ -62,8 +74,8 @@ impl<'a, T, C: Encoder<T>, W> MessageSender<'a, T, C, W> {
     ///
     /// # Errors
     ///
-    /// - Returns an error if the workflow is currently not waiting for messages
-    ///   on the associated inbound channel.
+    /// Returns an error if the workflow is currently not waiting for messages
+    /// on the associated inbound channel.
     pub fn send(&mut self, message: T) -> Result<SentMessage<'a, W>, ConsumeError> {
         let raw_message = self.codec.encode_value(message);
         self.env
@@ -75,6 +87,7 @@ impl<'a, T, C: Encoder<T>, W> MessageSender<'a, T, C, W> {
 }
 
 /// Result of sending a message over an inbound channel.
+#[derive(Debug)]
 #[must_use = "must be `flush`ed to progress the workflow"]
 pub struct SentMessage<'a, W> {
     env: WorkflowEnv<'a, W>,
@@ -82,6 +95,10 @@ pub struct SentMessage<'a, W> {
 
 impl<W> SentMessage<'_, W> {
     /// Progresses the workflow after an inbound message is consumed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if workflow execution traps.
     pub fn flush(self) -> Result<Receipt, ExecutionError> {
         self.env.with(Workflow::tick)
     }
@@ -109,7 +126,7 @@ where
     }
 }
 
-/// Handle for an [outbound channel](Sender) that allows taking messages
+/// Handle for an [outbound workflow channel](Sender) that allows taking messages
 /// from the channel.
 #[derive(Debug)]
 pub struct MessageReceiver<'a, T, C, W> {
@@ -121,6 +138,10 @@ pub struct MessageReceiver<'a, T, C, W> {
 
 impl<T, C: Decoder<T>, W> MessageReceiver<'_, T, C, W> {
     /// Takes messages from the channel and progresses the flow marking the channel as flushed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if workflow execution traps.
     pub fn take_messages(&mut self) -> Result<Receipt<TakenMessages<T, C>>, ExecutionError> {
         let (start_idx, raw_messages, exec_result) = self.env.with(|workflow| {
             let (start_idx, messages) = workflow.take_outbound_messages(&self.channel_name);
@@ -136,7 +157,7 @@ impl<T, C: Decoder<T>, W> MessageReceiver<'_, T, C, W> {
     }
 }
 
-/// Result of taking messages from an outbound channel.
+/// Result of taking messages from an outbound workflow channel.
 #[derive(Debug)]
 pub struct TakenMessages<'a, T, C> {
     start_idx: usize,
@@ -152,6 +173,10 @@ impl<T, C: Decoder<T>> TakenMessages<'_, T, C> {
     }
 
     /// Tries to decode the taken messages.
+    ///
+    /// # Errors
+    ///
+    /// Returns a decoding error, if any.
     pub fn decode(self) -> Result<Vec<T>, C::Error> {
         self.raw_messages
             .into_iter()
@@ -193,6 +218,7 @@ pub struct DataPeeker<'a, T, C, W> {
 
 impl<T, C: Decoder<T>, W> DataPeeker<'_, T, C, W> {
     /// Retrieves the data input.
+    #[allow(clippy::missing_panics_doc)] // we've checked that the data input exists previously
     pub fn get(&mut self) -> T {
         let raw_input = self
             .env
@@ -291,6 +317,20 @@ where
     /// API interface of the workflow, e.g. its inbound and outbound channels.
     pub api: <W as TakeHandle<WorkflowEnv<'a, W>>>::Handle,
     env: WorkflowEnv<'a, W>,
+}
+
+impl<'a, W> fmt::Debug for WorkflowHandle<'a, W>
+where
+    W: TakeHandle<WorkflowEnv<'a, W>, Id = ()> + 'a,
+    <W as TakeHandle<WorkflowEnv<'a, W>>>::Handle: fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WorkflowHandle")
+            .field("api", &self.api)
+            .field("env", &self.env)
+            .finish()
+    }
 }
 
 impl<'a, W> WorkflowHandle<'a, W>
