@@ -31,7 +31,7 @@ pub use crate::{
     module::{ExtendLinker, WorkflowEngine, WorkflowModule},
     workflow::{
         DataPeeker, MessageReceiver, MessageSender, PersistedWorkflow, SentMessage, TakenMessages,
-        Workflow, WorkflowHandle, WorkflowEnv,
+        Workflow, WorkflowEnv, WorkflowHandle,
     },
 };
 pub use tardigrade_shared::{FutureId, TaskId, TimerId, WakerId};

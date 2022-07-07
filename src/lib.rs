@@ -32,7 +32,7 @@
 //!
 //! [`Future`]: std::future::Future
 //! [future-chan]: https://docs.rs/futures/latest/futures/channel/index.html
-//! [`Interface`]: crate::workflow::Interface
+//! [`Interface`]: crate::interface::Interface
 
 #![warn(missing_debug_implementations, missing_docs, bare_trait_objects)]
 #![warn(clippy::all, clippy::pedantic)]
@@ -40,7 +40,6 @@
 
 pub mod channel;
 mod codec;
-mod context;
 mod data;
 mod ext;
 mod task;
@@ -48,34 +47,25 @@ mod task;
 pub mod test;
 mod time;
 pub mod trace;
+pub mod workflow;
 
 #[cfg(feature = "serde_json")]
 pub use crate::codec::Json;
 pub use crate::{
     codec::{Decoder, Encoder, Raw},
-    context::{SpawnWorkflow, TaskHandle, UntypedHandle, Wasm},
     data::{Data, RawData},
     ext::FutureExt,
     task::{spawn, yield_now, JoinHandle},
     time::sleep,
 };
 
-pub mod workflow {
-    //! Workflow-related types.
-
-    // Re-export some types from the shared crate for convenience.
-    pub use tardigrade_shared::workflow::*;
-
-    #[cfg(feature = "derive")]
-    pub use tardigrade_derive::GetInterface;
-}
-
 #[cfg(feature = "derive")]
 pub use tardigrade_derive::{handle, init};
+pub use tardigrade_shared::interface;
 
 /// Creates an entry point for the specified workflow type.
 ///
-/// The specified type must implement [`SpawnWorkflow`].
+/// The specified type must implement [`SpawnWorkflow`](crate::workflow::SpawnWorkflow).
 #[macro_export]
 macro_rules! workflow_entry {
     ($workflow:ty) => {

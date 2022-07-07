@@ -9,11 +9,11 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::context::Wasm;
-use tardigrade_shared::{
-    abi::IntoWasm,
-    workflow::{HandleError, HandleErrorKind, InboundChannel, OutboundChannel, TakeHandle},
+use crate::{
+    interface::{AccessError, AccessErrorKind, InboundChannel, OutboundChannel},
+    workflow::{TakeHandle, Wasm},
 };
+use tardigrade_shared::abi::IntoWasm;
 
 #[derive(Debug)]
 pub struct MpscReceiver {
@@ -24,7 +24,7 @@ impl TakeHandle<Wasm> for MpscReceiver {
     type Id = str;
     type Handle = Self;
 
-    fn take_handle(_env: &mut Wasm, id: &str) -> Result<Self, HandleError> {
+    fn take_handle(_env: &mut Wasm, id: &str) -> Result<Self, AccessError> {
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
             #[link_name = "mpsc_receiver::get"]
@@ -33,7 +33,7 @@ impl TakeHandle<Wasm> for MpscReceiver {
 
         unsafe {
             let result = mpsc_receiver_get(id.as_ptr(), id.len());
-            Result::<(), HandleErrorKind>::from_abi_in_wasm(result)
+            Result::<(), AccessErrorKind>::from_abi_in_wasm(result)
                 .map(|()| Self {
                     channel_name: id.to_owned(),
                 })
@@ -75,7 +75,7 @@ impl TakeHandle<Wasm> for MpscSender {
     type Id = str;
     type Handle = Self;
 
-    fn take_handle(_env: &mut Wasm, id: &str) -> Result<Self, HandleError> {
+    fn take_handle(_env: &mut Wasm, id: &str) -> Result<Self, AccessError> {
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
             #[link_name = "mpsc_sender::get"]
@@ -84,7 +84,7 @@ impl TakeHandle<Wasm> for MpscSender {
 
         unsafe {
             let result = mpsc_sender_get(id.as_ptr(), id.len());
-            Result::<(), HandleErrorKind>::from_abi_in_wasm(result)
+            Result::<(), AccessErrorKind>::from_abi_in_wasm(result)
                 .map(|()| Self {
                     channel_name: id.to_owned(),
                 })

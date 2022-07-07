@@ -10,10 +10,10 @@ use std::{
 };
 
 use crate::{
+    interface::AccessError,
     test::{Runtime, TestHost},
-    Wasm,
+    workflow::{TakeHandle, Wasm},
 };
-use tardigrade_shared::workflow::{HandleError, TakeHandle};
 
 pub type MpscReceiver = mpsc::UnboundedReceiver<Vec<u8>>;
 
@@ -21,7 +21,7 @@ impl TakeHandle<Wasm> for MpscReceiver {
     type Id = str;
     type Handle = Self;
 
-    fn take_handle(_env: &mut Wasm, id: &str) -> Result<Self, HandleError> {
+    fn take_handle(_env: &mut Wasm, id: &str) -> Result<Self, AccessError> {
         Runtime::with_mut(|rt| rt.take_inbound_channel(id))
     }
 }
@@ -30,7 +30,7 @@ impl TakeHandle<TestHost> for MpscReceiver {
     type Id = str;
     type Handle = MpscSender;
 
-    fn take_handle(_env: &mut TestHost, id: &str) -> Result<Self::Handle, HandleError> {
+    fn take_handle(_env: &mut TestHost, id: &str) -> Result<Self::Handle, AccessError> {
         let inner = Runtime::with_mut(|rt| rt.sender_for_inbound_channel(id))?;
         Ok(MpscSender { inner })
     }
@@ -60,7 +60,7 @@ impl TakeHandle<Wasm> for MpscSender {
     type Id = str;
     type Handle = Self;
 
-    fn take_handle(_env: &mut Wasm, id: &str) -> Result<Self, HandleError> {
+    fn take_handle(_env: &mut Wasm, id: &str) -> Result<Self, AccessError> {
         let inner = Runtime::with_mut(|rt| rt.outbound_channel(id))?;
         Ok(Self { inner })
     }
@@ -70,7 +70,7 @@ impl TakeHandle<TestHost> for MpscSender {
     type Id = str;
     type Handle = MpscReceiver;
 
-    fn take_handle(_env: &mut TestHost, id: &str) -> Result<Self::Handle, HandleError> {
+    fn take_handle(_env: &mut TestHost, id: &str) -> Result<Self::Handle, AccessError> {
         Runtime::with_mut(|rt| rt.take_receiver_for_outbound_channel(id))
     }
 }

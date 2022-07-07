@@ -24,7 +24,10 @@ use crate::{
     },
     TaskId, TimerId,
 };
-use tardigrade_shared::workflow::{Initialize, Interface, TakeHandle};
+use tardigrade::{
+    interface::Interface,
+    workflow::{Initialize, Inputs, TakeHandle},
+};
 
 /// Persisted version of a [`Workflow`] containing the state of its external dependencies
 /// (channels and timers), and its linear WASM memory.
@@ -61,7 +64,7 @@ impl<W: Initialize<Id = ()>> Workflow<W> {
     /// - Returns an error if a trap occurs when spawning the main task for the workflow
     ///   or polling it.
     pub fn new(module: &WorkflowModule<W>, inputs: W::Init) -> anyhow::Result<Receipt<Self>> {
-        let raw_inputs = module.interface().create_inputs(inputs);
+        let raw_inputs = Inputs::for_interface(module.interface(), inputs);
         let state = WorkflowData::from_interface(module.interface(), raw_inputs.into_inner());
         let mut this = Self::from_state(module, state)?;
         this.spawn_main_task()

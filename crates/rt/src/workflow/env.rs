@@ -12,12 +12,12 @@ use crate::{
 };
 use tardigrade::{
     channel::{Receiver, Sender},
-    trace::{FutureUpdate, TracedFuture, TracedFutures, Tracer},
-    workflow::{
-        DataInput, HandleError, HandleErrorKind, InboundChannel, Interface, OutboundChannel,
-        TakeHandle,
+    interface::{
+        AccessError, AccessErrorKind, DataInput, InboundChannel, Interface, OutboundChannel,
     },
-    Data, Decoder, Encoder, UntypedHandle,
+    trace::{FutureUpdate, TracedFuture, TracedFutures, Tracer},
+    workflow::{TakeHandle, UntypedHandle},
+    Data, Decoder, Encoder,
 };
 
 /// Environment for a [`Workflow`].
@@ -111,7 +111,7 @@ where
     type Id = str;
     type Handle = MessageSender<'a, T, C, W>;
 
-    fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Result<Self::Handle, HandleError> {
+    fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
         let channel_exists = env.with(|workflow| workflow.interface.inbound_channel(id).is_some());
         if channel_exists {
             Ok(MessageSender {
@@ -121,7 +121,7 @@ where
                 _item: PhantomData,
             })
         } else {
-            Err(HandleErrorKind::Unknown.for_handle(InboundChannel(id)))
+            Err(AccessErrorKind::Unknown.for_handle(InboundChannel(id)))
         }
     }
 }
@@ -192,7 +192,7 @@ where
     type Id = str;
     type Handle = MessageReceiver<'a, T, C, W>;
 
-    fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Result<Self::Handle, HandleError> {
+    fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
         let channel_exists = env.with(|workflow| workflow.interface.outbound_channel(id).is_some());
         if channel_exists {
             Ok(MessageReceiver {
@@ -202,7 +202,7 @@ where
                 _item: PhantomData,
             })
         } else {
-            Err(HandleErrorKind::Unknown.for_handle(OutboundChannel(id)))
+            Err(AccessErrorKind::Unknown.for_handle(OutboundChannel(id)))
         }
     }
 }
@@ -235,7 +235,7 @@ where
     type Id = str;
     type Handle = DataPeeker<'a, T, C, W>;
 
-    fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Result<Self::Handle, HandleError> {
+    fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
         let input_exists = env.with(|workflow| workflow.interface.data_input(id).is_some());
         if input_exists {
             Ok(DataPeeker {
@@ -245,7 +245,7 @@ where
                 _item: PhantomData,
             })
         } else {
-            Err(HandleErrorKind::Unknown.for_handle(DataInput(id)))
+            Err(AccessErrorKind::Unknown.for_handle(DataInput(id)))
         }
     }
 }
@@ -301,7 +301,7 @@ where
     type Id = str;
     type Handle = TracerHandle<'a, C, W>;
 
-    fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Result<Self::Handle, HandleError> {
+    fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
         Ok(TracerHandle {
             receiver: Sender::<FutureUpdate, C>::take_handle(env, id)?,
             futures: TracedFutures::new(),
@@ -337,7 +337,7 @@ impl<'a, W> WorkflowHandle<'a, W>
 where
     W: TakeHandle<WorkflowEnv<'a, W>, Id = ()> + 'a,
 {
-    pub(super) fn new(workflow: &'a mut Workflow<W>) -> Result<Self, HandleError> {
+    pub(super) fn new(workflow: &'a mut Workflow<W>) -> Result<Self, AccessError> {
         let mut env = WorkflowEnv::new(workflow);
         Ok(Self {
             api: W::take_handle(&mut env, &())?,
@@ -358,7 +358,7 @@ impl<'a> TakeHandle<WorkflowEnv<'a, ()>> for Interface<()> {
     fn take_handle(
         env: &mut WorkflowEnv<'a, ()>,
         _id: &Self::Id,
-    ) -> Result<Self::Handle, HandleError> {
+    ) -> Result<Self::Handle, AccessError> {
         Ok(env.with(|workflow| workflow.interface.clone()))
     }
 }
@@ -370,7 +370,7 @@ impl<'a> TakeHandle<WorkflowEnv<'a, ()>> for () {
     fn take_handle(
         env: &mut WorkflowEnv<'a, ()>,
         _id: &Self::Id,
-    ) -> Result<Self::Handle, HandleError> {
+    ) -> Result<Self::Handle, AccessError> {
         UntypedHandle::take_handle(env, &())
     }
 }

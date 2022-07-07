@@ -9,8 +9,8 @@
 use std::{error, fmt, task::Poll};
 
 use crate::{
+    interface::AccessErrorKind,
     types::{JoinError, PollMessage, PollTask},
-    workflow::HandleErrorKind,
 };
 
 /// Value directly representable in WASM ABI, e.g., `i64`.
@@ -215,15 +215,15 @@ impl IntoWasm for PollMessage {
     }
 }
 
-impl IntoWasm for Result<(), HandleErrorKind> {
+impl IntoWasm for Result<(), AccessErrorKind> {
     type Abi = i64;
 
     fn into_wasm<A: AllocateBytes>(self, alloc: &mut A) -> Result<Self::Abi, A::Error> {
         Ok(match self {
             Ok(()) => 0,
-            Err(HandleErrorKind::Unknown) => -1,
-            Err(HandleErrorKind::AlreadyAcquired) => -2,
-            Err(HandleErrorKind::Custom(err)) => {
+            Err(AccessErrorKind::Unknown) => -1,
+            Err(AccessErrorKind::AlreadyAcquired) => -2,
+            Err(AccessErrorKind::Custom(err)) => {
                 let message = err.to_string();
                 let (ptr, len) = alloc.copy_to_wasm(message.as_bytes())?;
                 (i64::from(ptr) << 32) + i64::from(len)
@@ -235,13 +235,13 @@ impl IntoWasm for Result<(), HandleErrorKind> {
     unsafe fn from_abi_in_wasm(abi: i64) -> Self {
         Err(match abi {
             0 => return Ok(()),
-            -1 => HandleErrorKind::Unknown,
-            -2 => HandleErrorKind::AlreadyAcquired,
+            -1 => AccessErrorKind::Unknown,
+            -2 => AccessErrorKind::AlreadyAcquired,
             _ => {
                 let ptr = (abi >> 32) as *mut u8;
                 let len = (abi & 0xffff_ffff) as usize;
                 let message = String::from_raw_parts(ptr, len, len);
-                HandleErrorKind::Custom(message.into())
+                AccessErrorKind::Custom(message.into())
             }
         })
     }

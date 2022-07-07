@@ -14,7 +14,7 @@ use super::{
     WorkflowData,
 };
 use crate::{TaskId, WakerId};
-use tardigrade_shared::workflow::Interface;
+use tardigrade::interface::Interface;
 
 /// Error persisting a [`Workflow`](crate::Workflow).
 #[derive(Debug)]

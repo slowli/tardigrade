@@ -5,7 +5,7 @@ use syn::{spanned::Spanned, DeriveInput};
 
 use std::{env, fs, path::Path};
 
-use tardigrade_shared::workflow::Interface;
+use tardigrade_shared::interface::Interface;
 
 #[derive(Debug)]
 struct GetInterface {
@@ -32,8 +32,8 @@ impl GetInterface {
 
         quote! {
             impl #impl_generics #tr for #name #ty_generics #where_clause {
-                fn interface() -> tardigrade::workflow::Interface<Self> {
-                    tardigrade::workflow::Interface::from_bytes(&__TARDIGRADE_SPEC)
+                fn interface() -> tardigrade::interface::Interface<Self> {
+                    tardigrade::interface::Interface::from_bytes(&__TARDIGRADE_SPEC)
                         .downcast::<Self>()
                         .expect("workflow interface does not match declaration")
                 }

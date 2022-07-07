@@ -30,14 +30,13 @@ use std::{
 
 use crate::{
     channel::{imp as channel_imp, Receiver, Sender},
+    interface::{AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel},
     trace::Tracer,
-    Data, Decoder, Encoder, SpawnWorkflow, Wasm,
+    workflow::{Inputs, SpawnWorkflow, TakeHandle, Wasm},
+    Data, Decoder, Encoder,
 };
 use tardigrade_shared::{
     trace::{FutureUpdate, TracedFuture, TracedFutures},
-    workflow::{
-        HandleError, HandleErrorKind, InboundChannel, Interface, OutboundChannel, TakeHandle,
-    },
     FutureId,
 };
 
@@ -220,44 +219,44 @@ impl Runtime {
     pub fn take_inbound_channel(
         &mut self,
         name: &str,
-    ) -> Result<UnboundedReceiver<Vec<u8>>, HandleError> {
+    ) -> Result<UnboundedReceiver<Vec<u8>>, AccessError> {
         let channel_place = self
             .inbound_channels
             .get_mut(name)
-            .ok_or_else(|| HandleErrorKind::Unknown.for_handle(InboundChannel(name)))?;
+            .ok_or_else(|| AccessErrorKind::Unknown.for_handle(InboundChannel(name)))?;
         channel_place
             .take_rx()
-            .ok_or_else(|| HandleErrorKind::AlreadyAcquired.for_handle(InboundChannel(name)))
+            .ok_or_else(|| AccessErrorKind::AlreadyAcquired.for_handle(InboundChannel(name)))
     }
 
     pub fn sender_for_inbound_channel(
         &self,
         name: &str,
-    ) -> Result<UnboundedSender<Vec<u8>>, HandleError> {
+    ) -> Result<UnboundedSender<Vec<u8>>, AccessError> {
         self.inbound_channels
             .get(name)
             .map(ChannelPair::clone_sx)
-            .ok_or_else(|| HandleErrorKind::Unknown.for_handle(InboundChannel(name)))
+            .ok_or_else(|| AccessErrorKind::Unknown.for_handle(InboundChannel(name)))
     }
 
-    pub fn outbound_channel(&self, name: &str) -> Result<UnboundedSender<Vec<u8>>, HandleError> {
+    pub fn outbound_channel(&self, name: &str) -> Result<UnboundedSender<Vec<u8>>, AccessError> {
         self.outbound_channels
             .get(name)
             .map(ChannelPair::clone_sx)
-            .ok_or_else(|| HandleErrorKind::Unknown.for_handle(OutboundChannel(name)))
+            .ok_or_else(|| AccessErrorKind::Unknown.for_handle(OutboundChannel(name)))
     }
 
     pub fn take_receiver_for_outbound_channel(
         &mut self,
         name: &str,
-    ) -> Result<UnboundedReceiver<Vec<u8>>, HandleError> {
+    ) -> Result<UnboundedReceiver<Vec<u8>>, AccessError> {
         let channel_place = self
             .outbound_channels
             .get_mut(name)
-            .ok_or_else(|| HandleErrorKind::Unknown.for_handle(OutboundChannel(name)))?;
+            .ok_or_else(|| AccessErrorKind::Unknown.for_handle(OutboundChannel(name)))?;
         channel_place
             .take_rx()
-            .ok_or_else(|| HandleErrorKind::AlreadyAcquired.for_handle(OutboundChannel(name)))
+            .ok_or_else(|| AccessErrorKind::AlreadyAcquired.for_handle(OutboundChannel(name)))
     }
 
     pub fn insert_timer(&mut self, duration: Duration) -> oneshot::Receiver<()> {
@@ -324,7 +323,7 @@ where
     Fut: Future<Output = Result<(), E>>,
 {
     let interface = W::interface();
-    let workflow_inputs = interface.create_inputs(inputs);
+    let workflow_inputs = Inputs::for_interface(&interface, inputs);
 
     // Order is important: we need futures in `local_pool` to be dropped before `_guard`
     // (which will drop `Runtime`, including the clock)
@@ -375,7 +374,7 @@ impl<T, C: Encoder<T> + Default> TakeHandle<TestHost> for Receiver<T, C> {
     type Id = str;
     type Handle = Sender<T, C>;
 
-    fn take_handle(env: &mut TestHost, id: &str) -> Result<Self::Handle, HandleError> {
+    fn take_handle(env: &mut TestHost, id: &str) -> Result<Self::Handle, AccessError> {
         channel_imp::MpscReceiver::take_handle(env, id).map(|raw| Sender::new(raw, C::default()))
     }
 }
@@ -384,7 +383,7 @@ impl<T, C: Decoder<T> + Default> TakeHandle<TestHost> for Sender<T, C> {
     type Id = str;
     type Handle = Receiver<T, C>;
 
-    fn take_handle(env: &mut TestHost, id: &str) -> Result<Self::Handle, HandleError> {
+    fn take_handle(env: &mut TestHost, id: &str) -> Result<Self::Handle, AccessError> {
         channel_imp::MpscSender::take_handle(env, id).map(|raw| Receiver::new(raw, C::default()))
     }
 }
@@ -393,7 +392,7 @@ impl<T, C: Decoder<T> + Default> TakeHandle<TestHost> for Data<T, C> {
     type Id = str;
     type Handle = Self;
 
-    fn take_handle(_env: &mut TestHost, id: &str) -> Result<Self, HandleError> {
+    fn take_handle(_env: &mut TestHost, id: &str) -> Result<Self, AccessError> {
         Self::from_env(id)
     }
 }
@@ -439,7 +438,7 @@ where
     type Id = str;
     type Handle = TracerHandle<C>;
 
-    fn take_handle(env: &mut TestHost, id: &str) -> Result<Self::Handle, HandleError> {
+    fn take_handle(env: &mut TestHost, id: &str) -> Result<Self::Handle, AccessError> {
         Ok(TracerHandle {
             receiver: Sender::take_handle(env, id)?.fuse(),
             futures: TracedFutures::default(),

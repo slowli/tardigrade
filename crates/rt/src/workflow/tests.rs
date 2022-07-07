@@ -12,6 +12,7 @@ use crate::{
     utils::{copy_string_from_wasm, WasmAllocator},
     WorkflowEngine,
 };
+use tardigrade::workflow::InputsBuilder;
 use tardigrade_shared::abi::AllocateBytes;
 
 #[derive(Debug, Clone, Copy)]
@@ -139,7 +140,7 @@ fn starting_workflow() {
 
     let engine = WorkflowEngine::default();
     let module = WorkflowModule::<()>::new(&engine, ExportsMock::MOCK_MODULE_BYTES).unwrap();
-    let mut inputs = module.interface().inputs_builder();
+    let mut inputs = InputsBuilder::new(module.interface());
     inputs.insert("inputs", b"test_input".to_vec());
     let receipt = Workflow::new(&module, inputs.build()).unwrap();
 
@@ -177,7 +178,7 @@ fn receiving_inbound_message() {
 
     let engine = WorkflowEngine::default();
     let module = WorkflowModule::<()>::new(&engine, ExportsMock::MOCK_MODULE_BYTES).unwrap();
-    let mut inputs = module.interface().inputs_builder();
+    let mut inputs = InputsBuilder::new(module.interface());
     inputs.insert("inputs", b"test_input".to_vec());
     let mut workflow = Workflow::new(&module, inputs.build()).unwrap().into_inner();
 

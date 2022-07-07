@@ -13,11 +13,8 @@ use crate::{
     utils::{copy_bytes_from_wasm, copy_string_from_wasm, WasmAllocator},
     WakerId,
 };
-use tardigrade_shared::{
-    abi::IntoWasm,
-    workflow::{HandleErrorKind, OutboundChannelSpec},
-    PollMessage,
-};
+use tardigrade::interface::{AccessErrorKind, OutboundChannelSpec};
+use tardigrade_shared::{abi::IntoWasm, PollMessage};
 
 /// Kind of a [`ConsumeError`].
 #[derive(Debug, Clone)]
@@ -160,13 +157,13 @@ impl WorkflowData {
         Ok(())
     }
 
-    fn acquire_inbound_channel(&mut self, channel_name: &str) -> Result<(), HandleErrorKind> {
+    fn acquire_inbound_channel(&mut self, channel_name: &str) -> Result<(), AccessErrorKind> {
         let channel_state = self
             .inbound_channels
             .get_mut(channel_name)
-            .ok_or(HandleErrorKind::Unknown)?;
+            .ok_or(AccessErrorKind::Unknown)?;
         if mem::replace(&mut channel_state.is_acquired, true) {
-            Err(HandleErrorKind::AlreadyAcquired)
+            Err(AccessErrorKind::AlreadyAcquired)
         } else {
             Ok(())
         }
@@ -314,7 +311,7 @@ impl WorkflowFunctions {
         let result = if ctx.data().outbound_channels.contains_key(&channel_name) {
             Ok(())
         } else {
-            Err(HandleErrorKind::Unknown)
+            Err(AccessErrorKind::Unknown)
         };
         crate::log_result!(result, "Acquired outbound channel `{}`", channel_name)
             .into_wasm(&mut WasmAllocator::new(ctx))

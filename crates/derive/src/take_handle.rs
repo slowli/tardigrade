@@ -40,6 +40,15 @@ impl TargetField {
         let field = self.ident(field_index);
         quote!(#field: <#unwrapped_ty as #tr>::take_handle(&mut *env, #id)?)
     }
+
+    fn validate_interface(&self) -> impl ToTokens {
+        let unwrapped_ty = &self.wrapper.as_ref().unwrap().inner_types[0];
+        let id = self.id();
+        let tr = quote!(tardigrade::interface::ValidateInterface);
+        quote! {
+            <#unwrapped_ty as #tr>::validate_interface(interface, #id)?;
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -135,8 +144,32 @@ impl TakeHandle {
                 type Id = ();
                 type Handle = #handle #ty_generics;
 
-                fn take_handle(env: &mut #env, _id: &()) -> core::result::Result<Self::Handle, tardigrade::workflow::HandleError> {
+                fn take_handle(
+                    env: &mut #env,
+                    _id: &(),
+                ) -> core::result::Result<Self::Handle, tardigrade::interface::AccessError> {
                     core::result::Result::Ok(#handle #handle_fields)
+                }
+            }
+        }
+    }
+
+    fn impl_validate_interface(&self) -> impl ToTokens {
+        let target = &self.target;
+        let tr = quote!(tardigrade::interface::ValidateInterface);
+        let fields = self.base.fields.iter();
+        let validations = fields.map(TargetField::validate_interface);
+
+        quote! {
+            impl #tr for #target {
+                type Id = ();
+
+                fn validate_interface(
+                    interface: &tardigrade::interface::Interface<()>,
+                    _id: &(),
+                ) -> core::result::Result<(), tardigrade::interface::AccessError> {
+                    #(#validations)*
+                    core::result::Result::Ok(())
                 }
             }
         }
@@ -155,11 +188,13 @@ impl ToTokens for TakeHandle {
         } else {
             None
         };
+        let validate_interface_impl = self.impl_validate_interface();
         let take_handle_impl = self.impl_take_handle();
 
         tokens.extend(quote! {
             #clone_impl
             #debug_impl
+            #validate_interface_impl
             #take_handle_impl
         });
     }
@@ -170,16 +205,14 @@ pub(crate) fn impl_take_handle(attr: TokenStream, input: TokenStream) -> TokenSt
         Ok(attrs) => attrs,
         Err(err) => return err.write_errors().into(),
     };
-    let mut input: syn::DeriveInput = match syn::parse(input) {
+    let mut input: DeriveInput = match syn::parse(input) {
         Ok(input) => input,
         Err(err) => return err.into_compile_error().into(),
     };
-
     let init = match TakeHandle::new(&mut input, attrs) {
         Ok(init) => init,
         Err(err) => return err.write_errors().into(),
     };
-
     let tokens = quote!(#input #init);
     tokens.into()
 }

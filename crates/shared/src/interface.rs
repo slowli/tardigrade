@@ -1,45 +1,129 @@
-//! Workflow-related types, such as workflow interface definitions.
-
-// TODO: use a newtype instead of `()` for untyped workflows?
+//! Types related to workflow interface definition.
 
 use serde::{Deserialize, Serialize};
 
-use std::{collections::HashMap, fmt, marker::PhantomData, ops};
+use std::{collections::HashMap, error, fmt, marker::PhantomData, ops};
 
-mod handle;
-
-pub use self::handle::{
-    ChannelKind, Handle, HandleError, HandleErrorKind, HandleLocation, TakeHandle,
-};
-
-/// Type that can contribute to initializing a workflow.
-///
-/// This trait is sort of dual to [`TakeHandle`]. It is implemented for data inputs, and is derived
-/// for workflow types.
-pub trait Initialize {
-    /// Type of the initializing value. For example, this is actual data for data inputs.
-    type Init;
-    /// ID determining where to put the initializer, usually a `str` (for named values)
-    /// or `()` (for singleton values).
-    type Id: ?Sized;
-
-    /// Inserts `init`ialization data into `builder` using its "location" `id`.
-    fn initialize(builder: &mut InputsBuilder, init: Self::Init, id: &Self::Id);
+/// Kind of a channel in a workflow interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChannelKind {
+    /// Inbound channel.
+    Inbound,
+    /// Outbound channel.
+    Outbound,
 }
 
-/// Initializing value for a particular type.
-pub type Init<T> = <T as Initialize>::Init;
+impl fmt::Display for ChannelKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Inbound => "inbound",
+            Self::Outbound => "outbound",
+        })
+    }
+}
 
-impl Initialize for () {
-    type Init = Inputs;
-    type Id = ();
+/// Kind of an [`AccessError`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum AccessErrorKind {
+    /// Channel was not registered in the workflow interface.
+    Unknown,
+    /// An inbound channel was already acquired by the workflow.
+    AlreadyAcquired,
+    /// Custom error.
+    Custom(Box<dyn error::Error + Send + Sync>),
+}
 
-    fn initialize(builder: &mut InputsBuilder, init: Self::Init, _id: &Self::Id) {
-        builder.inputs = init
-            .inner
-            .into_iter()
-            .map(|(name, bytes)| (name, Some(bytes)))
-            .collect();
+impl fmt::Display for AccessErrorKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unknown => formatter.write_str("not registered in the workflow interface"),
+            Self::AlreadyAcquired => formatter.write_str("already acquired"),
+            Self::Custom(err) => fmt::Display::fmt(err, formatter),
+        }
+    }
+}
+
+impl AccessErrorKind {
+    /// Creates a custom error with the provided description.
+    pub fn custom(err: impl Into<String>) -> Self {
+        Self::Custom(err.into().into())
+    }
+
+    /// Adds a location to this error kind, converting it to an [`AccessError`].
+    pub fn for_handle(self, location: impl Into<InterfaceLocation>) -> AccessError {
+        AccessError {
+            kind: self,
+            location: Some(location.into()),
+        }
+    }
+}
+
+/// Location in a workflow [`Interface`].
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum InterfaceLocation {
+    /// Channel in the workflow interface.
+    Channel {
+        /// Channel kind.
+        kind: ChannelKind,
+        /// Channel name.
+        name: String,
+    },
+    /// Data input with the specified name.
+    DataInput(String),
+}
+
+impl fmt::Display for InterfaceLocation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Channel { kind, name } => {
+                write!(formatter, "{} channel `{}`", kind, name)
+            }
+            Self::DataInput(name) => write!(formatter, "data input `{}`", name),
+        }
+    }
+}
+
+/// Errors that can occur when accessing an element of a workflow [`Interface`].
+#[derive(Debug)]
+pub struct AccessError {
+    kind: AccessErrorKind,
+    location: Option<InterfaceLocation>,
+}
+
+impl fmt::Display for AccessError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(location) = &self.location {
+            write!(
+                formatter,
+                "cannot take handle for {}: {}",
+                location, self.kind
+            )
+        } else {
+            write!(formatter, "cannot take handle: {}", self.kind)
+        }
+    }
+}
+
+impl error::Error for AccessError {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        match &self.kind {
+            AccessErrorKind::Custom(err) => Some(err.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+impl AccessError {
+    /// Returns the kind of this error.
+    pub fn kind(&self) -> &AccessErrorKind {
+        &self.kind
+    }
+
+    /// Returns location of this error.
+    pub fn location(&self) -> Option<&InterfaceLocation> {
+        self.location.as_ref()
     }
 }
 
@@ -56,7 +140,7 @@ pub struct InboundChannelSpec {
 pub struct OutboundChannelSpec {
     /// Human-readable channel description.
     pub description: String,
-    /// Channel capacity, i.e., number of elements that can be buffered locally before
+    /// Channel capacity, i.e., the number of messages that can be buffered locally before
     /// the channel needs to be flushed. `None` means unbounded capacity.
     #[serde(default = "OutboundChannelSpec::default_capacity")]
     pub capacity: Option<usize>,
@@ -86,7 +170,7 @@ impl fmt::Display for DataInput<'_> {
     }
 }
 
-impl From<DataInput<'_>> for HandleLocation {
+impl From<DataInput<'_>> for InterfaceLocation {
     fn from(data_input: DataInput<'_>) -> Self {
         Self::DataInput(data_input.0.to_owned())
     }
@@ -102,7 +186,7 @@ impl fmt::Display for InboundChannel<'_> {
     }
 }
 
-impl From<InboundChannel<'_>> for HandleLocation {
+impl From<InboundChannel<'_>> for InterfaceLocation {
     fn from(channel: InboundChannel<'_>) -> Self {
         Self::Channel {
             kind: ChannelKind::Inbound,
@@ -121,7 +205,7 @@ impl fmt::Display for OutboundChannel<'_> {
     }
 }
 
-impl From<OutboundChannel<'_>> for HandleLocation {
+impl From<OutboundChannel<'_>> for InterfaceLocation {
     fn from(channel: OutboundChannel<'_>) -> Self {
         Self::Channel {
             kind: ChannelKind::Outbound,
@@ -231,27 +315,6 @@ impl<W> Interface<W> {
             .iter()
             .map(|(name, spec)| (name.as_str(), spec))
     }
-
-    /// Returns an [`InputsBuilder`] that can be used to supply [`Inputs`] to create workflow
-    /// instances.
-    pub fn inputs_builder(&self) -> InputsBuilder {
-        InputsBuilder {
-            inputs: self
-                .data_inputs
-                .iter()
-                .map(|(name, _)| (name.clone(), None))
-                .collect(),
-        }
-    }
-}
-
-impl<W: Initialize<Id = ()>> Interface<W> {
-    #[doc(hidden)]
-    pub fn create_inputs(&self, inputs: W::Init) -> Inputs {
-        let mut builder = self.inputs_builder();
-        W::initialize(&mut builder, inputs, &());
-        builder.build()
-    }
 }
 
 impl<W> ops::Index<DataInput<'_>> for Interface<W> {
@@ -302,11 +365,11 @@ impl Interface<()> {
     /// Returns an error if there is a mismatch between the interface of the workflow type
     /// and this interface, e.g., if the workflow type relies on a channel / data input
     /// not present in this interface.
-    pub fn downcast<W>(self) -> Result<Interface<W>, HandleError>
+    pub fn downcast<W>(self) -> Result<Interface<W>, AccessError>
     where
-        W: for<'a> TakeHandle<&'a Interface<()>, Id = ()>,
+        W: ValidateInterface<Id = ()>,
     {
-        W::take_handle(&mut &self, &())?;
+        W::validate_interface(&self, &())?;
         Ok(Interface {
             version: self.version,
             inbound_channels: self.inbound_channels,
@@ -317,88 +380,24 @@ impl Interface<()> {
     }
 }
 
-impl TakeHandle<&Interface<()>> for () {
-    type Id = ();
-    type Handle = ();
+/// Validates a workflow interface.
+pub trait ValidateInterface {
+    /// ID of the type within the interface, usually a `str` (for named handles)
+    /// or `()` (for singleton handles).
+    type Id: ?Sized;
 
-    fn take_handle(_env: &mut &Interface<()>, _id: &Self::Id) -> Result<(), HandleError> {
+    /// Performs validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the interface is invalid.
+    fn validate_interface(interface: &Interface<()>, id: &Self::Id) -> Result<(), AccessError>;
+}
+
+impl ValidateInterface for () {
+    type Id = ();
+
+    fn validate_interface(_interface: &Interface<()>, _id: &()) -> Result<(), AccessError> {
         Ok(()) // validation always succeeds
     }
-}
-
-/// Builder for workflow [`Inputs`]. Builders can be instantiated using
-/// [`Interface::inputs_builder()`].
-#[derive(Debug, Clone)]
-pub struct InputsBuilder {
-    inputs: HashMap<String, Option<Vec<u8>>>,
-}
-
-impl InputsBuilder {
-    /// Inserts `raw_data` for an input with the specified `name`. It is caller's responsibility
-    /// to ensure that raw data has an appropriate format.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `name` does not correspond to a data input in the workflow interface.
-    /// This can be checked beforehand using [`Self::requires_input()`].
-    pub fn insert(&mut self, name: &str, raw_data: Vec<u8>) {
-        let data_entry = self
-            .inputs
-            .get_mut(name)
-            .unwrap_or_else(|| panic!("Workflow does not have data input `{}`", name));
-        *data_entry = Some(raw_data);
-    }
-
-    /// Checks whether the builder requires an input with the specified `name`.
-    pub fn requires_input(&self, name: &str) -> bool {
-        self.inputs.get(name).map_or(false, Option::is_none)
-    }
-
-    /// Returns names of missing inputs.
-    pub fn missing_input_names(&self) -> impl Iterator<Item = &str> + '_ {
-        self.inputs.iter().filter_map(|(name, maybe_data)| {
-            if maybe_data.is_none() {
-                Some(name.as_str())
-            } else {
-                None
-            }
-        })
-    }
-
-    /// Create [`Inputs`] from this builder.
-    ///
-    /// # Panics
-    ///
-    /// Panics if any inputs are not supplied.
-    pub fn build(self) -> Inputs {
-        let inputs = self.inputs.into_iter().map(|(name, maybe_data)| {
-            let data =
-                maybe_data.unwrap_or_else(|| panic!("Workflow input `{}` is not supplied", name));
-            (name, data)
-        });
-        Inputs {
-            inner: inputs.collect(),
-        }
-    }
-}
-
-/// Container for workflow inputs.
-#[derive(Debug, Clone)]
-pub struct Inputs {
-    inner: HashMap<String, Vec<u8>>,
-}
-
-impl Inputs {
-    #[doc(hidden)]
-    pub fn into_inner(self) -> HashMap<String, Vec<u8>> {
-        self.inner
-    }
-}
-
-/// Allows obtaining an [`Interface`] for a workflow.
-///
-/// This trait should be derived for workflow types using the corresponding macro.
-pub trait GetInterface {
-    /// Obtains the workflow interface.
-    fn interface() -> Interface<Self>;
 }

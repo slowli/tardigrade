@@ -25,10 +25,10 @@ use std::{
 
 use crate::{
     codec::{Decoder, Encoder, Raw},
-    workflow::{
-        HandleError, HandleErrorKind, InboundChannel, Interface, OutboundChannel, TakeHandle,
+    interface::{
+        AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel, ValidateInterface,
     },
-    Wasm,
+    workflow::{TakeHandle, Wasm},
 };
 
 mod broadcast;
@@ -101,21 +101,20 @@ where
     type Id = str;
     type Handle = Self;
 
-    fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, HandleError> {
+    fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, AccessError> {
         imp::MpscReceiver::take_handle(env, id).map(|raw| Self::new(raw, C::default()))
     }
 }
 
-impl<T, C> TakeHandle<&Interface<()>> for Receiver<T, C>
+impl<T, C> ValidateInterface for Receiver<T, C>
 where
     C: Encoder<T> + Decoder<T>,
 {
     type Id = str;
-    type Handle = ();
 
-    fn take_handle(env: &mut &Interface<()>, id: &str) -> Result<(), HandleError> {
-        if env.inbound_channel(id).is_none() {
-            let err = HandleErrorKind::Unknown.for_handle(InboundChannel(id));
+    fn validate_interface(interface: &Interface<()>, id: &str) -> Result<(), AccessError> {
+        if interface.inbound_channel(id).is_none() {
+            let err = AccessErrorKind::Unknown.for_handle(InboundChannel(id));
             return Err(err);
         }
         Ok(())
@@ -186,7 +185,7 @@ where
     type Id = str;
     type Handle = Self;
 
-    fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, HandleError> {
+    fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, AccessError> {
         imp::MpscSender::take_handle(env, id).map(|raw| Self::new(raw, C::default()))
     }
 }
@@ -213,16 +212,15 @@ impl<T, C: Encoder<T>> Sink<T> for Sender<T, C> {
     }
 }
 
-impl<T, C> TakeHandle<&Interface<()>> for Sender<T, C>
+impl<T, C> ValidateInterface for Sender<T, C>
 where
     C: Encoder<T> + Decoder<T>,
 {
     type Id = str;
-    type Handle = ();
 
-    fn take_handle(env: &mut &Interface<()>, id: &str) -> Result<(), HandleError> {
-        if env.outbound_channel(id).is_none() {
-            let err = HandleErrorKind::Unknown.for_handle(OutboundChannel(id));
+    fn validate_interface(interface: &Interface<()>, id: &str) -> Result<(), AccessError> {
+        if interface.outbound_channel(id).is_none() {
+            let err = AccessErrorKind::Unknown.for_handle(OutboundChannel(id));
             Err(err)
         } else {
             Ok(())

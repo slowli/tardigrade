@@ -14,11 +14,13 @@ pub use tardigrade_shared::trace::{
     FutureState, FutureUpdate, FutureUpdateError, FutureUpdateKind, TracedFuture, TracedFutures,
 };
 
-use crate::{channel::Sender, Encoder, Wasm};
-use tardigrade_shared::{
-    workflow::{HandleError, HandleErrorKind, Interface, OutboundChannel, TakeHandle},
-    FutureId,
+use crate::{
+    channel::Sender,
+    interface::{AccessError, AccessErrorKind, Interface, OutboundChannel, ValidateInterface},
+    workflow::{TakeHandle, Wasm},
+    Encoder,
 };
+use tardigrade_shared::FutureId;
 
 /// Wrapper around [`Sender`] that sends updates for [`Traced`] futures to the host.
 #[derive(Debug)]
@@ -51,30 +53,29 @@ where
     type Id = str;
     type Handle = Self;
 
-    fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, HandleError> {
+    fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, AccessError> {
         Sender::take_handle(env, id).map(|sender| Self { sender })
     }
 }
 
-impl<C> TakeHandle<&Interface<()>> for Tracer<C>
+impl<C> ValidateInterface for Tracer<C>
 where
     C: Encoder<FutureUpdate> + Default,
 {
     type Id = str;
-    type Handle = ();
 
-    fn take_handle(env: &mut &Interface<()>, id: &str) -> Result<(), HandleError> {
-        if let Some(spec) = env.outbound_channel(id) {
+    fn validate_interface(interface: &Interface<()>, id: &str) -> Result<(), AccessError> {
+        if let Some(spec) = interface.outbound_channel(id) {
             if spec.capacity != None {
                 let err = format!(
                     "unexpected channel capacity: {:?}, expected infinite capacity (`None`)",
                     spec.capacity
                 );
-                return Err(HandleErrorKind::custom(err).for_handle(OutboundChannel(id)));
+                return Err(AccessErrorKind::custom(err).for_handle(OutboundChannel(id)));
             }
             Ok(())
         } else {
-            let err = HandleErrorKind::Unknown.for_handle(OutboundChannel(id));
+            let err = AccessErrorKind::Unknown.for_handle(OutboundChannel(id));
             Err(err)
         }
     }

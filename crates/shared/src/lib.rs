@@ -5,9 +5,9 @@
 #![allow(clippy::must_use_candidate, clippy::module_name_repetitions)]
 
 pub mod abi;
+pub mod interface;
 pub mod trace;
 mod types;
-pub mod workflow;
 
 pub use crate::types::{
     FutureId, JoinError, PollMessage, PollTask, TaskId, TimerDefinition, TimerId, TimerKind,

@@ -1,12 +1,23 @@
+//! Workflow-related types.
+//!
+//! See [the crate docs](crate) for an intro on workflows.
+
 use std::{collections::HashMap, fmt, future::Future, ops};
+
+mod handle;
+mod init;
+
+pub use self::{
+    handle::{Handle, TakeHandle},
+    init::{Init, Initialize, Inputs, InputsBuilder},
+};
+#[cfg(feature = "derive")]
+pub use tardigrade_derive::GetInterface;
 
 use crate::{
     channel::{RawReceiver, RawSender},
+    interface::{AccessError, DataInput, InboundChannel, Interface, OutboundChannel},
     RawData,
-};
-use tardigrade_shared::workflow::{
-    DataInput, GetInterface, HandleError, InboundChannel, Initialize, Interface, OutboundChannel,
-    TakeHandle,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -34,6 +45,14 @@ mod imp {
             Self(Box::pin(future))
         }
     }
+}
+
+/// Allows obtaining an [`Interface`] for a workflow.
+///
+/// This trait should be derived for workflow types using the corresponding macro.
+pub trait GetInterface {
+    /// Obtains the workflow interface.
+    fn interface() -> Interface<Self>;
 }
 
 /// WASM environment.
@@ -72,7 +91,7 @@ impl TaskHandle {
 
     #[cfg(target_arch = "wasm32")]
     #[doc(hidden)] // only used in the `workflow_entry` macro
-    pub fn from_workflow<W: SpawnWorkflow>() -> Result<Self, HandleError> {
+    pub fn from_workflow<W: SpawnWorkflow>() -> Result<Self, AccessError> {
         let mut wasm = Wasm::default();
         let handle = <W as TakeHandle<Wasm>>::take_handle(&mut wasm, &())?;
         Ok(W::spawn(handle))
@@ -127,7 +146,7 @@ where
     type Id = ();
     type Handle = Self;
 
-    fn take_handle(env: &mut Env, _id: &()) -> Result<Self, HandleError> {
+    fn take_handle(env: &mut Env, _id: &()) -> Result<Self, AccessError> {
         let interface = Interface::<()>::take_handle(env, &())?;
 
         let data_inputs = interface

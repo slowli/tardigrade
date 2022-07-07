@@ -17,10 +17,8 @@ use crate::{
     data::{WasmContextPtr, WorkflowData, WorkflowFunctions},
     TaskId, TimerId, WakerId,
 };
-use tardigrade_shared::{
-    abi::TryFromWasm,
-    workflow::{Interface, TakeHandle},
-};
+use tardigrade::interface::{Interface, ValidateInterface};
+use tardigrade_shared::abi::TryFromWasm;
 
 fn ensure_func_ty<Args, Out>(ty: &ExternType, fn_name: &str) -> anyhow::Result<()>
 where
@@ -191,10 +189,7 @@ impl<W> WorkflowModule<W> {
     }
 }
 
-impl<W> WorkflowModule<W>
-where
-    W: for<'a> TakeHandle<&'a Interface<()>, Id = ()>,
-{
+impl<W: ValidateInterface<Id = ()>> WorkflowModule<W> {
     /// Validates the provided WASM module and wraps it.
     ///
     /// # Errors

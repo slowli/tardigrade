@@ -4,10 +4,8 @@ use std::marker::PhantomData;
 
 use crate::{
     codec::{Decoder, Encoder, Raw},
-    context::Wasm,
-};
-use tardigrade_shared::workflow::{
-    DataInput, HandleError, HandleErrorKind, Initialize, InputsBuilder, Interface, TakeHandle,
+    interface::{AccessError, AccessErrorKind, DataInput, Interface, ValidateInterface},
+    workflow::{Initialize, InputsBuilder, TakeHandle, Wasm},
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -56,13 +54,13 @@ impl<T, C> Data<T, C> {
 }
 
 impl<T, C: Decoder<T> + Default> Data<T, C> {
-    pub(crate) fn from_env(id: &str) -> Result<Self, HandleError> {
+    pub(crate) fn from_env(id: &str) -> Result<Self, AccessError> {
         let raw = imp::try_get_raw_data(id)
-            .ok_or_else(|| HandleErrorKind::Unknown.for_handle(DataInput(id)))?;
+            .ok_or_else(|| AccessErrorKind::Unknown.for_handle(DataInput(id)))?;
         C::default()
             .try_decode_bytes(raw)
             .map(Self::from)
-            .map_err(|err| HandleErrorKind::Custom(Box::new(err)).for_handle(DataInput(id)))
+            .map_err(|err| AccessErrorKind::Custom(Box::new(err)).for_handle(DataInput(id)))
     }
 }
 
@@ -82,7 +80,7 @@ where
     type Id = str;
     type Handle = Self;
 
-    fn take_handle(_env: &mut Wasm, id: &str) -> Result<Self, HandleError> {
+    fn take_handle(_env: &mut Wasm, id: &str) -> Result<Self, AccessError> {
         Self::from_env(id)
     }
 }
@@ -100,16 +98,15 @@ impl<T, C: Encoder<T> + Default> Initialize for Data<T, C> {
 /// [`Data`] input of raw bytes.
 pub type RawData = Data<Vec<u8>, Raw>;
 
-impl<T, C> TakeHandle<&Interface<()>> for Data<T, C>
+impl<T, C> ValidateInterface for Data<T, C>
 where
     C: Encoder<T> + Decoder<T>,
 {
     type Id = str;
-    type Handle = ();
 
-    fn take_handle(env: &mut &Interface<()>, id: &str) -> Result<(), HandleError> {
-        if env.data_input(id).is_none() {
-            Err(HandleErrorKind::Unknown.for_handle(DataInput(id)))
+    fn validate_interface(interface: &Interface<()>, id: &str) -> Result<(), AccessError> {
+        if interface.data_input(id).is_none() {
+            Err(AccessErrorKind::Unknown.for_handle(DataInput(id)))
         } else {
             Ok(())
         }
