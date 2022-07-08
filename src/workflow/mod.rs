@@ -1,6 +1,86 @@
 //! Workflow-related types.
 //!
 //! See [the crate docs](crate) for an intro on workflows.
+//!
+//! # Examples
+//!
+//! Simple workflow definition:
+//!
+//! ```
+//! # use futures::StreamExt;
+//! # use serde::{Deserialize, Serialize};
+//! use tardigrade::{
+//!     channel::{Sender, Receiver},
+//!     workflow::{GetInterface, Handle, Init, SpawnWorkflow, TaskHandle, Wasm},
+//!     Data, Json,
+//! };
+//!
+//! /// Workflow type. Usually, this should be a unit / empty struct.
+//! #[derive(Debug, GetInterface)]
+//! # #[tardigrade(interface = r#"{"v":0}"#)]
+//! pub struct MyWorkflow(());
+//!
+//! /// Handle for the workflow. Fields are public for integration testing.
+//! #[tardigrade::handle(for = "MyWorkflow")]
+//! #[derive(Debug)]
+//! pub struct MyHandle<Env> {
+//!     /// Data input.
+//!     pub input: Handle<Data<Input, Json>, Env>,
+//!     /// Inbound channel with commands.
+//!     pub commands: Handle<Receiver<Command, Json>, Env>,
+//!     /// Outbound channel with events.
+//!     pub events: Handle<Sender<Event, Json>, Env>,
+//! }
+//!
+//! /// Input provided to the workflow. Since it's a single input,
+//! /// it also acts as the initializer.
+//! #[tardigrade::init(for = "MyWorkflow", codec = "Json")]
+//! #[derive(Debug, Serialize, Deserialize)]
+//! pub struct Input {
+//!     pub start_counter: u32,
+//! }
+//!
+//! /// Commands received via `commands` channel.
+//! #[derive(Debug, Serialize, Deserialize)]
+//! pub enum Command {
+//!     Ping(String),
+//!     // other variants...
+//! }
+//!
+//! /// Events emitted via `events` channel.
+//! #[derive(Debug, Serialize, Deserialize)]
+//! pub enum Event {
+//!     Pong(String),
+//!     // other variants...
+//! }
+//!
+//! impl MyHandle<Wasm> {
+//!     async fn process_command(&mut self, command: &Command) {
+//!         match command {
+//!             Command::Ping(ping) => {
+//!                 let counter = &mut self.input.as_mut().start_counter;
+//!                 let pong = format!("{}, counter={}", ping, *counter);
+//!                 *counter += 1;
+//!                 self.events.send(Event::Pong(pong)).await;
+//!             }
+//!             // other commands...
+//!         }
+//!     }
+//! }
+//!
+//! // Actual workflow logic.
+//! impl SpawnWorkflow for MyWorkflow {
+//!     fn spawn(mut handle: MyHandle<Wasm>) -> TaskHandle {
+//!         TaskHandle::new(async move {
+//!             while let Some(command) = handle.commands.next().await {
+//!                 handle.process_command(&command).await;
+//!             }
+//!         })
+//!     }
+//! }
+//!
+//! tardigrade::workflow_entry!(MyWorkflow);
+//! ```
 
 use std::{collections::HashMap, fmt, future::Future, ops};
 
@@ -11,6 +91,10 @@ pub use self::{
     handle::{Handle, TakeHandle},
     init::{Init, Initialize, Inputs, InputsBuilder},
 };
+
+/// Derives the [`GetInterface`] trait for a workflow type.
+///
+/// [`GetInterface`]: trait@GetInterface
 #[cfg(feature = "derive")]
 pub use tardigrade_derive::GetInterface;
 
@@ -89,7 +173,6 @@ impl TaskHandle {
         Self(imp::TaskHandle::new(future))
     }
 
-    #[cfg(target_arch = "wasm32")]
     #[doc(hidden)] // only used in the `workflow_entry` macro
     pub fn from_workflow<W: SpawnWorkflow>() -> Result<Self, AccessError> {
         let mut wasm = Wasm::default();
@@ -99,7 +182,7 @@ impl TaskHandle {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn into_inner(self) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
-        self.0 .0
+        self.0.0
     }
 }
 

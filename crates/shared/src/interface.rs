@@ -131,6 +131,7 @@ impl AccessError {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct InboundChannelSpec {
     /// Human-readable channel description.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
 }
 
@@ -139,6 +140,7 @@ pub struct InboundChannelSpec {
 #[non_exhaustive]
 pub struct OutboundChannelSpec {
     /// Human-readable channel description.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
     /// Channel capacity, i.e., the number of messages that can be buffered locally before
     /// the channel needs to be flushed. `None` means unbounded capacity.
@@ -157,6 +159,7 @@ impl OutboundChannelSpec {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DataInputSpec {
     /// Human-readable data input description.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
 }
 
@@ -216,6 +219,30 @@ impl From<OutboundChannel<'_>> for InterfaceLocation {
 
 /// Specification of a workflow interface. Contains info about inbound / outbound channels,
 /// data inputs etc.
+///
+/// # Examples
+///
+/// ```
+/// # use tardigrade_shared::interface::*;
+/// # const INTERFACE_BYTES: &[u8] = br#"{
+/// #     "v": 0,
+/// #     "in": { "commands": {} },
+/// #     "out": { "events": {} },
+/// #     "data": { "inputs": {} }
+/// # }"#;
+/// let interface: Interface<()> = // ...
+/// #     Interface::from_bytes(INTERFACE_BYTES);
+///
+/// let spec = interface.inbound_channel("commands").unwrap();
+/// println!("{}", spec.description);
+///
+/// assert!(interface
+///     .outbound_channels()
+///     .all(|(_, spec)| spec.capacity == Some(1)));
+/// // Indexing is also possible using newtype wrappers from the module
+/// let inputs = &interface[DataInput("inputs")];
+/// println!("{}", inputs.description);
+/// ```
 #[derive(Serialize, Deserialize)]
 pub struct Interface<W: ?Sized> {
     #[serde(rename = "v")]

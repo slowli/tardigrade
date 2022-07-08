@@ -3,6 +3,78 @@
 //! This emulates imports / exports provided to WASM workflow modules by the Tardigrade runtime,
 //! allowing to test workflow logic without launching a runtime (or even including
 //! the corresponding crate as a dev dependency).
+//!
+//! # Examples
+//!
+//! ```
+//! # use std::time::Duration;
+//! # use assert_matches::assert_matches;
+//! # use futures::{FutureExt, StreamExt};
+//! # use serde::{Deserialize, Serialize};
+//! # use tardigrade::{
+//! #     channel::Sender,
+//! #     workflow::{Handle, GetInterface, SpawnWorkflow, TaskHandle, Wasm},
+//! #     Data, Json,
+//! # };
+//! // Assume we want to test a workflow.
+//! #[derive(Debug, GetInterface)]
+//! # #[tardigrade(interface = r#"{
+//! #     "v": 0,
+//! #     "out": { "events": {} },
+//! #     "data": { "input": {} }
+//! # }"#)]
+//! pub struct MyWorkflow(());
+//!
+//! /// Workflow handle.
+//! #[tardigrade::handle(for = "MyWorkflow")]
+//! #[derive(Debug)]
+//! pub struct MyHandle<Env> {
+//!     pub input: Handle<Data<Input, Json>, Env>,
+//!     pub events: Handle<Sender<Event, Json>, Env>,
+//! }
+//!
+//! /// Input provided to the workflow.
+//! #[tardigrade::init(for = "MyWorkflow", codec = "Json")]
+//! #[derive(Debug, Serialize, Deserialize)]
+//! pub struct Input {
+//!     pub counter: u32,
+//! }
+//!
+//! /// Events emitted by the workflow.
+//! #[derive(Debug, Serialize, Deserialize)]
+//! pub enum Event {
+//!     Count(u32),
+//! }
+//!
+//! // Workflow logic
+//! impl SpawnWorkflow for MyWorkflow {
+//!     fn spawn(handle: MyHandle<Wasm>) -> TaskHandle {
+//!         let counter = handle.input.into_inner().counter;
+//!         let mut events = handle.events;
+//!         TaskHandle::new(async move {
+//!             for i in 0..counter {
+//!                 tardigrade::sleep(Duration::from_millis(100)).await;
+//!                 events.send(Event::Count(i)).await;
+//!             }
+//!         })
+//!     }
+//! }
+//!
+//! // We can test the workflow as follows:
+//! use tardigrade::test::{TestHandle, TestWorkflow};
+//!
+//! async fn test_workflow(mut handle: TestHandle<MyWorkflow>) {
+//!     // The workflow should be waiting for a timer to emit an event.
+//!     assert!(handle.api.events.next().now_or_never().is_none());
+//!
+//!     let now = handle.timers.now();
+//!     let new_now = handle.timers.advance_time_to_next_event();
+//!     assert_eq!((new_now - now).num_milliseconds(), 100);
+//!     let event = handle.api.events.next().await.unwrap();
+//!     assert_matches!(event, Event::Count(0));
+//! }
+//! MyWorkflow::test(Input { counter: 1 }, test_workflow);
+//! ```
 
 use chrono::{DateTime, Utc};
 use futures::{
@@ -93,6 +165,7 @@ impl RuntimeClock {
     }
 
     fn advance_time_to_next_event(&mut self) -> DateTime<Utc> {
+        dbg!(&*self);
         if let Some(entry) = self.timers.peek() {
             let expires_at = entry.expires_at;
             self.set_now(expires_at);
@@ -336,6 +409,7 @@ where
         .spawner()
         .spawn_local(W::spawn(workflow).into_inner())
         .expect("cannot spawn workflow");
+    local_pool.run_until_stalled();
     local_pool.run_until(test_fn(test_handle))
 }
 

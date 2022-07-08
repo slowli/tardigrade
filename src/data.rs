@@ -53,6 +53,18 @@ impl<T, C> Data<T, C> {
     }
 }
 
+impl<T, C> AsRef<T> for Data<T, C> {
+    fn as_ref(&self) -> &T {
+        &self.inner
+    }
+}
+
+impl<T, C> AsMut<T> for Data<T, C> {
+    fn as_mut(&mut self) -> &mut T {
+        &mut self.inner
+    }
+}
+
 impl<T, C: Decoder<T> + Default> Data<T, C> {
     pub(crate) fn from_env(id: &str) -> Result<Self, AccessError> {
         let raw = imp::try_get_raw_data(id)
