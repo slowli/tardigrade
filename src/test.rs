@@ -68,8 +68,9 @@
 //!     assert!(handle.api.events.next().now_or_never().is_none());
 //!
 //!     let now = handle.timers.now();
-//!     let new_now = handle.timers.advance_time_to_next_event();
+//!     let new_now = handle.timers.next_timer_expiration().unwrap();
 //!     assert_eq!((new_now - now).num_milliseconds(), 100);
+//!     handle.timers.set_now(new_now);
 //!     let event = handle.api.events.next().await.unwrap();
 //!     assert_matches!(event, Event::Count(0));
 //! }
@@ -154,6 +155,10 @@ impl Default for RuntimeClock {
 }
 
 impl RuntimeClock {
+    fn next_timer_expiration(&self) -> Option<DateTime<Utc>> {
+        self.timers.peek().map(|timer| timer.expires_at)
+    }
+
     fn insert_timer(&mut self, duration: Duration) -> oneshot::Receiver<()> {
         let duration = chrono::Duration::from_std(duration).expect("duration is too large");
         let (sx, rx) = oneshot::channel();
@@ -162,15 +167,6 @@ impl RuntimeClock {
             notifier: sx,
         });
         rx
-    }
-
-    fn advance_time_to_next_event(&mut self) -> DateTime<Utc> {
-        dbg!(&*self);
-        if let Some(entry) = self.timers.peek() {
-            let expires_at = entry.expires_at;
-            self.set_now(expires_at);
-        }
-        self.now
     }
 
     fn set_now(&mut self, now: DateTime<Utc>) {
@@ -200,28 +196,41 @@ impl TimersHandle {
         Runtime::with_mut(|rt| rt.clock.now)
     }
 
-    /// Advances time to the next timer event.
-    pub fn advance_time_to_next_event(&self) -> DateTime<Utc> {
-        Runtime::with_mut(|rt| rt.clock.advance_time_to_next_event())
+    /// Returns the expiration timestamp of the nearest timer.
+    pub fn next_timer_expiration(&self) -> Option<DateTime<Utc>> {
+        Runtime::with_mut(|rt| rt.clock.next_timer_expiration())
+    }
+
+    /// Advances time to the specified point, triggering the expired timers.
+    pub fn set_now(&self, now: DateTime<Utc>) {
+        Runtime::with_mut(|rt| rt.clock.set_now(now));
     }
 }
 
 #[derive(Debug)]
 struct ChannelPair {
-    sx: UnboundedSender<Vec<u8>>,
+    sx: Option<UnboundedSender<Vec<u8>>>,
     rx: Option<UnboundedReceiver<Vec<u8>>>,
 }
 
 impl Default for ChannelPair {
     fn default() -> Self {
         let (sx, rx) = mpsc::unbounded();
-        Self { sx, rx: Some(rx) }
+        Self {
+            sx: Some(sx),
+            rx: Some(rx),
+        }
     }
 }
 
 impl ChannelPair {
     fn clone_sx(&self) -> UnboundedSender<Vec<u8>> {
-        self.sx.clone()
+        self.sx.clone().unwrap()
+        // ^ `unwrap()` is safe: `take_sx()` is never called for outbound channels
+    }
+
+    fn take_sx(&mut self) -> Option<UnboundedSender<Vec<u8>>> {
+        self.sx.take()
     }
 
     fn take_rx(&mut self) -> Option<UnboundedReceiver<Vec<u8>>> {
@@ -293,23 +302,26 @@ impl Runtime {
         &mut self,
         name: &str,
     ) -> Result<UnboundedReceiver<Vec<u8>>, AccessError> {
-        let channel_place = self
+        let channel = self
             .inbound_channels
             .get_mut(name)
             .ok_or_else(|| AccessErrorKind::Unknown.for_handle(InboundChannel(name)))?;
-        channel_place
+        channel
             .take_rx()
             .ok_or_else(|| AccessErrorKind::AlreadyAcquired.for_handle(InboundChannel(name)))
     }
 
-    pub fn sender_for_inbound_channel(
-        &self,
+    pub fn take_sender_for_inbound_channel(
+        &mut self,
         name: &str,
     ) -> Result<UnboundedSender<Vec<u8>>, AccessError> {
-        self.inbound_channels
-            .get(name)
-            .map(ChannelPair::clone_sx)
-            .ok_or_else(|| AccessErrorKind::Unknown.for_handle(InboundChannel(name)))
+        let channel = self
+            .inbound_channels
+            .get_mut(name)
+            .ok_or_else(|| AccessErrorKind::Unknown.for_handle(InboundChannel(name)))?;
+        channel
+            .take_sx()
+            .ok_or_else(|| AccessErrorKind::AlreadyAcquired.for_handle(InboundChannel(name)))
     }
 
     pub fn outbound_channel(&self, name: &str) -> Result<UnboundedSender<Vec<u8>>, AccessError> {
@@ -323,11 +335,11 @@ impl Runtime {
         &mut self,
         name: &str,
     ) -> Result<UnboundedReceiver<Vec<u8>>, AccessError> {
-        let channel_place = self
+        let channel = self
             .outbound_channels
             .get_mut(name)
             .ok_or_else(|| AccessErrorKind::Unknown.for_handle(OutboundChannel(name)))?;
-        channel_place
+        channel
             .take_rx()
             .ok_or_else(|| AccessErrorKind::AlreadyAcquired.for_handle(OutboundChannel(name)))
     }
@@ -398,16 +410,14 @@ where
     let interface = W::interface();
     let workflow_inputs = Inputs::for_interface(&interface, inputs);
 
-    // Order is important: we need futures in `local_pool` to be dropped before `_guard`
-    // (which will drop `Runtime`, including the clock)
-    let (_guard, mut local_pool) = Runtime::initialize(&interface, workflow_inputs.into_inner());
+    let (guard, mut local_pool) = Runtime::initialize(&interface, workflow_inputs.into_inner());
     let mut wasm = Wasm::default();
     let workflow = W::take_handle(&mut wasm, &()).unwrap();
     let test_handle = TestHandle::new();
 
     local_pool
         .spawner()
-        .spawn_local(W::spawn(workflow).into_inner())
+        .spawn_local(W::spawn(workflow).into_inner().map(|()| drop(guard)))
         .expect("cannot spawn workflow");
     local_pool.run_until_stalled();
     local_pool.run_until(test_fn(test_handle))

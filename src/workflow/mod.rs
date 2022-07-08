@@ -182,7 +182,7 @@ impl TaskHandle {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn into_inner(self) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
-        self.0.0
+        self.0 .0
     }
 }
 

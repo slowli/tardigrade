@@ -31,7 +31,7 @@ impl TakeHandle<TestHost> for MpscReceiver {
     type Handle = MpscSender;
 
     fn take_handle(_env: &mut TestHost, id: &str) -> Result<Self::Handle, AccessError> {
-        let inner = Runtime::with_mut(|rt| rt.sender_for_inbound_channel(id))?;
+        let inner = Runtime::with_mut(|rt| rt.take_sender_for_inbound_channel(id))?;
         Ok(MpscSender { inner })
     }
 }
@@ -50,8 +50,8 @@ impl MpscSender {
     fn drop_err(_: Result<(), mpsc::SendError>) -> Result<(), Infallible> {
         // We can have the receiver dropped in tests (implicitly when the test is finished,
         // or explicitly in the test code). Since we cannot observe channel state after this,
-        // we just drop upstream errors to emulate WASM sandbox, in which channels
-        // are never dropped.
+        // we just drop upstream errors to emulate WASM sandbox, in which (implicit) receivers
+        // for the outbound channels are never dropped by the host.
         Ok(())
     }
 }

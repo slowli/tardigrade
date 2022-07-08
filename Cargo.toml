@@ -24,7 +24,11 @@ rand = "0.8.5"
 default = ["serde_json"]
 derive = ["tardigrade-derive"]
 
-# FIXME: make complete, ensure it works
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"
+required-features = ["derive"]
+
 [profile.wasm]
 inherits = "release"
 panic = "abort"
@@ -40,4 +44,3 @@ members = [
   "crates/rt",
   "e2e-tests/basic",
 ]
-
