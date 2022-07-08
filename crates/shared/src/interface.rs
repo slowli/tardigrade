@@ -377,12 +377,20 @@ impl Interface<()> {
     /// Currently, this assumes that the definition is JSON-encoded, but this should be considered
     /// an implementation detail.
     ///
+    /// # Errors
+    ///
+    /// Returns an error if `bytes` do not represent a valid interface definition.
+    pub fn try_from_bytes(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        serde_json::from_slice(bytes).map_err(Into::into)
+    }
+
+    /// Version of [`Self::try_from_bytes()`] that panics on error.
+    ///
     /// # Panics
     ///
     /// Panics if `bytes` do not represent a valid interface definition.
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        serde_json::from_slice(bytes)
-            .unwrap_or_else(|err| panic!("Cannot deserialize spec: {}", err))
+        Self::try_from_bytes(bytes).unwrap_or_else(|err| panic!("Cannot deserialize spec: {}", err))
     }
 
     /// Tries to downcast this interface to a particular workflow.

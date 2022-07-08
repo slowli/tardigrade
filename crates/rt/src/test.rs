@@ -58,7 +58,7 @@ impl WasmOpt {
 pub struct ModuleCompiler {
     package_name: &'static str,
     profile: &'static str,
-    stack_size: Option<usize>,
+    current_dir: Option<PathBuf>,
     wasm_opt: Option<WasmOpt>,
     cache: Mutex<Option<PathBuf>>,
 }
@@ -72,14 +72,22 @@ impl ModuleCompiler {
         Self {
             package_name,
             profile: "release",
-            stack_size: None,
+            current_dir: None,
             wasm_opt: None,
             cache: Mutex::new(None),
         }
     }
-
     fn drop_cache(&mut self) {
         *self.cache.get_mut().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    /// Sets the current directory for executing commands. This may be important for `cargo`
+    /// if some configuration options (e.g., linker options such as the stack size)
+    /// are configured via the `.cargo` dir in the package dir.
+    pub fn set_current_dir(&mut self, dir: impl AsRef<Path>) -> &mut Self {
+        self.drop_cache();
+        self.current_dir = Some(dir.as_ref().to_owned());
+        self
     }
 
     /// Sets the build profile. By default, profile is set to `release`, but it may make sense
@@ -88,14 +96,6 @@ impl ModuleCompiler {
     pub fn set_profile(&mut self, profile: &'static str) -> &mut Self {
         self.drop_cache();
         self.profile = profile;
-        self
-    }
-
-    /// Sets the stack size in bytes, which sets the `-zstack-size` link arg. By default,
-    /// this arg is not set, and stack size defaults to 1 MB.
-    pub fn set_stack_size(&mut self, stack_size: usize) -> &mut Self {
-        self.drop_cache();
-        self.stack_size = Some(stack_size);
         self
     }
 
@@ -137,12 +137,10 @@ impl ModuleCompiler {
     fn compile_wasm(&self) -> PathBuf {
         let profile = format!("--profile={}", self.profile);
         let mut command = Command::new("cargo");
-        command.args(["build", "--lib", "--target", Self::TARGET, &profile]);
-        if let Some(stack_size) = self.stack_size {
-            // TODO: combine with existing flags?
-            let rust_flags = format!("-C link-arg=-zstack-size={}", stack_size);
-            command.env("RUSTFLAGS", &rust_flags);
+        if let Some(dir) = &self.current_dir {
+            command.current_dir(dir);
         }
+        command.args(["build", "--lib", "--target", Self::TARGET, &profile]);
 
         let mut command = command
             .stdin(Stdio::null())

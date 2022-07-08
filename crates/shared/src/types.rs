@@ -1,6 +1,7 @@
 //! Types shared between host and client envs.
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use std::{error, fmt, task::Poll};
 
@@ -21,7 +22,8 @@ pub type TimerId = u64;
 pub type FutureId = u64;
 
 /// Errors that can occur when joining a task (i.e., waiting for its completion).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum JoinError {
     /// The task was aborted.
     Aborted,
@@ -67,7 +69,7 @@ impl TryFromWasm for TimerKind {
 }
 
 /// Definition of a timer used by a workflow.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct TimerDefinition {
     /// Expiration timestamp of the timer.
     pub expires_at: DateTime<Utc>,

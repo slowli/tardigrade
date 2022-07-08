@@ -1,5 +1,6 @@
 //! Functionality to manage tasks.
 
+use serde::{Deserialize, Serialize};
 use wasmtime::{StoreContextMut, Trap};
 
 use std::{
@@ -14,7 +15,7 @@ use super::{
 };
 use crate::{
     receipt::{Event, ExecutedFunction, ResourceEventKind, ResourceId, WakeUpCause},
-    utils::{copy_string_from_wasm, drop_value, WasmAllocator},
+    utils::{copy_string_from_wasm, drop_value, serde_poll, WasmAllocator},
     TaskId, WakerId,
 };
 use tardigrade_shared::{abi::IntoWasm, JoinError};
@@ -46,20 +47,24 @@ impl TaskQueue {
 }
 
 /// State of task within a [`Workflow`](crate::Workflow).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskState {
     name: String,
+    #[serde(with = "serde_poll")]
     completion_result: Poll<Result<(), JoinError>>,
-    spawned_by: ExecutedFunction,
+    spawned_by: Option<TaskId>,
     wakes_on_completion: HashSet<WakerId>,
 }
 
 impl TaskState {
-    fn new(name: String, spawned_by: ExecutedFunction) -> Self {
+    fn new(name: String, spawned_by: &ExecutedFunction) -> Self {
         Self {
             name,
             completion_result: Poll::Pending,
-            spawned_by,
+            spawned_by: match spawned_by {
+                ExecutedFunction::Task { task_id, .. } => Some(*task_id),
+                _ => None,
+            },
             wakes_on_completion: HashSet::new(),
         }
     }
@@ -69,9 +74,10 @@ impl TaskState {
         &self.name
     }
 
-    /// Returns a function (usually, another task) that has spawned this task.
-    pub fn spawned_by(&self) -> &ExecutedFunction {
-        &self.spawned_by
+    /// Returns ID of a task that has spawned this task. If this task was not spawned by
+    /// a task, returns `None`.
+    pub fn spawned_by(&self) -> Option<TaskId> {
+        self.spawned_by
     }
 
     /// Returns current poll state of this task.
@@ -128,7 +134,7 @@ impl WorkflowData {
 
         let execution = self.current_execution();
         execution.push_resource_event(ResourceId::Task(task_id), ResourceEventKind::Created);
-        let task_state = TaskState::new(task_name, execution.function.clone());
+        let task_state = TaskState::new(task_name, &execution.function);
         self.tasks.insert(task_id, task_state);
         Ok(())
     }
@@ -138,7 +144,7 @@ impl WorkflowData {
         debug_assert!(self.task_queue.is_empty());
         debug_assert!(self.current_execution.is_none());
 
-        let task_state = TaskState::new("_main".to_owned(), ExecutedFunction::Entry);
+        let task_state = TaskState::new("_main".to_owned(), &ExecutedFunction::Entry);
         self.tasks.insert(task_id, task_state);
         self.task_queue.insert_task(
             task_id,

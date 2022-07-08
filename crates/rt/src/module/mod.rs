@@ -1,12 +1,13 @@
 //! Module utils.
 
 use anyhow::{anyhow, bail, ensure, Context};
+use once_cell::sync::OnceCell;
 use wasmtime::{
     AsContextMut, Caller, Engine, ExternType, Func, Instance, Linker, Memory, Module, Store,
     StoreContextMut, Trap, TypedFunc, WasmParams, WasmResults, WasmRet, WasmTy,
 };
 
-use std::{fmt, task::Poll};
+use std::{fmt, sync::Arc, task::Poll};
 
 #[cfg(test)]
 mod tests;
@@ -81,12 +82,49 @@ impl fmt::Debug for WorkflowEngine {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct DataSection {
+    start: u32,
+    section: Vec<u8>,
+}
+
+impl DataSection {
+    pub fn start(&self) -> u32 {
+        self.start
+    }
+
+    pub fn len(&self) -> usize {
+        self.section.len()
+    }
+
+    pub fn end(&self) -> usize {
+        self.start as usize + self.section.len()
+    }
+
+    pub fn create_diff(&self, memory: &[u8]) -> Vec<u8> {
+        let mut diff = self.section.clone();
+        let section_in_memory = &memory[self.start as usize..];
+        for (byte, &mem_byte) in diff.iter_mut().zip(section_in_memory) {
+            *byte ^= mem_byte;
+        }
+        diff
+    }
+
+    pub fn restore_from_diff(&self, diff: &mut [u8]) {
+        debug_assert_eq!(diff.len(), self.section.len());
+        for (byte, &mem_byte) in diff.iter_mut().zip(&self.section) {
+            *byte ^= mem_byte;
+        }
+    }
+}
+
 /// Workflow module that combines a WASM module with the workflow logic and the declared
 /// workflow [`Interface`].
 pub struct WorkflowModule<W> {
     pub(crate) inner: Module,
     interface: Interface<W>,
     linker_extensions: Vec<Box<dyn LowLevelExtendLinker>>,
+    data_section: OnceCell<Arc<DataSection>>,
 }
 
 impl<W> fmt::Debug for WorkflowModule<W> {
@@ -124,7 +162,8 @@ impl WorkflowModule<()> {
                 let (section_name, section_bytes) =
                     Self::read_section(&remaining_bytes[..section_len])?;
                 if section_name == INTERFACE_SECTION.as_bytes() {
-                    let interface: Interface<()> = serde_json::from_slice(section_bytes)?;
+                    let interface =
+                        Interface::try_from_bytes(section_bytes).map_err(anyhow::Error::new)?;
                     Self::check_internal_validity(&interface)?;
                     return Ok(interface);
                 }
@@ -187,6 +226,20 @@ impl<W> WorkflowModule<W> {
         }
         Ok(())
     }
+
+    pub(crate) fn cache_data_section(
+        &self,
+        store: &Store<WorkflowData>,
+    ) -> Option<Arc<DataSection>> {
+        let exports = store.data().exports();
+        exports.data_location.map(|(start, end)| {
+            let section = self.data_section.get_or_init(|| {
+                let section = exports.memory.data(store)[start as usize..end as usize].to_vec();
+                Arc::new(DataSection { start, section })
+            });
+            Arc::clone(section)
+        })
+    }
 }
 
 impl<W: ValidateInterface<Id = ()>> WorkflowModule<W> {
@@ -214,6 +267,7 @@ impl<W: ValidateInterface<Id = ()>> WorkflowModule<W> {
                 .downcast()
                 .context("mismatch between declared and actual workflow interface")?,
             linker_extensions: vec![Box::new(WorkflowFunctions)],
+            data_section: OnceCell::new(),
         })
     }
 }
@@ -221,6 +275,7 @@ impl<W: ValidateInterface<Id = ()>> WorkflowModule<W> {
 #[derive(Clone, Copy)]
 pub(crate) struct ModuleExports {
     pub memory: Memory,
+    data_location: Option<(u32, u32)>,
     create_main_task: TypedFunc<(), TaskId>,
     poll_task: TypedFunc<(TaskId, TaskId), i32>,
     drop_task: TypedFunc<TaskId, ()>,
@@ -328,9 +383,13 @@ impl ModuleExports {
     #[cfg_attr(test, mimicry::mock(using = "tests::ExportsMock::mock_new"))]
     pub fn new(store: &mut Store<WorkflowData>, instance: &Instance) -> Self {
         let memory = instance.get_memory(&mut *store, "memory").unwrap();
+        let global_base = Self::extract_u32_global(&mut *store, instance, "__global_base");
+        let heap_base = Self::extract_u32_global(&mut *store, instance, "__heap_base");
+        let data_location = global_base.and_then(|start| heap_base.map(|end| (start, end)));
 
         Self {
             memory,
+            data_location,
             create_main_task: Self::extract_function(&mut *store, instance, "tardigrade_rt::main"),
             poll_task: Self::extract_function(&mut *store, instance, "tardigrade_rt::poll_task"),
             drop_task: Self::extract_function(&mut *store, instance, "tardigrade_rt::drop_task"),
@@ -342,6 +401,16 @@ impl ModuleExports {
             create_waker: Self::extract_function(store, instance, "tardigrade_rt::create_waker"),
             wake_waker: Self::extract_function(store, instance, "tardigrade_rt::wake_waker"),
         }
+    }
+
+    #[allow(clippy::cast_sign_loss)] // intentional
+    fn extract_u32_global(
+        store: &mut Store<WorkflowData>,
+        instance: &Instance,
+        name: &str,
+    ) -> Option<u32> {
+        let value = instance.get_global(&mut *store, name)?.get(&mut *store);
+        value.i32().map(|value| value as u32)
     }
 
     fn extract_function<Args, Out>(

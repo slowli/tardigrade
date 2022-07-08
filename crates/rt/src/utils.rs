@@ -96,3 +96,122 @@ pub(crate) fn drop_value<T>(poll_result: &Poll<T>) -> Poll<()> {
         Poll::Ready(_) => Poll::Ready(()),
     }
 }
+
+pub(crate) mod serde_b64 {
+    use serde::{
+        de::{Error as DeError, Unexpected, Visitor},
+        Deserializer, Serializer,
+    };
+
+    use std::fmt;
+
+    pub fn serialize<T: AsRef<[u8]>, S: Serializer>(
+        value: &T,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        if serializer.is_human_readable() {
+            serializer.serialize_str(&base64::encode_config(value, base64::URL_SAFE_NO_PAD))
+        } else {
+            serializer.serialize_bytes(value.as_ref())
+        }
+    }
+
+    pub fn deserialize<'de, T, D>(deserializer: D) -> Result<T, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: From<Vec<u8>>,
+    {
+        struct HexVisitor;
+
+        impl<'de> Visitor<'de> for HexVisitor {
+            type Value = Vec<u8>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("base64-encoded byte array")
+            }
+
+            fn visit_str<E: DeError>(self, value: &str) -> Result<Self::Value, E> {
+                base64::decode_config(value, base64::URL_SAFE_NO_PAD)
+                    .map_err(|_| E::invalid_type(Unexpected::Str(value), &self))
+            }
+
+            fn visit_bytes<E: DeError>(self, value: &[u8]) -> Result<Self::Value, E> {
+                Ok(value.to_vec())
+            }
+        }
+
+        struct BytesVisitor;
+
+        impl<'de> Visitor<'de> for BytesVisitor {
+            type Value = Vec<u8>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("byte array")
+            }
+
+            fn visit_bytes<E: DeError>(self, value: &[u8]) -> Result<Self::Value, E> {
+                Ok(value.to_vec())
+            }
+
+            fn visit_byte_buf<E: DeError>(self, value: Vec<u8>) -> Result<Self::Value, E> {
+                Ok(value)
+            }
+        }
+
+        let maybe_bytes = if deserializer.is_human_readable() {
+            deserializer.deserialize_str(HexVisitor)
+        } else {
+            deserializer.deserialize_byte_buf(BytesVisitor)
+        };
+        maybe_bytes.map(From::from)
+    }
+}
+
+pub(crate) mod serde_poll {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use std::task::Poll;
+
+    #[derive(Debug, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    enum PollResult<E> {
+        Pending,
+        Ok,
+        Error(E),
+    }
+
+    impl<'a, E> PollResult<&'a E> {
+        fn from_ref(poll: &'a Poll<Result<(), E>>) -> Self {
+            match poll {
+                Poll::Pending => Self::Pending,
+                Poll::Ready(Ok(())) => Self::Ok,
+                Poll::Ready(Err(err)) => Self::Error(err),
+            }
+        }
+    }
+
+    impl<E> From<PollResult<E>> for Poll<Result<(), E>> {
+        fn from(result: PollResult<E>) -> Self {
+            match result {
+                PollResult::Pending => Poll::Pending,
+                PollResult::Ok => Poll::Ready(Ok(())),
+                PollResult::Error(err) => Poll::Ready(Err(err)),
+            }
+        }
+    }
+
+    pub fn serialize<E: Serialize, S: Serializer>(
+        value: &Poll<Result<(), E>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        PollResult::from_ref(value).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, E, D>(deserializer: D) -> Result<Poll<Result<(), E>>, D::Error>
+    where
+        E: Deserialize<'de>,
+        D: Deserializer<'de>,
+    {
+        PollResult::<E>::deserialize(deserializer).map(From::from)
+    }
+}

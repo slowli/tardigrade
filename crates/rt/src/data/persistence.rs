@@ -1,6 +1,7 @@
 //! Persistence for `State`.
 
 use anyhow::{anyhow, bail, ensure};
+use serde::{Deserialize, Serialize};
 
 use std::{
     collections::{HashMap, HashSet},
@@ -47,18 +48,17 @@ impl fmt::Display for PersistError {
 
 impl error::Error for PersistError {}
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct InboundChannelState {
     is_acquired: bool,
     received_messages: usize,
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     wakes_on_next_element: HashSet<WakerId>,
 }
 
 impl InboundChannelState {
     fn new(state: &super::InboundChannelState) -> Self {
         debug_assert!(state.pending_message.is_none());
-        // FIXME: is this constraint really ensured?
-
         Self {
             is_acquired: state.is_acquired,
             received_messages: state.received_messages,
@@ -88,9 +88,10 @@ impl InboundChannelState {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct OutboundChannelState {
     flushed_messages: usize,
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     wakes_on_flush: HashSet<WakerId>,
 }
 
@@ -131,7 +132,7 @@ impl OutboundChannelState {
 }
 
 /// `Workflow` state that can be persisted between workflow invocations.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct WorkflowState {
     inbound_channels: HashMap<String, InboundChannelState>,
     outbound_channels: HashMap<String, OutboundChannelState>,

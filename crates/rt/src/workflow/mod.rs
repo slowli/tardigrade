@@ -4,20 +4,24 @@ use anyhow::Context;
 use chrono::{DateTime, Utc};
 use wasmtime::{AsContextMut, Linker, Store, Trap};
 
-use std::{fmt, task::Poll};
+use std::{fmt, sync::Arc, task::Poll};
 
 mod env;
+mod persistence;
 #[cfg(test)]
 mod tests;
 
-pub use self::env::{
-    DataPeeker, MessageReceiver, MessageSender, SentMessage, TakenMessages, WorkflowEnv,
-    WorkflowHandle,
+pub use self::{
+    env::{
+        DataPeeker, MessageReceiver, MessageSender, SentMessage, TakenMessages, WorkflowEnv,
+        WorkflowHandle,
+    },
+    persistence::PersistedWorkflow,
 };
 
 use crate::{
-    data::{ConsumeError, PersistError, TaskState, TimerState, WorkflowData, WorkflowState},
-    module::{ModuleExports, WorkflowModule},
+    data::{ConsumeError, PersistError, TaskState, TimerState, WorkflowData},
+    module::{DataSection, ModuleExports, WorkflowModule},
     receipt::{
         Event, ExecutedFunction, Execution, ExecutionError, Receipt, ResourceEventKind, ResourceId,
         WakeUpCause,
@@ -29,19 +33,11 @@ use tardigrade::{
     workflow::{Initialize, Inputs, TakeHandle},
 };
 
-/// Persisted version of a [`Workflow`] containing the state of its external dependencies
-/// (channels and timers), and its linear WASM memory.
-#[derive(Debug)]
-// TODO: getters and/or `serde` (de)serialization
-pub struct PersistedWorkflow {
-    state: WorkflowState,
-    memory: Vec<u8>,
-}
-
 /// Workflow instance.
 pub struct Workflow<W> {
     store: Store<WorkflowData>,
     interface: Interface<W>,
+    data_section: Option<Arc<DataSection>>,
 }
 
 impl<W> fmt::Debug for Workflow<W> {
@@ -98,9 +94,11 @@ impl<W> Workflow<W> {
             .context("failed instantiating module")?;
         let exports = ModuleExports::new(&mut store, &instance);
         store.data_mut().set_exports(exports);
+        let data_section = module.cache_data_section(&store);
         Ok(Self {
             store,
             interface: module.interface().clone(),
+            data_section,
         })
     }
 
@@ -311,45 +309,21 @@ impl<W> Workflow<W> {
     /// Returns an error if the workflow is in such a state that it cannot be persisted
     /// right now.
     pub fn persist(&self) -> Result<PersistedWorkflow, PersistError> {
-        let state = self.store.data().persist()?;
-        let memory = self.store.data().exports().memory;
-        let memory = memory.data(&self.store).to_vec();
-        Ok(PersistedWorkflow { state, memory })
+        PersistedWorkflow::new(self)
     }
 
-    /// Restores a workflow from the persisted state and the `module` defining the workflow.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the workflow definition from `module` and the `persisted` state
-    /// do not match (e.g., differ in defined channels / data inputs).
-    pub fn restored(
-        module: &WorkflowModule<W>,
-        persisted: PersistedWorkflow,
-    ) -> anyhow::Result<Self> {
-        let data = persisted
-            .state
-            .restore(module.interface())
-            .context("failed restoring workflow state")?;
-        let mut this = Self::from_state(module, data)?;
-        this.copy_memory(&persisted.memory)
-            .context("failed restoring workflow memory")?;
-        Ok(this)
-    }
-
-    fn copy_memory(&mut self, memory_contents: &[u8]) -> anyhow::Result<()> {
+    fn copy_memory(&mut self, offset: usize, memory_contents: &[u8]) -> anyhow::Result<()> {
         const WASM_PAGE_SIZE: u64 = 65_536;
 
         let memory = self.store.data().exports().memory;
-        let delta_bytes = memory_contents
-            .len()
-            .saturating_sub(memory.data_size(&mut self.store));
+        let delta_bytes =
+            (memory_contents.len() + offset).saturating_sub(memory.data_size(&mut self.store));
         let delta_pages = ((delta_bytes as u64) + WASM_PAGE_SIZE - 1) / WASM_PAGE_SIZE;
 
         if delta_pages > 0 {
             memory.grow(&mut self.store, delta_pages)?;
         }
-        memory.write(&mut self.store, 0, memory_contents)?;
+        memory.write(&mut self.store, offset, memory_contents)?;
         Ok(())
     }
 }

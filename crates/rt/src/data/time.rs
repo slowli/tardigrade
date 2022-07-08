@@ -1,6 +1,7 @@
 //! Time utilities.
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
+use serde::{Deserialize, Serialize};
 use wasmtime::{StoreContextMut, Trap};
 
 use std::{
@@ -24,10 +25,11 @@ use tardigrade_shared::{
 };
 
 /// State of a [`Workflow`](crate::Workflow) timer.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimerState {
     definition: TimerDefinition,
     is_completed: bool,
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     wakes_on_completion: HashSet<WakerId>,
 }
 
@@ -56,7 +58,7 @@ impl TimerState {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Timers {
     current_time: DateTime<Utc>,
     timers: HashMap<TimerId, TimerState>,

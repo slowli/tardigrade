@@ -82,6 +82,7 @@ impl ExportsMock {
         // the simplest implementations possible.
         ModuleExports {
             memory,
+            data_location: None,
             create_main_task: Func::wrap(&mut *store, || 0_u64).typed(&*store).unwrap(),
             poll_task: Func::wrap(&mut *store, |_: TaskId, _: TaskId| 0_i32)
                 .typed(&*store)

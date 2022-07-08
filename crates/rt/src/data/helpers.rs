@@ -1,5 +1,6 @@
 //! Various helpers for workflow state.
 
+use serde::{Deserialize, Serialize};
 use wasmtime::{AsContextMut, Store, StoreContextMut, Trap};
 
 use std::{collections::HashSet, fmt, mem, task::Poll};
@@ -10,14 +11,15 @@ use crate::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, ResourceEvent, ResourceEventKind,
         ResourceId, WakeUpCause,
     },
-    utils::drop_value,
+    utils::{drop_value, serde_b64},
     TaskId, TimerId, WakerId,
 };
 use tardigrade_shared::PollMessage;
 
 /// Thin wrapper around `Vec<u8>`.
-#[derive(Clone, PartialEq)]
-pub(super) struct Message(Vec<u8>);
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(super) struct Message(#[serde(with = "serde_b64")] Vec<u8>);
 
 impl fmt::Debug for Message {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -25,6 +27,12 @@ impl fmt::Debug for Message {
             .debug_struct("Message")
             .field("len", &self.0.len())
             .finish()
+    }
+}
+
+impl AsRef<[u8]> for Message {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
     }
 }
 
@@ -206,7 +214,7 @@ impl CurrentExecution {
         for event in Self::resource_events(&self.events) {
             match (event.kind, event.resource_id) {
                 (Created, ResourceId::Task(task_id)) => {
-                    let cause = WakeUpCause::Spawned(Box::new(self.function.clone()));
+                    let cause = WakeUpCause::Function(Box::new(self.function.clone()));
                     state.task_queue.insert_task(task_id, &cause);
                 }
                 (Dropped, ResourceId::Timer(timer_id)) => {
