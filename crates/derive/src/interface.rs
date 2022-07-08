@@ -1,11 +1,18 @@
-use darling::FromDeriveInput;
+use darling::{FromDeriveInput, FromMeta};
 use proc_macro::TokenStream;
 use quote::{quote, ToTokens};
 use syn::{spanned::Spanned, DeriveInput};
 
-use std::{env, fs, path::Path};
+use std::{borrow::Cow, env, fs, path::Path};
 
+use crate::utils::find_meta_attrs;
 use tardigrade_shared::interface::Interface;
+
+#[derive(Debug, Default, FromMeta)]
+struct GetInterfaceAttrs {
+    #[darling(default)]
+    interface: Option<String>,
+}
 
 #[derive(Debug)]
 struct GetInterface {
@@ -14,6 +21,24 @@ struct GetInterface {
 }
 
 impl GetInterface {
+    fn get_spec_contents(spec: &str) -> darling::Result<Cow<'_, [u8]>> {
+        if let Some(spec_path) = spec.strip_prefix("file:") {
+            let manifest_path = env::var_os("CARGO_MANIFEST_DIR").ok_or_else(|| {
+                let message = "`CARGO_MANIFEST_DIR` env var not set; please use cargo";
+                darling::Error::custom(message)
+            })?;
+            let full_spec_path = Path::new(&manifest_path).join(spec_path);
+
+            let contents = fs::read(&full_spec_path).map_err(|err| {
+                let message = format!("cannot read workflow spec at `{}`: {}", spec_path, err);
+                darling::Error::custom(message)
+            })?;
+            Ok(Cow::Owned(contents))
+        } else {
+            Ok(Cow::Borrowed(spec.as_bytes()))
+        }
+    }
+
     fn data_section(&self) -> impl ToTokens {
         let len = self.compressed_spec.len();
         let spec = syn::LitByteStr::new(&self.compressed_spec, self.input.span());
@@ -44,24 +69,22 @@ impl GetInterface {
 
 impl FromDeriveInput for GetInterface {
     fn from_derive_input(input: &DeriveInput) -> darling::Result<Self> {
-        let manifest_path = env::var_os("CARGO_MANIFEST_DIR").ok_or_else(|| {
-            let message = "`CARGO_MANIFEST_DIR` env var not set; please use cargo";
-            darling::Error::custom(message).with_span(&input.ident)
-        })?;
-        // FIXME: make relative path configurable
-        let spec_path = "src/tardigrade.json";
-        let full_spec_path = Path::new(&manifest_path).join(spec_path);
+        let attrs = find_meta_attrs("tardigrade", &input.attrs).map_or_else(
+            || Ok(GetInterfaceAttrs::default()),
+            |meta| GetInterfaceAttrs::from_nested_meta(&meta),
+        )?;
+        let spec = attrs
+            .interface
+            .as_deref()
+            .unwrap_or("file:src/tardigrade.json");
+        let contents = Self::get_spec_contents(spec).map_err(|err| err.with_span(&input.ident))?;
 
-        let contents = fs::read(&full_spec_path).map_err(|err| {
-            let message = format!("cannot read workflow spec at `{}`: {}", spec_path, err);
-            darling::Error::custom(message).with_span(&input.ident)
-        })?;
         let interface: Interface<()> = serde_json::from_slice(&contents).map_err(|err| {
-            let message = format!("error deserializing spec at `{}`: {}", spec_path, err);
+            let message = format!("error deserializing workflow spec: {}", err);
             darling::Error::custom(message).with_span(&input.ident)
         })?;
         let compressed_spec = serde_json::to_vec(&interface).map_err(|err| {
-            let message = format!("error serializing spec: {}", err);
+            let message = format!("error serializing workflow spec: {}", err);
             darling::Error::custom(message).with_span(&input.ident)
         })?;
 
@@ -79,7 +102,7 @@ impl ToTokens for GetInterface {
         tokens.extend(quote! {
             #data_section
             #get_interface_impl
-        })
+        });
     }
 }
 

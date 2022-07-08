@@ -1,12 +1,57 @@
+use darling::FromMeta;
 use proc_macro::TokenStream;
 use quote::{quote, ToTokens};
-use syn::{DeriveInput, Path};
+use syn::{DeriveInput, Ident, Path};
 
-use crate::utils::{MacroAttrs, TargetField, TargetStruct};
+use crate::utils::{parse_attr, TargetField, TargetStruct};
+
+#[derive(Debug, FromMeta)]
+struct InitAttrs {
+    #[darling(rename = "for")]
+    target: Path,
+    #[darling(default)]
+    rename: Option<String>,
+    #[darling(default)]
+    codec: Option<Path>,
+}
+
+#[derive(Debug)]
+enum InitializeStruct {
+    MultiField(TargetStruct),
+    SingleField {
+        ident: Ident,
+        codec: Path,
+        name: String,
+    },
+}
+
+impl InitializeStruct {
+    fn ident(&self) -> &Ident {
+        match self {
+            Self::MultiField(target) => &target.ident,
+            Self::SingleField { ident, .. } => ident,
+        }
+    }
+
+    fn initialize_method(&self) -> impl ToTokens {
+        match self {
+            Self::MultiField(target) => {
+                let init_fields = target.fields.iter().enumerate();
+                let init_fields = init_fields.map(|(idx, field)| field.init_from_field(idx));
+                quote!(#(#init_fields)*)
+            }
+            Self::SingleField { name, codec, ident } => {
+                let ty = quote!(tardigrade::Data<#ident, #codec>);
+                let tr = quote!(tardigrade::workflow::Initialize);
+                quote!(<#ty as #tr>::initialize(&mut *builder, init, #name))
+            }
+        }
+    }
+}
 
 #[derive(Debug)]
 struct Initialize {
-    base: TargetStruct,
+    base: InitializeStruct,
     target: Path,
 }
 
@@ -39,15 +84,26 @@ impl TargetField {
 }
 
 impl Initialize {
-    fn new(input: &mut DeriveInput, attrs: MacroAttrs) -> darling::Result<Self> {
+    fn new(input: &mut DeriveInput, attrs: InitAttrs) -> darling::Result<Self> {
         if !input.generics.params.is_empty() {
             let message = "generics are not supported";
             return Err(darling::Error::custom(message).with_span(&input.generics));
         }
-        let base = TargetStruct::new(input)?;
-        for field in &base.fields {
-            field.check_for_init()?;
-        }
+        let base = if let Some(codec) = attrs.codec {
+            InitializeStruct::SingleField {
+                ident: input.ident.clone(),
+                codec,
+                name: attrs
+                    .rename
+                    .unwrap_or_else(|| Self::normalize_name(&input.ident)),
+            }
+        } else {
+            let base = TargetStruct::new(input)?;
+            for field in &base.fields {
+                field.check_for_init()?;
+            }
+            InitializeStruct::MultiField(base)
+        };
 
         Ok(Self {
             base,
@@ -55,13 +111,23 @@ impl Initialize {
         })
     }
 
+    fn normalize_name(ident: &Ident) -> String {
+        let ident = ident.to_string();
+        let mut snake = String::with_capacity(ident.len());
+        for (i, ch) in ident.char_indices() {
+            if i > 0 && ch.is_ascii_uppercase() {
+                snake.push('_');
+            }
+            snake.push(ch.to_ascii_lowercase());
+        }
+        snake
+    }
+
     fn impl_initialize(&self) -> impl ToTokens {
         let target = &self.target;
-        let init = &self.base.ident;
+        let init = self.base.ident();
         let tr = quote!(tardigrade::workflow::Initialize);
-
-        let init_fields = self.base.fields.iter().enumerate();
-        let init_fields = init_fields.map(|(idx, field)| field.init_from_field(idx));
+        let method_impl = self.base.initialize_method();
 
         quote! {
             impl #tr for #target {
@@ -73,7 +139,7 @@ impl Initialize {
                     init: Self::Init,
                     _id: &(),
                 ) {
-                    #(#init_fields)*
+                    #method_impl
                 }
             }
         }
@@ -90,11 +156,11 @@ impl ToTokens for Initialize {
 }
 
 pub(crate) fn impl_initialize(attr: TokenStream, input: TokenStream) -> TokenStream {
-    let attrs = match MacroAttrs::parse(attr) {
+    let attrs = match parse_attr::<InitAttrs>(attr) {
         Ok(attrs) => attrs,
         Err(err) => return err.write_errors().into(),
     };
-    let mut input: syn::DeriveInput = match syn::parse(input) {
+    let mut input: DeriveInput = match syn::parse(input) {
         Ok(input) => input,
         Err(err) => return err.into_compile_error().into(),
     };

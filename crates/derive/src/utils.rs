@@ -11,6 +11,13 @@ use syn::{
 
 use std::collections::HashSet;
 
+pub(crate) fn find_meta_attrs(name: &str, args: &[Attribute]) -> Option<NestedMeta> {
+    args.iter()
+        .filter_map(|attr| attr.parse_meta().ok())
+        .find(|meta| meta.path().is_ident(name))
+        .map(NestedMeta::from)
+}
+
 fn take_meta_attr(name: &str, attrs: &mut Vec<Attribute>) -> Option<NestedMeta> {
     let (i, meta) = attrs.iter().enumerate().find_map(|(i, attr)| {
         if let Ok(meta) = attr.parse_meta() {
@@ -24,7 +31,7 @@ fn take_meta_attr(name: &str, attrs: &mut Vec<Attribute>) -> Option<NestedMeta> 
     Some(meta)
 }
 
-pub(crate) fn take_derive(attrs: &mut Vec<syn::Attribute>, name: &str) -> bool {
+pub(crate) fn take_derive(attrs: &mut Vec<Attribute>, name: &str) -> bool {
     let idx = attrs.iter_mut().enumerate().find_map(|(i, attr)| {
         if attr.path.is_ident("derive") {
             if let Ok(Meta::List(mut list)) = attr.parse_meta() {
@@ -95,13 +102,13 @@ impl FieldWrapper {
                 _ => None,
             });
             let inner_types: Vec<_> = inner_types.collect();
-            if inner_types.len() != args.len() {
-                None
-            } else {
+            if inner_types.len() == args.len() {
                 Some(Self {
                     ident: last_segment.ident.clone(),
                     inner_types,
                 })
+            } else {
+                None
             }
         } else {
             None
@@ -125,9 +132,10 @@ impl TargetField {
     fn new(field: &mut syn::Field) -> darling::Result<Self> {
         let ident = field.ident.clone();
 
-        let attrs = take_meta_attr("tardigrade", &mut field.attrs)
-            .map(|meta| TargetFieldAttrs::from_nested_meta(&meta))
-            .unwrap_or_else(|| Ok(TargetFieldAttrs::default()))?;
+        let attrs = take_meta_attr("tardigrade", &mut field.attrs).map_or_else(
+            || Ok(TargetFieldAttrs::default()),
+            |meta| TargetFieldAttrs::from_nested_meta(&meta),
+        )?;
 
         let name = attrs
             .rename
@@ -297,12 +305,10 @@ pub(crate) struct MacroAttrs {
     pub target: Path,
 }
 
-impl MacroAttrs {
-    pub fn parse(tokens: TokenStream) -> darling::Result<Self> {
-        let meta = Punctuated::<NestedMeta, Token![,]>::parse_terminated.parse(tokens)?;
-        let meta: Vec<_> = meta.into_iter().collect();
-        Self::from_list(&meta)
-    }
+pub(crate) fn parse_attr<T: FromMeta>(tokens: TokenStream) -> darling::Result<T> {
+    let meta = Punctuated::<NestedMeta, Token![,]>::parse_terminated.parse(tokens)?;
+    let meta: Vec<_> = meta.into_iter().collect();
+    T::from_list(&meta)
 }
 
 #[cfg(test)]

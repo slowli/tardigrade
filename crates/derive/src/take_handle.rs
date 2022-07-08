@@ -6,7 +6,7 @@ use proc_macro2::Ident;
 use quote::{quote, ToTokens};
 use syn::{parse_quote, DeriveInput, Generics, Path, Type};
 
-use crate::utils::{take_derive, MacroAttrs, TargetField, TargetStruct};
+use crate::utils::{parse_attr, take_derive, MacroAttrs, TargetField, TargetStruct};
 
 impl TargetField {
     fn check_for_handle(&self, env_ident: &Ident) -> darling::Result<()> {
@@ -201,7 +201,7 @@ impl ToTokens for TakeHandle {
 }
 
 pub(crate) fn impl_take_handle(attr: TokenStream, input: TokenStream) -> TokenStream {
-    let attrs = match MacroAttrs::parse(attr) {
+    let attrs = match parse_attr::<MacroAttrs>(attr) {
         Ok(attrs) => attrs,
         Err(err) => return err.write_errors().into(),
     };
@@ -209,10 +209,10 @@ pub(crate) fn impl_take_handle(attr: TokenStream, input: TokenStream) -> TokenSt
         Ok(input) => input,
         Err(err) => return err.into_compile_error().into(),
     };
-    let init = match TakeHandle::new(&mut input, attrs) {
-        Ok(init) => init,
+    let take_handle = match TakeHandle::new(&mut input, attrs) {
+        Ok(take_handle) => take_handle,
         Err(err) => return err.write_errors().into(),
     };
-    let tokens = quote!(#input #init);
+    let tokens = quote!(#input #take_handle);
     tokens.into()
 }
