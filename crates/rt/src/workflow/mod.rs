@@ -6,21 +6,15 @@ use wasmtime::{AsContextMut, Linker, Store, Trap};
 
 use std::{fmt, sync::Arc, task::Poll};
 
-mod env;
 mod persistence;
 #[cfg(test)]
 mod tests;
 
-pub use self::{
-    env::{
-        DataPeeker, MessageReceiver, MessageSender, SentMessage, TakenMessages, WorkflowEnv,
-        WorkflowHandle,
-    },
-    persistence::PersistedWorkflow,
-};
+pub use self::persistence::PersistedWorkflow;
 
 use crate::{
     data::{ConsumeError, PersistError, TaskState, TimerState, WorkflowData},
+    handle::{WorkflowEnv, WorkflowHandle},
     module::{DataSection, ModuleExports, WorkflowModule},
     receipt::{
         Event, ExecutedFunction, Execution, ExecutionError, Receipt, ResourceEventKind, ResourceId,
@@ -100,6 +94,10 @@ impl<W> Workflow<W> {
             interface: module.interface().clone(),
             data_section,
         })
+    }
+
+    pub(crate) fn interface(&self) -> &Interface<W> {
+        &self.interface
     }
 
     fn spawn_main_task(&mut self) -> Result<(), Trap> {
@@ -226,7 +224,7 @@ impl<W> Workflow<W> {
     }
 
     // FIXME: revert actions (sending messages, spawning tasks) on task panic
-    fn tick(&mut self) -> Result<Receipt, ExecutionError> {
+    pub(crate) fn tick(&mut self) -> Result<Receipt, ExecutionError> {
         let mut receipt = Receipt::new();
         match self.do_tick(&mut receipt) {
             Ok(()) => Ok(receipt),
@@ -244,11 +242,11 @@ impl<W> Workflow<W> {
         Ok(())
     }
 
-    fn data_input(&self, input_name: &str) -> Option<Vec<u8>> {
+    pub(crate) fn data_input(&self, input_name: &str) -> Option<Vec<u8>> {
         self.store.data().data_input(input_name)
     }
 
-    fn push_inbound_message(
+    pub(crate) fn push_inbound_message(
         &mut self,
         channel_name: &str,
         message: Vec<u8>,
@@ -266,7 +264,7 @@ impl<W> Workflow<W> {
         )
     }
 
-    fn take_outbound_messages(&mut self, channel_name: &str) -> (usize, Vec<Vec<u8>>) {
+    pub(crate) fn take_outbound_messages(&mut self, channel_name: &str) -> (usize, Vec<Vec<u8>>) {
         let (start_idx, messages) = self.store.data_mut().take_outbound_messages(channel_name);
         crate::trace!(
             "Taken messages with lengths {:?} from channel `{}`",

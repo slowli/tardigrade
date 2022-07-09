@@ -20,6 +20,7 @@
 #![allow(clippy::must_use_candidate, clippy::module_name_repetitions)]
 
 mod data;
+pub mod handle;
 mod module;
 pub mod receipt;
 pub mod test;
@@ -29,9 +30,6 @@ mod workflow;
 pub use crate::{
     data::{ConsumeError, ConsumeErrorKind, PersistError, TaskState, TimerState},
     module::{ExtendLinker, WorkflowEngine, WorkflowModule},
-    workflow::{
-        DataPeeker, MessageReceiver, MessageSender, PersistedWorkflow, SentMessage, TakenMessages,
-        Workflow, WorkflowEnv, WorkflowHandle,
-    },
+    workflow::{PersistedWorkflow, Workflow},
 };
 pub use tardigrade_shared::{FutureId, TaskId, TimerId, WakerId};

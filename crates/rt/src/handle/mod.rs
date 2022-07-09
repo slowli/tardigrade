@@ -1,4 +1,4 @@
-//! Workflow environment.
+//! Handles for [`Workflow`].
 
 // FIXME: state of traced futures is lost across saves!
 
@@ -112,7 +112,8 @@ where
     type Handle = MessageSender<'a, T, C, W>;
 
     fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
-        let channel_exists = env.with(|workflow| workflow.interface.inbound_channel(id).is_some());
+        let channel_exists =
+            env.with(|workflow| workflow.interface().inbound_channel(id).is_some());
         if channel_exists {
             Ok(MessageSender {
                 env: env.clone(),
@@ -193,7 +194,8 @@ where
     type Handle = MessageReceiver<'a, T, C, W>;
 
     fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
-        let channel_exists = env.with(|workflow| workflow.interface.outbound_channel(id).is_some());
+        let channel_exists =
+            env.with(|workflow| workflow.interface().outbound_channel(id).is_some());
         if channel_exists {
             Ok(MessageReceiver {
                 env: env.clone(),
@@ -236,7 +238,7 @@ where
     type Handle = DataPeeker<'a, T, C, W>;
 
     fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
-        let input_exists = env.with(|workflow| workflow.interface.data_input(id).is_some());
+        let input_exists = env.with(|workflow| workflow.interface().data_input(id).is_some());
         if input_exists {
             Ok(DataPeeker {
                 env: env.clone(),
@@ -250,6 +252,7 @@ where
     }
 }
 
+/// Handle allowing to trace futures.
 #[derive(Debug)]
 pub struct TracerHandle<'a, C, W> {
     receiver: MessageReceiver<'a, FutureUpdate, C, W>,
@@ -260,19 +263,27 @@ impl<'a, C, W> TracerHandle<'a, C, W>
 where
     C: Decoder<FutureUpdate>,
 {
+    /// Gets the current state of a future with the specified ID.
     pub fn future(&self, id: FutureId) -> Option<&TracedFuture> {
         self.futures.get(&id)
     }
 
+    /// Lists all traced futures.
     pub fn futures(&self) -> impl Iterator<Item = (FutureId, &TracedFuture)> + '_ {
         self.futures.iter().map(|(id, state)| (*id, state))
     }
 
-    pub fn flush(&mut self) -> anyhow::Result<Receipt> {
+    /// Takes tracing messages from the workflow and updates traced future states accordingly.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an [`ExecutionError`] occurs when flushing tracing messages, or
+    /// if decoding messages fails.
+    pub fn take_traces(&mut self) -> anyhow::Result<Receipt> {
         let receipt = self
             .receiver
             .take_messages()
-            .context("cannot flush trace messages")?;
+            .context("cannot flush tracing messages")?;
         let receipt = receipt
             .map(TakenMessages::decode)
             .transpose()
@@ -359,7 +370,7 @@ impl<'a> TakeHandle<WorkflowEnv<'a, ()>> for Interface<()> {
         env: &mut WorkflowEnv<'a, ()>,
         _id: &Self::Id,
     ) -> Result<Self::Handle, AccessError> {
-        Ok(env.with(|workflow| workflow.interface.clone()))
+        Ok(env.with(|workflow| workflow.interface().clone()))
     }
 }
 
