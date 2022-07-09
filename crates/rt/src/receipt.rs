@@ -17,6 +17,11 @@ pub enum WakeUpCause {
         /// 0-based message index.
         message_index: usize,
     },
+    /// Woken up by an inbound channel getting closed.
+    ChannelClosed {
+        /// Name of the inbound channel that was closed.
+        channel_name: String,
+    },
     /// Woken up by flushing an outbound channel.
     Flush {
         /// Name of the outbound channel that was flushed.

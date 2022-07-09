@@ -254,7 +254,7 @@ pub struct Interface<W: ?Sized> {
     #[serde(rename = "data", default, skip_serializing_if = "HashMap::is_empty")]
     data_inputs: HashMap<String, DataInputSpec>,
     #[serde(skip, default)]
-    _workflow: PhantomData<*const W>,
+    _workflow: PhantomData<fn(W)>,
 }
 
 impl<W: ?Sized> fmt::Debug for Interface<W> {

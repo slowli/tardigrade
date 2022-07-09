@@ -27,6 +27,18 @@ use tardigrade::{
     workflow::{Initialize, Inputs, TakeHandle},
 };
 
+#[derive(Debug)]
+pub(crate) struct ListenedEvents {
+    pub inbound_channels: Vec<String>,
+    pub nearest_timer: Option<DateTime<Utc>>,
+}
+
+impl ListenedEvents {
+    pub fn is_empty(&self) -> bool {
+        self.inbound_channels.is_empty() && self.nearest_timer.is_none()
+    }
+}
+
 /// Workflow instance.
 pub struct Workflow<W> {
     store: Store<WorkflowData>,
@@ -115,6 +127,14 @@ impl<W> Workflow<W> {
     /// Lists all tasks in this workflow.
     pub fn tasks(&self) -> impl Iterator<Item = (TaskId, &TaskState)> + '_ {
         self.store.data().tasks()
+    }
+
+    /// Checks whether the workflow is finished, i.e., all tasks in it have completed.
+    pub fn is_finished(&self) -> bool {
+        self.store
+            .data()
+            .tasks()
+            .all(|(_, state)| state.result().is_ready())
     }
 
     fn do_execute(&mut self, function: &mut ExecutedFunction) -> Result<(), Trap> {
@@ -262,6 +282,26 @@ impl<W> Workflow<W> {
             message_len,
             channel_name
         )
+    }
+
+    pub(crate) fn close_inbound_channel(&mut self, channel_name: &str) -> Result<(), ConsumeError> {
+        let result = self.store.data_mut().close_inbound_channel(channel_name);
+        crate::log_result!(result, "Closed inbound channel `{}`", channel_name)
+    }
+
+    pub(crate) fn listened_events(&self) -> ListenedEvents {
+        let data = self.store.data();
+        let expirations = data
+            .timers()
+            .iter()
+            .map(|(_, state)| state.definition().expires_at);
+        ListenedEvents {
+            inbound_channels: data
+                .listened_inbound_channels()
+                .map(str::to_owned)
+                .collect(),
+            nearest_timer: expirations.min(),
+        }
     }
 
     pub(crate) fn take_outbound_messages(&mut self, channel_name: &str) -> (usize, Vec<Vec<u8>>) {

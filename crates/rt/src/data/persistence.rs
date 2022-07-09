@@ -48,8 +48,15 @@ impl fmt::Display for PersistError {
 
 impl error::Error for PersistError {}
 
+#[allow(clippy::trivially_copy_pass_by_ref)] // required by serde
+fn flip_bool(&flag: &bool) -> bool {
+    !flag
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct InboundChannelState {
+    #[serde(default, skip_serializing_if = "flip_bool")]
+    is_closed: bool,
     is_acquired: bool,
     received_messages: usize,
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]
@@ -60,6 +67,7 @@ impl InboundChannelState {
     fn new(state: &super::InboundChannelState) -> Self {
         debug_assert!(state.pending_message.is_none());
         Self {
+            is_closed: state.is_closed,
             is_acquired: state.is_acquired,
             received_messages: state.received_messages,
             wakes_on_next_element: state.wakes_on_next_element.clone(),
@@ -80,6 +88,7 @@ impl InboundChannelState {
         })?;
 
         Ok(super::InboundChannelState {
+            is_closed: self.is_closed,
             is_acquired: self.is_acquired,
             received_messages: self.received_messages,
             pending_message: None,

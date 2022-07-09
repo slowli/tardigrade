@@ -5,12 +5,15 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.57"
+async-io = "1.7.0" # TODO: make optional
 base64 = "0.13.0"
 chrono = { version = "0.4.19", features = ["serde"] }
 flate2 = "1.0.24"
+futures = "0.3.21" # TODO: make optional?
 leb128 = "0.2.5"
-log = "0.4.17"
+log = "0.4.17" # TODO: make optional?
 once_cell = "1.13.0"
+pin-project-lite = "0.2.9"
 serde = { version = "1", features = ["derive"] }
 wasmtime = "0.37.0"
 
