@@ -26,22 +26,11 @@ pub trait Decoder<T> {
 }
 
 /// Encoder of a particular type.
+///
+/// Unlike [`Decoder`]s, `Encoder`s are assumed to be infallible.
 pub trait Encoder<T> {
-    /// Encoding error.
-    type Error: error::Error + Send + Sync + 'static;
-
-    /// Tries to encode `value`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the value cannot be encoded.
-    fn try_encode_value(&mut self, value: T) -> Result<Vec<u8>, Self::Error>;
-
-    /// Encodes `value`. This is a convenience method that `unwrap()`s the result
-    /// of [`Self::try_encode_value()`].
-    fn encode_value(&mut self, value: T) -> Vec<u8> {
-        self.try_encode_value(value).expect("Cannot encode value")
-    }
+    /// Encodes `value`.
+    fn encode_value(&mut self, value: T) -> Vec<u8>;
 }
 
 /// Raw / identity codec that passes through byte [`Vec`]s without changes.
@@ -49,10 +38,8 @@ pub trait Encoder<T> {
 pub struct Raw;
 
 impl Encoder<Vec<u8>> for Raw {
-    type Error = Infallible;
-
-    fn try_encode_value(&mut self, value: Vec<u8>) -> Result<Vec<u8>, Self::Error> {
-        Ok(value)
+    fn encode_value(&mut self, value: Vec<u8>) -> Vec<u8> {
+        value
     }
 }
 
@@ -74,11 +61,11 @@ mod json {
     #[derive(Debug, Clone, Copy, Default)]
     pub struct Json;
 
+    /// Panics if the value cannot be serialized. Serialization errors are usually confined
+    /// to edge cases (e.g., very deeply nested / recursive objects).
     impl<T: Serialize> Encoder<T> for Json {
-        type Error = serde_json::Error;
-
-        fn try_encode_value(&mut self, value: T) -> Result<Vec<u8>, Self::Error> {
-            serde_json::to_vec(&value)
+        fn encode_value(&mut self, value: T) -> Vec<u8> {
+            serde_json::to_vec(&value).expect("cannot serialize value")
         }
     }
 
