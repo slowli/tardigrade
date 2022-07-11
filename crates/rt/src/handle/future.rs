@@ -77,7 +77,6 @@ enum ListenedEventOutput<'a> {
     Channel {
         name: &'a str,
         message: Option<Vec<u8>>,
-        rx: mpsc::Receiver<Vec<u8>>,
     },
     Timer(DateTime<Utc>),
 }
@@ -114,7 +113,6 @@ impl<W> AsyncEnv<W> {
         }
     }
 
-    // FIXME: make method cancel-safe (using a guard?)
     async fn tick(&mut self) -> Result<Option<Termination>, ExecutionError> {
         if self.workflow.is_finished() {
             return Ok(Some(Termination::Finished));
@@ -129,49 +127,39 @@ impl<W> AsyncEnv<W> {
             return Ok(Some(Termination::Stalled));
         }
 
-        let channel_futures = events.inbound_channels.iter().filter_map(|name| {
-            self.inbound_channels
-                .remove(name)
-                .map(|rx| (name, rx.into_future()))
+        let channel_futures = self.inbound_channels.iter_mut().filter_map(|(name, rx)| {
+            if events.inbound_channels.contains(name) {
+                let fut = rx
+                    .next()
+                    .map(|message| ListenedEventOutput::Channel { name, message })
+                    .left_future();
+                Some(fut)
+            } else {
+                None
+            }
         });
-        let mut channel_futures: Vec<_> = channel_futures.collect();
 
         let timer_event = events.nearest_timer.map(|timestamp| {
             let timer = self.scheduler.create_timer(timestamp);
             timer.map(ListenedEventOutput::Timer).right_future()
         });
-        let all_futures = channel_futures
-            .iter_mut()
-            .map(|(name, fut)| {
-                fut.map(|(message, rx)| ListenedEventOutput::Channel { name, message, rx })
-                    .left_future()
-            })
-            .chain(timer_event);
+        let all_futures = channel_futures.chain(timer_event);
 
         let (output, ..) = future::select_all(all_futures).await;
-
         let receipt = match output {
-            ListenedEventOutput::Channel { name, message, rx } => {
+            ListenedEventOutput::Channel { name, message } => {
                 if let Some(message) = message {
                     self.workflow.push_inbound_message(name, message).unwrap();
                 } else {
                     self.workflow.close_inbound_channel(name).unwrap();
                 }
                 // ^ `unwrap()`s above are safe: we know `workflow` listens to the channel
-                self.inbound_channels.insert(name.to_owned(), rx);
                 self.workflow.tick()?
             }
 
             ListenedEventOutput::Timer(timestamp) => self.workflow.set_current_time(timestamp)?,
         };
         self.send_receipt(receipt).await;
-
-        // Restore inbound channels.
-        for (name, future) in channel_futures {
-            if let Some(rx) = future.into_inner() {
-                self.inbound_channels.insert(name.clone(), rx);
-            }
-        }
 
         Ok(None)
     }
