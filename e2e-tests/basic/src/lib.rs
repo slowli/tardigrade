@@ -7,8 +7,8 @@ use tardigrade::{
     channel::{Receiver, Sender},
     sleep,
     trace::Tracer,
-    workflow::{GetInterface, Handle, Init},
-    Data, FutureExt as _, Json, SpawnWorkflow, TaskHandle, Wasm,
+    workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm},
+    Data, FutureExt as _, Json,
 };
 
 #[cfg(test)]
@@ -45,6 +45,18 @@ pub enum DomainEvent {
     Delivered { index: usize, order: PizzaOrder },
 }
 
+impl DomainEvent {
+    pub fn index(&self) -> usize {
+        match self {
+            Self::OrderTaken { index, .. }
+            | Self::Baked { index, .. }
+            | Self::StartedDelivering { index, .. }
+            | Self::Delivered { index, .. } => *index,
+        }
+    }
+}
+
+#[tardigrade::init(for = "PizzaDelivery", codec = "Json")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Inputs {
     pub oven_count: usize,
@@ -72,18 +84,6 @@ pub struct PizzaDeliveryHandle<Env = Wasm> {
     pub orders: Handle<Receiver<PizzaOrder, Json>, Env>,
     #[tardigrade(flatten)]
     pub shared: Handle<Shared, Env>,
-}
-
-#[tardigrade::init(for = "PizzaDelivery")]
-#[derive(Debug, Clone)]
-pub struct PizzaDeliveryInit {
-    inputs: Init<Data<Inputs, Json>>,
-}
-
-impl From<Inputs> for PizzaDeliveryInit {
-    fn from(inputs: Inputs) -> Self {
-        Self { inputs }
-    }
 }
 
 impl SpawnWorkflow for PizzaDelivery {
@@ -135,7 +135,7 @@ impl SharedHandle<Wasm> {
         events
             .send(DomainEvent::StartedDelivering { index, order })
             .await;
-        let delay = Duration::from_millis(order.delivery_distance * 100);
+        let delay = Duration::from_millis(order.delivery_distance * 10);
         sleep(delay).trace(&self.tracer, "delivery_timer").await;
         events.send(DomainEvent::Delivered { index, order }).await;
     }

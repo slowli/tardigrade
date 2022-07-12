@@ -1,0 +1,7 @@
+[target.wasm32-unknown-unknown]
+rustflags = [
+  # Specifies stack size (32K)
+  "-C", "link-arg=-zstack-size=32768",
+  # Exposes the start of the data section / end of the stack
+  "-C", "link-arg=--export=__global_base",
+]
