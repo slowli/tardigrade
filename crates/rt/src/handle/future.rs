@@ -3,7 +3,7 @@
 #![allow(missing_docs)]
 
 use chrono::{DateTime, Utc};
-use futures::{channel::mpsc, future, FutureExt, Sink, SinkExt, Stream, StreamExt};
+use futures::{channel::mpsc, future, FutureExt, Sink, Stream, StreamExt};
 use pin_project_lite::pin_project;
 
 use std::{
@@ -72,7 +72,7 @@ pub struct AsyncEnv<W> {
     scheduler: Box<dyn Schedule>,
     inbound_channels: HashMap<String, mpsc::Receiver<Vec<u8>>>,
     outbound_channels: HashMap<String, mpsc::UnboundedSender<Vec<u8>>>,
-    receipts: Option<mpsc::Sender<Receipt>>,
+    receipts: Option<mpsc::UnboundedSender<Receipt>>,
 }
 
 #[derive(Debug)]
@@ -105,6 +105,13 @@ impl<W> AsyncEnv<W> {
         }
     }
 
+    /// Returns the receiver for execution [`Receipt`]s.
+    pub fn receipts(&mut self) -> impl Stream<Item = Receipt> {
+        let (sx, rx) = mpsc::unbounded();
+        self.receipts = Some(sx);
+        rx
+    }
+
     pub fn into_inner(self) -> Workflow<W> {
         self.workflow
     }
@@ -125,8 +132,8 @@ impl<W> AsyncEnv<W> {
             return Ok(Some(Termination::Finished));
         }
 
-        // First, flush all outbound messages ("almost" sync and cheap).
-        self.flush_outbound_messages().await?;
+        // First, flush all outbound messages (synchronous and cheap).
+        self.flush_outbound_messages()?;
 
         // Determine external events listened by the workflow.
         let events = self.workflow.listened_events();
@@ -166,13 +173,13 @@ impl<W> AsyncEnv<W> {
 
             ListenedEventOutput::Timer(timestamp) => self.workflow.set_current_time(timestamp)?,
         };
-        self.send_receipt(receipt).await;
+        self.send_receipt(receipt);
 
         Ok(None)
     }
 
     /// Repeatedly flushes messages to the outbound channels until no messages are left.
-    async fn flush_outbound_messages(&mut self) -> Result<(), ExecutionError> {
+    fn flush_outbound_messages(&mut self) -> Result<(), ExecutionError> {
         loop {
             let mut messages_sent = false;
             for (name, sx) in &mut self.outbound_channels {
@@ -186,16 +193,16 @@ impl<W> AsyncEnv<W> {
 
             if messages_sent {
                 let receipt = self.workflow.tick()?;
-                self.send_receipt(receipt).await;
+                self.send_receipt(receipt);
             } else {
                 break Ok(());
             }
         }
     }
 
-    async fn send_receipt(&mut self, receipt: Receipt) {
+    fn send_receipt(&mut self, receipt: Receipt) {
         if let Some(receipts) = &mut self.receipts {
-            receipts.send(receipt).await.ok();
+            receipts.unbounded_send(receipt).ok();
             // ^ We don't care if nobody listens to receipts.
         }
     }
