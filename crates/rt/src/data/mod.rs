@@ -2,7 +2,10 @@
 
 use wasmtime::{StoreContextMut, Trap};
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 mod channel;
 mod helpers;
@@ -25,7 +28,7 @@ use self::{
     time::Timers,
 };
 use crate::{
-    module::ModuleExports,
+    module::{Clock, ModuleExports},
     receipt::WakeUpCause,
     utils::{copy_string_from_wasm, WasmAllocator},
     TaskId,
@@ -37,10 +40,12 @@ use tardigrade_shared::abi::IntoWasm;
 pub struct WorkflowData {
     /// Functions exported by the `Instance`. Instantiated immediately after instance.
     exports: Option<ModuleExports>,
+    // Interfaces (channels, data inputs).
     inbound_channels: HashMap<String, InboundChannelState>,
     outbound_channels: HashMap<String, OutboundChannelState>,
     data_inputs: HashMap<String, Message>,
     timers: Timers,
+    clock: Arc<dyn Clock>,
     /// All tasks together with relevant info.
     tasks: HashMap<TaskId, TaskState>,
     /// Data related to the currently executing WASM call.
@@ -57,6 +62,7 @@ impl WorkflowData {
     pub(crate) fn from_interface<W>(
         interface: &Interface<W>,
         data_inputs: HashMap<String, Vec<u8>>,
+        clock: Arc<dyn Clock>,
     ) -> Self {
         // Sanity-check correspondence of inputs to the interface.
         debug_assert_eq!(
@@ -89,6 +95,7 @@ impl WorkflowData {
             outbound_channels,
             data_inputs,
             timers: Timers::new(),
+            clock,
             tasks: HashMap::new(),
             current_execution: None,
             task_queue: TaskQueue::default(),

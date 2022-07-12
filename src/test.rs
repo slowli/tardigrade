@@ -116,7 +116,7 @@ use tardigrade_shared::{
 #[derive(Debug)]
 struct TimerEntry {
     expires_at: DateTime<Utc>,
-    notifier: oneshot::Sender<()>,
+    notifier: oneshot::Sender<DateTime<Utc>>,
 }
 
 impl PartialEq for TimerEntry {
@@ -139,41 +139,60 @@ impl Ord for TimerEntry {
     }
 }
 
+/// Mock workflow scheduler.
 #[derive(Debug)]
-struct RuntimeClock {
+pub struct MockScheduler {
     now: DateTime<Utc>,
     timers: BinaryHeap<TimerEntry>,
 }
 
-impl Default for RuntimeClock {
+impl Default for MockScheduler {
     fn default() -> Self {
-        Self {
-            now: Utc::now(),
-            timers: BinaryHeap::new(),
-        }
+        Self::new(Utc::now())
     }
 }
 
-impl RuntimeClock {
-    fn next_timer_expiration(&self) -> Option<DateTime<Utc>> {
+impl MockScheduler {
+    /// Creates a scheduler with the specified current timestamp.
+    pub fn new(now: DateTime<Utc>) -> Self {
+        Self {
+            now,
+            timers: BinaryHeap::new(),
+        }
+    }
+
+    /// Returns the expiration for the nearest timer, or `None` if there are no active timers.
+    pub fn next_timer_expiration(&self) -> Option<DateTime<Utc>> {
         self.timers.peek().map(|timer| timer.expires_at)
     }
 
-    fn insert_timer(&mut self, duration: Duration) -> oneshot::Receiver<()> {
-        let duration = chrono::Duration::from_std(duration).expect("duration is too large");
+    /// Inserts a timer into this scheduler.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `expires_at` is in the past according to [`Self::now()`].
+    pub fn insert_timer(&mut self, expires_at: DateTime<Utc>) -> oneshot::Receiver<DateTime<Utc>> {
+        assert!(expires_at > self.now);
+
         let (sx, rx) = oneshot::channel();
         self.timers.push(TimerEntry {
-            expires_at: self.now + duration,
+            expires_at,
             notifier: sx,
         });
         rx
     }
 
-    fn set_now(&mut self, now: DateTime<Utc>) {
+    /// Returns the current timestamp.
+    pub fn now(&self) -> DateTime<Utc> {
+        self.now
+    }
+
+    /// Sets the current timestamp for the scheduler.
+    pub fn set_now(&mut self, now: DateTime<Utc>) {
         self.now = now;
         while let Some(timer) = self.timers.pop() {
             if timer.expires_at <= now {
-                timer.notifier.send(()).ok();
+                timer.notifier.send(now).ok();
             } else {
                 self.timers.push(timer);
                 break;
@@ -193,17 +212,17 @@ pub struct TimersHandle {
 impl TimersHandle {
     /// Returns current time.
     pub fn now(&self) -> DateTime<Utc> {
-        Runtime::with_mut(|rt| rt.clock.now)
+        Runtime::with_mut(|rt| rt.scheduler.now)
     }
 
     /// Returns the expiration timestamp of the nearest timer.
     pub fn next_timer_expiration(&self) -> Option<DateTime<Utc>> {
-        Runtime::with_mut(|rt| rt.clock.next_timer_expiration())
+        Runtime::with_mut(|rt| rt.scheduler.next_timer_expiration())
     }
 
     /// Advances time to the specified point, triggering the expired timers.
     pub fn set_now(&self, now: DateTime<Utc>) {
-        Runtime::with_mut(|rt| rt.clock.set_now(now));
+        Runtime::with_mut(|rt| rt.scheduler.set_now(now));
     }
 }
 
@@ -244,7 +263,7 @@ pub(crate) struct Runtime {
     data_inputs: HashMap<String, Vec<u8>>,
     inbound_channels: HashMap<String, ChannelPair>,
     outbound_channels: HashMap<String, ChannelPair>,
-    clock: RuntimeClock,
+    scheduler: MockScheduler,
 }
 
 thread_local! {
@@ -270,7 +289,7 @@ impl Runtime {
             data_inputs,
             inbound_channels: inbound.collect(),
             outbound_channels: outbound.collect(),
-            clock: RuntimeClock::default(),
+            scheduler: MockScheduler::default(),
         };
 
         RT.with(|cell| {
@@ -344,8 +363,9 @@ impl Runtime {
             .ok_or_else(|| AccessErrorKind::AlreadyAcquired.for_handle(OutboundChannel(name)))
     }
 
-    pub fn insert_timer(&mut self, duration: Duration) -> oneshot::Receiver<()> {
-        self.clock.insert_timer(duration)
+    pub fn insert_timer(&mut self, duration: Duration) -> oneshot::Receiver<DateTime<Utc>> {
+        let duration = chrono::Duration::from_std(duration).expect("duration is too large");
+        self.scheduler.insert_timer(self.scheduler.now() + duration)
     }
 
     pub fn spawn_task<T>(&self, task: impl Future<Output = T> + 'static) -> RemoteHandle<T> {

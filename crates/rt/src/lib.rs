@@ -29,7 +29,7 @@ mod workflow;
 
 pub use crate::{
     data::{ConsumeError, ConsumeErrorKind, PersistError, TaskState, TimerState},
-    module::{ExtendLinker, WorkflowEngine, WorkflowModule},
+    module::{Clock, ExtendLinker, WorkflowEngine, WorkflowModule},
     workflow::{PersistedWorkflow, Workflow},
 };
 pub use tardigrade_shared::{FutureId, TaskId, TimerId, WakerId};

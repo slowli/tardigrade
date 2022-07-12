@@ -67,7 +67,11 @@ impl<W: Initialize<Id = ()>> Workflow<W> {
     ///   or polling it.
     pub fn new(module: &WorkflowModule<W>, inputs: W::Init) -> anyhow::Result<Receipt<Self>> {
         let raw_inputs = Inputs::for_interface(module.interface(), inputs);
-        let state = WorkflowData::from_interface(module.interface(), raw_inputs.into_inner());
+        let state = WorkflowData::from_interface(
+            module.interface(),
+            raw_inputs.into_inner(),
+            module.clone_clock(),
+        );
         let mut this = Self::from_state(module, state)?;
         this.spawn_main_task()
             .context("failed spawning main task")?;
@@ -291,10 +295,13 @@ impl<W> Workflow<W> {
 
     pub(crate) fn listened_events(&self) -> ListenedEvents {
         let data = self.store.data();
-        let expirations = data
-            .timers()
-            .iter()
-            .map(|(_, state)| state.definition().expires_at);
+        let expirations = data.timers().iter().filter_map(|(_, state)| {
+            if state.completed_at().is_none() {
+                Some(state.definition().expires_at)
+            } else {
+                None
+            }
+        });
         ListenedEvents {
             inbound_channels: data
                 .listened_inbound_channels()

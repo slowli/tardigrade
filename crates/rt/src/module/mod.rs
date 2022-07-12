@@ -1,6 +1,7 @@
 //! Module utils.
 
 use anyhow::{anyhow, bail, ensure, Context};
+use chrono::{DateTime, Utc};
 use once_cell::sync::OnceCell;
 use wasmtime::{
     AsContextMut, Caller, Engine, ExternType, Func, Instance, Linker, Memory, Module, Store,
@@ -68,6 +69,27 @@ impl<T: ExtendLinker> LowLevelExtendLinker for T {
     }
 }
 
+/// Wall clock.
+pub trait Clock: Send + Sync + 'static {
+    /// Returns the current timestamp. This is used in [`Workflow`]s when creating new timers.
+    fn now(&self) -> DateTime<Utc>;
+}
+
+impl<F> Clock for F
+where
+    F: Fn() -> DateTime<Utc> + Send + Sync + 'static,
+{
+    fn now(&self) -> DateTime<Utc> {
+        self()
+    }
+}
+
+impl fmt::Debug for dyn Clock {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("Clock").finish_non_exhaustive()
+    }
+}
+
 /// Workflow engine, essentially a thin wrapper around [`Engine`] from wasmtime.
 #[derive(Default)]
 pub struct WorkflowEngine {
@@ -123,6 +145,7 @@ impl DataSection {
 pub struct WorkflowModule<W> {
     pub(crate) inner: Module,
     interface: Interface<W>,
+    clock: Arc<dyn Clock>,
     linker_extensions: Vec<Box<dyn LowLevelExtendLinker>>,
     data_section: OnceCell<Arc<DataSection>>,
 }
@@ -204,6 +227,18 @@ impl WorkflowModule<()> {
 }
 
 impl<W> WorkflowModule<W> {
+    /// Specifies a [`Clock`] implementation to be used with [`Workflow`]s instantiated
+    /// from this module.
+    #[must_use]
+    pub fn with_clock(mut self, clock: impl Clock) -> Self {
+        self.clock = Arc::new(clock);
+        self
+    }
+
+    pub(crate) fn clone_clock(&self) -> Arc<dyn Clock> {
+        Arc::clone(&self.clock)
+    }
+
     /// Returns the interface of this module.
     pub fn interface(&self) -> &Interface<W> {
         &self.interface
@@ -266,6 +301,7 @@ impl<W: ValidateInterface<Id = ()>> WorkflowModule<W> {
             interface: interface
                 .downcast()
                 .context("mismatch between declared and actual workflow interface")?,
+            clock: Arc::new(Utc::now),
             linker_extensions: vec![Box::new(WorkflowFunctions)],
             data_section: OnceCell::new(),
         })
@@ -474,7 +510,7 @@ impl ModuleImports {
 
             "timer::new" => ensure_func_ty::<(i32, i64), TimerId>(ty, fn_name),
             "timer::drop" => ensure_func_ty::<TimerId, ()>(ty, fn_name),
-            "timer::poll" => ensure_func_ty::<(TimerId, WasmContextPtr), i32>(ty, fn_name),
+            "timer::poll" => ensure_func_ty::<(TimerId, WasmContextPtr), i64>(ty, fn_name),
 
             other => {
                 bail!(

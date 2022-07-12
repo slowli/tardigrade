@@ -28,7 +28,8 @@ use tardigrade_shared::{
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimerState {
     definition: TimerDefinition,
-    is_completed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    completed_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     wakes_on_completion: HashSet<WakerId>,
 }
@@ -39,21 +40,21 @@ impl TimerState {
         self.definition
     }
 
-    /// Returns `true` iff the timer has completed.
-    pub fn is_completed(&self) -> bool {
-        self.is_completed
+    /// Returns timestamp when the timer was completed.
+    pub fn completed_at(&self) -> Option<DateTime<Utc>> {
+        self.completed_at
     }
 
-    fn poll(&mut self) -> Poll<()> {
-        if self.is_completed {
-            Poll::Ready(())
+    fn poll(&self) -> Poll<DateTime<Utc>> {
+        if let Some(timestamp) = self.completed_at {
+            Poll::Ready(timestamp)
         } else {
             Poll::Pending
         }
     }
 
-    fn complete(&mut self) -> HashSet<WakerId> {
-        self.is_completed = true;
+    fn complete(&mut self, current_timestamp: DateTime<Utc>) -> HashSet<WakerId> {
+        self.completed_at = Some(current_timestamp);
         mem::take(&mut self.wakes_on_completion)
     }
 }
@@ -68,7 +69,7 @@ pub(crate) struct Timers {
 impl Timers {
     pub(super) fn new() -> Self {
         Self {
-            current_time: Utc::now(), // FIXME: generalize
+            current_time: Utc::now(),
             timers: HashMap::new(),
             next_timer_id: 0,
         }
@@ -88,7 +89,7 @@ impl Timers {
             id,
             TimerState {
                 definition,
-                is_completed: false,
+                completed_at: None,
                 wakes_on_completion: HashSet::new(),
             },
         );
@@ -100,7 +101,7 @@ impl Timers {
         self.timers.remove(&timer_id);
     }
 
-    fn poll(&mut self, id: TimerId) -> Result<Poll<()>, Trap> {
+    fn poll(&mut self, id: TimerId) -> Result<Poll<DateTime<Utc>>, Trap> {
         let timer_state = self
             .timers
             .get_mut(&id)
@@ -128,7 +129,7 @@ impl Timers {
         self.current_time = time;
         self.timers.iter_mut().filter_map(move |(&id, state)| {
             if state.definition.expires_at <= time {
-                Some((id, state.complete()))
+                Some((id, state.complete(time)))
             } else {
                 None
             }
@@ -139,7 +140,7 @@ impl Timers {
 impl WorkflowData {
     fn timer_definition(&self, kind: TimerKind, value: i64) -> TimerDefinition {
         let expires_at = match kind {
-            TimerKind::Duration => self.timers.current_time + Duration::milliseconds(value),
+            TimerKind::Duration => self.clock.now() + Duration::milliseconds(value),
             TimerKind::Instant => Utc.timestamp_millis(value),
         };
         TimerDefinition { expires_at }
@@ -175,11 +176,15 @@ impl WorkflowData {
         }
     }
 
-    fn poll_timer(&mut self, timer_id: TimerId, cx: &mut WasmContext) -> Result<Poll<()>, Trap> {
+    fn poll_timer(
+        &mut self,
+        timer_id: TimerId,
+        cx: &mut WasmContext,
+    ) -> Result<Poll<DateTime<Utc>>, Trap> {
         let poll_result = self.timers.poll(timer_id)?;
         self.current_execution().push_resource_event(
             ResourceId::Timer(timer_id),
-            ResourceEventKind::Polled(poll_result),
+            ResourceEventKind::Polled(poll_result.map(drop)),
         );
         Ok(poll_result.wake_if_pending(cx, || WakerPlacement::Timer(timer_id)))
     }
@@ -218,7 +223,7 @@ impl WorkflowFunctions {
         mut ctx: StoreContextMut<'_, WorkflowData>,
         timer_id: TimerId,
         poll_cx: WasmContextPtr,
-    ) -> Result<i32, Trap> {
+    ) -> Result<i64, Trap> {
         let mut poll_cx = WasmContext::new(poll_cx);
         let poll_result = ctx.data_mut().poll_timer(timer_id, &mut poll_cx);
         let poll_result = crate::log_result!(

@@ -28,15 +28,18 @@ use tardigrade::{
     Data, Decoder, Encoder,
 };
 
-pub type ClockFuture = Pin<Box<dyn Future<Output = DateTime<Utc>> + Send>>;
+/// Future for [`Schedule::create_timer()`].
+pub type TimerFuture = Pin<Box<dyn Future<Output = DateTime<Utc>> + Send>>;
 
+/// Scheduler.
 pub trait Schedule: Send + 'static {
-    fn create_timer(&mut self, timestamp: DateTime<Utc>) -> ClockFuture;
+    /// Creates a timer with the specified expiration timestamp.
+    fn create_timer(&mut self, expires_at: DateTime<Utc>) -> TimerFuture;
 }
 
 impl fmt::Debug for dyn Schedule {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_struct("Clock").finish_non_exhaustive()
+        formatter.debug_struct("Schedule").finish_non_exhaustive()
     }
 }
 
@@ -44,7 +47,7 @@ impl fmt::Debug for dyn Schedule {
 pub struct AsyncIoScheduler;
 
 impl Schedule for AsyncIoScheduler {
-    fn create_timer(&mut self, timestamp: DateTime<Utc>) -> ClockFuture {
+    fn create_timer(&mut self, timestamp: DateTime<Utc>) -> TimerFuture {
         use async_io::Timer;
 
         let timestamp = SystemTime::from(timestamp);
@@ -92,20 +95,24 @@ pub enum Termination {
 }
 
 impl<W> AsyncEnv<W> {
-    pub fn new(workflow: Workflow<W>, clock: impl Schedule) -> Self {
+    pub fn new(workflow: Workflow<W>, scheduler: impl Schedule) -> Self {
         Self {
             workflow,
-            scheduler: Box::new(clock),
+            scheduler: Box::new(scheduler),
             inbound_channels: HashMap::new(),
             outbound_channels: HashMap::new(),
             receipts: None,
         }
     }
 
+    pub fn into_inner(self) -> Workflow<W> {
+        self.workflow
+    }
+
     /// # Errors
     ///
     /// Returns an error if workflow execution traps.
-    pub async fn run(mut self) -> Result<Termination, ExecutionError> {
+    pub async fn run(&mut self) -> Result<Termination, ExecutionError> {
         loop {
             if let Some(termination) = self.tick().await? {
                 return Ok(termination);

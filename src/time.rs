@@ -1,5 +1,6 @@
 //! Time-related futures.
 
+use chrono::{DateTime, Utc};
 use pin_project_lite::pin_project;
 
 use std::{
@@ -11,6 +12,8 @@ use std::{
 
 #[cfg(target_arch = "wasm32")]
 mod imp {
+    use chrono::{DateTime, Utc};
+
     use std::{
         future::Future,
         pin::Pin,
@@ -24,14 +27,14 @@ mod imp {
     pub struct Sleep(TimerId);
 
     impl Future for Sleep {
-        type Output = ();
+        type Output = DateTime<Utc>;
 
         fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
             #[link(wasm_import_module = "tardigrade_rt")]
             #[allow(improper_ctypes)]
             extern "C" {
                 #[link_name = "timer::poll"]
-                fn timer_poll(timer_id: TimerId, cx: *mut Context<'_>) -> i32;
+                fn timer_poll(timer_id: TimerId, cx: *mut Context<'_>) -> i64;
             }
 
             unsafe {
@@ -71,6 +74,7 @@ mod imp {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod imp {
+    use chrono::{DateTime, Utc};
     use futures::channel::oneshot;
     use pin_project_lite::pin_project;
 
@@ -88,12 +92,12 @@ mod imp {
         #[repr(transparent)]
         pub struct Sleep {
             #[pin]
-            inner: oneshot::Receiver<()>,
+            inner: oneshot::Receiver<DateTime<Utc>>,
         }
     }
 
     impl Future for Sleep {
-        type Output = ();
+        type Output = DateTime<Utc>;
 
         fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
             self.project()
@@ -121,7 +125,7 @@ pin_project! {
 }
 
 impl Future for Sleep {
-    type Output = ();
+    type Output = DateTime<Utc>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.project().inner.poll(cx)

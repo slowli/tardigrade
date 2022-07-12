@@ -1,11 +1,20 @@
 //! Helpers for workflow integration testing.
 
+use chrono::{DateTime, Utc};
+use futures::{future, FutureExt};
+
 use std::{
-    env, fs,
+    env, fs, ops,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Mutex, PoisonError},
+    sync::{Arc, Mutex, PoisonError},
 };
+
+use crate::{
+    handle::future::{Schedule, TimerFuture},
+    module::Clock,
+};
+use tardigrade::test::MockScheduler as SchedulerBase;
 
 /// Options for the `wasm-opt` optimizer.
 #[derive(Debug)]
@@ -182,5 +191,54 @@ impl ModuleCompiler {
                 err
             )
         })
+    }
+}
+
+/// Mock scheduler.
+#[derive(Debug, Clone, Default)]
+pub struct MockScheduler {
+    inner: Arc<Mutex<SchedulerBase>>,
+}
+
+impl MockScheduler {
+    fn inner(&self) -> impl ops::DerefMut<Target = SchedulerBase> + '_ {
+        self.inner.lock().unwrap()
+    }
+
+    /// Returns the expiration for the nearest timer, or `None` if there are no active timers.
+    pub fn next_timer_expiration(&self) -> Option<DateTime<Utc>> {
+        self.inner().next_timer_expiration()
+    }
+
+    /// Returns the current timestamp.
+    pub fn now(&self) -> DateTime<Utc> {
+        self.inner().now()
+    }
+
+    /// Sets the current timestamp for the scheduler.
+    pub fn set_now(&self, now: DateTime<Utc>) {
+        self.inner().set_now(now);
+    }
+}
+
+impl Clock for MockScheduler {
+    fn now(&self) -> DateTime<Utc> {
+        self.now()
+    }
+}
+
+impl Schedule for MockScheduler {
+    fn create_timer(&mut self, expires_at: DateTime<Utc>) -> TimerFuture {
+        let mut guard = self.inner();
+        let now = guard.now();
+        if now >= expires_at {
+            Box::pin(future::ready(now))
+        } else {
+            Box::pin(guard.insert_timer(expires_at).then(|res| match res {
+                Ok(timestamp) => future::ready(timestamp).left_future(),
+                Err(_) => future::pending().right_future(),
+                // ^ Error occurs when the mock scheduler is dropped, usually at the end of a test
+            }))
+        }
     }
 }

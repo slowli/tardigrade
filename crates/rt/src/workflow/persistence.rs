@@ -102,7 +102,7 @@ impl PersistedWorkflow {
     pub fn restore<W>(self, module: &WorkflowModule<W>) -> anyhow::Result<Workflow<W>> {
         let data = self
             .state
-            .restore(module.interface())
+            .restore(module.interface(), module.clone_clock())
             .context("failed restoring workflow state")?;
         let mut workflow = Workflow::from_state(module, data)?;
 

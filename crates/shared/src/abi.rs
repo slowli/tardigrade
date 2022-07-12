@@ -6,6 +6,8 @@
 //! [Canonical ABI]: https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md
 //! [wit-bindgen]: https://github.com/bytecodealliance/wit-bindgen
 
+use chrono::{DateTime, TimeZone, Utc};
+
 use std::{error, fmt, task::Poll};
 
 use crate::{
@@ -211,6 +213,24 @@ impl IntoWasm for PollMessage {
                 let bytes = Vec::from_raw_parts(ptr, len, len);
                 Self::Ready(Some(bytes))
             }
+        }
+    }
+}
+
+impl IntoWasm for Poll<DateTime<Utc>> {
+    type Abi = i64;
+
+    fn into_wasm<A: AllocateBytes>(self, _alloc: &mut A) -> Result<Self::Abi, A::Error> {
+        Ok(match self {
+            Poll::Pending => -1,
+            Poll::Ready(timestamp) => timestamp.timestamp_millis(),
+        })
+    }
+
+    unsafe fn from_abi_in_wasm(abi: i64) -> Self {
+        match abi {
+            -1 => Poll::Pending,
+            _ => Poll::Ready(Utc.timestamp_millis(abi)),
         }
     }
 }
