@@ -108,10 +108,7 @@ use crate::{
     workflow::{Inputs, SpawnWorkflow, TakeHandle, Wasm},
     Data, Decoder, Encoder,
 };
-use tardigrade_shared::{
-    trace::{FutureUpdate, TracedFuture, TracedFutures},
-    FutureId,
-};
+use tardigrade_shared::trace::{FutureUpdate, TracedFutures};
 
 #[derive(Debug)]
 struct TimerEntry {
@@ -512,6 +509,11 @@ impl<C> TracerHandle<C>
 where
     C: Decoder<FutureUpdate> + Default,
 {
+    /// Returns a reference to the traced futures.
+    pub fn futures(&self) -> &TracedFutures {
+        &self.futures
+    }
+
     /// Applies all accumulated updates for the traced futures.
     #[allow(clippy::missing_panics_doc)]
     pub fn update(&mut self) {
@@ -519,19 +521,9 @@ where
             return;
         }
         while let Some(Some(update)) = self.receiver.next().now_or_never() {
-            TracedFuture::update(&mut self.futures, update).unwrap();
+            self.futures.update(update).unwrap();
             // `unwrap()` is intentional: it's to catch bugs in library code
         }
-    }
-
-    /// Returns the current state of a future with the specified ID.
-    pub fn future(&self, id: FutureId) -> Option<&TracedFuture> {
-        self.futures.get(&id)
-    }
-
-    /// Lists all futures together their current state.
-    pub fn futures(&self) -> impl Iterator<Item = (FutureId, &TracedFuture)> + '_ {
-        self.futures.iter().map(|(id, state)| (*id, state))
     }
 }
 

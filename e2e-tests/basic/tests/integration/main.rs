@@ -103,7 +103,7 @@ fn basic_workflow() -> Result<(), Box<dyn error::Error>> {
 
     let tracer_handle = &mut handle.api.shared.tracer;
     tracer_handle.take_traces()?;
-    let mut futures = tracer_handle.futures().map(|(_, state)| state);
+    let mut futures = tracer_handle.futures().iter().map(|(_, state)| state);
     let baking_future = futures
         .find(|&future| future.name() == "baking_timer")
         .unwrap();
@@ -217,7 +217,7 @@ fn restoring_workflow() -> Result<(), Box<dyn error::Error>> {
     // Check that the delivery timer is now active.
     let tracer_handle = &mut handle.api.shared.tracer;
     tracer_handle.take_traces()?;
-    let mut futures = tracer_handle.futures().map(|(_, state)| state);
+    let mut futures = tracer_handle.futures().iter().map(|(_, state)| state);
     let delivery_future = futures
         .find(|&future| future.name() == "delivery_timer")
         .unwrap();

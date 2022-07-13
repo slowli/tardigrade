@@ -10,14 +10,14 @@ pub mod future;
 
 use crate::{
     receipt::{ExecutionError, Receipt},
-    ConsumeError, FutureId, Workflow,
+    ConsumeError, Workflow,
 };
 use tardigrade::{
     channel::{Receiver, Sender},
     interface::{
         AccessError, AccessErrorKind, DataInput, InboundChannel, Interface, OutboundChannel,
     },
-    trace::{FutureUpdate, TracedFuture, TracedFutures, Tracer},
+    trace::{FutureUpdate, TracedFutures, Tracer},
     workflow::{TakeHandle, UntypedHandle},
     Data, Decoder, Encoder,
 };
@@ -241,14 +241,9 @@ impl<'a, C, W> TracerHandle<'a, C, W>
 where
     C: Decoder<FutureUpdate>,
 {
-    /// Gets the current state of a future with the specified ID.
-    pub fn future(&self, id: FutureId) -> Option<&TracedFuture> {
-        self.futures.get(&id)
-    }
-
-    /// Lists all traced futures.
-    pub fn futures(&self) -> impl Iterator<Item = (FutureId, &TracedFuture)> + '_ {
-        self.futures.iter().map(|(id, state)| (*id, state))
+    /// Returns a reference to the traced futures.
+    pub fn futures(&self) -> &TracedFutures {
+        &self.futures
     }
 
     /// Takes tracing messages from the workflow and updates traced future states accordingly.
@@ -269,7 +264,7 @@ where
 
         let receipt = receipt.map(|updates| {
             for update in updates {
-                if let Err(err) = TracedFuture::update(&mut self.futures, update) {
+                if let Err(err) = self.futures.update(update) {
                     log::warn!(
                         target: "tardigrade_rt",
                         "Error tracing futures: {}. This shouldn't happen normally \
@@ -293,7 +288,7 @@ where
     fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
         Ok(TracerHandle {
             receiver: Sender::<FutureUpdate, C>::take_handle(env, id)?,
-            futures: TracedFutures::new(),
+            futures: TracedFutures::default(), // FIXME: restore state
         })
     }
 }

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use std::{collections::HashMap, error, fmt};
+use std::{collections::HashMap, error, fmt, ops};
 
 use crate::FutureId;
 
@@ -141,18 +141,41 @@ impl TracedFuture {
 }
 
 /// Container for traced futures.
-pub type TracedFutures = HashMap<FutureId, TracedFuture>;
+#[derive(Debug, Clone, Default)]
+pub struct TracedFutures {
+    inner: HashMap<FutureId, TracedFuture>,
+}
 
-impl TracedFuture {
+impl TracedFutures {
+    /// Returns the number of traced futures.
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Checks whether this container is empty (contains no traced futures).
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    /// Obtains the traced future with the specified ID.
+    pub fn get(&self, id: FutureId) -> Option<&TracedFuture> {
+        self.inner.get(&id)
+    }
+
+    /// Iterates over the contained futures.
+    pub fn iter(&self) -> impl Iterator<Item = (FutureId, &TracedFuture)> + '_ {
+        self.inner.iter().map(|(id, state)| (*id, state))
+    }
+
     /// Updates traced futures, adding a new future to the `map` if necessary.
     ///
     /// # Errors
     ///
     /// Returns an error if the update is inconsistent with the current state of an existing
     /// traced future.
-    pub fn update(map: &mut TracedFutures, update: FutureUpdate) -> Result<(), FutureUpdateError> {
+    pub fn update(&mut self, update: FutureUpdate) -> Result<(), FutureUpdateError> {
         if let FutureUpdateKind::Created { name } = update.kind {
-            let prev_state = map.insert(
+            let prev_state = self.inner.insert(
                 update.id,
                 TracedFuture {
                     name,
@@ -163,11 +186,21 @@ impl TracedFuture {
                 return Err(FutureUpdateError::RedefinedFuture { id: update.id });
             }
         } else {
-            let future = map
+            let future = self
+                .inner
                 .get_mut(&update.id)
                 .ok_or(FutureUpdateError::UndefinedFuture { id: update.id })?;
             future.state.update(&update.kind)?;
         }
         Ok(())
+    }
+}
+
+impl ops::Index<FutureId> for TracedFutures {
+    type Output = TracedFuture;
+
+    fn index(&self, id: FutureId) -> &Self::Output {
+        self.get(id)
+            .unwrap_or_else(|| panic!("future with ID {} is not traced", id))
     }
 }

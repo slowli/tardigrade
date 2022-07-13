@@ -10,9 +10,10 @@ use futures::{
 
 use std::{error, time::Duration};
 
+use tardigrade::trace::FutureState;
 use tardigrade::Json;
 use tardigrade_rt::{
-    handle::future::{AsyncEnv, AsyncIoScheduler, MessageReceiver, Termination},
+    handle::future::{AsyncEnv, AsyncIoScheduler, MessageReceiver, Termination, TracerHandle},
     receipt::{Event, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
     test::MockScheduler,
     TimerId, Workflow, WorkflowEngine, WorkflowModule,
@@ -20,6 +21,16 @@ use tardigrade_rt::{
 use tardigrade_test_basic::{DomainEvent, Inputs, PizzaDelivery, PizzaKind, PizzaOrder};
 
 use super::COMPILER;
+
+async fn retry_until_some<T>(mut condition: impl FnMut() -> Option<T>) -> T {
+    for _ in 0..5 {
+        if let Some(value) = condition() {
+            return value;
+        }
+        task::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("Run out of attempts waiting for condition");
+}
 
 async fn test_async_handle(cancel_workflow: bool) -> Result<(), Box<dyn error::Error>> {
     let module_bytes = task::spawn_blocking(|| COMPILER.compile()).await;
@@ -70,6 +81,17 @@ async fn test_async_handle(cancel_workflow: bool) -> Result<(), Box<dyn error::E
     } else {
         drop(handle.orders); // should terminate the workflow
         assert_matches!(join_handle.await, Either::Left(Ok(Termination::Finished)));
+
+        let mut tracer = handle.shared.tracer;
+        tracer
+            .by_ref()
+            .try_for_each(|_| future::ready(Ok(())))
+            .await?;
+        assert!(tracer
+            .futures()
+            .iter()
+            .all(|(_, fut)| fut.state() == FutureState::Dropped));
+        assert_eq!(tracer.futures().len(), 3);
     }
 
     Ok(())
@@ -104,7 +126,7 @@ async fn test_async_handle_with_concurrency(
     });
     let mut orders = stream::iter(orders).map(Ok);
     handle.orders.send_all(&mut orders).await?;
-    drop(handle.orders);
+    drop(handle.orders); // will terminate the workflow eventually
 
     let events: Vec<_> = handle.shared.events.try_collect().await?;
     assert_eq!(events.len(), ORDER_COUNT * 4);
@@ -122,7 +144,7 @@ async fn test_async_handle_with_concurrency(
         );
     }
 
-    join_handle.cancel().await;
+    join_handle.await?;
     Ok(())
 }
 
@@ -197,6 +219,7 @@ async fn wait_timer(
 struct AsyncRig<S> {
     scheduler: MockScheduler,
     events: MessageReceiver<DomainEvent, Json>,
+    tracer: TracerHandle<Json>,
     receipts: S,
 }
 
@@ -246,6 +269,7 @@ async fn initialize_workflow(
     Ok(AsyncRig {
         scheduler,
         events: handle.shared.events,
+        tracer: handle.shared.tracer,
         receipts,
     })
 }
@@ -255,13 +279,18 @@ async fn async_handle_with_mock_scheduler() -> Result<(), Box<dyn error::Error>>
     let AsyncRig {
         scheduler,
         mut events,
+        mut tracer,
         mut receipts,
     } = initialize_workflow().await?;
 
     wait_timer(&mut receipts, 1, ResourceEventKind::Created).await;
     let now = scheduler.now();
-    let next_timer = scheduler.next_timer_expiration().unwrap();
-    assert_eq!((next_timer - now).num_milliseconds(), 40);
+    let next_timer = retry_until_some(|| {
+        scheduler
+            .next_timer_expiration()
+            .filter(|&timer| (timer - now).num_milliseconds() == 40)
+    })
+    .await;
 
     scheduler.set_now(next_timer);
     {
@@ -276,14 +305,30 @@ async fn async_handle_with_mock_scheduler() -> Result<(), Box<dyn error::Error>>
     }
     assert!(events.next().now_or_never().is_none());
 
+    tracer
+        .by_ref()
+        .try_take_while(|(_, fut)| {
+            let baking_finished =
+                fut.name() == "baking_process (order=2)" && fut.state() == FutureState::Dropped;
+            future::ready(Ok(!baking_finished))
+        })
+        .try_for_each(|_| future::ready(Ok(())))
+        .await?;
+    assert!(!tracer.futures().is_empty());
+    let (_, delivery_future) = tracer
+        .futures()
+        .iter()
+        .find(|(_, fut)| fut.name() == "baking_process (order=1)")
+        .unwrap();
+    assert_eq!(delivery_future.state(), FutureState::Polling);
+
     let now = scheduler.now();
-    let next_timer = scheduler.next_timer_expiration().unwrap();
+    let next_timer = retry_until_some(|| scheduler.next_timer_expiration()).await;
     assert_eq!((next_timer - now).num_milliseconds(), 10);
     scheduler.set_now(next_timer);
 
     wait_timer(&mut receipts, 2, ResourceEventKind::Created).await;
-    task::sleep(Duration::from_millis(25)).await; // TODO: find better way
-    let next_timer = scheduler.next_timer_expiration().unwrap();
+    let next_timer = retry_until_some(|| scheduler.next_timer_expiration()).await;
     scheduler.set_now(next_timer);
     wait_timer(&mut receipts, 0, ResourceEventKind::Dropped).await;
 
@@ -304,6 +349,7 @@ async fn async_handle_with_mock_scheduler_and_bulk_update() -> Result<(), Box<dy
         scheduler,
         mut events,
         mut receipts,
+        ..
     } = initialize_workflow().await?;
 
     let now = scheduler.now();

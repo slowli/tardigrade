@@ -24,7 +24,11 @@ async fn test_workflow_basics(handle: TestHandle<PizzaDelivery>) {
     {
         let tracer_handle = &mut api.shared.tracer;
         tracer_handle.update();
-        let traced_futures: Vec<_> = tracer_handle.futures().map(|(_, state)| state).collect();
+        let traced_futures: Vec<_> = tracer_handle
+            .futures()
+            .iter()
+            .map(|(_, state)| state)
+            .collect();
         assert_eq!(traced_futures.len(), 2);
 
         let baking_process_future = traced_futures
@@ -49,7 +53,11 @@ async fn test_workflow_basics(handle: TestHandle<PizzaDelivery>) {
     {
         let tracer_handle = &mut api.shared.tracer;
         tracer_handle.update();
-        let traced_futures: Vec<_> = tracer_handle.futures().map(|(_, state)| state).collect();
+        let traced_futures: Vec<_> = tracer_handle
+            .futures()
+            .iter()
+            .map(|(_, state)| state)
+            .collect();
         assert_eq!(traced_futures.len(), 3);
 
         let baking_timer_future = traced_futures

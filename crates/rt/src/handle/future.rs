@@ -2,6 +2,7 @@
 
 #![allow(missing_docs)]
 
+use anyhow::Context as _;
 use chrono::{DateTime, Utc};
 use futures::{channel::mpsc, future, FutureExt, Sink, Stream, StreamExt};
 use pin_project_lite::pin_project;
@@ -19,11 +20,12 @@ use std::{
 use crate::{
     receipt::{ExecutionError, Receipt},
     workflow::Workflow,
+    FutureId,
 };
 use tardigrade::{
     channel::{Receiver, Sender},
     interface::{AccessError, AccessErrorKind, DataInput, InboundChannel, OutboundChannel},
-    trace::Tracer,
+    trace::{FutureUpdate, TracedFuture, TracedFutures, Tracer},
     workflow::TakeHandle,
     Data, Decoder, Encoder,
 };
@@ -348,12 +350,56 @@ where
     }
 }
 
-// FIXME
-impl<C, W> TakeHandle<AsyncEnv<W>> for Tracer<C> {
-    type Id = str;
-    type Handle = ();
+pin_project! {
+    /// Handle allowing to trace futures.
+    #[derive(Debug)]
+    pub struct TracerHandle<C> {
+        #[pin]
+        receiver: MessageReceiver<FutureUpdate, C>,
+        futures: TracedFutures,
+    }
+}
 
-    fn take_handle(_env: &mut AsyncEnv<W>, _id: &str) -> Result<Self::Handle, AccessError> {
-        Ok(())
+impl<C> TracerHandle<C> {
+    pub fn futures(&self) -> &TracedFutures {
+        &self.futures
+    }
+}
+
+impl<C: Decoder<FutureUpdate>> Stream for TracerHandle<C> {
+    type Item = anyhow::Result<(FutureId, TracedFuture)>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let projection = self.project();
+        let update = match projection.receiver.poll_next(cx) {
+            Poll::Ready(Some(Ok(update))) => update,
+            Poll::Ready(Some(Err(err))) => {
+                let res = Err(err).context("cannot decode `FutureUpdate`");
+                return Poll::Ready(Some(res));
+            }
+            Poll::Ready(None) => return Poll::Ready(None),
+            Poll::Pending => return Poll::Pending,
+        };
+
+        let future_id = update.id;
+        let update_result = projection
+            .futures
+            .update(update)
+            .map(|()| (future_id, projection.futures[future_id].clone()))
+            .context("invalid update");
+        Poll::Ready(Some(update_result))
+    }
+}
+
+impl<C: Decoder<FutureUpdate> + Default, W> TakeHandle<AsyncEnv<W>> for Tracer<C> {
+    type Id = str;
+    type Handle = TracerHandle<C>;
+
+    fn take_handle(env: &mut AsyncEnv<W>, id: &str) -> Result<Self::Handle, AccessError> {
+        let receiver = Sender::<FutureUpdate, C>::take_handle(env, id)?;
+        Ok(TracerHandle {
+            receiver,
+            futures: TracedFutures::default(), // FIXME: restore state
+        })
     }
 }
