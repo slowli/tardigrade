@@ -321,10 +321,10 @@ impl Runtime {
         let channel = self
             .inbound_channels
             .get_mut(name)
-            .ok_or_else(|| AccessErrorKind::Unknown.for_handle(InboundChannel(name)))?;
+            .ok_or_else(|| AccessErrorKind::Unknown.with_location(InboundChannel(name)))?;
         channel
             .take_rx()
-            .ok_or_else(|| AccessErrorKind::AlreadyAcquired.for_handle(InboundChannel(name)))
+            .ok_or_else(|| AccessErrorKind::AlreadyAcquired.with_location(InboundChannel(name)))
     }
 
     pub fn take_sender_for_inbound_channel(
@@ -334,17 +334,17 @@ impl Runtime {
         let channel = self
             .inbound_channels
             .get_mut(name)
-            .ok_or_else(|| AccessErrorKind::Unknown.for_handle(InboundChannel(name)))?;
+            .ok_or_else(|| AccessErrorKind::Unknown.with_location(InboundChannel(name)))?;
         channel
             .take_sx()
-            .ok_or_else(|| AccessErrorKind::AlreadyAcquired.for_handle(InboundChannel(name)))
+            .ok_or_else(|| AccessErrorKind::AlreadyAcquired.with_location(InboundChannel(name)))
     }
 
     pub fn outbound_channel(&self, name: &str) -> Result<UnboundedSender<Vec<u8>>, AccessError> {
         self.outbound_channels
             .get(name)
             .map(ChannelPair::clone_sx)
-            .ok_or_else(|| AccessErrorKind::Unknown.for_handle(OutboundChannel(name)))
+            .ok_or_else(|| AccessErrorKind::Unknown.with_location(OutboundChannel(name)))
     }
 
     pub fn take_receiver_for_outbound_channel(
@@ -354,10 +354,10 @@ impl Runtime {
         let channel = self
             .outbound_channels
             .get_mut(name)
-            .ok_or_else(|| AccessErrorKind::Unknown.for_handle(OutboundChannel(name)))?;
+            .ok_or_else(|| AccessErrorKind::Unknown.with_location(OutboundChannel(name)))?;
         channel
             .take_rx()
-            .ok_or_else(|| AccessErrorKind::AlreadyAcquired.for_handle(OutboundChannel(name)))
+            .ok_or_else(|| AccessErrorKind::AlreadyAcquired.with_location(OutboundChannel(name)))
     }
 
     pub fn insert_timer(&mut self, duration: Duration) -> oneshot::Receiver<DateTime<Utc>> {
@@ -537,7 +537,7 @@ where
     fn take_handle(env: &mut TestHost, id: &str) -> Result<Self::Handle, AccessError> {
         Ok(TracerHandle {
             receiver: Sender::take_handle(env, id)?.fuse(),
-            futures: TracedFutures::default(),
+            futures: TracedFutures::new(id),
         })
     }
 }

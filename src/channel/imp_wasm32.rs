@@ -37,7 +37,7 @@ impl TakeHandle<Wasm> for MpscReceiver {
                 .map(|()| Self {
                     channel_name: id.to_owned(),
                 })
-                .map_err(|kind| kind.for_handle(InboundChannel(id)))
+                .map_err(|kind| kind.with_location(InboundChannel(id)))
         }
     }
 }
@@ -88,7 +88,7 @@ impl TakeHandle<Wasm> for MpscSender {
                 .map(|()| Self {
                     channel_name: id.to_owned(),
                 })
-                .map_err(|kind| kind.for_handle(OutboundChannel(id)))
+                .map_err(|kind| kind.with_location(OutboundChannel(id)))
         }
     }
 }

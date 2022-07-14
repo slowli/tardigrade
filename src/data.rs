@@ -68,11 +68,11 @@ impl<T, C> AsMut<T> for Data<T, C> {
 impl<T, C: Decoder<T> + Default> Data<T, C> {
     pub(crate) fn from_env(id: &str) -> Result<Self, AccessError> {
         let raw = imp::try_get_raw_data(id)
-            .ok_or_else(|| AccessErrorKind::Unknown.for_handle(DataInput(id)))?;
+            .ok_or_else(|| AccessErrorKind::Unknown.with_location(DataInput(id)))?;
         C::default()
             .try_decode_bytes(raw)
             .map(Self::from)
-            .map_err(|err| AccessErrorKind::Custom(Box::new(err)).for_handle(DataInput(id)))
+            .map_err(|err| AccessErrorKind::Custom(Box::new(err)).with_location(DataInput(id)))
     }
 }
 
@@ -118,7 +118,7 @@ where
 
     fn validate_interface(interface: &Interface<()>, id: &str) -> Result<(), AccessError> {
         if interface.data_input(id).is_none() {
-            Err(AccessErrorKind::Unknown.for_handle(DataInput(id)))
+            Err(AccessErrorKind::Unknown.with_location(DataInput(id)))
         } else {
             Ok(())
         }

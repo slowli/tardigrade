@@ -3,7 +3,8 @@
 //! The runtime provides host environment in which [`Workflow`]s defined in a WASM module
 //! can be executed and [persisted](PersistedWorkflow) / restored. Interaction with a workflow
 //! (e.g., submitting messages to inbound channels or taking messages from outbound channels)
-//! can be performed using [`WorkflowHandle`].
+//! can be performed using low-level, synchronous [`WorkflowHandle`], or more high-level,
+//! future-based [`AsyncEnv`].
 //!
 //! # Instantiating workflows
 //!
@@ -14,6 +15,8 @@
 //! 3. [`Workflow`] is an instance of a workflow. It can be created from a [`WorkflowModule`].
 //!
 //! [`wasmtime`]: https://docs.rs/wasmtime/latest/wasmtime/
+//! [`WorkflowHandle`]: crate::handle::WorkflowHandle
+//! [`AsyncEnv`]: crate::handle::future::AsyncEnv
 
 #![warn(missing_debug_implementations, missing_docs, bare_trait_objects)]
 #![warn(clippy::all, clippy::pedantic)]

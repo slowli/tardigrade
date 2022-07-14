@@ -88,7 +88,7 @@ mod handle;
 mod init;
 
 pub use self::{
-    handle::{Handle, TakeHandle},
+    handle::{EnvExtensions, ExtendEnv, Handle, TakeHandle},
     init::{Init, Initialize, Inputs, InputsBuilder},
 };
 
@@ -235,15 +235,15 @@ where
         let data_inputs = interface
             .data_inputs()
             .map(|(name, _)| Ok((name.to_owned(), RawData::take_handle(&mut *env, name)?)))
-            .collect::<Result<_, _>>()?;
+            .collect::<Result<_, AccessError>>()?;
         let inbound_channels = interface
             .inbound_channels()
             .map(|(name, _)| Ok((name.to_owned(), RawReceiver::take_handle(&mut *env, name)?)))
-            .collect::<Result<_, _>>()?;
+            .collect::<Result<_, AccessError>>()?;
         let outbound_channels = interface
             .outbound_channels()
             .map(|(name, _)| Ok((name.to_owned(), RawSender::take_handle(&mut *env, name)?)))
-            .collect::<Result<_, _>>()?;
+            .collect::<Result<_, AccessError>>()?;
 
         Ok(Self {
             data_inputs,

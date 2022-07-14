@@ -114,7 +114,7 @@ where
 
     fn validate_interface(interface: &Interface<()>, id: &str) -> Result<(), AccessError> {
         if interface.inbound_channel(id).is_none() {
-            let err = AccessErrorKind::Unknown.for_handle(InboundChannel(id));
+            let err = AccessErrorKind::Unknown.with_location(InboundChannel(id));
             return Err(err);
         }
         Ok(())
@@ -220,7 +220,7 @@ where
 
     fn validate_interface(interface: &Interface<()>, id: &str) -> Result<(), AccessError> {
         if interface.outbound_channel(id).is_none() {
-            let err = AccessErrorKind::Unknown.for_handle(OutboundChannel(id));
+            let err = AccessErrorKind::Unknown.with_location(OutboundChannel(id));
             Err(err)
         } else {
             Ok(())

@@ -78,7 +78,8 @@ impl fmt::Display for FutureUpdateError {
 impl error::Error for FutureUpdateError {}
 
 /// State of a traced [`Future`](std::future::Future).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum FutureState {
     /// Future is created, but was not yet polled.
@@ -122,7 +123,7 @@ impl FutureState {
 }
 
 /// Information about a traced [`Future`](std::future::Future).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TracedFuture {
     name: String,
     state: FutureState,
@@ -141,30 +142,44 @@ impl TracedFuture {
 }
 
 /// Container for traced futures.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TracedFutures {
-    inner: HashMap<FutureId, TracedFuture>,
+    channel_name: String,
+    futures: HashMap<FutureId, TracedFuture>,
 }
 
 impl TracedFutures {
+    /// Creates a new container for traced futures.
+    pub fn new(channel_name: impl Into<String>) -> Self {
+        Self {
+            channel_name: channel_name.into(),
+            futures: HashMap::new(),
+        }
+    }
+
+    /// Returns the name of a channel the traced futures are attached to.
+    pub fn channel_name(&self) -> &str {
+        &self.channel_name
+    }
+
     /// Returns the number of traced futures.
     pub fn len(&self) -> usize {
-        self.inner.len()
+        self.futures.len()
     }
 
     /// Checks whether this container is empty (contains no traced futures).
     pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
+        self.futures.is_empty()
     }
 
     /// Obtains the traced future with the specified ID.
     pub fn get(&self, id: FutureId) -> Option<&TracedFuture> {
-        self.inner.get(&id)
+        self.futures.get(&id)
     }
 
     /// Iterates over the contained futures.
     pub fn iter(&self) -> impl Iterator<Item = (FutureId, &TracedFuture)> + '_ {
-        self.inner.iter().map(|(id, state)| (*id, state))
+        self.futures.iter().map(|(id, state)| (*id, state))
     }
 
     /// Updates traced futures, adding a new future to the `map` if necessary.
@@ -175,7 +190,7 @@ impl TracedFutures {
     /// traced future.
     pub fn update(&mut self, update: FutureUpdate) -> Result<(), FutureUpdateError> {
         if let FutureUpdateKind::Created { name } = update.kind {
-            let prev_state = self.inner.insert(
+            let prev_state = self.futures.insert(
                 update.id,
                 TracedFuture {
                     name,
@@ -187,7 +202,7 @@ impl TracedFutures {
             }
         } else {
             let future = self
-                .inner
+                .futures
                 .get_mut(&update.id)
                 .ok_or(FutureUpdateError::UndefinedFuture { id: update.id })?;
             future.state.update(&update.kind)?;

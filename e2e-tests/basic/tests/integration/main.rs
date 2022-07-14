@@ -10,6 +10,7 @@ use tardigrade::{
     Decoder, Encoder, Json,
 };
 use tardigrade_rt::{
+    handle::WorkflowEnv,
     receipt::{ChannelEvent, ChannelEventKind, Event, ExecutedFunction, WakeUpCause},
     test::{ModuleCompiler, WasmOpt},
     PersistError, PersistedWorkflow, Workflow, WorkflowEngine, WorkflowModule,
@@ -68,7 +69,7 @@ fn basic_workflow() -> Result<(), Box<dyn error::Error>> {
     assert_eq!(main_task.spawned_by(), None);
     assert_eq!(workflow.timers().count(), 0);
 
-    let mut handle = workflow.handle();
+    let mut handle = WorkflowEnv::new(&mut workflow).handle();
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,
         delivery_distance: 10,
@@ -123,7 +124,7 @@ fn workflow_with_concurrency() -> Result<(), Box<dyn error::Error>> {
         deliverer_count: 1,
     };
     let mut workflow = Workflow::new(&module, inputs)?.into_inner();
-    let mut handle = workflow.handle();
+    let mut handle = WorkflowEnv::new(&mut workflow).handle();
 
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,
@@ -165,7 +166,7 @@ fn restoring_workflow() -> Result<(), Box<dyn error::Error>> {
         deliverer_count: 1,
     };
     let mut workflow = Workflow::new(&module, inputs)?.into_inner();
-    let mut handle = workflow.handle();
+    let mut handle = WorkflowEnv::new(&mut workflow).handle();
 
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,
@@ -189,12 +190,16 @@ fn restoring_workflow() -> Result<(), Box<dyn error::Error>> {
     );
 
     handle.api.shared.tracer.take_traces()?;
+    let traced_futures = handle.api.shared.tracer.into_futures();
     let persisted = workflow.persist()?;
     let persisted_json = serde_json::to_string(&persisted)?;
     assert!(persisted_json.len() < 5_000, "{}", persisted_json);
     let persisted: PersistedWorkflow = serde_json::from_str(&persisted_json)?;
+
     let mut workflow = persisted.restore(&module)?;
-    let mut handle = workflow.handle();
+    let mut env = WorkflowEnv::new(&mut workflow);
+    env.extensions().insert(traced_futures);
+    let mut handle = env.handle();
 
     handle.with(|workflow| {
         let new_time = workflow.current_time() + chrono::Duration::milliseconds(100);
@@ -244,7 +249,7 @@ fn untyped_workflow() -> Result<(), Box<dyn error::Error>> {
 
     assert_eq!(receipt.executions().len(), 1);
     let mut workflow = receipt.into_inner();
-    let mut handle = workflow.handle();
+    let mut handle = WorkflowEnv::new(&mut workflow).handle();
 
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,

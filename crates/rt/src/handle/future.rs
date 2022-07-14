@@ -1,7 +1,5 @@
 //! Async handles for [`Workflow`].
 
-#![allow(missing_docs)]
-
 use anyhow::Context as _;
 use chrono::{DateTime, Utc};
 use futures::{channel::mpsc, future, FutureExt, Sink, Stream, StreamExt};
@@ -18,6 +16,7 @@ use std::{
 };
 
 use crate::{
+    handle::EnvExtensions,
     receipt::{ExecutionError, Receipt},
     workflow::Workflow,
     FutureId,
@@ -33,7 +32,7 @@ use tardigrade::{
 /// Future for [`Schedule::create_timer()`].
 pub type TimerFuture = Pin<Box<dyn Future<Output = DateTime<Utc>> + Send>>;
 
-/// Scheduler.
+/// Scheduler that allows creating futures completing at the specified timestamp.
 pub trait Schedule: Send + 'static {
     /// Creates a timer with the specified expiration timestamp.
     fn create_timer(&mut self, expires_at: DateTime<Utc>) -> TimerFuture;
@@ -45,6 +44,10 @@ impl fmt::Debug for dyn Schedule {
     }
 }
 
+/// [Scheduler](Schedule) implementation from [`async-io`] (a part of [`async-std`] suite).
+///
+/// [`async-io`]: https://docs.rs/async-io/
+/// [`async-std`]: https://docs.rs/async-std/
 #[derive(Debug)]
 pub struct AsyncIoScheduler;
 
@@ -68,6 +71,11 @@ impl Schedule for AsyncIoScheduler {
     }
 }
 
+/// Asynchronous environment for executing [`Workflow`]s.
+///
+/// This type is used as a type param for the [`TakeHandle`] trait. The returned handles
+/// allow interacting with the workflow (e.g., [send messages](MessageSender) via inbound channels
+/// and [take messages](MessageReceiver) from outbound channels).
 #[derive(Debug)]
 pub struct AsyncEnv<W> {
     workflow: Workflow<W>,
@@ -75,6 +83,7 @@ pub struct AsyncEnv<W> {
     inbound_channels: HashMap<String, mpsc::Receiver<Vec<u8>>>,
     outbound_channels: HashMap<String, mpsc::UnboundedSender<Vec<u8>>>,
     receipts: Option<mpsc::UnboundedSender<Receipt>>,
+    extensions: EnvExtensions,
 }
 
 #[derive(Debug)]
@@ -86,6 +95,7 @@ enum ListenedEventOutput<'a> {
     Timer(DateTime<Utc>),
 }
 
+/// Terminal status of a [`Workflow`].
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Termination {
@@ -97,6 +107,8 @@ pub enum Termination {
 }
 
 impl<W> AsyncEnv<W> {
+    /// Creates an async environment for a `workflow` that uses the specified `scheduler`
+    /// for timers.
     pub fn new(workflow: Workflow<W>, scheduler: impl Schedule) -> Self {
         Self {
             workflow,
@@ -104,6 +116,7 @@ impl<W> AsyncEnv<W> {
             inbound_channels: HashMap::new(),
             outbound_channels: HashMap::new(),
             receipts: None,
+            extensions: EnvExtensions::default(),
         }
     }
 
@@ -114,13 +127,28 @@ impl<W> AsyncEnv<W> {
         rx
     }
 
+    /// Retrieves the underlying workflow, consuming the environment.
     pub fn into_inner(self) -> Workflow<W> {
         self.workflow
     }
 
+    /// Returns a mutable reference to environment extensions.
+    pub fn extensions(&mut self) -> &mut EnvExtensions {
+        &mut self.extensions
+    }
+
+    /// Executes the enclosed [`Workflow`] until it is terminated or an error occurs.
+    /// As the workflow executes, outbound messages and [`Receipt`]s will be sent using
+    /// respective channels.
+    ///
+    /// Note that it is possible to cancel this future (e.g., by [`select`]ing between it
+    /// and a cancellation signal) and continue working with the enclosed workflow.
+    ///
     /// # Errors
     ///
     /// Returns an error if workflow execution traps.
+    ///
+    /// [`select`]: futures::select
     pub async fn run(&mut self) -> Result<Termination, ExecutionError> {
         loop {
             if let Some(termination) = self.tick().await? {
@@ -155,12 +183,15 @@ impl<W> AsyncEnv<W> {
             }
         });
 
+        // TODO: cache `timer_event`?
         let timer_event = events.nearest_timer.map(|timestamp| {
             let timer = self.scheduler.create_timer(timestamp);
             timer.map(ListenedEventOutput::Timer).right_future()
         });
         let all_futures = channel_futures.chain(timer_event);
 
+        // This is the only `await` placement in the future, and it happens when the workflow
+        // is safe to save: it has no outbound messages.
         let (output, ..) = future::select_all(all_futures).await;
         let receipt = match output {
             ListenedEventOutput::Channel { name, message } => {
@@ -214,6 +245,7 @@ impl<W> AsyncEnv<W>
 where
     W: TakeHandle<AsyncEnv<W>, Id = ()>,
 {
+    /// Creates a workflow handle from this environment.
     #[allow(clippy::missing_panics_doc)] // TODO: is `unwrap()` really safe here?
     pub fn handle(&mut self) -> W::Handle {
         W::take_handle(self, &()).unwrap()
@@ -221,6 +253,11 @@ where
 }
 
 pin_project! {
+    /// Async handle for an [inbound workflow channel](Receiver) that allows sending messages
+    /// via the channel.
+    ///
+    /// Dropping the handle while [`AsyncEnv::run()`] is executing will signal to the workflow
+    /// that the corresponding channel is closed by the host.
     #[derive(Debug)]
     pub struct MessageSender<T, C> {
         #[pin]
@@ -280,12 +317,18 @@ where
                 _item: PhantomData,
             })
         } else {
-            Err(AccessErrorKind::Unknown.for_handle(InboundChannel(id)))
+            Err(AccessErrorKind::Unknown.with_location(InboundChannel(id)))
         }
     }
 }
 
 pin_project! {
+    /// Async handle for an [outbound workflow channel](Sender) that allows taking messages
+    /// from the channel.
+    ///
+    /// Dropping the handle has no effect on workflow execution (outbound channels cannot
+    /// be closed by the host), but allows to save resources, since outbound messages
+    /// would be dropped rather than buffered.
     #[derive(Debug)]
     pub struct MessageReceiver<T, C> {
         #[pin]
@@ -326,7 +369,7 @@ where
                 _item: PhantomData,
             })
         } else {
-            Err(AccessErrorKind::Unknown.for_handle(OutboundChannel(id)))
+            Err(AccessErrorKind::Unknown.with_location(OutboundChannel(id)))
         }
     }
 }
@@ -343,26 +386,36 @@ where
         if let Some(bytes) = input_bytes {
             C::default()
                 .try_decode_bytes(bytes)
-                .map_err(|err| AccessErrorKind::Custom(Box::new(err)).for_handle(DataInput(id)))
+                .map_err(|err| AccessErrorKind::Custom(Box::new(err)).with_location(DataInput(id)))
         } else {
-            Err(AccessErrorKind::Unknown.for_handle(DataInput(id)))
+            Err(AccessErrorKind::Unknown.with_location(DataInput(id)))
         }
     }
 }
 
 pin_project! {
-    /// Handle allowing to trace futures.
+    /// Async handle allowing to trace futures.
+    ///
+    /// This handle is a [`Stream`] emitting updated future states as the updates are received
+    /// from the workflow.
     #[derive(Debug)]
     pub struct TracerHandle<C> {
         #[pin]
         receiver: MessageReceiver<FutureUpdate, C>,
+        channel_name: String,
         futures: TracedFutures,
     }
 }
 
 impl<C> TracerHandle<C> {
+    /// Returns a reference to the traced futures.
     pub fn futures(&self) -> &TracedFutures {
         &self.futures
+    }
+
+    /// Returns traced futures, consuming this handle.
+    pub fn into_futures(self) -> TracedFutures {
+        self.futures
     }
 }
 
@@ -399,7 +452,8 @@ impl<C: Decoder<FutureUpdate> + Default, W> TakeHandle<AsyncEnv<W>> for Tracer<C
         let receiver = Sender::<FutureUpdate, C>::take_handle(env, id)?;
         Ok(TracerHandle {
             receiver,
-            futures: TracedFutures::default(), // FIXME: restore state
+            channel_name: id.to_owned(),
+            futures: Self::take_handle(&mut env.extensions, id)?,
         })
     }
 }

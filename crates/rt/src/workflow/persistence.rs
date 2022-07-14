@@ -1,7 +1,6 @@
 //! Workflow persistence.
 
 use anyhow::{ensure, Context};
-
 use serde::{Deserialize, Serialize};
 use wasmtime::Store;
 

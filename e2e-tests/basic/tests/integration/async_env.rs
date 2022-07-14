@@ -18,7 +18,9 @@ use tardigrade_rt::{
     test::MockScheduler,
     TimerId, Workflow, WorkflowEngine, WorkflowModule,
 };
-use tardigrade_test_basic::{DomainEvent, Inputs, PizzaDelivery, PizzaKind, PizzaOrder};
+use tardigrade_test_basic::{
+    DomainEvent, Inputs, PizzaDelivery, PizzaDeliveryHandle, PizzaKind, PizzaOrder,
+};
 
 use super::COMPILER;
 
@@ -372,5 +374,108 @@ async fn async_handle_with_mock_scheduler_and_bulk_update() -> Result<(), Box<dy
     assert!(events.next().now_or_never().is_none());
 
     wait_timer(&mut receipts, 0, ResourceEventKind::Dropped).await;
+    Ok(())
+}
+
+#[derive(Debug)]
+struct CancellableWorkflow {
+    module: WorkflowModule<PizzaDelivery>,
+    handle: PizzaDeliveryHandle<AsyncEnv<PizzaDelivery>>,
+    join_handle: task::JoinHandle<Workflow<PizzaDelivery>>,
+    scheduler: MockScheduler,
+    cancel_sx: oneshot::Sender<()>,
+}
+
+async fn spawn_cancellable_workflow() -> Result<CancellableWorkflow, Box<dyn error::Error>> {
+    let module_bytes = task::spawn_blocking(|| COMPILER.compile()).await;
+    let engine = WorkflowEngine::default();
+    let scheduler = MockScheduler::default();
+    let module =
+        WorkflowModule::<PizzaDelivery>::new(&engine, &module_bytes)?.with_clock(scheduler.clone());
+
+    let inputs = Inputs {
+        oven_count: 1,
+        deliverer_count: 1,
+    };
+    let workflow = Workflow::new(&module, inputs)?.into_inner();
+    let mut env = AsyncEnv::new(workflow, scheduler.clone());
+    let handle = env.handle();
+
+    let (cancel_sx, mut cancel_rx) = oneshot::channel::<()>();
+    let join_handle = task::spawn(async move {
+        futures::select! {
+            _ = env.run().fuse() => unreachable!("workflow should not be completed"),
+            _ = cancel_rx => env.into_inner(),
+        }
+    });
+
+    Ok(CancellableWorkflow {
+        module,
+        handle,
+        join_handle,
+        scheduler,
+        cancel_sx,
+    })
+}
+
+#[async_std::test]
+async fn persisting_workflow() -> Result<(), Box<dyn error::Error>> {
+    let CancellableWorkflow {
+        module,
+        mut handle,
+        join_handle,
+        scheduler,
+        cancel_sx,
+    } = spawn_cancellable_workflow().await?;
+
+    let order = PizzaOrder {
+        kind: PizzaKind::Pepperoni,
+        delivery_distance: 10,
+    };
+    handle.orders.send(order).await?;
+
+    let next_timer = retry_until_some(|| scheduler.next_timer_expiration()).await;
+    scheduler.set_now(next_timer);
+    // Wait until the second timer is active.
+    while let Some(event) = handle.shared.events.try_next().await? {
+        if matches!(event, DomainEvent::StartedDelivering { .. }) {
+            break;
+        }
+    }
+
+    // Cancel the workflow.
+    cancel_sx.send(()).unwrap();
+    let workflow = join_handle.await;
+    let mut tracer = handle.shared.tracer;
+    tracer
+        .by_ref()
+        .try_for_each(|_| future::ready(Ok(())))
+        .await?;
+    let traced_futures = tracer.into_futures();
+    let persisted = workflow.persist()?;
+
+    // Restore the persisted workflow and launch it again.
+    let workflow = persisted.restore(&module)?;
+    let mut env = AsyncEnv::new(workflow, scheduler.clone());
+    env.extensions().insert(traced_futures);
+    let handle = env.handle();
+    let join_handle = task::spawn(async move { env.run().await });
+
+    drop(handle.orders); // should terminate the workflow once the delivery timer is expired
+    let next_timer = retry_until_some(|| scheduler.next_timer_expiration()).await;
+    scheduler.set_now(next_timer);
+    assert_matches!(join_handle.await?, Termination::Finished);
+
+    let mut tracer = handle.shared.tracer;
+    tracer
+        .by_ref()
+        .try_for_each(|_| future::ready(Ok(())))
+        .await?;
+    assert_eq!(tracer.futures().len(), 3);
+    assert!(tracer
+        .futures()
+        .iter()
+        .all(|(_, fut)| fut.state() == FutureState::Dropped));
+
     Ok(())
 }

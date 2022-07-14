@@ -310,13 +310,15 @@ impl WorkflowData {
         let messages = mem::take(&mut channel_state.messages);
         channel_state.flushed_messages += messages.len();
 
-        self.schedule_wakers(
-            wakers,
-            WakeUpCause::Flush {
-                channel_name: channel_name.to_owned(),
-                message_indexes: start_message_idx..(start_message_idx + messages.len()),
-            },
-        );
+        if !messages.is_empty() {
+            self.schedule_wakers(
+                wakers,
+                WakeUpCause::Flush {
+                    channel_name: channel_name.to_owned(),
+                    message_indexes: start_message_idx..(start_message_idx + messages.len()),
+                },
+            );
+        }
         let messages = messages.into_iter().map(Into::into).collect();
         (start_message_idx, messages)
     }

@@ -51,7 +51,7 @@ impl AccessErrorKind {
     }
 
     /// Adds a location to this error kind, converting it to an [`AccessError`].
-    pub fn for_handle(self, location: impl Into<InterfaceLocation>) -> AccessError {
+    pub fn with_location(self, location: impl Into<InterfaceLocation>) -> AccessError {
         AccessError {
             kind: self,
             location: Some(location.into()),
@@ -72,6 +72,8 @@ pub enum InterfaceLocation {
     },
     /// Data input with the specified name.
     DataInput(String),
+    /// Extension with the specified name.
+    Extension(String),
 }
 
 impl fmt::Display for InterfaceLocation {
@@ -81,6 +83,7 @@ impl fmt::Display for InterfaceLocation {
                 write!(formatter, "{} channel `{}`", kind, name)
             }
             Self::DataInput(name) => write!(formatter, "data input `{}`", name),
+            Self::Extension(name) => write!(formatter, "extension `{}`", name),
         }
     }
 }
@@ -102,6 +105,15 @@ impl fmt::Display for AccessError {
             )
         } else {
             write!(formatter, "cannot take handle: {}", self.kind)
+        }
+    }
+}
+
+impl From<AccessErrorKind> for AccessError {
+    fn from(kind: AccessErrorKind) -> Self {
+        Self {
+            kind,
+            location: None,
         }
     }
 }

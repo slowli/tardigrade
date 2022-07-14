@@ -72,6 +72,8 @@ impl<T: ExtendLinker> LowLevelExtendLinker for T {
 /// Wall clock.
 pub trait Clock: Send + Sync + 'static {
     /// Returns the current timestamp. This is used in [`Workflow`]s when creating new timers.
+    ///
+    /// [`Workflow`]: crate::Workflow
     fn now(&self) -> DateTime<Utc>;
 }
 
@@ -229,6 +231,8 @@ impl WorkflowModule<()> {
 impl<W> WorkflowModule<W> {
     /// Specifies a [`Clock`] implementation to be used with [`Workflow`]s instantiated
     /// from this module.
+    ///
+    /// [`Workflow`]: crate::Workflow
     #[must_use]
     pub fn with_clock(mut self, clock: impl Clock) -> Self {
         self.clock = Arc::new(clock);

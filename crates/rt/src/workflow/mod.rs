@@ -14,7 +14,6 @@ pub use self::persistence::PersistedWorkflow;
 
 use crate::{
     data::{ConsumeError, PersistError, TaskState, TimerState, WorkflowData},
-    handle::{WorkflowEnv, WorkflowHandle},
     module::{DataSection, ModuleExports, WorkflowModule},
     receipt::{
         Event, ExecutedFunction, Execution, ExecutionError, Receipt, ResourceEventKind, ResourceId,
@@ -24,7 +23,7 @@ use crate::{
 };
 use tardigrade::{
     interface::Interface,
-    workflow::{Initialize, Inputs, TakeHandle},
+    workflow::{Initialize, Inputs},
 };
 
 #[derive(Debug)]
@@ -77,17 +76,6 @@ impl<W: Initialize<Id = ()>> Workflow<W> {
             .context("failed spawning main task")?;
         let receipt = this.tick().context("failed polling main task")?;
         Ok(receipt.map(|()| this))
-    }
-}
-
-impl<'a, W> Workflow<W>
-where
-    W: TakeHandle<WorkflowEnv<'a, W>, Id = ()> + 'a,
-{
-    /// Gets a handle for this workflow allowing to interact with its channels.
-    #[allow(clippy::missing_panics_doc)] // TODO: is `unwrap()` really safe here?
-    pub fn handle(&'a mut self) -> WorkflowHandle<'a, W> {
-        WorkflowHandle::new(self).unwrap()
     }
 }
 
