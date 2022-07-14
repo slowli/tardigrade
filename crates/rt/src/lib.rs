@@ -18,6 +18,9 @@
 //! [`WorkflowHandle`]: crate::handle::WorkflowHandle
 //! [`AsyncEnv`]: crate::handle::future::AsyncEnv
 
+// Documentation settings.
+#![doc(html_root_url = "https://docs.rs/tardigrade-rt/0.1.0")]
+// Linter settings.
 #![warn(missing_debug_implementations, missing_docs, bare_trait_objects)]
 #![warn(clippy::all, clippy::pedantic)]
 #![allow(clippy::must_use_candidate, clippy::module_name_repetitions)]

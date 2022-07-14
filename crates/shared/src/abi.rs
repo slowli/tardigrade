@@ -1,10 +1,10 @@
 //! Simple WASM ABI for interaction between the host and the workflow client.
 //!
-//! In the future, this ABI could be replaced with [Canonical ABI] generated with [wit-bindgen].
+//! In the future, this ABI could be replaced with [Canonical ABI] generated with [`wit-bindgen`].
 //! For now, a hand-written conversions between host and WASM environments are used instead.
 //!
 //! [Canonical ABI]: https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md
-//! [wit-bindgen]: https://github.com/bytecodealliance/wit-bindgen
+//! [`wit-bindgen`]: https://github.com/bytecodealliance/wit-bindgen
 
 use chrono::{DateTime, TimeZone, Utc};
 

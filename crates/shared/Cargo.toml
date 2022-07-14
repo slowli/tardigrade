@@ -2,8 +2,17 @@
 name = "tardigrade-shared"
 version = "0.1.0"
 edition = "2021"
+authors = ["Alex Ostrovski <ostrovski.alex@gmail.com>"]
+readme = "README.md"
+keywords = ["orchestration", "workflow", "business process"]
+categories = ["asynchronous", "wasm"]
+description = "Shared data types for Tardigrade workflows"
+repository = "https://github.com/slowli/tardigrade"
 
 [dependencies]
 chrono = { version = "0.4.19", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[dev-dependencies]
+version-sync = "0.9.4"
