@@ -130,15 +130,29 @@ pub struct ResourceEvent {
 }
 
 /// Kind of a [`ChannelEvent`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum ChannelEventKind {
     /// Inbound channel was polled for messages.
-    InboundChannelPolled,
+    InboundChannelPolled {
+        /// Result of a poll, with the message replaced with its byte length.
+        result: Poll<Option<usize>>,
+    },
     /// Outbound channel was polled for readiness.
-    OutboundChannelReady,
+    OutboundChannelReady {
+        /// Result of a poll.
+        result: Poll<()>,
+    },
+    /// Message was sent via an outbound channel.
+    OutboundMessageSent {
+        /// Byte length of the sent message.
+        message_len: usize,
+    },
     /// Outbound channel was polled for flush.
-    OutboundChannelFlushed,
+    OutboundChannelFlushed {
+        /// Result of a poll.
+        result: Poll<()>,
+    },
 }
 
 /// Event related to an inbound or outbound [`Workflow`](crate::Workflow) channel.
@@ -149,8 +163,6 @@ pub struct ChannelEvent {
     pub kind: ChannelEventKind,
     /// Name of the channel.
     pub channel_name: String,
-    /// Result of polling the channel.
-    pub result: Poll<()>,
 }
 
 /// Event included into a [`Receipt`].
@@ -179,6 +191,14 @@ impl Event {
     pub(crate) fn as_resource_event(&self) -> Option<&ResourceEvent> {
         if let Event::Resource(res_event) = self {
             Some(res_event)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn as_channel_event(&self) -> Option<&ChannelEvent> {
+        if let Event::Channel(chan_event) = self {
+            Some(chan_event)
         } else {
             None
         }

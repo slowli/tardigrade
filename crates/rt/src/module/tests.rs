@@ -38,6 +38,7 @@ pub(crate) struct ExportsMock {
     pub exports_created: bool,
     pub next_waker: WakerId,
     pub consumed_wakers: HashSet<WakerId>,
+    pub dropped_tasks: HashSet<TaskId>,
     heap_pos: u32,
     poll_fns: Answers<MockPollFn>,
 }
@@ -116,18 +117,26 @@ impl ExportsMock {
         ctx: StoreContextMut<'_, WorkflowData>,
         task_id: TaskId,
     ) -> Result<Poll<()>, Trap> {
-        assert_eq!(task_id, 0);
-        let poll_fn = this.borrow().poll_fns.next_for(());
-        poll_fn(ctx)
+        if task_id == 0 {
+            let poll_fn = this.borrow().poll_fns.next_for(());
+            poll_fn(ctx)
+        } else {
+            Ok(Poll::Pending)
+        }
     }
 
     pub(super) fn drop_task(
-        _: &Mut<Self>,
+        this: &Mut<Self>,
         _: &ModuleExports,
         _: StoreContextMut<'_, WorkflowData>,
-        _: TaskId,
+        task_id: TaskId,
     ) -> Result<(), Trap> {
-        unreachable!("should not be called")
+        assert!(
+            this.borrow().dropped_tasks.insert(task_id),
+            "task {} dropped twice",
+            task_id
+        );
+        Ok(())
     }
 
     pub(super) fn alloc_bytes(

@@ -11,10 +11,10 @@ use crate::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, ResourceEvent, ResourceEventKind,
         ResourceId, WakeUpCause,
     },
-    utils::{drop_value, serde_b64},
+    utils::serde_b64,
     TaskId, TimerId, WakerId,
 };
-use tardigrade_shared::PollMessage;
+use tardigrade_shared::{JoinError, PollMessage};
 
 /// Thin wrapper around `Vec<u8>`.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -138,7 +138,6 @@ impl Wakers {
     }
 }
 
-// FIXME: encapsulate channel progress as well
 #[derive(Debug)]
 pub(super) struct CurrentExecution {
     /// Executed function.
@@ -147,6 +146,8 @@ pub(super) struct CurrentExecution {
     tasks_to_be_awoken: HashSet<TaskId>,
     /// Tasks to be aborted after the task finishes polling.
     tasks_to_be_aborted: HashSet<TaskId>,
+    /// Wakers created during execution, together with their placement.
+    new_wakers: HashSet<WakerId>,
     /// Log of events.
     events: Vec<Event>,
 }
@@ -157,6 +158,7 @@ impl CurrentExecution {
             function,
             tasks_to_be_awoken: HashSet::new(),
             tasks_to_be_aborted: HashSet::new(),
+            new_wakers: HashSet::new(),
             events: Vec::new(),
         }
     }
@@ -171,26 +173,31 @@ impl CurrentExecution {
 
     pub fn push_inbound_channel_event(&mut self, channel_name: &str, result: &PollMessage) {
         self.push_event(ChannelEvent {
-            kind: ChannelEventKind::InboundChannelPolled,
+            kind: ChannelEventKind::InboundChannelPolled {
+                result: match result {
+                    Poll::Pending => Poll::Pending,
+                    Poll::Ready(maybe_message) => Poll::Ready(maybe_message.as_ref().map(Vec::len)),
+                },
+            },
             channel_name: channel_name.to_owned(),
-            result: drop_value(result),
         });
     }
 
-    pub fn push_outbound_channel_event(
-        &mut self,
-        channel_name: &str,
-        flush: bool,
-        result: Poll<()>,
-    ) {
+    pub fn push_outbound_poll_event(&mut self, channel_name: &str, flush: bool, result: Poll<()>) {
         self.push_event(ChannelEvent {
             kind: if flush {
-                ChannelEventKind::OutboundChannelFlushed
+                ChannelEventKind::OutboundChannelFlushed { result }
             } else {
-                ChannelEventKind::OutboundChannelReady
+                ChannelEventKind::OutboundChannelReady { result }
             },
             channel_name: channel_name.to_owned(),
-            result,
+        });
+    }
+
+    pub fn push_outbound_message_event(&mut self, channel_name: &str, message_len: usize) {
+        self.push_event(ChannelEvent {
+            kind: ChannelEventKind::OutboundMessageSent { message_len },
+            channel_name: channel_name.to_owned(),
         });
     }
 
@@ -207,6 +214,10 @@ impl CurrentExecution {
         events.iter().filter_map(Event::as_resource_event)
     }
 
+    fn channel_events(events: &[Event]) -> impl Iterator<Item = &ChannelEvent> {
+        events.iter().filter_map(Event::as_channel_event)
+    }
+
     pub fn commit(self, state: &mut WorkflowData) -> Vec<Event> {
         use self::ResourceEventKind::{Created, Dropped};
 
@@ -219,6 +230,9 @@ impl CurrentExecution {
                 }
                 (Dropped, ResourceId::Timer(timer_id)) => {
                     state.timers.remove(timer_id);
+                }
+                (Dropped, ResourceId::Task(task_id)) => {
+                    state.complete_task(task_id, Err(JoinError::Aborted));
                 }
                 _ => { /* Do nothing */ }
             }
@@ -249,6 +263,19 @@ impl CurrentExecution {
                 _ => { /* Do nothing */ }
             }
         }
+
+        state.remove_wakers(&self.new_wakers);
+
+        for event in Self::channel_events(&self.events) {
+            if matches!(event.kind, ChannelEventKind::OutboundMessageSent { .. }) {
+                let channel = state
+                    .outbound_channels
+                    .get_mut(&event.channel_name)
+                    .unwrap();
+                channel.messages.pop();
+            }
+        }
+
         crate::trace!("Reverted CurrentTask from {:?}", state);
         self.events
     }
@@ -257,6 +284,10 @@ impl CurrentExecution {
 /// Waker-related `State` functionality.
 impl WorkflowData {
     fn place_waker(&mut self, placement: &WakerPlacement, waker: WakerId) {
+        if let Some(execution) = &mut self.current_execution {
+            execution.new_wakers.insert(waker);
+        }
+
         crate::trace!("Placing waker {} in {:?}", waker, placement);
         match placement {
             WakerPlacement::InboundChannel(name) => {
@@ -274,6 +305,20 @@ impl WorkflowData {
                 self.tasks.get_mut(task).unwrap().insert_waker(waker);
             }
         }
+    }
+
+    fn remove_wakers(&mut self, wakers: &HashSet<WakerId>) {
+        for state in self.inbound_channels.values_mut() {
+            state
+                .wakes_on_next_element
+                .retain(|waker_id| !wakers.contains(waker_id));
+        }
+        for state in self.outbound_channels.values_mut() {
+            state
+                .wakes_on_flush
+                .retain(|waker_id| !wakers.contains(waker_id));
+        }
+        self.timers.remove_wakers(wakers);
     }
 
     pub(super) fn schedule_wakers(&mut self, wakers: HashSet<WakerId>, cause: WakeUpCause) {

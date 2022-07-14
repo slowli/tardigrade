@@ -212,8 +212,12 @@ impl WorkflowData {
     }
 
     pub(crate) fn complete_task(&mut self, task_id: TaskId, result: Result<(), JoinError>) {
-        let result = crate::log_result!(result, "Completed task {}", task_id);
         let task_state = self.tasks.get_mut(&task_id).unwrap();
+        if task_state.completion_result.is_ready() {
+            // Task is already completed.
+            return;
+        }
+        let result = crate::log_result!(result, "Completed task {}", task_id);
         task_state.completion_result = Poll::Ready(result);
         let wakers = mem::take(&mut task_state.wakes_on_completion);
         self.schedule_wakers(wakers, WakeUpCause::CompletedTask(task_id));

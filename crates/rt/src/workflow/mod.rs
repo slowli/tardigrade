@@ -237,7 +237,6 @@ impl<W> Workflow<W> {
         Ok(())
     }
 
-    // FIXME: revert actions (sending messages, spawning tasks) on task panic
     pub(crate) fn tick(&mut self) -> Result<Receipt, ExecutionError> {
         let mut receipt = Receipt::new();
         match self.do_tick(&mut receipt) {

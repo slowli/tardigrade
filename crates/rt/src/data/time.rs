@@ -117,6 +117,14 @@ impl Timers {
             .insert(waker);
     }
 
+    pub(super) fn remove_wakers(&mut self, wakers: &HashSet<WakerId>) {
+        for state in self.timers.values_mut() {
+            state
+                .wakes_on_completion
+                .retain(|waker_id| !wakers.contains(waker_id));
+        }
+    }
+
     pub fn current_time(&self) -> DateTime<Utc> {
         self.current_time
     }

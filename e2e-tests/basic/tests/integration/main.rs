@@ -53,8 +53,7 @@ fn basic_workflow() -> Result<(), Box<dyn error::Error>> {
     assert_matches!(
         &execution.events[0],
         Event::Channel(ChannelEvent {
-            kind: ChannelEventKind::InboundChannelPolled,
-            result: Poll::Pending,
+            kind: ChannelEventKind::InboundChannelPolled { result: Poll::Pending },
             channel_name,
             ..
         }) if channel_name == "orders"

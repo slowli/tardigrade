@@ -259,8 +259,11 @@ impl WorkflowData {
         channel_name: &str,
         message: Vec<u8>,
     ) -> Result<(), Trap> {
+        let message_len = message.len();
         let channel_state = self.outbound_channel_mut(channel_name)?;
         channel_state.messages.push(message.into());
+        self.current_execution()
+            .push_outbound_message_event(channel_name, message_len);
         Ok(())
     }
 
@@ -294,7 +297,7 @@ impl WorkflowData {
         };
 
         self.current_execution()
-            .push_outbound_channel_event(channel_name, flush, poll_result);
+            .push_outbound_poll_event(channel_name, flush, poll_result);
         Ok(poll_result.wake_if_pending(cx, || {
             WakerPlacement::OutboundChannel(channel_name.to_owned())
         }))
@@ -306,12 +309,12 @@ impl WorkflowData {
             .get_mut(channel_name)
             .unwrap_or_else(|| panic!("No outbound channel `{}`", channel_name));
 
-        let wakers = mem::take(&mut channel_state.wakes_on_flush);
         let start_message_idx = channel_state.flushed_messages;
         let messages = mem::take(&mut channel_state.messages);
         channel_state.flushed_messages += messages.len();
 
         if !messages.is_empty() {
+            let wakers = mem::take(&mut channel_state.wakes_on_flush);
             self.schedule_wakers(
                 wakers,
                 WakeUpCause::Flush {

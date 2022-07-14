@@ -116,6 +116,14 @@ impl WorkflowData {
     pub(crate) fn data_input(&self, input_name: &str) -> Option<Vec<u8>> {
         self.data_inputs.get(input_name).map(Message::to_vec)
     }
+
+    #[cfg(test)]
+    pub(crate) fn outbound_channel_wakers(&self) -> impl Iterator<Item = crate::WakerId> + '_ {
+        self.outbound_channels
+            .values()
+            .flat_map(|state| &state.wakes_on_flush)
+            .copied()
+    }
 }
 
 /// Functions operating on `WorkflowData` exported to WASM.
