@@ -19,20 +19,18 @@ use tardigrade_test_basic::{DomainEvent, Inputs, PizzaDelivery, PizzaKind, Pizza
 
 mod async_env;
 
-static COMPILER: Lazy<ModuleCompiler> = Lazy::new(|| {
-    let mut compiler = ModuleCompiler::new(env!("CARGO_PKG_NAME"));
-    compiler
+static MODULE_BYTES: Lazy<Vec<u8>> = Lazy::new(|| {
+    ModuleCompiler::new(env!("CARGO_PKG_NAME"))
         .set_current_dir(env!("CARGO_MANIFEST_DIR"))
         .set_profile("wasm")
-        .set_wasm_opt(WasmOpt::default());
-    compiler
+        .set_wasm_opt(WasmOpt::default())
+        .compile()
 });
 
 #[test]
 fn basic_workflow() -> Result<(), Box<dyn error::Error>> {
-    let module_bytes = COMPILER.compile();
     let engine = WorkflowEngine::default();
-    let module = WorkflowModule::<PizzaDelivery>::new(&engine, &module_bytes)?;
+    let module = WorkflowModule::<PizzaDelivery>::new(&engine, &MODULE_BYTES)?;
 
     let inputs = Inputs {
         oven_count: 1,
@@ -115,9 +113,8 @@ fn basic_workflow() -> Result<(), Box<dyn error::Error>> {
 
 #[test]
 fn workflow_with_concurrency() -> Result<(), Box<dyn error::Error>> {
-    let module_bytes = COMPILER.compile();
     let engine = WorkflowEngine::default();
-    let module = WorkflowModule::<PizzaDelivery>::new(&engine, &module_bytes)?;
+    let module = WorkflowModule::<PizzaDelivery>::new(&engine, &MODULE_BYTES)?;
 
     let inputs = Inputs {
         oven_count: 2,
@@ -157,9 +154,8 @@ fn workflow_with_concurrency() -> Result<(), Box<dyn error::Error>> {
 
 #[test]
 fn restoring_workflow() -> Result<(), Box<dyn error::Error>> {
-    let module_bytes = COMPILER.compile();
     let engine = WorkflowEngine::default();
-    let module = WorkflowModule::<PizzaDelivery>::new(&engine, &module_bytes)?;
+    let module = WorkflowModule::<PizzaDelivery>::new(&engine, &MODULE_BYTES)?;
 
     let inputs = Inputs {
         oven_count: 1,
@@ -233,9 +229,8 @@ fn restoring_workflow() -> Result<(), Box<dyn error::Error>> {
 
 #[test]
 fn untyped_workflow() -> Result<(), Box<dyn error::Error>> {
-    let module_bytes = COMPILER.compile();
     let engine = WorkflowEngine::default();
-    let module = WorkflowModule::<()>::new(&engine, &module_bytes)?;
+    let module = WorkflowModule::<()>::new(&engine, &MODULE_BYTES)?;
 
     let mut builder = InputsBuilder::new(module.interface());
     builder.insert(

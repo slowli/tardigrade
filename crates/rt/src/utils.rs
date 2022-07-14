@@ -7,6 +7,7 @@ use std::{fmt, task::Poll};
 use crate::data::WorkflowData;
 use tardigrade_shared::abi::AllocateBytes;
 
+#[cfg(feature = "log")]
 #[macro_export]
 #[doc(hidden)] // not public
 macro_rules! trace {
@@ -15,6 +16,16 @@ macro_rules! trace {
     };
 }
 
+#[cfg(not(feature = "log"))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! trace {
+    ($($arg:tt)*) => {{
+        let _ = format_args!($($arg)*);
+    }}
+}
+
+#[cfg(feature = "log")]
 #[macro_export]
 #[doc(hidden)] // not public
 macro_rules! log_result {
@@ -29,6 +40,15 @@ macro_rules! log_result {
         }
         $result
     }};
+}
+
+#[cfg(not(feature = "log"))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! log_result {
+    ($result:tt, $($arg:tt)*) => {
+        ($result, format_args!($($arg)*)).0
+    };
 }
 
 pub(crate) struct WasmAllocator<'a>(StoreContextMut<'a, WorkflowData>);

@@ -22,7 +22,7 @@ use tardigrade_test_basic::{
     DomainEvent, Inputs, PizzaDelivery, PizzaDeliveryHandle, PizzaKind, PizzaOrder,
 };
 
-use super::COMPILER;
+use super::MODULE_BYTES;
 
 async fn retry_until_some<T>(mut condition: impl FnMut() -> Option<T>) -> T {
     for _ in 0..5 {
@@ -35,9 +35,9 @@ async fn retry_until_some<T>(mut condition: impl FnMut() -> Option<T>) -> T {
 }
 
 async fn test_async_handle(cancel_workflow: bool) -> Result<(), Box<dyn error::Error>> {
-    let module_bytes = task::spawn_blocking(|| COMPILER.compile()).await;
+    let module_bytes = task::spawn_blocking(|| &*MODULE_BYTES).await;
     let engine = WorkflowEngine::default();
-    let module = WorkflowModule::<PizzaDelivery>::new(&engine, &module_bytes)?;
+    let module = WorkflowModule::<PizzaDelivery>::new(&engine, module_bytes)?;
 
     let inputs = Inputs {
         oven_count: 1,
@@ -152,9 +152,9 @@ async fn test_async_handle_with_concurrency(
 
 #[async_std::test]
 async fn async_handle_with_concurrency() -> Result<(), Box<dyn error::Error>> {
-    let module_bytes = task::spawn_blocking(|| COMPILER.compile()).await;
+    let module_bytes = task::spawn_blocking(|| &*MODULE_BYTES).await;
     let engine = WorkflowEngine::default();
-    let module = WorkflowModule::<PizzaDelivery>::new(&engine, &module_bytes)?;
+    let module = WorkflowModule::<PizzaDelivery>::new(&engine, module_bytes)?;
 
     let sample_inputs = [
         Inputs {
@@ -227,11 +227,11 @@ struct AsyncRig<S> {
 
 async fn initialize_workflow(
 ) -> Result<AsyncRig<impl Stream<Item = Receipt>>, Box<dyn error::Error>> {
-    let module_bytes = task::spawn_blocking(|| COMPILER.compile()).await;
+    let module_bytes = task::spawn_blocking(|| &*MODULE_BYTES).await;
     let engine = WorkflowEngine::default();
     let scheduler = MockScheduler::default();
     let module =
-        WorkflowModule::<PizzaDelivery>::new(&engine, &module_bytes)?.with_clock(scheduler.clone());
+        WorkflowModule::<PizzaDelivery>::new(&engine, module_bytes)?.with_clock(scheduler.clone());
 
     let inputs = Inputs {
         oven_count: 2,
@@ -387,11 +387,11 @@ struct CancellableWorkflow {
 }
 
 async fn spawn_cancellable_workflow() -> Result<CancellableWorkflow, Box<dyn error::Error>> {
-    let module_bytes = task::spawn_blocking(|| COMPILER.compile()).await;
+    let module_bytes = task::spawn_blocking(|| &*MODULE_BYTES).await;
     let engine = WorkflowEngine::default();
     let scheduler = MockScheduler::default();
     let module =
-        WorkflowModule::<PizzaDelivery>::new(&engine, &module_bytes)?.with_clock(scheduler.clone());
+        WorkflowModule::<PizzaDelivery>::new(&engine, module_bytes)?.with_clock(scheduler.clone());
 
     let inputs = Inputs {
         oven_count: 1,

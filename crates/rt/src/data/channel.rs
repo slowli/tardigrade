@@ -211,6 +211,7 @@ impl WorkflowData {
         Ok(())
     }
 
+    #[cfg(feature = "async")]
     pub(crate) fn listened_inbound_channels(&self) -> impl Iterator<Item = &str> + '_ {
         self.inbound_channels.iter().filter_map(|(name, state)| {
             if state.wakes_on_next_element.is_empty() {

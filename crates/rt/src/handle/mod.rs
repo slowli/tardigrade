@@ -4,6 +4,7 @@ use anyhow::Context;
 
 use std::{cell::RefCell, fmt, marker::PhantomData, ops::Range, rc::Rc};
 
+#[cfg(feature = "async")]
 pub mod future;
 
 use crate::{
@@ -95,11 +96,25 @@ impl<'a, T, C: Encoder<T>, W> MessageSender<'a, T, C, W> {
     /// on the associated inbound channel.
     pub fn send(&mut self, message: T) -> Result<SentMessage<'a, W>, ConsumeError> {
         let raw_message = self.codec.encode_value(message);
-        let exec_result = self
-            .workflow
+        self.workflow
             .borrow_mut()
-            .push_inbound_message(&self.channel_name, raw_message);
-        exec_result.map(|()| SentMessage {
+            .push_inbound_message(&self.channel_name, raw_message)?;
+        Ok(SentMessage {
+            workflow: Rc::clone(&self.workflow),
+        })
+    }
+
+    /// Closes this channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the channel is already closed, or the workflow
+    /// is currently not waiting for messages on the associated inbound channel.
+    pub fn close(self) -> Result<SentMessage<'a, W>, ConsumeError> {
+        self.workflow
+            .borrow_mut()
+            .close_inbound_channel(&self.channel_name)?;
+        Ok(SentMessage {
             workflow: Rc::clone(&self.workflow),
         })
     }

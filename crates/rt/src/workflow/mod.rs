@@ -26,12 +26,14 @@ use tardigrade::{
     workflow::{Initialize, Inputs},
 };
 
+#[cfg(feature = "async")]
 #[derive(Debug)]
 pub(crate) struct ListenedEvents {
     pub inbound_channels: Vec<String>,
     pub nearest_timer: Option<DateTime<Utc>>,
 }
 
+#[cfg(feature = "async")]
 impl ListenedEvents {
     pub fn is_empty(&self) -> bool {
         self.inbound_channels.is_empty() && self.nearest_timer.is_none()
@@ -281,6 +283,7 @@ impl<W> Workflow<W> {
         crate::log_result!(result, "Closed inbound channel `{}`", channel_name)
     }
 
+    #[cfg(feature = "async")]
     pub(crate) fn listened_events(&self) -> ListenedEvents {
         let data = self.store.data();
         let expirations = data.timers().iter().filter_map(|(_, state)| {

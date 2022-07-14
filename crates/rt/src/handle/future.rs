@@ -12,7 +12,6 @@ use std::{
     marker::PhantomData,
     pin::Pin,
     task::{Context, Poll},
-    time::{Instant, SystemTime},
 };
 
 use crate::{
@@ -48,12 +47,15 @@ impl fmt::Debug for dyn Schedule {
 ///
 /// [`async-io`]: https://docs.rs/async-io/
 /// [`async-std`]: https://docs.rs/async-std/
+#[cfg(feature = "async-io")]
 #[derive(Debug)]
 pub struct AsyncIoScheduler;
 
+#[cfg(feature = "async-io")]
 impl Schedule for AsyncIoScheduler {
     fn create_timer(&mut self, timestamp: DateTime<Utc>) -> TimerFuture {
         use async_io::Timer;
+        use std::time::{Instant, SystemTime};
 
         let timestamp = SystemTime::from(timestamp);
         let (now_instant, now) = (Instant::now(), SystemTime::now());

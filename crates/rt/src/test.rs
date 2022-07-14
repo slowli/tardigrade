@@ -1,19 +1,17 @@
 //! Helpers for workflow integration testing.
 
 use chrono::{DateTime, Utc};
-use futures::{future, FutureExt};
 
 use std::{
     env, fs, ops,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, Mutex},
 };
 
-use crate::{
-    handle::future::{Schedule, TimerFuture},
-    module::Clock,
-};
+#[cfg(feature = "async")]
+use crate::handle::future::{Schedule, TimerFuture};
+use crate::module::Clock;
 use tardigrade::test::MockScheduler as SchedulerBase;
 
 /// Options for the `wasm-opt` optimizer.
@@ -69,7 +67,6 @@ pub struct ModuleCompiler {
     profile: &'static str,
     current_dir: Option<PathBuf>,
     wasm_opt: Option<WasmOpt>,
-    cache: Mutex<Option<PathBuf>>,
 }
 
 impl ModuleCompiler {
@@ -83,18 +80,13 @@ impl ModuleCompiler {
             profile: "release",
             current_dir: None,
             wasm_opt: None,
-            cache: Mutex::new(None),
         }
-    }
-    fn drop_cache(&mut self) {
-        *self.cache.get_mut().unwrap_or_else(PoisonError::into_inner) = None;
     }
 
     /// Sets the current directory for executing commands. This may be important for `cargo`
     /// if some configuration options (e.g., linker options such as the stack size)
     /// are configured via the `.cargo` dir in the package dir.
     pub fn set_current_dir(&mut self, dir: impl AsRef<Path>) -> &mut Self {
-        self.drop_cache();
         self.current_dir = Some(dir.as_ref().to_owned());
         self
     }
@@ -103,14 +95,12 @@ impl ModuleCompiler {
     /// to create a separate profile for WASM compilation, e.g., to optimize for size and
     /// to enable link-time optimization.
     pub fn set_profile(&mut self, profile: &'static str) -> &mut Self {
-        self.drop_cache();
         self.profile = profile;
         self
     }
 
     /// Sets WASM optimization options.
     pub fn set_wasm_opt(&mut self, options: WasmOpt) -> &mut Self {
-        self.drop_cache();
         self.wasm_opt = Some(options);
         self
     }
@@ -180,10 +170,7 @@ impl ModuleCompiler {
     /// Panics if any error occurs during compilation or optimization. In this case, the output
     /// of `cargo build` / `wasm-opt` will be available to determine the error cause.
     pub fn compile(&self) -> Vec<u8> {
-        let wasm_file = {
-            let mut guard = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-            guard.get_or_insert_with(|| self.do_compile()).clone()
-        };
+        let wasm_file = self.do_compile();
         fs::read(&wasm_file).unwrap_or_else(|err| {
             panic!(
                 "Error reading file `{}`: {}",
@@ -227,8 +214,11 @@ impl Clock for MockScheduler {
     }
 }
 
+#[cfg(feature = "async")]
 impl Schedule for MockScheduler {
     fn create_timer(&mut self, expires_at: DateTime<Utc>) -> TimerFuture {
+        use futures::{future, FutureExt};
+
         let mut guard = self.inner();
         let now = guard.now();
         if now >= expires_at {
@@ -237,7 +227,8 @@ impl Schedule for MockScheduler {
             Box::pin(guard.insert_timer(expires_at).then(|res| match res {
                 Ok(timestamp) => future::ready(timestamp).left_future(),
                 Err(_) => future::pending().right_future(),
-                // ^ Error occurs when the mock scheduler is dropped, usually at the end of a test
+                // ^ An error can occur when the mock scheduler is dropped, usually at the end
+                // of a test. In this case the timer never expires.
             }))
         }
     }
