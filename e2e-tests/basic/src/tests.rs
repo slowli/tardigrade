@@ -1,4 +1,6 @@
-//! Tests that use the test wrapper.
+//! Tests that use the test wrapper from `tardigrade` library.
+//!
+//! The wrapper emulates the Tardigrade environment without requiring compilation to WASM.
 
 use assert_matches::assert_matches;
 use futures::{stream, FutureExt, SinkExt};

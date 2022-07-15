@@ -2,6 +2,7 @@
 rustflags = [
   # Specifies stack size (32K)
   "-C", "link-arg=-zstack-size=32768",
-  # Exposes the start of the data section / end of the stack
+  # Exposes the start of the data section / end of the stack. This is necessary
+  # for efficient compression of workflow memory.
   "-C", "link-arg=--export=__global_base",
 ]

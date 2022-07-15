@@ -3,6 +3,12 @@ name = "tardigrade-test-basic"
 version = "0.0.0"
 edition = "2021"
 publish = false
+authors = ["Alex Ostrovski <ostrovski.alex@gmail.com>"]
+readme = "README.md"
+keywords = ["orchestration", "workflow", "business process"]
+categories = ["asynchronous", "wasm"]
+description = "Example of a Tardigrade workflow"
+repository = "https://github.com/slowli/tardigrade"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

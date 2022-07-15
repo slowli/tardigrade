@@ -1,3 +1,6 @@
+//! Tardigrade workflow example implementing pizza shop business process
+//! (baking and delivery).
+
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
@@ -31,12 +34,14 @@ impl PizzaKind {
     }
 }
 
+/// Orders sent to the workflow via an inbound channel (see [`PizzaDeliveryHandle`]).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct PizzaOrder {
     pub kind: PizzaKind,
     pub delivery_distance: u64,
 }
 
+/// Domain events emitted by the workflow and sent via the corresponding outbound channel.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub enum DomainEvent {
     OrderTaken { index: usize, order: PizzaOrder },
@@ -56,27 +61,40 @@ impl DomainEvent {
     }
 }
 
+/// Data inputs necessary for the workflow initialization.
 #[tardigrade::init(for = "PizzaDelivery", codec = "Json")]
+// ^ Proc macro that defines `Inputs` as an initializer for the workflow type (`PizzaDelivery`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Inputs {
     pub oven_count: usize,
     pub deliverer_count: usize,
 }
 
+/// Marker for the cloneable part of the workflow.
 #[derive(Debug)]
 pub struct Shared(());
 
+/// Cloneable part of the workflow handle consisting of its outbound channels.
 #[tardigrade::handle(for = "Shared")]
+// ^ Proc macro that ties `SharedHandle` to the marker type.
 #[derive(Debug, Clone)]
 pub struct SharedHandle<Env> {
+    // For the proc macro to work, fields need to be defined as `Handle<T, Env>`, where
+    // `T` describes a workflow element (in this case, an outbound channel).
     pub events: Handle<Sender<DomainEvent, Json>, Env>,
     #[tardigrade(rename = "traces")]
+    // ^ Similar to `serde`, elements can be renamed using a field attribute.
     pub tracer: Handle<Tracer<Json>, Env>,
 }
 
+/// Marker workflow type.
+// `GetInterface` derive macro picks up the workflow interface definition at `tardigrade.json`
+// and implements the corresponding trait based on it. It also exposes the interface definition
+// in a custom WASM section, so that it is available to the workflow runtime.
 #[derive(Debug, GetInterface)]
 pub struct PizzaDelivery(());
 
+/// Handle for the workflow.
 #[tardigrade::handle(for = "PizzaDelivery")]
 #[derive(Debug)]
 pub struct PizzaDeliveryHandle<Env = Wasm> {
@@ -86,15 +104,28 @@ pub struct PizzaDeliveryHandle<Env = Wasm> {
     pub shared: Handle<Shared, Env>,
 }
 
+// Besides defining `PizzaDeliveryHandle` as a handle for `PizzaDelivery`,
+// the `handle` proc macro also provides a `ValidateInterface` implementation.
+// This allows to ensure (unfortunately, in runtime) that the handle corresponds
+// to the interface declaration.
+#[test]
+fn interface_agrees_between_declaration_and_handle() {
+    PizzaDelivery::interface(); // Checks are performed internally
+}
+
+/// Defines how workflow instances are spawned.
 impl SpawnWorkflow for PizzaDelivery {
     fn spawn(handle: Self::Handle) -> TaskHandle {
         TaskHandle::new(handle.spawn())
     }
 }
 
+// Defines the entry point for the workflow.
 tardigrade::workflow_entry!(PizzaDelivery);
 
 impl PizzaDeliveryHandle<Wasm> {
+    /// This is where the actual workflow logic is contained. We pass incoming orders
+    /// through 2 unordered buffers with the capacities defined by the data inputs.
     async fn spawn(self) {
         let inputs = self.inputs.into_inner();
         let shared = self.shared;
@@ -108,6 +139,9 @@ impl PizzaDeliveryHandle<Wasm> {
                     &shared.tracer,
                     format!("baking_process (order={})", counter),
                 )
+                // ^ `trace` extension for `Future`s allows tracing progress
+                // for the target. Internally, it passes updates to the host
+                // via an outbound channel.
             })
             .buffer_unordered(inputs.oven_count);
 
