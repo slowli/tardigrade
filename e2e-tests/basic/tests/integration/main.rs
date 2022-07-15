@@ -267,3 +267,58 @@ fn untyped_workflow() -> Result<(), Box<dyn error::Error>> {
 
     Ok(())
 }
+
+#[test]
+fn workflow_recovery_after_trap() -> Result<(), Box<dyn error::Error>> {
+    const SAMPLES: usize = 5;
+
+    let engine = WorkflowEngine::default();
+    let module = WorkflowModule::<()>::new(&engine, &MODULE_BYTES)?;
+
+    let mut builder = InputsBuilder::new(module.interface());
+    builder.insert(
+        "inputs",
+        Json.encode_value(Inputs {
+            oven_count: SAMPLES,
+            deliverer_count: 1,
+        }),
+    );
+    let mut workflow = Workflow::new(&module, builder.build())?.into_inner();
+
+    let order = PizzaOrder {
+        kind: PizzaKind::Pepperoni,
+        delivery_distance: 10,
+    };
+    let messages = (0..10).map(|i| {
+        if i % 2 == 0 {
+            b"invalid".to_vec()
+        } else {
+            Json.encode_value(order)
+        }
+    });
+
+    for (i, message) in messages.enumerate() {
+        workflow.check_persistence()?;
+        let result = workflow.revert_on_error(|workflow| {
+            let mut handle = WorkflowEnv::new(workflow).handle();
+            let sender = &mut handle.api[InboundChannel("orders")];
+            sender.send(message).unwrap().flush()
+        });
+
+        if i % 2 == 0 {
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("workflow execution failed"), "{}", err);
+        } else {
+            result?;
+
+            let mut handle = WorkflowEnv::new(&mut workflow).handle();
+            let events = handle.api[OutboundChannel("events")]
+                .take_messages()?
+                .into_inner();
+            assert_eq!(events.message_indices(), (i / 2)..(i / 2 + 1));
+
+            handle.api[OutboundChannel("traces")].take_messages()?;
+        }
+    }
+    Ok(())
+}

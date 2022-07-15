@@ -123,27 +123,17 @@ impl InboundChannelState {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(super) struct OutboundChannelState {
-    pub capacity: Option<usize>,
     pub flushed_messages: usize,
     pub messages: Vec<Message>,
     pub wakes_on_flush: HashSet<WakerId>,
 }
 
 impl OutboundChannelState {
-    pub(super) fn new(spec: &OutboundChannelSpec) -> Self {
-        Self {
-            capacity: spec.capacity,
-            flushed_messages: 0,
-            messages: Vec::new(),
-            wakes_on_flush: HashSet::new(),
-        }
-    }
-
     /// Is this channel ready to receive another message?
-    fn is_ready(&self) -> bool {
-        self.capacity.map_or(true, |cap| self.messages.len() < cap)
+    fn is_ready(&self, spec: &OutboundChannelSpec) -> bool {
+        spec.capacity.map_or(true, |cap| self.messages.len() < cap)
     }
 }
 
@@ -287,9 +277,14 @@ impl WorkflowData {
         flush: bool,
         cx: &mut WasmContext,
     ) -> Result<Poll<()>, Trap> {
-        let channel_state = self.outbound_channel_mut(channel_name)?;
+        let channel_state = self.outbound_channels.get(channel_name).ok_or_else(|| {
+            let message = format!("no outbound channel `{}`", channel_name);
+            Trap::new(message)
+        })?;
+        let spec = self.interface.outbound_channel(channel_name).unwrap();
+
         let should_block =
-            !channel_state.is_ready() || (flush && !channel_state.messages.is_empty());
+            !channel_state.is_ready(spec) || (flush && !channel_state.messages.is_empty());
         let poll_result = if should_block {
             Poll::Pending
         } else {

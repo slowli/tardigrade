@@ -41,6 +41,7 @@ pub struct WorkflowData {
     /// Functions exported by the `Instance`. Instantiated immediately after instance.
     exports: Option<ModuleExports>,
     // Interfaces (channels, data inputs).
+    interface: Interface<()>,
     inbound_channels: HashMap<String, InboundChannelState>,
     outbound_channels: HashMap<String, OutboundChannelState>,
     data_inputs: HashMap<String, Message>,
@@ -59,8 +60,8 @@ pub struct WorkflowData {
 }
 
 impl WorkflowData {
-    pub(crate) fn from_interface<W>(
-        interface: &Interface<W>,
+    pub(crate) fn from_interface(
+        interface: Interface<()>,
         data_inputs: HashMap<String, Vec<u8>>,
         clock: Arc<dyn Clock>,
     ) -> Self {
@@ -82,7 +83,7 @@ impl WorkflowData {
             .collect();
         let outbound_channels = interface
             .outbound_channels()
-            .map(|(name, spec)| (name.to_owned(), OutboundChannelState::new(spec)))
+            .map(|(name, _)| (name.to_owned(), OutboundChannelState::default()))
             .collect();
         let data_inputs = data_inputs
             .into_iter()
@@ -91,6 +92,7 @@ impl WorkflowData {
 
         Self {
             exports: None,
+            interface,
             inbound_channels,
             outbound_channels,
             data_inputs,
@@ -111,6 +113,10 @@ impl WorkflowData {
 
     pub(crate) fn set_exports(&mut self, exports: ModuleExports) {
         self.exports = Some(exports);
+    }
+
+    pub(crate) fn interface(&self) -> &Interface<()> {
+        &self.interface
     }
 
     pub(crate) fn data_input(&self, input_name: &str) -> Option<Vec<u8>> {

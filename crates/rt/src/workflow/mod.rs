@@ -4,7 +4,7 @@ use anyhow::Context;
 use chrono::{DateTime, Utc};
 use wasmtime::{AsContextMut, Linker, Store, Trap};
 
-use std::{fmt, sync::Arc, task::Poll};
+use std::{fmt, marker::PhantomData, sync::Arc, task::Poll};
 
 mod persistence;
 #[cfg(test)]
@@ -43,8 +43,8 @@ impl ListenedEvents {
 /// Workflow instance.
 pub struct Workflow<W> {
     store: Store<WorkflowData>,
-    interface: Interface<W>,
     data_section: Option<Arc<DataSection>>,
+    _ty: PhantomData<W>,
 }
 
 impl<W> fmt::Debug for Workflow<W> {
@@ -52,7 +52,7 @@ impl<W> fmt::Debug for Workflow<W> {
         formatter
             .debug_struct("Workflow")
             .field("store", &self.store)
-            .field("interface", &self.interface)
+            .field("data_section", &self.data_section)
             .finish()
     }
 }
@@ -69,7 +69,7 @@ impl<W: Initialize<Id = ()>> Workflow<W> {
     pub fn new(module: &WorkflowModule<W>, inputs: W::Init) -> anyhow::Result<Receipt<Self>> {
         let raw_inputs = Inputs::for_interface(module.interface(), inputs);
         let state = WorkflowData::from_interface(
-            module.interface(),
+            module.interface().clone().erase(),
             raw_inputs.into_inner(),
             module.clone_clock(),
         );
@@ -97,13 +97,13 @@ impl<W> Workflow<W> {
         let data_section = module.cache_data_section(&store);
         Ok(Self {
             store,
-            interface: module.interface().clone(),
             data_section,
+            _ty: PhantomData,
         })
     }
 
-    pub(crate) fn interface(&self) -> &Interface<W> {
-        &self.interface
+    pub(crate) fn interface(&self) -> &Interface<()> {
+        self.store.data().interface()
     }
 
     fn spawn_main_task(&mut self) -> Result<(), Trap> {
@@ -337,6 +337,16 @@ impl<W> Workflow<W> {
         self.store.data().timers().iter()
     }
 
+    /// Checks whether this workflow can be persisted right now.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the workflow cannot be persisted. The error points out
+    /// a reason (potentially, one of the reasons if there are multiple).
+    pub fn check_persistence(&self) -> Result<(), PersistError> {
+        self.store.data().check_persistence()
+    }
+
     /// Persists this workflow.
     ///
     /// # Errors
@@ -345,6 +355,27 @@ impl<W> Workflow<W> {
     /// right now.
     pub fn persist(&self) -> Result<PersistedWorkflow, PersistError> {
         PersistedWorkflow::new(self)
+    }
+
+    /// Executes the provided closure, reverting any workflow progress if an error occurs.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the workflow cannot be persisted (e.g., due to non-flushed messages).
+    /// Call [`Self::check_persistence()`] beforehand to determine whether this is the case.
+    ///
+    /// # Errors
+    ///
+    /// Passes through errors returned by the closure.
+    pub fn revert_on_error<T, E>(
+        &mut self,
+        action: impl FnOnce(&mut Self) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let backup = self.persist().unwrap();
+        action(self).map_err(|err| {
+            backup.restore_to_workflow(self); // `unwrap()` should be safe by design
+            err
+        })
     }
 
     fn copy_memory(&mut self, offset: usize, memory_contents: &[u8]) -> anyhow::Result<()> {

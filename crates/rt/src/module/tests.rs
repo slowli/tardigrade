@@ -8,7 +8,7 @@ use super::*;
 #[test]
 fn import_checks_are_consistent() {
     let interface = Interface::default();
-    let state = WorkflowData::from_interface(&interface, HashMap::new(), Arc::new(Utc::now));
+    let state = WorkflowData::from_interface(interface, HashMap::new(), Arc::new(Utc::now));
     let engine = Engine::default();
     let mut store = Store::new(&engine, state);
     let mut linker = Linker::new(&engine);

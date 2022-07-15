@@ -75,43 +75,15 @@ impl Memory {
             Self::Unstructured(exports.memory.data(store).to_vec())
         }
     }
-}
 
-/// Persisted version of a [`Workflow`] containing the state of its external dependencies
-/// (channels and timers), and its linear WASM memory.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PersistedWorkflow {
-    state: WorkflowState,
-    memory: Memory,
-}
-
-impl PersistedWorkflow {
-    pub(super) fn new<W>(workflow: &Workflow<W>) -> Result<Self, PersistError> {
-        let state = workflow.store.data().persist()?;
-        let memory = Memory::new(&workflow.store, workflow.data_section.as_deref());
-        Ok(Self { state, memory })
-    }
-
-    /// Restores a workflow from the persisted state and the `module` defining the workflow.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the workflow definition from `module` and the `persisted` state
-    /// do not match (e.g., differ in defined channels / data inputs).
-    pub fn restore<W>(self, module: &WorkflowModule<W>) -> anyhow::Result<Workflow<W>> {
-        let data = self
-            .state
-            .restore(module.interface(), module.clone_clock())
-            .context("failed restoring workflow state")?;
-        let mut workflow = Workflow::from_state(module, data)?;
-
-        match self.memory {
-            Memory::Unstructured(bytes) => {
+    fn restore<W>(self, workflow: &mut Workflow<W>) -> anyhow::Result<()> {
+        match self {
+            Self::Unstructured(bytes) => {
                 workflow
                     .copy_memory(0, &bytes)
                     .context("failed restoring workflow memory")?;
             }
-            Memory::Structured {
+            Self::Structured {
                 data_base,
                 mut data_diff,
                 heap,
@@ -135,6 +107,46 @@ impl PersistedWorkflow {
                     .context("failed restoring workflow heap")?;
             }
         }
+        Ok(())
+    }
+}
+
+/// Persisted version of a [`Workflow`] containing the state of its external dependencies
+/// (channels and timers), and its linear WASM memory.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PersistedWorkflow {
+    state: WorkflowState,
+    memory: Memory,
+}
+
+impl PersistedWorkflow {
+    pub(super) fn new<W>(workflow: &Workflow<W>) -> Result<Self, PersistError> {
+        workflow.store.data().check_persistence()?;
+        let state = workflow.store.data().persist();
+        let memory = Memory::new(&workflow.store, workflow.data_section.as_deref());
+        Ok(Self { state, memory })
+    }
+
+    /// Restores a workflow from the persisted state and the `module` defining the workflow.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the workflow definition from `module` and the `persisted` state
+    /// do not match (e.g., differ in defined channels / data inputs).
+    pub fn restore<W>(self, module: &WorkflowModule<W>) -> anyhow::Result<Workflow<W>> {
+        let interface = module.interface().clone().erase();
+        let data = self
+            .state
+            .restore(interface, module.clone_clock())
+            .context("failed restoring workflow state")?;
+        let mut workflow = Workflow::from_state(module, data)?;
+        self.memory.restore(&mut workflow)?;
         Ok(workflow)
+    }
+
+    /// Must be called with the same `workflow` that was used when creating this struct.
+    pub(super) fn restore_to_workflow<W>(self, workflow: &mut Workflow<W>) {
+        self.state.restore_in_place(workflow.store.data_mut());
+        self.memory.restore(workflow).unwrap();
     }
 }

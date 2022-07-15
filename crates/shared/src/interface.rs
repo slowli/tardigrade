@@ -354,6 +354,17 @@ impl<W> Interface<W> {
             .iter()
             .map(|(name, spec)| (name.as_str(), spec))
     }
+
+    /// Erases the type of this interface.
+    pub fn erase(self) -> Interface<()> {
+        Interface {
+            version: self.version,
+            inbound_channels: self.inbound_channels,
+            outbound_channels: self.outbound_channels,
+            data_inputs: self.data_inputs,
+            _workflow: PhantomData,
+        }
+    }
 }
 
 impl<W> ops::Index<DataInput<'_>> for Interface<W> {

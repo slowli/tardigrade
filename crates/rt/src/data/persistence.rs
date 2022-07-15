@@ -75,9 +75,9 @@ impl InboundChannelState {
         }
     }
 
-    fn restore<W>(
+    fn restore(
         self,
-        interface: &Interface<W>,
+        interface: &Interface<()>,
         channel_name: &str,
     ) -> anyhow::Result<super::InboundChannelState> {
         interface.inbound_channel(channel_name).ok_or_else(|| {
@@ -88,13 +88,19 @@ impl InboundChannelState {
             )
         })?;
 
-        Ok(super::InboundChannelState {
-            is_closed: self.is_closed,
-            is_acquired: self.is_acquired,
-            received_messages: self.received_messages,
+        Ok(self.into())
+    }
+}
+
+impl From<InboundChannelState> for super::InboundChannelState {
+    fn from(persisted: InboundChannelState) -> Self {
+        Self {
+            is_closed: persisted.is_closed,
+            is_acquired: persisted.is_acquired,
+            received_messages: persisted.received_messages,
             pending_message: None,
-            wakes_on_next_element: self.wakes_on_next_element,
-        })
+            wakes_on_next_element: persisted.wakes_on_next_element,
+        }
     }
 }
 
@@ -106,38 +112,37 @@ struct OutboundChannelState {
 }
 
 impl OutboundChannelState {
-    fn new(state: &super::OutboundChannelState, name: &str) -> Result<Self, PersistError> {
-        if state.messages.is_empty() {
-            Ok(Self {
-                flushed_messages: state.flushed_messages,
-                wakes_on_flush: state.wakes_on_flush.clone(),
-            })
-        } else {
-            Err(PersistError::PendingOutboundMessage {
-                channel_name: name.to_owned(),
-            })
+    fn new(state: &super::OutboundChannelState) -> Self {
+        debug_assert!(state.messages.is_empty());
+        Self {
+            flushed_messages: state.flushed_messages,
+            wakes_on_flush: state.wakes_on_flush.clone(),
         }
     }
 
-    fn restore<W>(
+    fn restore(
         self,
-        interface: &Interface<W>,
+        interface: &Interface<()>,
         channel_name: &str,
     ) -> anyhow::Result<super::OutboundChannelState> {
-        let spec = interface.outbound_channel(channel_name).ok_or_else(|| {
+        interface.outbound_channel(channel_name).ok_or_else(|| {
             anyhow!(
                 "outbound channel `{}` is present in persisted state, but not \
                  in workflow interface",
                 channel_name
             )
         })?;
+        Ok(self.into())
+    }
+}
 
-        Ok(super::OutboundChannelState {
-            capacity: spec.capacity,
-            flushed_messages: self.flushed_messages,
+impl From<OutboundChannelState> for super::OutboundChannelState {
+    fn from(persisted: OutboundChannelState) -> Self {
+        Self {
+            flushed_messages: persisted.flushed_messages,
             messages: Vec::new(),
-            wakes_on_flush: self.wakes_on_flush,
-        })
+            wakes_on_flush: persisted.wakes_on_flush,
+        }
     }
 }
 
@@ -152,9 +157,9 @@ pub(crate) struct WorkflowState {
 }
 
 impl WorkflowState {
-    pub fn restore<W>(
+    pub fn restore(
         self,
-        interface: &Interface<W>,
+        interface: Interface<()>,
         clock: Arc<dyn Clock>,
     ) -> anyhow::Result<WorkflowData> {
         let maybe_missing_data_input = interface
@@ -184,7 +189,7 @@ impl WorkflowState {
             self.inbound_channels.len()
         );
         let inbound_channels = self.inbound_channels.into_iter().map(|(name, state)| {
-            let restored = state.restore(interface, &name)?;
+            let restored = state.restore(&interface, &name)?;
             Ok((name, restored))
         });
         let inbound_channels = inbound_channels.collect::<anyhow::Result<_>>()?;
@@ -198,13 +203,14 @@ impl WorkflowState {
             self.outbound_channels.len()
         );
         let outbound_channels = self.outbound_channels.into_iter().map(|(name, state)| {
-            let restored = state.restore(interface, &name)?;
+            let restored = state.restore(&interface, &name)?;
             Ok((name, restored))
         });
         let outbound_channels = outbound_channels.collect::<anyhow::Result<_>>()?;
 
         Ok(WorkflowData {
             exports: None,
+            interface,
             inbound_channels,
             outbound_channels,
             timers: self.timers,
@@ -217,10 +223,32 @@ impl WorkflowState {
             current_wakeup_cause: None,
         })
     }
+
+    // NB. Should agree with logic in `Self::restore()`.
+    pub fn restore_in_place(self, data: &mut WorkflowData) {
+        data.inbound_channels = self
+            .inbound_channels
+            .into_iter()
+            .map(|(name, state)| (name, state.into()))
+            .collect();
+        data.outbound_channels = self
+            .outbound_channels
+            .into_iter()
+            .map(|(name, state)| (name, state.into()))
+            .collect();
+
+        data.timers = self.timers;
+        data.tasks = self.tasks;
+        data.data_inputs = self.data_inputs;
+        data.current_execution = None;
+        data.task_queue = TaskQueue::default();
+        data.waker_queue = Vec::new();
+        data.current_wakeup_cause = None;
+    }
 }
 
 impl WorkflowData {
-    pub(crate) fn persist(&self) -> Result<WorkflowState, PersistError> {
+    pub(crate) fn check_persistence(&self) -> Result<(), PersistError> {
         // Check that we're not losing info.
         if self.current_execution.is_some()
             || !self.task_queue.is_empty()
@@ -229,26 +257,38 @@ impl WorkflowData {
             return Err(PersistError::PendingTask);
         }
 
+        for (name, channel) in &self.outbound_channels {
+            if !channel.messages.is_empty() {
+                return Err(PersistError::PendingOutboundMessage {
+                    channel_name: name.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    // Must be preceded with `Self::check_persistence()`.
+    pub(crate) fn persist(&self) -> WorkflowState {
         let outbound_channels = self
             .outbound_channels
             .iter()
             .map(|(name, state)| {
-                let persisted_state = OutboundChannelState::new(state, name)?;
-                Ok((name.clone(), persisted_state))
+                let persisted_state = OutboundChannelState::new(state);
+                (name.clone(), persisted_state)
             })
-            .collect::<Result<_, PersistError>>()?;
+            .collect();
         let inbound_channels = self
             .inbound_channels
             .iter()
             .map(|(name, state)| (name.clone(), InboundChannelState::new(state)))
             .collect();
 
-        Ok(WorkflowState {
+        WorkflowState {
             inbound_channels,
             outbound_channels,
             timers: self.timers.clone(),
             data_inputs: self.data_inputs.clone(),
             tasks: self.tasks.clone(),
-        })
+        }
     }
 }
