@@ -2,7 +2,6 @@
 
 use futures::future::{FutureExt, RemoteHandle};
 use once_cell::unsync::Lazy;
-use pin_project_lite::pin_project;
 use slab::Slab;
 
 use std::{
@@ -153,13 +152,10 @@ fn spawn_raw(task_name: &str, task: impl Future<Output = ()> + 'static) -> RawTa
     handle
 }
 
-pin_project! {
-    #[derive(Debug)]
-    pub(super) struct JoinHandle<T> {
-        raw: Option<RawTaskHandle>,
-        #[pin]
-        handle: RemoteHandle<T>,
-    }
+#[derive(Debug)]
+pub(super) struct JoinHandle<T> {
+    raw: Option<RawTaskHandle>,
+    handle: Option<RemoteHandle<T>>,
 }
 
 impl<T> JoinHandle<T> {
@@ -168,23 +164,43 @@ impl<T> JoinHandle<T> {
             raw.abort();
         }
     }
+
+    // Because we implement `Drop`, we cannot use `pin_project` macro, so we implement
+    // field projections manually.
+    fn project_raw(self: Pin<&mut Self>) -> &mut Option<RawTaskHandle> {
+        // SAFETY: `raw` is never considered pinned
+        unsafe { &mut self.get_unchecked_mut().raw }
+    }
+
+    fn project_handle(self: Pin<&mut Self>) -> Pin<&mut RemoteHandle<T>> {
+        // SAFETY: map function is simple field access with always succeeding `unwrap()`,
+        // which satisfies the `map_unchecked_mut` contract
+        unsafe { self.map_unchecked_mut(|this| this.handle.as_mut().unwrap()) }
+    }
+}
+
+impl<T> Drop for JoinHandle<T> {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.forget(); // Prevent the task to be aborted
+        }
+    }
 }
 
 impl<T: 'static> Future for JoinHandle<T> {
     type Output = Result<T, JoinError>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let projection = self.project();
-        if let Some(raw) = projection.raw {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if let Some(raw) = self.as_mut().project_raw() {
             match raw.poll_unpin(cx) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
                 Poll::Ready(Ok(())) => {
-                    projection.raw.take();
+                    self.as_mut().project_raw().take();
                 }
             }
         }
-        projection.handle.poll(cx).map(Ok)
+        self.project_handle().poll(cx).map(Ok)
     }
 }
 
@@ -195,7 +211,7 @@ pub(super) fn spawn<T: 'static>(
     let (remote, handle) = task.remote_handle();
     JoinHandle {
         raw: Some(spawn_raw(task_name, remote)),
-        handle,
+        handle: Some(handle),
     }
 }
 
