@@ -38,8 +38,12 @@ mod imp;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "imp_mock.rs"]
 pub(crate) mod imp;
+mod requests;
 
-pub use self::broadcast::{BroadcastError, BroadcastPublisher, BroadcastSubscriber};
+pub use self::{
+    broadcast::{BroadcastError, BroadcastPublisher, BroadcastSubscriber},
+    requests::{Requests, WithId},
+};
 
 pin_project! {
     /// Receiver for an inbound channel provided to the workflow.

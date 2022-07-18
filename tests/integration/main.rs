@@ -3,6 +3,7 @@
 use futures::{stream, SinkExt, StreamExt};
 
 mod channel;
+mod requests;
 
 use tardigrade::{
     channel::{Receiver, Sender},
