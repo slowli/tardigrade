@@ -11,10 +11,20 @@ use tardigrade::{
     workflow::{GetInterface, Handle, Initialize, InputsBuilder, SpawnWorkflow, TaskHandle, Wasm},
     Json,
 };
+use tardigrade_shared::interface::Interface;
 
-#[derive(Debug, GetInterface)]
-#[tardigrade(interface = r#"{ "v": 0, "in": { "commands": {} }, "out": { "events": {} } }"#)]
+#[derive(Debug)]
 struct TestedWorkflow;
+
+impl GetInterface for TestedWorkflow {
+    const WORKFLOW_NAME: &'static str = "TestedWorkflow";
+
+    fn interface() -> Interface<Self> {
+        Interface::from_bytes(br#"{ "v": 0, "in": { "commands": {} }, "out": { "events": {} } }"#)
+            .downcast()
+            .unwrap()
+    }
+}
 
 #[tardigrade::handle(for = "TestedWorkflow")]
 struct TestHandle<Env> {

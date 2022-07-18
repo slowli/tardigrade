@@ -10,9 +10,12 @@
 //!
 //! 1. [`WorkflowEngine`] encapsulates the [`wasmtime`] engine to validate, compile and run
 //!   WASM modules. It should be instantiated once at the beginning of the program lifecycle.
-//! 2. [`WorkflowModule`] represents a single workflow definition. It can be instantiated
-//!   from the module binary using a `WorkflowEngine`.
-//! 3. [`Workflow`] is an instance of a workflow. It can be created from a [`WorkflowModule`].
+//! 2. [`WorkflowModule`] represents a deployment artifact represented by a WASM module
+//!   with a particular interface (e.g., a custom section declaring one or more workflow
+//!   interfaces). It can be instantiated from the module binary using a `WorkflowEngine`.
+//! 3. [`WorkflowSpawner`] allows to spawn workflows using a particular workflow definition
+//!   from the module. A spawner can be obtained from [`WorkflowModule`].
+//! 4. [`Workflow`] is an instance of a workflow. It can be created from a [`WorkflowSpawner`].
 //!
 //! [`wasmtime`]: https://docs.rs/wasmtime/latest/wasmtime/
 //! [`WorkflowHandle`]: crate::handle::WorkflowHandle
@@ -35,7 +38,7 @@ mod workflow;
 
 pub use crate::{
     data::{ConsumeError, ConsumeErrorKind, PersistError, TaskState, TimerState},
-    module::{Clock, ExtendLinker, WorkflowEngine, WorkflowModule},
+    module::{Clock, ExtendLinker, WorkflowEngine, WorkflowModule, WorkflowSpawner},
     workflow::{PersistedWorkflow, Workflow},
 };
 pub use tardigrade_shared::{FutureId, TaskId, TimerId, WakerId};

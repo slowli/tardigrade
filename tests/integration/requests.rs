@@ -9,6 +9,7 @@ use tardigrade::{
     workflow::{GetInterface, Handle, Init, SpawnWorkflow, TaskHandle, Wasm},
     Data, Json,
 };
+use tardigrade_shared::interface::Interface;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 struct Options {
@@ -27,14 +28,22 @@ impl Default for Options {
     }
 }
 
-#[derive(Debug, GetInterface)]
-#[tardigrade(interface = r#"{
-    "v": 0,
-    "data": { "strings": {}, "options": {} },
-    "in": { "responses": {} },
-    "out": { "requests": {} }
-}"#)]
+#[derive(Debug)]
 struct TestedWorkflow;
+
+impl GetInterface for TestedWorkflow {
+    const WORKFLOW_NAME: &'static str = "TestedWorkflow";
+
+    fn interface() -> Interface<Self> {
+        const SPEC: &[u8] = br#"{
+            "v": 0,
+            "data": { "strings": {}, "options": {} },
+            "in": { "responses": {} },
+            "out": { "requests": {} }
+        }"#;
+        Interface::from_bytes(SPEC).downcast().unwrap()
+    }
+}
 
 #[tardigrade::handle(for = "TestedWorkflow")]
 struct TestHandle<Env> {

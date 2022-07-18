@@ -14,7 +14,7 @@ pub use self::persistence::PersistedWorkflow;
 
 use crate::{
     data::{ConsumeError, PersistError, TaskState, TimerState, WorkflowData},
-    module::{DataSection, ModuleExports, WorkflowModule},
+    module::{DataSection, ModuleExports, WorkflowSpawner},
     receipt::{
         Event, ExecutedFunction, Execution, ExecutionError, Receipt, ResourceEventKind, ResourceId,
         WakeUpCause,
@@ -57,7 +57,7 @@ impl<W> fmt::Debug for Workflow<W> {
     }
 }
 
-impl<W: Initialize<Id = ()>> Workflow<W> {
+impl<W: Initialize<Id = ()>> WorkflowSpawner<W> {
     /// Instantiates a new workflow from the `module` and the provided `inputs`.
     ///
     /// # Errors
@@ -66,14 +66,14 @@ impl<W: Initialize<Id = ()>> Workflow<W> {
     ///   with imports) fails.
     /// - Returns an error if a trap occurs when spawning the main task for the workflow
     ///   or polling it.
-    pub fn new(module: &WorkflowModule<W>, inputs: W::Init) -> anyhow::Result<Receipt<Self>> {
-        let raw_inputs = Inputs::for_interface(module.interface(), inputs);
+    pub fn spawn(&self, inputs: W::Init) -> anyhow::Result<Receipt<Workflow<W>>> {
+        let raw_inputs = Inputs::for_interface(self.interface(), inputs);
         let state = WorkflowData::from_interface(
-            module.interface().clone().erase(),
+            self.interface().clone().erase(),
             raw_inputs.into_inner(),
-            module.clone_clock(),
+            self.clone_clock(),
         );
-        let mut this = Self::from_state(module, state)?;
+        let mut this = Workflow::from_state(self, state)?;
         this.spawn_main_task()
             .context("failed spawning main task")?;
         let receipt = this.tick().context("failed polling main task")?;
@@ -82,19 +82,19 @@ impl<W: Initialize<Id = ()>> Workflow<W> {
 }
 
 impl<W> Workflow<W> {
-    fn from_state(module: &WorkflowModule<W>, state: WorkflowData) -> anyhow::Result<Self> {
-        let mut linker = Linker::new(module.inner.engine());
-        let mut store = Store::new(linker.engine(), state);
-        module
+    fn from_state(spawner: &WorkflowSpawner<W>, state: WorkflowData) -> anyhow::Result<Self> {
+        let mut linker = Linker::new(spawner.module.engine());
+        let mut store = Store::new(spawner.module.engine(), state);
+        spawner
             .extend_linker(&mut store, &mut linker)
             .context("failed extending `Linker` for module")?;
 
         let instance = linker
-            .instantiate(&mut store, &module.inner)
+            .instantiate(&mut store, &spawner.module)
             .context("failed instantiating module")?;
-        let exports = ModuleExports::new(&mut store, &instance);
+        let exports = ModuleExports::new(&mut store, &instance, spawner.workflow_name());
         store.data_mut().set_exports(exports);
-        let data_section = module.cache_data_section(&store);
+        let data_section = spawner.cache_data_section(&store);
         Ok(Self {
             store,
             data_section,

@@ -198,12 +198,14 @@ pub use tardigrade_shared::interface;
 /// See the [`workflow`](crate::workflow) module docs for an end-to-end example of usage.
 #[macro_export]
 macro_rules! workflow_entry {
-    ($workflow:ty) => {
-        #[no_mangle]
-        #[cfg_attr(target_arch = "wasm32", export_name = "tardigrade_rt::main")]
-        #[doc(hidden)]
-        pub extern "C" fn __tardigrade_rt__main() -> $crate::workflow::TaskHandle {
-            $crate::workflow::TaskHandle::from_workflow::<$workflow>().unwrap()
-        }
+    ($workflow:ident) => {
+        const _: () = {
+            #[no_mangle]
+            #[export_name = concat!("tardigrade_rt::spawn::", stringify!($workflow))]
+            #[doc(hidden)]
+            pub extern "C" fn __tardigrade_rt__main() -> $crate::workflow::TaskHandle {
+                $crate::workflow::TaskHandle::from_workflow::<$workflow>().unwrap()
+            }
+        };
     };
 }

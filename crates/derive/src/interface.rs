@@ -40,13 +40,17 @@ impl GetInterface {
     }
 
     fn data_section(&self) -> impl ToTokens {
-        let len = self.compressed_spec.len();
-        let spec = syn::LitByteStr::new(&self.compressed_spec, self.input.span());
-
+        let name = &self.input.ident;
+        let wasm = quote!(tardigrade::workflow::Wasm);
+        let args = quote! {
+            <#name as tardigrade::workflow::GetInterface>::WORKFLOW_NAME,
+            INTERFACE_SPEC,
+        };
         quote! {
             #[cfg_attr(target_arch = "wasm32", link_section = "__tardigrade_spec")]
             #[doc(hidden)]
-            pub static __TARDIGRADE_SPEC: [u8; #len] = *#spec;
+            pub static __TARDIGRADE_SPEC: [u8; #wasm::custom_section_len(#args)] =
+                #wasm::custom_section(#args);
         }
     }
 
@@ -57,8 +61,10 @@ impl GetInterface {
 
         quote! {
             impl #impl_generics #tr for #name #ty_generics #where_clause {
+                const WORKFLOW_NAME: &'static str = core::stringify!(#name);
+
                 fn interface() -> tardigrade::interface::Interface<Self> {
-                    tardigrade::interface::Interface::from_bytes(&__TARDIGRADE_SPEC)
+                    tardigrade::interface::Interface::from_bytes(&INTERFACE_SPEC)
                         .downcast::<Self>()
                         .expect("workflow interface does not match declaration")
                 }
@@ -99,9 +105,13 @@ impl ToTokens for GetInterface {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         let data_section = self.data_section();
         let get_interface_impl = self.impl_get_interface();
+        let spec = syn::LitByteStr::new(&self.compressed_spec, self.input.span());
         tokens.extend(quote! {
-            #data_section
-            #get_interface_impl
+            const _: () = {
+                const INTERFACE_SPEC: &[u8] = #spec;
+                #data_section
+                #get_interface_impl
+            };
         });
     }
 }

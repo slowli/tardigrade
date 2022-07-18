@@ -7,10 +7,9 @@ use std::collections::HashSet;
 use super::*;
 use crate::{
     data::{WasmContextPtr, WorkflowFunctions},
-    module::{ExportsMock, MockPollFn},
+    module::{ExportsMock, MockPollFn, WorkflowEngine, WorkflowModule},
     receipt::{ChannelEvent, ChannelEventKind},
     utils::{copy_string_from_wasm, WasmAllocator},
-    WorkflowEngine,
 };
 use tardigrade::workflow::InputsBuilder;
 use tardigrade_shared::{abi::AllocateBytes, JoinError};
@@ -136,17 +135,22 @@ fn consume_message(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()
     Ok(Poll::Pending)
 }
 
+fn create_workflow() -> Receipt<Workflow<()>> {
+    let engine = WorkflowEngine::default();
+    let spawner = WorkflowModule::new(&engine, ExportsMock::MOCK_MODULE_BYTES)
+        .unwrap()
+        .for_untyped_workflow("TestWorkflow")
+        .unwrap();
+    let mut inputs = InputsBuilder::new(spawner.interface());
+    inputs.insert("inputs", b"test_input".to_vec());
+    spawner.spawn(inputs.build()).unwrap()
+}
+
 #[test]
 fn starting_workflow() {
     let poll_fns = Answers::from_value(initialize_task as MockPollFn);
     let exports_guard = ExportsMock::prepare(poll_fns);
-
-    let engine = WorkflowEngine::default();
-    let module = WorkflowModule::<()>::new(&engine, ExportsMock::MOCK_MODULE_BYTES).unwrap();
-    let mut inputs = InputsBuilder::new(module.interface());
-    inputs.insert("inputs", b"test_input".to_vec());
-    let receipt = Workflow::new(&module, inputs.build()).unwrap();
-
+    let receipt = create_workflow();
     let exports_mock = exports_guard.into_inner();
     assert!(exports_mock.exports_created);
 
@@ -177,12 +181,7 @@ fn starting_workflow() {
 fn receiving_inbound_message() {
     let poll_fns = Answers::from_values([initialize_task, consume_message]);
     let exports_guard = ExportsMock::prepare(poll_fns);
-
-    let engine = WorkflowEngine::default();
-    let module = WorkflowModule::<()>::new(&engine, ExportsMock::MOCK_MODULE_BYTES).unwrap();
-    let mut inputs = InputsBuilder::new(module.interface());
-    inputs.insert("inputs", b"test_input".to_vec());
-    let mut workflow = Workflow::new(&module, inputs.build()).unwrap().into_inner();
+    let mut workflow = create_workflow().into_inner();
 
     workflow
         .push_inbound_message("orders", b"order #1".to_vec())
@@ -280,12 +279,11 @@ fn trap_when_starting_workflow() {
     let _guard = ExportsMock::prepare(poll_fns);
 
     let engine = WorkflowEngine::default();
-    let module = WorkflowModule::<()>::new(&engine, ExportsMock::MOCK_MODULE_BYTES).unwrap();
-    let mut inputs = InputsBuilder::new(module.interface());
+    let module = WorkflowModule::new(&engine, ExportsMock::MOCK_MODULE_BYTES).unwrap();
+    let spawner = module.for_untyped_workflow("TestWorkflow").unwrap();
+    let mut inputs = InputsBuilder::new(spawner.interface());
     inputs.insert("inputs", b"test_input".to_vec());
-    let err = Workflow::new(&module, inputs.build())
-        .unwrap_err()
-        .to_string();
+    let err = spawner.spawn(inputs.build()).unwrap_err().to_string();
 
     assert!(err.contains("failed polling main task"), "{}", err);
 }
@@ -311,12 +309,7 @@ fn spawning_and_cancelling_task() {
     };
     let poll_fns = Answers::from_values([initialize_and_spawn_task, abort_task_and_complete]);
     let mock_guard = ExportsMock::prepare(poll_fns);
-
-    let engine = WorkflowEngine::default();
-    let module = WorkflowModule::<()>::new(&engine, ExportsMock::MOCK_MODULE_BYTES).unwrap();
-    let mut inputs = InputsBuilder::new(module.interface());
-    inputs.insert("inputs", b"test_input".to_vec());
-    let receipt = Workflow::new(&module, inputs.build()).unwrap();
+    let receipt = create_workflow();
 
     assert_eq!(receipt.executions().len(), 2);
     let task_spawned = receipt.executions()[0].events.iter().any(|event| {
@@ -387,12 +380,7 @@ fn rolling_back_task_spawning() {
     };
     let poll_fns = Answers::from_values([initialize_task, spawn_task_and_trap]);
     let _guard = ExportsMock::prepare(poll_fns);
-
-    let engine = WorkflowEngine::default();
-    let module = WorkflowModule::<()>::new(&engine, ExportsMock::MOCK_MODULE_BYTES).unwrap();
-    let mut inputs = InputsBuilder::new(module.interface());
-    inputs.insert("inputs", b"test_input".to_vec());
-    let mut workflow = Workflow::new(&module, inputs.build()).unwrap().into_inner();
+    let mut workflow = create_workflow().into_inner();
 
     // Push the message in order to tick the main task.
     workflow
@@ -426,12 +414,7 @@ fn rolling_back_task_abort() {
     };
     let poll_fns = Answers::from_values([initialize_and_spawn_task, abort_task_and_trap]);
     let mock_guard = ExportsMock::prepare(poll_fns);
-
-    let engine = WorkflowEngine::default();
-    let module = WorkflowModule::<()>::new(&engine, ExportsMock::MOCK_MODULE_BYTES).unwrap();
-    let mut inputs = InputsBuilder::new(module.interface());
-    inputs.insert("inputs", b"test_input".to_vec());
-    let mut workflow = Workflow::new(&module, inputs.build()).unwrap().into_inner();
+    let mut workflow = create_workflow().into_inner();
 
     // Push the message in order to tick the main task.
     workflow
@@ -465,12 +448,7 @@ fn rolling_back_emitting_messages_on_trap() {
     };
     let poll_fns = Answers::from_values([initialize_task, emit_message_and_trap]);
     let _guard = ExportsMock::prepare(poll_fns);
-
-    let engine = WorkflowEngine::default();
-    let module = WorkflowModule::<()>::new(&engine, ExportsMock::MOCK_MODULE_BYTES).unwrap();
-    let mut inputs = InputsBuilder::new(module.interface());
-    inputs.insert("inputs", b"test_input".to_vec());
-    let mut workflow = Workflow::new(&module, inputs.build()).unwrap().into_inner();
+    let mut workflow = create_workflow().into_inner();
 
     // Push the message in order to tick the main task.
     workflow
@@ -490,12 +468,7 @@ fn rolling_back_placing_waker_on_trap() {
     };
     let poll_fns = Answers::from_values([initialize_task, flush_event_and_trap]);
     let _guard = ExportsMock::prepare(poll_fns);
-
-    let engine = WorkflowEngine::default();
-    let module = WorkflowModule::<()>::new(&engine, ExportsMock::MOCK_MODULE_BYTES).unwrap();
-    let mut inputs = InputsBuilder::new(module.interface());
-    inputs.insert("inputs", b"test_input".to_vec());
-    let mut workflow = Workflow::new(&module, inputs.build()).unwrap().into_inner();
+    let mut workflow = create_workflow().into_inner();
 
     // Push the message in order to tick the main task.
     workflow

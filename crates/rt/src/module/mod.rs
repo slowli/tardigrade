@@ -8,7 +8,7 @@ use wasmtime::{
     StoreContextMut, Trap, TypedFunc, WasmParams, WasmResults, WasmRet, WasmTy,
 };
 
-use std::{fmt, sync::Arc, task::Poll};
+use std::{collections::HashMap, fmt, str, sync::Arc, task::Poll};
 
 #[cfg(test)]
 mod tests;
@@ -19,7 +19,8 @@ use crate::{
     data::{WasmContextPtr, WorkflowData, WorkflowFunctions},
     TaskId, TimerId, WakerId,
 };
-use tardigrade::interface::{Interface, ValidateInterface};
+use tardigrade::interface::Interface;
+use tardigrade::workflow::GetInterface;
 use tardigrade_shared::abi::TryFromWasm;
 
 fn ensure_func_ty<Args, Out>(ty: &ExternType, fn_name: &str) -> anyhow::Result<()>
@@ -144,26 +145,23 @@ impl DataSection {
 
 /// Workflow module that combines a WASM module with the workflow logic and the declared
 /// workflow [`Interface`].
-pub struct WorkflowModule<W> {
+pub struct WorkflowModule {
     pub(crate) inner: Module,
-    interface: Interface<W>,
-    clock: Arc<dyn Clock>,
-    linker_extensions: Vec<Box<dyn LowLevelExtendLinker>>,
-    data_section: OnceCell<Arc<DataSection>>,
+    interfaces: HashMap<String, Interface<()>>,
 }
 
-impl<W> fmt::Debug for WorkflowModule<W> {
+impl fmt::Debug for WorkflowModule {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("WorkflowModule")
-            .field("interface", &self.interface)
+            .field("interfaces", &self.interfaces)
             .finish_non_exhaustive()
     }
 }
 
-impl WorkflowModule<()> {
+impl WorkflowModule {
     #[cfg_attr(test, mimicry::mock(using = "tests::ExportsMock"))]
-    fn interface_from_wasm(module_bytes: &[u8]) -> anyhow::Result<Interface<()>> {
+    fn interfaces_from_wasm(module_bytes: &[u8]) -> anyhow::Result<HashMap<String, Interface<()>>> {
         const INTERFACE_SECTION: &str = "__tardigrade_spec";
         const CUSTOM_SECTION_TYPE: u8 = 0;
         const HEADER_LEN: usize = 8; // 4-byte magic + 4-byte version field
@@ -187,10 +185,7 @@ impl WorkflowModule<()> {
                 let (section_name, section_bytes) =
                     Self::read_section(&remaining_bytes[..section_len])?;
                 if section_name == INTERFACE_SECTION.as_bytes() {
-                    let interface =
-                        Interface::try_from_bytes(section_bytes).map_err(anyhow::Error::new)?;
-                    Self::check_internal_validity(&interface)?;
-                    return Ok(interface);
+                    return Self::interfaces_from_section(section_bytes);
                 }
             }
 
@@ -199,13 +194,47 @@ impl WorkflowModule<()> {
         bail!("WASM lacks `{}` custom section", INTERFACE_SECTION);
     }
 
-    // TODO: multiple sections?
     fn read_section(mut bytes: &[u8]) -> anyhow::Result<(&[u8], &[u8])> {
         let name_len = leb128::read::unsigned(&mut bytes)
             .context("cannot read WASM custom section name length")?;
         let name_len =
             usize::try_from(name_len).context("cannot convert WASM custom section name length")?;
         Ok(bytes.split_at(name_len))
+    }
+
+    fn interfaces_from_section(
+        mut section: &[u8],
+    ) -> anyhow::Result<HashMap<String, Interface<()>>> {
+        let mut interfaces = HashMap::with_capacity(1);
+        while !section.is_empty() {
+            let name_len =
+                leb128::read::unsigned(&mut section).context("cannot read workflow name length")?;
+            let name_len =
+                usize::try_from(name_len).context("cannot convert workflow name length")?;
+            let name = section
+                .get(0..name_len)
+                .ok_or_else(|| anyhow!("workflow name is out of bounds"))?;
+            let name = str::from_utf8(name).context("workflow name is not UTF-8")?;
+            section = &section[name_len..];
+
+            let interface_len = leb128::read::unsigned(&mut section)
+                .context("cannot read interface spec length")?;
+            let interface_len =
+                usize::try_from(interface_len).context("cannot convert interface spec length")?;
+            let interface_spec = section
+                .get(0..interface_len)
+                .ok_or_else(|| anyhow!("interface spec is out of bounds"))?;
+            let interface_spec = Interface::try_from_bytes(interface_spec).with_context(|| {
+                format!("failed parsing interface spec for workflow `{}`", name)
+            })?;
+            Self::check_internal_validity(&interface_spec)?;
+            section = &section[interface_len..];
+
+            if interfaces.insert(name.to_owned(), interface_spec).is_some() {
+                bail!("Interface for workflow `{}` is redefined", name);
+            }
+        }
+        Ok(interfaces)
     }
 
     fn check_internal_validity(interface: &Interface<()>) -> anyhow::Result<()> {
@@ -221,31 +250,119 @@ impl WorkflowModule<()> {
     }
 
     #[cfg_attr(test, mimicry::mock(using = "tests::ExportsMock"))]
-    fn validate_module(module: &Module) -> anyhow::Result<()> {
-        ModuleExports::validate_module(module)?;
+    fn validate_module(
+        module: &Module,
+        workflows: &HashMap<String, Interface<()>>,
+    ) -> anyhow::Result<()> {
+        ModuleExports::validate_module(module, workflows)?;
         ModuleImports::validate_module(module)?;
         Ok(())
     }
+
+    /// Lists the interfaces of workflows defined in this module.
+    pub fn interfaces(&self) -> impl Iterator<Item = (&str, &Interface<()>)> + '_ {
+        self.interfaces
+            .iter()
+            .map(|(name, interface)| (name.as_str(), interface))
+    }
+
+    /// Validates the provided WASM module and wraps it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error in any of the following cases:
+    ///
+    /// - `module_bytes` is not a valid WASM module.
+    /// - The module has bogus imports from the `tardigrade_rt` module, such as an unknown function
+    ///   or a known functions with an incorrect signature.
+    /// - The module does not have necessary exports.
+    /// - The module does not have a custom section with the workflow interface definition(s).
+    pub fn new(engine: &WorkflowEngine, module_bytes: &[u8]) -> anyhow::Result<Self> {
+        let module =
+            Module::from_binary(&engine.inner, module_bytes).context("cannot parse WASM module")?;
+        let interfaces = WorkflowModule::interfaces_from_wasm(module_bytes)
+            .context("cannot extract workflow interface from WASM module")?;
+        WorkflowModule::validate_module(&module, &interfaces)?;
+        Ok(Self {
+            inner: module,
+            interfaces,
+        })
+    }
+
+    /// Returns a spawner for a strongly-typed workflow defined in this module.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error in any of the following cases.
+    ///
+    /// - The workflow is not present in the module.
+    /// - The workflow interface definition does not match the interface implied by type param `W`.
+    pub fn for_workflow<W>(&self) -> anyhow::Result<WorkflowSpawner<W>>
+    where
+        W: GetInterface,
+    {
+        let interface = self.interfaces.get(W::WORKFLOW_NAME).ok_or_else(|| {
+            anyhow!(
+                "workflow module does not contain definition of workflow `{}`",
+                W::WORKFLOW_NAME
+            )
+        })?;
+        let interface = interface.clone().downcast::<W>().with_context(|| {
+            anyhow!("mismatch in interface for workflow `{}`", W::WORKFLOW_NAME)
+        })?;
+        Ok(WorkflowSpawner::new(
+            self.inner.clone(),
+            interface,
+            W::WORKFLOW_NAME,
+        ))
+    }
+
+    /// Creates a spawner for a dynamically-typed workflow with the specified name.
+    /// Returns `None` if the workflow with such a name is not present in the module.
+    pub fn for_untyped_workflow(&self, workflow_name: &str) -> Option<WorkflowSpawner<()>> {
+        let interface = self.interfaces.get(workflow_name)?.clone();
+        Some(WorkflowSpawner::new(
+            self.inner.clone(),
+            interface,
+            workflow_name,
+        ))
+    }
 }
 
-impl<W> WorkflowModule<W> {
-    /// Specifies a [`Clock`] implementation to be used with [`Workflow`]s instantiated
-    /// from this module.
-    ///
-    /// [`Workflow`]: crate::Workflow
-    #[must_use]
-    pub fn with_clock(mut self, clock: impl Clock) -> Self {
-        self.clock = Arc::new(clock);
-        self
-    }
+/// Spawner of workflows of a specific type.
+///
+/// Can be created using [`WorkflowModule::for_workflow`] or
+/// [`WorkflowModule::for_untyped_workflow`].
+pub struct WorkflowSpawner<W> {
+    pub(crate) module: Module,
+    interface: Interface<W>,
+    workflow_name: String,
+    clock: Arc<dyn Clock>,
+    linker_extensions: Vec<Box<dyn LowLevelExtendLinker>>,
+    data_section: OnceCell<Arc<DataSection>>,
+}
 
-    pub(crate) fn clone_clock(&self) -> Arc<dyn Clock> {
-        Arc::clone(&self.clock)
+impl<W> fmt::Debug for WorkflowSpawner<W> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WorkflowSpawner")
+            .field("interface", &self.interface)
+            .field("workflow_name", &self.workflow_name)
+            .field("data_section", &self.data_section)
+            .finish_non_exhaustive()
     }
+}
 
-    /// Returns the interface of this module.
-    pub fn interface(&self) -> &Interface<W> {
-        &self.interface
+impl<W> WorkflowSpawner<W> {
+    fn new(module: Module, interface: Interface<W>, workflow_name: &str) -> Self {
+        Self {
+            module,
+            interface,
+            workflow_name: workflow_name.to_owned(),
+            clock: Arc::new(Utc::now),
+            linker_extensions: vec![Box::new(WorkflowFunctions)],
+            data_section: OnceCell::new(),
+        }
     }
 
     /// Inserts imports into the module linker, allowing the workflow in the module depend
@@ -279,36 +396,29 @@ impl<W> WorkflowModule<W> {
             Arc::clone(section)
         })
     }
-}
 
-impl<W: ValidateInterface<Id = ()>> WorkflowModule<W> {
-    /// Validates the provided WASM module and wraps it.
+    /// Returns the interface of the workflow spawned by this spawner.
+    pub fn interface(&self) -> &Interface<W> {
+        &self.interface
+    }
+
+    /// Returns the name of the workflow spawned by this spawner.
+    pub fn workflow_name(&self) -> &str {
+        &self.workflow_name
+    }
+
+    /// Specifies a [`Clock`] implementation to be used with [`Workflow`]s instantiated
+    /// from this module.
     ///
-    /// # Errors
-    ///
-    /// Returns an error in any of the following cases:
-    ///
-    /// - `module_bytes` is not a valid WASM module.
-    /// - The module has bogus imports from the `tardigrade_rt` module, such as an unknown function
-    ///   or a known functions with an incorrect signature.
-    /// - The module does not have necessary exports.
-    /// - The module does not have a custom section with the workflow interface definition.
-    /// - The workflow interface definition does not match the interface implied by type param `W`.
-    pub fn new(engine: &WorkflowEngine, module_bytes: &[u8]) -> anyhow::Result<Self> {
-        let module =
-            Module::from_binary(&engine.inner, module_bytes).context("cannot parse WASM module")?;
-        WorkflowModule::validate_module(&module)?;
-        let interface = WorkflowModule::interface_from_wasm(module_bytes)
-            .context("cannot extract workflow interface from WASM module")?;
-        Ok(Self {
-            inner: module,
-            interface: interface
-                .downcast()
-                .context("mismatch between declared and actual workflow interface")?,
-            clock: Arc::new(Utc::now),
-            linker_extensions: vec![Box::new(WorkflowFunctions)],
-            data_section: OnceCell::new(),
-        })
+    /// [`Workflow`]: crate::Workflow
+    #[must_use]
+    pub fn with_clock(mut self, clock: impl Clock) -> Self {
+        self.clock = Arc::new(clock);
+        self
+    }
+
+    pub(crate) fn clone_clock(&self) -> Arc<dyn Clock> {
+        Arc::clone(&self.clock)
     }
 }
 
@@ -390,7 +500,10 @@ impl fmt::Debug for ModuleExports {
 }
 
 impl ModuleExports {
-    fn validate_module(module: &Module) -> anyhow::Result<()> {
+    fn validate_module(
+        module: &Module,
+        workflows: &HashMap<String, Interface<()>>,
+    ) -> anyhow::Result<()> {
         let memory_ty = module
             .get_export("memory")
             .ok_or_else(|| anyhow!("module does not export memory"))?;
@@ -399,7 +512,12 @@ impl ModuleExports {
             "`memory` export is not a memory"
         );
 
-        Self::ensure_export_ty::<(), TaskId>(module, "tardigrade_rt::main")?;
+        for workflow_name in workflows.keys() {
+            Self::ensure_export_ty::<(), TaskId>(
+                module,
+                &format!("tardigrade_rt::spawn::{}", workflow_name),
+            )?;
+        }
         Self::ensure_export_ty::<(TaskId, TaskId), i32>(module, "tardigrade_rt::poll_task")?;
         Self::ensure_export_ty::<TaskId, ()>(module, "tardigrade_rt::drop_task")?;
         Self::ensure_export_ty::<u32, u32>(module, "tardigrade_rt::alloc_bytes")?;
@@ -421,16 +539,17 @@ impl ModuleExports {
     }
 
     #[cfg_attr(test, mimicry::mock(using = "tests::ExportsMock::mock_new"))]
-    pub fn new(store: &mut Store<WorkflowData>, instance: &Instance) -> Self {
+    pub fn new(store: &mut Store<WorkflowData>, instance: &Instance, workflow_name: &str) -> Self {
         let memory = instance.get_memory(&mut *store, "memory").unwrap();
         let global_base = Self::extract_u32_global(&mut *store, instance, "__global_base");
         let heap_base = Self::extract_u32_global(&mut *store, instance, "__heap_base");
         let data_location = global_base.and_then(|start| heap_base.map(|end| (start, end)));
+        let main_fn_name = format!("tardigrade_rt::spawn::{}", workflow_name);
 
         Self {
             memory,
             data_location,
-            create_main_task: Self::extract_function(&mut *store, instance, "tardigrade_rt::main"),
+            create_main_task: Self::extract_function(&mut *store, instance, &main_fn_name),
             poll_task: Self::extract_function(&mut *store, instance, "tardigrade_rt::poll_task"),
             drop_task: Self::extract_function(&mut *store, instance, "tardigrade_rt::drop_task"),
             alloc_bytes: Self::extract_function(

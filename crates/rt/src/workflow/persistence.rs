@@ -6,7 +6,7 @@ use wasmtime::Store;
 
 use crate::{
     data::{PersistError, WorkflowData, WorkflowState},
-    module::{DataSection, WorkflowModule},
+    module::{DataSection, WorkflowSpawner},
     workflow::Workflow,
 };
 
@@ -127,19 +127,19 @@ impl PersistedWorkflow {
         Ok(Self { state, memory })
     }
 
-    /// Restores a workflow from the persisted state and the `module` defining the workflow.
+    /// Restores a workflow from the persisted state and the `spawner` defining the workflow.
     ///
     /// # Errors
     ///
     /// Returns an error if the workflow definition from `module` and the `persisted` state
     /// do not match (e.g., differ in defined channels / data inputs).
-    pub fn restore<W>(self, module: &WorkflowModule<W>) -> anyhow::Result<Workflow<W>> {
-        let interface = module.interface().clone().erase();
+    pub fn restore<W>(self, spawner: &WorkflowSpawner<W>) -> anyhow::Result<Workflow<W>> {
+        let interface = spawner.interface().clone().erase();
         let data = self
             .state
-            .restore(interface, module.clone_clock())
+            .restore(interface, spawner.clone_clock())
             .context("failed restoring workflow state")?;
-        let mut workflow = Workflow::from_state(module, data)?;
+        let mut workflow = Workflow::from_state(spawner, data)?;
         self.memory.restore(&mut workflow)?;
         Ok(workflow)
     }

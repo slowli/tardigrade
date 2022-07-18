@@ -55,18 +55,24 @@ impl ExportsMock {
         this.set_as_mock()
     }
 
-    pub(super) fn interface_from_wasm(
+    pub(super) fn interfaces_from_wasm(
         this: &Mut<Self>,
         bytes: &[u8],
-    ) -> anyhow::Result<Interface<()>> {
+    ) -> anyhow::Result<HashMap<String, Interface<()>>> {
         if bytes == Self::MOCK_MODULE_BYTES {
-            Ok(Interface::from_bytes(INTERFACE))
+            let mut map = HashMap::with_capacity(1);
+            map.insert("TestWorkflow".to_owned(), Interface::from_bytes(INTERFACE));
+            Ok(map)
         } else {
-            this.call_real(|| WorkflowModule::interface_from_wasm(bytes))
+            this.call_real(|| WorkflowModule::interfaces_from_wasm(bytes))
         }
     }
 
-    pub(super) fn validate_module(_: &Mut<Self>, _: &Module) -> anyhow::Result<()> {
+    pub(super) fn validate_module(
+        _: &Mut<Self>,
+        _: &Module,
+        _: &HashMap<String, Interface<()>>,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -74,6 +80,7 @@ impl ExportsMock {
         this: &Mut<Self>,
         store: &mut Store<WorkflowData>,
         _: &Instance,
+        _: &str,
     ) -> ModuleExports {
         assert!(!this.borrow().exports_created);
         this.borrow().exports_created = true;

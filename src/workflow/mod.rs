@@ -82,7 +82,7 @@
 //! tardigrade::workflow_entry!(MyWorkflow);
 //! ```
 
-use std::{collections::HashMap, fmt, future::Future, ops};
+use std::{collections::HashMap, fmt, future::Future, mem, ops};
 
 mod handle;
 mod init;
@@ -97,6 +97,7 @@ pub use self::{
 /// [`GetInterface`]: trait@GetInterface
 #[cfg(feature = "derive")]
 pub use tardigrade_derive::GetInterface;
+use tardigrade_shared::interface::ValidateInterface;
 
 use crate::{
     channel::{RawReceiver, RawSender},
@@ -134,7 +135,9 @@ mod imp {
 /// Allows obtaining an [`Interface`] for a workflow.
 ///
 /// This trait should be derived for workflow types using the corresponding macro.
-pub trait GetInterface {
+pub trait GetInterface: ValidateInterface<Id = ()> {
+    /// Name of the workflow. This name is used in workflow module definitions.
+    const WORKFLOW_NAME: &'static str;
     /// Obtains the workflow interface.
     fn interface() -> Interface<Self>;
 }
@@ -146,6 +149,71 @@ pub trait GetInterface {
 /// in case of [tests](crate::test).
 #[derive(Debug, Default)]
 pub struct Wasm(());
+
+impl Wasm {
+    #[doc(hidden)]
+    pub const fn custom_section_len(name: &str, serialized_interface: &[u8]) -> usize {
+        Self::leb128_len(name.len())
+            + name.len()
+            + Self::leb128_len(serialized_interface.len())
+            + serialized_interface.len()
+    }
+
+    /// Returns the number of bytes in the unsigned LEB128 encoding of `value`.
+    const fn leb128_len(value: usize) -> usize {
+        let bits_count = mem::size_of::<usize>() * 8 - value.leading_zeros() as usize;
+        if bits_count == 0 {
+            1
+        } else {
+            (bits_count + 6) / 7 // == ceil(bits_count / 7)
+        }
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    const fn write_leb128<const N: usize>(
+        mut buffer: [u8; N],
+        mut value: usize,
+        mut pos: usize,
+    ) -> ([u8; N], usize) {
+        loop {
+            let low_bits = (value & 127) as u8;
+            value >>= 7;
+            buffer[pos] = low_bits;
+            if value > 0 {
+                buffer[pos] += 128; // Set the continuation bit
+                pos += 1;
+            } else {
+                pos += 1;
+                break;
+            }
+        }
+        (buffer, pos)
+    }
+
+    #[doc(hidden)]
+    pub const fn custom_section<const N: usize>(
+        name: &str,
+        serialized_interface: &[u8],
+    ) -> [u8; N] {
+        debug_assert!(N == Self::custom_section_len(name, serialized_interface));
+
+        let (mut buffer, pos) = Self::write_leb128([0; N], name.len(), 0);
+        let mut i = 0;
+        while i < name.len() {
+            buffer[pos + i] = name.as_bytes()[i];
+            i += 1;
+        }
+
+        let (mut buffer, pos) =
+            Self::write_leb128(buffer, serialized_interface.len(), pos + name.len());
+        let mut i = 0;
+        while i < serialized_interface.len() {
+            buffer[pos + i] = serialized_interface[i];
+            i += 1;
+        }
+        buffer
+    }
+}
 
 /// Workflow that can be spawned.
 ///
@@ -334,5 +402,59 @@ where
         self.outbound_channels
             .get_mut(index.0)
             .unwrap_or_else(|| panic!("{} is not defined", index))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn leb128_len_is_computed_correctly() {
+        assert_eq!(Wasm::leb128_len(0), 1);
+        assert_eq!(Wasm::leb128_len(5), 1);
+        assert_eq!(Wasm::leb128_len(127), 1);
+        assert_eq!(Wasm::leb128_len(128), 2);
+        assert_eq!(Wasm::leb128_len(256), 2);
+        assert_eq!(Wasm::leb128_len(16_383), 2);
+        assert_eq!(Wasm::leb128_len(16_384), 3);
+        assert_eq!(Wasm::leb128_len(624_485), 3);
+    }
+
+    #[test]
+    fn writing_leb128() {
+        let (buffer, pos) = Wasm::write_leb128([0; 3], 624_485, 0);
+        assert_eq!(buffer, [0xe5, 0x8e, 0x26]);
+        assert_eq!(pos, 3);
+    }
+
+    struct SimpleInterface;
+
+    impl SimpleInterface {
+        const WORKFLOW_NAME: &'static str = "SimpleInterface";
+        const SERIALIZED_INTERFACE: &'static [u8] = br#"{"v":0,"in":{"test":{}}}"#;
+    }
+
+    #[test]
+    fn writing_custom_section() {
+        const LEN: usize = Wasm::custom_section_len(
+            SimpleInterface::WORKFLOW_NAME,
+            SimpleInterface::SERIALIZED_INTERFACE,
+        );
+        const SECTION: [u8; LEN] = Wasm::custom_section(
+            SimpleInterface::WORKFLOW_NAME,
+            SimpleInterface::SERIALIZED_INTERFACE,
+        );
+
+        assert_eq!(
+            usize::from(SECTION[0]),
+            SimpleInterface::WORKFLOW_NAME.len()
+        );
+        assert_eq!(SECTION[1..16], *b"SimpleInterface");
+        assert_eq!(
+            usize::from(SECTION[16]),
+            SimpleInterface::SERIALIZED_INTERFACE.len()
+        );
+        assert_eq!(SECTION[17..], *SimpleInterface::SERIALIZED_INTERFACE);
     }
 }
