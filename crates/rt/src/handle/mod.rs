@@ -1,4 +1,13 @@
-//! Handles for [`Workflow`].
+//! Handles for [`Workflow`], allowing to interact with it (e.g., send and receive messages).
+//!
+//! There are 2 types of handles provided:
+//!
+//! - [`WorkflowEnv`] / [`WorkflowHandle`] provides low-level synchronous API.
+//! - [`AsyncEnv`] provides more high-level, future-based API.
+//!
+//! See [`WorkflowEnv`] and [`AsyncEnv`] docs for examples of usage.
+//!
+//! [`AsyncEnv`]: crate::handle::future::AsyncEnv
 
 use anyhow::Context;
 
@@ -28,6 +37,45 @@ use tardigrade::{
 /// and [take messages](MessageReceiver) from outbound channels).
 ///
 /// See [`AsyncEnv`](future::AsyncEnv) for a more high-level, future-based alternative.
+///
+/// # Examples
+///
+/// ```
+/// use tardigrade::interface::{InboundChannel, OutboundChannel};
+/// use tardigrade_rt::{handle::WorkflowEnv, Workflow};
+///
+/// # fn test_wrapper(workflow: Workflow<()>) -> anyhow::Result<()> {
+/// // Assume we have a dynamically typed workflow:
+/// let mut workflow: Workflow<()> = // ...
+/// #   workflow;
+/// // We can create a handle to manipulate the workflow.
+/// let mut handle = WorkflowEnv::new(&mut workflow).handle();
+///
+/// // Let's send a message via an inbound channel.
+/// let message = b"hello".to_vec();
+/// let receipt = handle.api[InboundChannel("commands")]
+///     .send(message)?
+///     .flush()?;
+/// // `receipt` contains information about executed functions,
+/// // spawned tasks, timers, etc.
+/// println!("{:?}", receipt.executions());
+///
+/// // Let's then take outbound messages from a certain channel:
+/// let receipt = handle.api[OutboundChannel("events")].take_messages()?;
+/// let messages: Vec<Vec<u8>> = receipt.into_inner().decode().unwrap();
+/// // ^ `decode().unwrap()` always succeeds because the codec
+/// // for untyped workflows is just an identity.
+///
+/// // It is possible to access / manipulate the underlying `Workflow`:
+/// let receipt = handle.with(|workflow| {
+///     println!("{:?}", workflow.tasks().collect::<Vec<_>>());
+///     let now = workflow.current_time();
+///     workflow.set_current_time(now + chrono::Duration::seconds(1))
+/// })?;
+/// println!("{:?}", receipt.executions());
+/// # Ok(())
+/// # }
+/// ```
 pub struct WorkflowEnv<'a, W> {
     inner: Rc<RefCell<&'a mut Workflow<W>>>,
     extensions: EnvExtensions,

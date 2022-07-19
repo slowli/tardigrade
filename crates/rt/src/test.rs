@@ -1,4 +1,28 @@
 //! Helpers for workflow integration testing.
+//!
+//! # Examples
+//!
+//! Typically, it is useful to cache a [`WorkflowModule`](crate::WorkflowModule)
+//! among multiple tests. This can be performed as follows:
+//!
+//! ```no_run
+//! use once_cell::sync::Lazy;
+//! use tardigrade_rt::{test::*, WorkflowEngine, WorkflowModule};
+//!
+//! static MODULE: Lazy<WorkflowModule> = Lazy::new(|| {
+//!     let module_bytes = ModuleCompiler::new(env!("CARGO_PKG_NAME"))
+//!         .set_current_dir(env!("CARGO_MANIFEST_DIR"))
+//!         .set_profile("wasm")
+//!         .set_wasm_opt(WasmOpt::default())
+//!         .compile();
+//!     let engine = WorkflowEngine::default();
+//!     WorkflowModule::new(&engine, &module_bytes).unwrap()
+//! });
+//!
+//! // The module can then be used in tests:
+//! let spawner = MODULE.for_untyped_workflow("TestWorkflow").unwrap();
+//! // Use `spawner` to spawn workflows...
+//! ```
 
 use chrono::{DateTime, Utc};
 
@@ -181,7 +205,47 @@ impl ModuleCompiler {
     }
 }
 
-/// Mock scheduler.
+/// Mock [wall clock](Clock) and [scheduler](Schedule).
+///
+/// # Examples
+///
+/// A primary use case is to use the scheduler with [`AsyncEnv`] for integration testing:
+///
+/// [`AsyncEnv`]: crate::handle::future::AsyncEnv
+///
+/// ```
+/// # use async_std::task;
+/// # use futures::TryStreamExt;
+/// use tardigrade::{interface::OutboundChannel, workflow::Inputs};
+/// use tardigrade_rt::{test::MockScheduler, Workflow, WorkflowModule};
+/// use tardigrade_rt::handle::future::AsyncEnv;
+///
+/// # async fn test_wrapper(module: WorkflowModule, inputs: Inputs) -> anyhow::Result<()> {
+/// let module: WorkflowModule = // ...
+/// #   module;
+/// let scheduler = MockScheduler::default();
+/// let spawner = module.for_untyped_workflow("TestWorkflow").unwrap();
+/// // Set the mocked wall clock for the workflow spawner.
+/// let spawner = spawner.with_clock(scheduler.clone());
+/// let inputs: Inputs = // ...
+/// #   inputs;
+/// let workflow: Workflow<()> = spawner.spawn(inputs)?.into_inner();
+///
+/// // Spin up the environment to execute the `workflow`.
+/// let mut env = AsyncEnv::new(workflow, scheduler.clone());
+/// let mut handle = env.handle();
+/// task::spawn(async move { env.run().await });
+///
+/// // Advance mocked wall clock.
+/// let now = scheduler.now();
+/// scheduler.set_now(now + chrono::Duration::seconds(1));
+/// // This can lead to the workflow progressing, e.g., by emitting messages
+/// let message: Option<Vec<u8>> =
+///     handle[OutboundChannel("events")].try_next().await?;
+/// // Assert on `message`...
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone, Default)]
 pub struct MockScheduler {
     inner: Arc<Mutex<SchedulerBase>>,

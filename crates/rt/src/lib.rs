@@ -17,6 +17,66 @@
 //!   from the module. A spawner can be obtained from [`WorkflowModule`].
 //! 4. [`Workflow`] is an instance of a workflow. It can be created from a [`WorkflowSpawner`].
 //!
+//! # Examples
+//!
+//! ## Instantiating workflow
+//!
+//! ```no_run
+//! use tardigrade::workflow::InputsBuilder;
+//! use tardigrade_rt::{Workflow, WorkflowEngine, WorkflowModule};
+//!
+//! let module_bytes: Vec<u8> = // e.g., take from a file
+//! #   vec![];
+//! let engine = WorkflowEngine::default();
+//! let module = WorkflowModule::new(&engine, &module_bytes)?;
+//! // It is possible to inspect module definitions:
+//! for (workflow_name, interface) in module.interfaces() {
+//!     println!("{}: {:?}", workflow_name, interface);
+//! }
+//!
+//! // There are 2 ways to create workflows: strongly typed workflow
+//! // (which requires depending on the workflow crate), and dynamically typed
+//! // workflows. The code below uses the second approach.
+//! let spawner = module.for_untyped_workflow("TestWorkflow").unwrap();
+//! let mut inputs = InputsBuilder::new(&spawner.interface());
+//! println!("{:?}", inputs.missing_input_names().collect::<Vec<_>>());
+//! // After filling inputs somehow...
+//! let receipt = spawner.spawn(inputs.build())?;
+//! // `receipt` contains information about WASM code execution. E.g.,
+//! // this will print the executed functions and a list of important
+//! // events for each of executions:
+//! println!("{:?}", receipt.executions());
+//!
+//! // The workflow is contained within the receipt:
+//! let workflow: Workflow<()> = receipt.into_inner();
+//! # Ok::<_, anyhow::Error>(())
+//! ```
+//!
+//! See [`WorkflowEnv`] and [`AsyncEnv`] docs for examples of what to do with workflows
+//! after instantiation.
+//!
+//! [`WorkflowEnv`]: crate::handle::WorkflowEnv
+//! [`AsyncEnv`]: crate::handle::future::AsyncEnv
+//!
+//! ## Persisting and restoring workflow
+//!
+//! ```
+//! # use tardigrade_rt::{PersistedWorkflow, Workflow, WorkflowSpawner};
+//! # fn test_wrapper(spawner: WorkflowSpawner<()>, workflow: Workflow<()>) -> anyhow::Result<()> {
+//! let workflow: Workflow<()> = // ...
+//! #   workflow;
+//! let persisted: PersistedWorkflow = workflow.persist()?;
+//! // The persisted workflow can be serialized:
+//! let json = serde_json::to_string(&persisted)?;
+//! let persisted: PersistedWorkflow = serde_json::from_str(&json)?;
+//! // The workflow can then be instantiated again using a `WorkflowSpawner`:
+//! let spawner: WorkflowSpawner<()> = // ...
+//! #   spawner;
+//! let restored_workflow: Workflow<()> = persisted.restore(&spawner)?;
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! [`wasmtime`]: https://docs.rs/wasmtime/latest/wasmtime/
 //! [`WorkflowHandle`]: crate::handle::WorkflowHandle
 //! [`AsyncEnv`]: crate::handle::future::AsyncEnv

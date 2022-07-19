@@ -1,4 +1,12 @@
 //! [`Receipt`]s for workflows and associated types.
+//!
+//! The root type is [`Receipt`] that records zero or more [`Execution`]s. Each `Execution`
+//! records [`Event`]s that have occurred when executing a specific [function](ExecutedFunction)
+//! from the WASM definition of the [`WorkflowModule`]. `Event`s can relate either to a message
+//! channel connected to the workflow ([`ChannelEvent`]), or to a resource managed by the runtime
+//! ([`ResourceEvent`]), such as a task or a timer.
+//!
+//! [`WorkflowModule`]: crate::WorkflowModule
 
 use wasmtime::Trap;
 
@@ -219,9 +227,9 @@ pub struct Execution {
 /// Receipt for executing tasks in a [`Workflow`](crate::Workflow).
 ///
 /// A receipt can be optionally associated with an output value, which depends on the context
-/// in which a workflow is getting executed. See [`Workflow::new()`] for an example.
+/// in which a workflow is getting executed. See [`WorkflowSpawner::spawn()`] for an example.
 ///
-/// [`Workflow::new()`]: crate::Workflow::new()
+/// [`WorkflowSpawner::spawn()`]: crate::WorkflowSpawner::spawn()
 #[derive(Debug)]
 pub struct Receipt<T = ()> {
     pub(crate) executions: Vec<Execution>,

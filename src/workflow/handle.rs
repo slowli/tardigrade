@@ -25,13 +25,13 @@ pub trait TakeHandle<Env> {
 /// Handle in a particular environment.
 pub type Handle<T, Env> = <T as TakeHandle<Env>>::Handle;
 
-/// Allows putting data into [`EnvExtensions`].
+/// Data that can be put into [`EnvExtensions`].
 pub trait ExtendEnv: Any + Send {
     /// Returns a unique string ID of the data.
     fn id(&self) -> String;
 }
 
-/// Extensions for a workflow [environment](TakeEnv) allowing to store arbitrary data associated
+/// Extensions for a workflow [environment](TakeHandle) allowing to store arbitrary data associated
 /// with a workflow.
 #[derive(Debug, Default)]
 pub struct EnvExtensions {
@@ -49,7 +49,7 @@ impl EnvExtensions {
     /// # Errors
     ///
     /// Returns an error if the extension data is present, but has an incorrect type
-    /// (not `T::Data`).
+    /// (not `T`).
     pub fn take<T: ExtendEnv>(&mut self, id: &str) -> Result<Option<T>, AccessError> {
         let state = match self.inner.remove(id) {
             Some(state) => state,

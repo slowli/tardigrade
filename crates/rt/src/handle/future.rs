@@ -80,6 +80,37 @@ impl Schedule for AsyncIoScheduler {
 /// This type is used as a type param for the [`TakeHandle`] trait. The returned handles
 /// allow interacting with the workflow (e.g., [send messages](MessageSender) via inbound channels
 /// and [take messages](MessageReceiver) from outbound channels).
+///
+/// # Examples
+///
+/// ```
+/// use async_std::task;
+/// use futures::prelude::*;
+/// use tardigrade::interface::{InboundChannel, OutboundChannel};
+/// use tardigrade_rt::{handle::future::{AsyncEnv, AsyncIoScheduler}, Workflow};
+///
+/// # async fn test_wrapper(workflow: Workflow<()>) -> anyhow::Result<()> {
+/// // Assume we have a dynamically typed workflow:
+/// let workflow: Workflow<()> = // ...
+/// #   workflow;
+/// // First, create an environment to execute the workflow in.
+/// let mut env = AsyncEnv::new(workflow, AsyncIoScheduler);
+/// let mut handle = env.handle();
+/// // Run the environment in a separate task.
+/// task::spawn(async move { env.run().await });
+///
+/// // Let's send a message via an inbound channel...
+/// let message = b"hello".to_vec();
+/// handle[InboundChannel("commands")].send(message).await?;
+///
+/// // ...and wait for some outbound messages
+/// let events = handle[OutboundChannel("events")].by_ref();
+/// let events: Vec<Vec<u8>> = events.take(2).try_collect().await.unwrap();
+/// // ^ `unwrap()` always succeeds because the codec for untyped workflows
+/// // is just an identity.
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug)]
 pub struct AsyncEnv<W> {
     workflow: Workflow<W>,
