@@ -55,6 +55,15 @@ groups of species able to suspend their metabolism for continuous periods
 Newer approaches to process orchestration include
 [Temporal] (an example of code-based workflow definition) and [Netflix Conductor].
 
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE)
+or [MIT license](LICENSE-MIT) at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in `tardigrade` by you, as defined in the Apache-2.0 license,
+shall be dual licensed as above, without any additional terms or conditions.
+
 [Camunda]: https://camunda.com/
 [BPMN]: https://en.wikipedia.org/wiki/Business_Process_Model_and_Notation
 [Temporal]: https://temporal.io/
