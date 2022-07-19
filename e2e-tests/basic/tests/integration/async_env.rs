@@ -16,13 +16,13 @@ use tardigrade_rt::{
     handle::future::{AsyncEnv, AsyncIoScheduler, MessageReceiver, Termination, TracerHandle},
     receipt::{Event, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
     test::MockScheduler,
-    TimerId, Workflow, WorkflowEngine, WorkflowModule,
+    TimerId, Workflow, WorkflowSpawner,
 };
 use tardigrade_test_basic::{
     DomainEvent, Inputs, PizzaDelivery, PizzaDeliveryHandle, PizzaKind, PizzaOrder,
 };
 
-use super::MODULE_BYTES;
+use super::MODULE;
 
 async fn retry_until_some<T>(mut condition: impl FnMut() -> Option<T>) -> T {
     for _ in 0..5 {
@@ -35,15 +35,14 @@ async fn retry_until_some<T>(mut condition: impl FnMut() -> Option<T>) -> T {
 }
 
 async fn test_async_handle(cancel_workflow: bool) -> Result<(), Box<dyn error::Error>> {
-    let module_bytes = task::spawn_blocking(|| &*MODULE_BYTES).await;
-    let engine = WorkflowEngine::default();
-    let module = WorkflowModule::<PizzaDelivery>::new(&engine, module_bytes)?;
+    let module = task::spawn_blocking(|| &*MODULE).await;
+    let spawner = module.for_workflow::<PizzaDelivery>()?;
 
     let inputs = Inputs {
         oven_count: 1,
         deliverer_count: 1,
     };
-    let workflow = Workflow::new(&module, inputs)?.into_inner();
+    let workflow = spawner.spawn(inputs)?.into_inner();
     let mut env = AsyncEnv::new(workflow, AsyncIoScheduler);
     let mut handle = env.handle();
 
@@ -110,14 +109,14 @@ async fn async_handle_with_cancellation() -> Result<(), Box<dyn error::Error>> {
 }
 
 async fn test_async_handle_with_concurrency(
-    module: &WorkflowModule<PizzaDelivery>,
+    spawner: &WorkflowSpawner<PizzaDelivery>,
     inputs: Inputs,
 ) -> Result<(), Box<dyn error::Error>> {
     const ORDER_COUNT: usize = 5;
 
     println!("testing async handle with {:?}", inputs);
 
-    let workflow = Workflow::new(module, inputs)?.into_inner();
+    let workflow = spawner.spawn(inputs)?.into_inner();
     let mut env = AsyncEnv::new(workflow, AsyncIoScheduler);
     let mut handle = env.handle();
     let join_handle = task::spawn(async move { env.run().await });
@@ -152,9 +151,8 @@ async fn test_async_handle_with_concurrency(
 
 #[async_std::test]
 async fn async_handle_with_concurrency() -> Result<(), Box<dyn error::Error>> {
-    let module_bytes = task::spawn_blocking(|| &*MODULE_BYTES).await;
-    let engine = WorkflowEngine::default();
-    let module = WorkflowModule::<PizzaDelivery>::new(&engine, module_bytes)?;
+    let module = task::spawn_blocking(|| &*MODULE).await;
+    let spawner = module.for_workflow::<PizzaDelivery>()?;
 
     let sample_inputs = [
         Inputs {
@@ -184,7 +182,7 @@ async fn async_handle_with_concurrency() -> Result<(), Box<dyn error::Error>> {
     ];
 
     for inputs in sample_inputs {
-        test_async_handle_with_concurrency(&module, inputs).await?;
+        test_async_handle_with_concurrency(&spawner, inputs).await?;
     }
     Ok(())
 }
@@ -227,17 +225,17 @@ struct AsyncRig<S> {
 
 async fn initialize_workflow(
 ) -> Result<AsyncRig<impl Stream<Item = Receipt>>, Box<dyn error::Error>> {
-    let module_bytes = task::spawn_blocking(|| &*MODULE_BYTES).await;
-    let engine = WorkflowEngine::default();
+    let module = task::spawn_blocking(|| &*MODULE).await;
     let scheduler = MockScheduler::default();
-    let module =
-        WorkflowModule::<PizzaDelivery>::new(&engine, module_bytes)?.with_clock(scheduler.clone());
+    let spawner = module
+        .for_workflow::<PizzaDelivery>()?
+        .with_clock(scheduler.clone());
 
     let inputs = Inputs {
         oven_count: 2,
         deliverer_count: 1,
     };
-    let workflow = Workflow::new(&module, inputs)?.into_inner();
+    let workflow = spawner.spawn(inputs)?.into_inner();
     let mut env = AsyncEnv::new(workflow, scheduler.clone());
     let mut handle = env.handle();
     let receipts = env.receipts();
@@ -379,7 +377,7 @@ async fn async_handle_with_mock_scheduler_and_bulk_update() -> Result<(), Box<dy
 
 #[derive(Debug)]
 struct CancellableWorkflow {
-    module: WorkflowModule<PizzaDelivery>,
+    spawner: WorkflowSpawner<PizzaDelivery>,
     handle: PizzaDeliveryHandle<AsyncEnv<PizzaDelivery>>,
     join_handle: task::JoinHandle<Workflow<PizzaDelivery>>,
     scheduler: MockScheduler,
@@ -387,17 +385,17 @@ struct CancellableWorkflow {
 }
 
 async fn spawn_cancellable_workflow() -> Result<CancellableWorkflow, Box<dyn error::Error>> {
-    let module_bytes = task::spawn_blocking(|| &*MODULE_BYTES).await;
-    let engine = WorkflowEngine::default();
+    let module = task::spawn_blocking(|| &*MODULE).await;
     let scheduler = MockScheduler::default();
-    let module =
-        WorkflowModule::<PizzaDelivery>::new(&engine, module_bytes)?.with_clock(scheduler.clone());
+    let spawner = module
+        .for_workflow::<PizzaDelivery>()?
+        .with_clock(scheduler.clone());
 
     let inputs = Inputs {
         oven_count: 1,
         deliverer_count: 1,
     };
-    let workflow = Workflow::new(&module, inputs)?.into_inner();
+    let workflow = spawner.spawn(inputs)?.into_inner();
     let mut env = AsyncEnv::new(workflow, scheduler.clone());
     let handle = env.handle();
 
@@ -410,7 +408,7 @@ async fn spawn_cancellable_workflow() -> Result<CancellableWorkflow, Box<dyn err
     });
 
     Ok(CancellableWorkflow {
-        module,
+        spawner,
         handle,
         join_handle,
         scheduler,
@@ -421,7 +419,7 @@ async fn spawn_cancellable_workflow() -> Result<CancellableWorkflow, Box<dyn err
 #[async_std::test]
 async fn persisting_workflow() -> Result<(), Box<dyn error::Error>> {
     let CancellableWorkflow {
-        module,
+        spawner,
         mut handle,
         join_handle,
         scheduler,
@@ -455,7 +453,7 @@ async fn persisting_workflow() -> Result<(), Box<dyn error::Error>> {
     let persisted = workflow.persist()?;
 
     // Restore the persisted workflow and launch it again.
-    let workflow = persisted.restore(&module)?;
+    let workflow = persisted.restore(&spawner)?;
     let mut env = AsyncEnv::new(workflow, scheduler.clone());
     env.extensions().insert(traced_futures);
     let handle = env.handle();

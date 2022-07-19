@@ -1,7 +1,7 @@
 use assert_matches::assert_matches;
 use once_cell::sync::Lazy;
 
-use std::{error, task::Poll};
+use std::{collections::HashMap, error, task::Poll};
 
 use tardigrade::{
     interface::{InboundChannel, OutboundChannel},
@@ -13,30 +13,46 @@ use tardigrade_rt::{
     handle::WorkflowEnv,
     receipt::{ChannelEvent, ChannelEventKind, Event, ExecutedFunction, WakeUpCause},
     test::{ModuleCompiler, WasmOpt},
-    PersistError, PersistedWorkflow, Workflow, WorkflowEngine, WorkflowModule,
+    PersistError, PersistedWorkflow, WorkflowEngine, WorkflowModule,
 };
 use tardigrade_test_basic::{DomainEvent, Inputs, PizzaDelivery, PizzaKind, PizzaOrder};
 
 mod async_env;
+mod tasks;
 
-static MODULE_BYTES: Lazy<Vec<u8>> = Lazy::new(|| {
-    ModuleCompiler::new(env!("CARGO_PKG_NAME"))
+static MODULE: Lazy<WorkflowModule> = Lazy::new(|| {
+    let module_bytes = ModuleCompiler::new(env!("CARGO_PKG_NAME"))
         .set_current_dir(env!("CARGO_MANIFEST_DIR"))
         .set_profile("wasm")
         .set_wasm_opt(WasmOpt::default())
-        .compile()
+        .compile();
+    let engine = WorkflowEngine::default();
+    WorkflowModule::new(&engine, &module_bytes).unwrap()
 });
 
 #[test]
-fn basic_workflow() -> Result<(), Box<dyn error::Error>> {
-    let engine = WorkflowEngine::default();
-    let module = WorkflowModule::<PizzaDelivery>::new(&engine, &MODULE_BYTES)?;
+fn module_information_is_correct() -> Result<(), Box<dyn error::Error>> {
+    let interfaces: HashMap<_, _> = MODULE.interfaces().collect();
+    assert!(interfaces["PizzaDelivery"]
+        .inbound_channel("orders")
+        .is_some());
+    assert!(interfaces["PizzaDelivery"]
+        .inbound_channel("baking_responses")
+        .is_none());
+    assert!(interfaces["PizzaDeliveryWithTasks"]
+        .inbound_channel("baking_responses")
+        .is_some());
+    Ok(())
+}
 
+#[test]
+fn basic_workflow() -> Result<(), Box<dyn error::Error>> {
+    let spawner = MODULE.for_workflow::<PizzaDelivery>()?;
     let inputs = Inputs {
         oven_count: 1,
         deliverer_count: 1,
     };
-    let receipt = Workflow::new(&module, inputs)?;
+    let receipt = spawner.spawn(inputs)?;
 
     assert_eq!(receipt.executions().len(), 1);
     let execution = &receipt.executions()[0];
@@ -112,14 +128,12 @@ fn basic_workflow() -> Result<(), Box<dyn error::Error>> {
 
 #[test]
 fn workflow_with_concurrency() -> Result<(), Box<dyn error::Error>> {
-    let engine = WorkflowEngine::default();
-    let module = WorkflowModule::<PizzaDelivery>::new(&engine, &MODULE_BYTES)?;
-
+    let spawner = MODULE.for_workflow::<PizzaDelivery>()?;
     let inputs = Inputs {
         oven_count: 2,
         deliverer_count: 1,
     };
-    let mut workflow = Workflow::new(&module, inputs)?.into_inner();
+    let mut workflow = spawner.spawn(inputs)?.into_inner();
     let mut handle = WorkflowEnv::new(&mut workflow).handle();
 
     let order = PizzaOrder {
@@ -153,14 +167,12 @@ fn workflow_with_concurrency() -> Result<(), Box<dyn error::Error>> {
 
 #[test]
 fn restoring_workflow() -> Result<(), Box<dyn error::Error>> {
-    let engine = WorkflowEngine::default();
-    let module = WorkflowModule::<PizzaDelivery>::new(&engine, &MODULE_BYTES)?;
-
+    let spawner = MODULE.for_workflow::<PizzaDelivery>()?;
     let inputs = Inputs {
         oven_count: 1,
         deliverer_count: 1,
     };
-    let mut workflow = Workflow::new(&module, inputs)?.into_inner();
+    let mut workflow = spawner.spawn(inputs)?.into_inner();
     let mut handle = WorkflowEnv::new(&mut workflow).handle();
 
     let order = PizzaOrder {
@@ -191,7 +203,7 @@ fn restoring_workflow() -> Result<(), Box<dyn error::Error>> {
     assert!(persisted_json.len() < 5_000, "{}", persisted_json);
     let persisted: PersistedWorkflow = serde_json::from_str(&persisted_json)?;
 
-    let mut workflow = persisted.restore(&module)?;
+    let mut workflow = persisted.restore(&spawner)?;
     let mut env = WorkflowEnv::new(&mut workflow);
     env.extensions().insert(traced_futures);
     let mut handle = env.handle();
@@ -228,10 +240,9 @@ fn restoring_workflow() -> Result<(), Box<dyn error::Error>> {
 
 #[test]
 fn untyped_workflow() -> Result<(), Box<dyn error::Error>> {
-    let engine = WorkflowEngine::default();
-    let module = WorkflowModule::<()>::new(&engine, &MODULE_BYTES)?;
+    let spawner = MODULE.for_untyped_workflow("PizzaDelivery").unwrap();
 
-    let mut builder = InputsBuilder::new(module.interface());
+    let mut builder = InputsBuilder::new(spawner.interface());
     builder.insert(
         "inputs",
         Json.encode_value(Inputs {
@@ -239,7 +250,7 @@ fn untyped_workflow() -> Result<(), Box<dyn error::Error>> {
             deliverer_count: 1,
         }),
     );
-    let receipt = Workflow::new(&module, builder.build())?;
+    let receipt = spawner.spawn(builder.build())?;
 
     assert_eq!(receipt.executions().len(), 1);
     let mut workflow = receipt.into_inner();
@@ -272,10 +283,9 @@ fn untyped_workflow() -> Result<(), Box<dyn error::Error>> {
 fn workflow_recovery_after_trap() -> Result<(), Box<dyn error::Error>> {
     const SAMPLES: usize = 5;
 
-    let engine = WorkflowEngine::default();
-    let module = WorkflowModule::<()>::new(&engine, &MODULE_BYTES)?;
+    let spawner = MODULE.for_untyped_workflow("PizzaDelivery").unwrap();
 
-    let mut builder = InputsBuilder::new(module.interface());
+    let mut builder = InputsBuilder::new(spawner.interface());
     builder.insert(
         "inputs",
         Json.encode_value(Inputs {
@@ -283,7 +293,7 @@ fn workflow_recovery_after_trap() -> Result<(), Box<dyn error::Error>> {
             deliverer_count: 1,
         }),
     );
-    let mut workflow = Workflow::new(&module, builder.build())?.into_inner();
+    let mut workflow = spawner.spawn(builder.build())?.into_inner();
 
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,

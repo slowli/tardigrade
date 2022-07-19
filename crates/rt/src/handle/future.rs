@@ -166,6 +166,9 @@ impl<W> AsyncEnv<W> {
 
         // First, flush all outbound messages (synchronous and cheap).
         self.flush_outbound_messages()?;
+        if self.workflow.is_finished() {
+            return Ok(Some(Termination::Finished));
+        }
 
         // Determine external events listened by the workflow.
         let events = self.workflow.listened_events();

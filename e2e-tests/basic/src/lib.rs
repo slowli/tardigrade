@@ -14,6 +14,7 @@ use tardigrade::{
     Data, FutureExt as _, Json,
 };
 
+pub mod tasks;
 #[cfg(test)]
 mod tests;
 
@@ -25,7 +26,7 @@ pub enum PizzaKind {
 }
 
 impl PizzaKind {
-    fn baking_time(self) -> Duration {
+    pub fn baking_time(self) -> Duration {
         Duration::from_millis(match self {
             Self::Pepperoni => 50,
             Self::Margherita => 75,

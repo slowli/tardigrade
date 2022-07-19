@@ -1,0 +1,28 @@
+{
+  "v": 0,
+  "in": {
+    "orders": {
+      "description": "New pizza orders go here"
+    },
+    "baking_responses": {
+      "description": "Responses for `baking_tasks`"
+    }
+  },
+  "out": {
+    "events": {
+      "description": "Domain events emitted during pizza order lifecycle"
+    },
+    "baking_tasks": {
+      "description": "Tasks to bake pizzas"
+    },
+    "traces": {
+      "capacity": null,
+      "description": "Structured logs for traced futures"
+    }
+  },
+  "data": {
+    "inputs": {
+      "description": "Configuration, such as the number of ovens"
+    }
+  }
+}

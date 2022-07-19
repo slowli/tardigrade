@@ -222,7 +222,7 @@ impl<W> Workflow<W> {
             poll_result: Poll::Pending,
         };
         let poll_result = self.execute(function, receipt);
-        crate::log_result!(poll_result, "Finished polling task {}", task_id).map(drop)
+        crate::log_result!(poll_result, "Finished polling task {}", task_id)
     }
 
     fn wake_tasks(&mut self, receipt: &mut Receipt) -> Result<(), Trap> {
