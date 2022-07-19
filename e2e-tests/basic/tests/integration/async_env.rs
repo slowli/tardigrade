@@ -10,8 +10,12 @@ use futures::{
 
 use std::{error, time::Duration};
 
-use tardigrade::trace::FutureState;
-use tardigrade::Json;
+use tardigrade::{
+    interface::{InboundChannel, OutboundChannel},
+    trace::FutureState,
+    workflow::InputsBuilder,
+    Decoder, Encoder, Json,
+};
 use tardigrade_rt::{
     handle::future::{AsyncEnv, AsyncIoScheduler, MessageReceiver, Termination, TracerHandle},
     receipt::{Event, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
@@ -475,5 +479,51 @@ async fn persisting_workflow() -> Result<(), Box<dyn error::Error>> {
         .iter()
         .all(|(_, fut)| fut.state() == FutureState::Dropped));
 
+    Ok(())
+}
+
+#[async_std::test]
+async fn dynamically_typed_async_handle() -> Result<(), Box<dyn error::Error>> {
+    let module = task::spawn_blocking(|| &*MODULE).await;
+    let spawner = module.for_untyped_workflow("PizzaDelivery").unwrap();
+    let mut builder = InputsBuilder::new(spawner.interface());
+    builder.insert(
+        "inputs",
+        Json.encode_value(Inputs {
+            oven_count: 1,
+            deliverer_count: 1,
+        }),
+    );
+    let workflow = spawner.spawn(builder.build())?.into_inner();
+
+    let mut env = AsyncEnv::new(workflow, AsyncIoScheduler);
+    let mut handle = env.handle();
+    let join_handle = task::spawn(async move { env.run().await });
+
+    let order = PizzaOrder {
+        kind: PizzaKind::Pepperoni,
+        delivery_distance: 10,
+    };
+    handle[InboundChannel("orders")]
+        .send(Json.encode_value(order))
+        .await?;
+    handle.remove(InboundChannel("orders")); // to terminate the workflow
+
+    let events = handle[OutboundChannel("events")].by_ref();
+    let events: Vec<DomainEvent> = events
+        .map(|res| Json.try_decode_bytes(res.unwrap()))
+        .try_collect()
+        .await?;
+    assert_matches!(
+        events.as_slice(),
+        [
+            DomainEvent::OrderTaken { .. },
+            DomainEvent::Baked { .. },
+            DomainEvent::StartedDelivering { .. },
+            DomainEvent::Delivered { .. },
+        ]
+    );
+
+    join_handle.await?;
     Ok(())
 }

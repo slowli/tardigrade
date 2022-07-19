@@ -287,6 +287,22 @@ where
     }
 }
 
+impl<Env> UntypedHandle<Env>
+where
+    RawData: TakeHandle<Env, Id = str>,
+    RawReceiver: TakeHandle<Env, Id = str>,
+    RawSender: TakeHandle<Env, Id = str>,
+{
+    /// Removes an element with the specified index from this handle. Returns `None` if
+    /// the element is not present in the handle.
+    pub fn remove<I>(&mut self, index: I) -> Option<I::Output>
+    where
+        I: UntypedHandleIndex<Env>,
+    {
+        index.remove_from(self)
+    }
+}
+
 impl<Env> TakeHandle<Env> for UntypedHandle<Env>
 where
     RawData: TakeHandle<Env, Id = str>,
@@ -321,86 +337,81 @@ where
     }
 }
 
-impl<Env> ops::Index<DataInput<'_>> for UntypedHandle<Env>
+/// Types that can be used for indexing [`UntypedHandle`].
+pub trait UntypedHandleIndex<Env>: Copy + fmt::Display
 where
     RawData: TakeHandle<Env, Id = str>,
     RawReceiver: TakeHandle<Env, Id = str>,
     RawSender: TakeHandle<Env, Id = str>,
 {
-    type Output = <RawData as TakeHandle<Env>>::Handle;
+    /// Output type for the indexing operation.
+    type Output;
 
-    fn index(&self, index: DataInput<'_>) -> &Self::Output {
-        self.data_inputs
-            .get(index.0)
+    #[doc(hidden)]
+    fn get_from(self, handle: &UntypedHandle<Env>) -> Option<&Self::Output>;
+
+    #[doc(hidden)]
+    fn get_mut_from(self, handle: &mut UntypedHandle<Env>) -> Option<&mut Self::Output>;
+
+    #[doc(hidden)]
+    fn remove_from(self, handle: &mut UntypedHandle<Env>) -> Option<Self::Output>;
+}
+
+macro_rules! impl_index {
+    ($target:ty => $raw:ty, $field:ident) => {
+        impl<Env> UntypedHandleIndex<Env> for $target
+        where
+            RawData: TakeHandle<Env, Id = str>,
+            RawReceiver: TakeHandle<Env, Id = str>,
+            RawSender: TakeHandle<Env, Id = str>,
+        {
+            type Output = <$raw as TakeHandle<Env>>::Handle;
+
+            fn get_from(self, handle: &UntypedHandle<Env>) -> Option<&Self::Output> {
+                handle.$field.get(self.0)
+            }
+
+            fn get_mut_from(self, handle: &mut UntypedHandle<Env>) -> Option<&mut Self::Output> {
+                handle.$field.get_mut(self.0)
+            }
+
+            fn remove_from(self, handle: &mut UntypedHandle<Env>) -> Option<Self::Output> {
+                handle.$field.remove(self.0)
+            }
+        }
+    };
+}
+
+impl_index!(DataInput<'_> => RawData, data_inputs);
+impl_index!(InboundChannel<'_> => RawReceiver, inbound_channels);
+impl_index!(OutboundChannel<'_> => RawSender, outbound_channels);
+
+impl<Env, I> ops::Index<I> for UntypedHandle<Env>
+where
+    I: UntypedHandleIndex<Env>,
+    RawData: TakeHandle<Env, Id = str>,
+    RawReceiver: TakeHandle<Env, Id = str>,
+    RawSender: TakeHandle<Env, Id = str>,
+{
+    type Output = I::Output;
+
+    fn index(&self, index: I) -> &Self::Output {
+        index
+            .get_from(self)
             .unwrap_or_else(|| panic!("{} is not defined", index))
     }
 }
 
-impl<Env> ops::IndexMut<DataInput<'_>> for UntypedHandle<Env>
+impl<Env, I> ops::IndexMut<I> for UntypedHandle<Env>
 where
+    I: UntypedHandleIndex<Env>,
     RawData: TakeHandle<Env, Id = str>,
     RawReceiver: TakeHandle<Env, Id = str>,
     RawSender: TakeHandle<Env, Id = str>,
 {
-    fn index_mut(&mut self, index: DataInput<'_>) -> &mut Self::Output {
-        self.data_inputs
-            .get_mut(index.0)
-            .unwrap_or_else(|| panic!("{} is not defined", index))
-    }
-}
-
-impl<Env> ops::Index<InboundChannel<'_>> for UntypedHandle<Env>
-where
-    RawData: TakeHandle<Env, Id = str>,
-    RawReceiver: TakeHandle<Env, Id = str>,
-    RawSender: TakeHandle<Env, Id = str>,
-{
-    type Output = <RawReceiver as TakeHandle<Env>>::Handle;
-
-    fn index(&self, index: InboundChannel<'_>) -> &Self::Output {
-        self.inbound_channels
-            .get(index.0)
-            .unwrap_or_else(|| panic!("{} is not defined", index))
-    }
-}
-
-impl<Env> ops::IndexMut<InboundChannel<'_>> for UntypedHandle<Env>
-where
-    RawData: TakeHandle<Env, Id = str>,
-    RawReceiver: TakeHandle<Env, Id = str>,
-    RawSender: TakeHandle<Env, Id = str>,
-{
-    fn index_mut(&mut self, index: InboundChannel<'_>) -> &mut Self::Output {
-        self.inbound_channels
-            .get_mut(index.0)
-            .unwrap_or_else(|| panic!("{} is not defined", index))
-    }
-}
-
-impl<Env> ops::Index<OutboundChannel<'_>> for UntypedHandle<Env>
-where
-    RawData: TakeHandle<Env, Id = str>,
-    RawReceiver: TakeHandle<Env, Id = str>,
-    RawSender: TakeHandle<Env, Id = str>,
-{
-    type Output = <RawSender as TakeHandle<Env>>::Handle;
-
-    fn index(&self, index: OutboundChannel<'_>) -> &Self::Output {
-        self.outbound_channels
-            .get(index.0)
-            .unwrap_or_else(|| panic!("{} is not defined", index))
-    }
-}
-
-impl<Env> ops::IndexMut<OutboundChannel<'_>> for UntypedHandle<Env>
-where
-    RawData: TakeHandle<Env, Id = str>,
-    RawReceiver: TakeHandle<Env, Id = str>,
-    RawSender: TakeHandle<Env, Id = str>,
-{
-    fn index_mut(&mut self, index: OutboundChannel<'_>) -> &mut Self::Output {
-        self.outbound_channels
-            .get_mut(index.0)
+    fn index_mut(&mut self, index: I) -> &mut Self::Output {
+        index
+            .get_mut_from(self)
             .unwrap_or_else(|| panic!("{} is not defined", index))
     }
 }

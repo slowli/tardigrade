@@ -22,9 +22,11 @@ use crate::{
 };
 use tardigrade::{
     channel::{Receiver, Sender},
-    interface::{AccessError, AccessErrorKind, DataInput, InboundChannel, OutboundChannel},
+    interface::{
+        AccessError, AccessErrorKind, DataInput, InboundChannel, Interface, OutboundChannel,
+    },
     trace::{FutureUpdate, TracedFuture, TracedFutures, Tracer},
-    workflow::TakeHandle,
+    workflow::{TakeHandle, UntypedHandle},
     Data, Decoder, Encoder,
 };
 
@@ -460,5 +462,23 @@ impl<C: Decoder<FutureUpdate> + Default, W> TakeHandle<AsyncEnv<W>> for Tracer<C
             channel_name: id.to_owned(),
             futures: Self::take_handle(&mut env.extensions, id)?,
         })
+    }
+}
+
+impl<'a> TakeHandle<AsyncEnv<()>> for Interface<()> {
+    type Id = ();
+    type Handle = Self;
+
+    fn take_handle(env: &mut AsyncEnv<()>, _id: &Self::Id) -> Result<Self::Handle, AccessError> {
+        Ok(env.workflow.interface().clone())
+    }
+}
+
+impl TakeHandle<AsyncEnv<()>> for () {
+    type Id = ();
+    type Handle = UntypedHandle<AsyncEnv<()>>;
+
+    fn take_handle(env: &mut AsyncEnv<()>, _id: &Self::Id) -> Result<Self::Handle, AccessError> {
+        UntypedHandle::take_handle(env, &())
     }
 }
