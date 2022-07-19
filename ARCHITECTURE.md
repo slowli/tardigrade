@@ -55,6 +55,7 @@ In addition to imports / exports, a workflow module also defines a workflow inte
 (e.g., names, description and specs for inputs and channels). It is serialized
 as JSON in a custom WASM section, similar to how it is done in `wasm-bindgen`.
 
+[BPMN]: https://en.wikipedia.org/wiki/Business_Process_Model_and_Notation
 [`Stream`]: https://docs.rs/futures/latest/futures/stream/trait.Stream.html
 [`Sink`]: https://docs.rs/futures/latest/futures/sink/trait.Sink.html
 [`Waker`]: https://doc.rust-lang.org/std/task/struct.Waker.html

@@ -1,5 +1,9 @@
 # Tardigrade: Derive Macros
 
+[![Build Status](https://github.com/slowli/tardigrade/workflows/CI/badge.svg?branch=main)](https://github.com/slowli/tardigrade/actions)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%2FApache--2.0-blue)](https://github.com/slowli/tardigrade#license)
+![rust 1.59+ required](https://img.shields.io/badge/rust-1.59+-blue.svg?label=Required%20Rust)
+
 This crate provides procedural macros for [`tardigrade`] allowing
 to simplify workflow definition.
 

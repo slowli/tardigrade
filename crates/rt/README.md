@@ -1,5 +1,12 @@
 # Tardigrade: Workflow Runtime
 
+[![Build Status](https://github.com/slowli/tardigrade/workflows/CI/badge.svg?branch=main)](https://github.com/slowli/tardigrade/actions)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%2FApache--2.0-blue)](https://github.com/slowli/tardigrade#license)
+![rust 1.59+ required](https://img.shields.io/badge/rust-1.59+-blue.svg?label=Required%20Rust)
+
+**Documentation:**
+[![crate docs (main)](https://img.shields.io/badge/main-yellow.svg?label=docs)](https://slowli.github.io/tardigrade/tardigrade_rt/)
+
 This crate provides a specialized runtime for [`tardigrade`] workflows.
 Workflow modules can be run either using a high-level async interface,
 or a lower-level sync API; the latter could be useful for greater control
