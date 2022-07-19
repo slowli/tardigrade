@@ -497,7 +497,7 @@ impl<C: Decoder<FutureUpdate> + Default, W> TakeHandle<AsyncEnv<W>> for Tracer<C
     }
 }
 
-impl<'a> TakeHandle<AsyncEnv<()>> for Interface<()> {
+impl TakeHandle<AsyncEnv<()>> for Interface<()> {
     type Id = ();
     type Handle = Self;
 
