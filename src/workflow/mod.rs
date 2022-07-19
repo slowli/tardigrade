@@ -96,6 +96,7 @@ pub use self::{
 ///
 /// [`GetInterface`]: trait@GetInterface
 #[cfg(feature = "derive")]
+#[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
 pub use tardigrade_derive::GetInterface;
 use tardigrade_shared::interface::ValidateInterface;
 

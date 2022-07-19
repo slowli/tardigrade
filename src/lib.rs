@@ -33,8 +33,23 @@
 //! [`Future`]: std::future::Future
 //! [future-chan]: https://docs.rs/futures/latest/futures/channel/index.html
 //! [`Interface`]: crate::interface::Interface
+//!
+//! # Crate features
+//!
+//! ## `serde_json`
+//!
+//! *(On by default)*
+//!
+//! Exposes [`Json`] [codec](crate::Encoder) for messages received by a workflow.
+//!
+//! ## `derive`
+//!
+//! *(Off by default)*
+//!
+//! Re-exports procedural macros from the `tardigrade-derive` crate.
 
 // Documentation settings.
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![doc(html_root_url = "https://docs.rs/tardigrade/0.1.0")]
 // Linter settings.
 #![warn(missing_debug_implementations, missing_docs, bare_trait_objects)]
@@ -110,6 +125,7 @@ pub use crate::{
 /// [`TakeHandle`]: crate::workflow::TakeHandle
 /// [`ValidateInterface`]: crate::interface::ValidateInterface
 #[cfg(feature = "derive")]
+#[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
 pub use tardigrade_derive::handle;
 
 /// Proc macro attribute for workflow initializers.
@@ -183,6 +199,7 @@ pub use tardigrade_derive::handle;
 /// [`Init`]: crate::workflow::Init
 /// [`Initialize`]: crate::workflow::Initialize
 #[cfg(feature = "derive")]
+#[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
 pub use tardigrade_derive::init;
 
 pub use tardigrade_shared::interface;

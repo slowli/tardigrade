@@ -50,6 +50,7 @@ impl fmt::Debug for dyn Schedule {
 /// [`async-io`]: https://docs.rs/async-io/
 /// [`async-std`]: https://docs.rs/async-std/
 #[cfg(feature = "async-io")]
+#[cfg_attr(docsrs, doc(cfg(feature = "async-io")))]
 #[derive(Debug)]
 pub struct AsyncIoScheduler;
 

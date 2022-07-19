@@ -59,6 +59,7 @@ mod json {
 
     /// JSON codec.
     #[derive(Debug, Clone, Copy, Default)]
+    #[cfg_attr(docsrs, doc(cfg(feature = "serde_json")))]
     pub struct Json;
 
     /// Panics if the value cannot be serialized. Serialization errors are usually confined

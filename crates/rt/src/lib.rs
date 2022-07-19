@@ -17,6 +17,37 @@
 //!   from the module. A spawner can be obtained from [`WorkflowModule`].
 //! 4. [`Workflow`] is an instance of a workflow. It can be created from a [`WorkflowSpawner`].
 //!
+//! [`wasmtime`]: https://docs.rs/wasmtime/latest/wasmtime/
+//! [`WorkflowHandle`]: crate::handle::WorkflowHandle
+//! [`AsyncEnv`]: crate::handle::future::AsyncEnv
+//!
+//! # Crate features
+//!
+//! ## `async`
+//!
+//! *(Off by default)*
+//!
+//! Exposes async handles for [`Workflow`]s in the [`handle::future`] module.
+//!
+//! ## `async-io`
+//!
+//! *(Off by default)*
+//!
+//! Implements [`Schedule`] trait, necessary to instantiate async workflow handles,
+//! using the [`async-io`] crate. Requires the `async` feature.
+//!
+//! ## `log`
+//!
+//! *(Off by default)*
+//!
+//! Enables logging some tracing information during workflow execution using
+//! [the eponymous crate][`log`]. The information is logged to the `tardigrade_rt` logger,
+//! mostly using `TRACE` level.
+//!
+//! [`Schedule`]: crate::handle::future::Schedule
+//! [`async-io`]: https://docs.rs/async-io/
+//! [`log`]: https://docs.rs/log/
+//!
 //! # Examples
 //!
 //! ## Instantiating workflow
@@ -76,12 +107,9 @@
 //! # Ok(())
 //! # }
 //! ```
-//!
-//! [`wasmtime`]: https://docs.rs/wasmtime/latest/wasmtime/
-//! [`WorkflowHandle`]: crate::handle::WorkflowHandle
-//! [`AsyncEnv`]: crate::handle::future::AsyncEnv
 
 // Documentation settings.
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![doc(html_root_url = "https://docs.rs/tardigrade-rt/0.1.0")]
 // Linter settings.
 #![warn(missing_debug_implementations, missing_docs, bare_trait_objects)]

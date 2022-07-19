@@ -14,6 +14,7 @@ use anyhow::Context;
 use std::{cell::RefCell, fmt, marker::PhantomData, ops::Range, rc::Rc};
 
 #[cfg(feature = "async")]
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 pub mod future;
 
 use crate::{
