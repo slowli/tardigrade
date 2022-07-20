@@ -1,27 +1,15 @@
-use mimicry::{Answers, CallReal, Mock, MockGuard, Mut};
-use wasmtime::MemoryType;
+//! Mocks for `WorkflowModule`s.
 
-use std::collections::{HashMap, HashSet};
+use mimicry::{Answers, CallReal, Mock, MockGuard, Mut};
+use wasmtime::{StoreContextMut, Trap};
+
+use std::{
+    collections::{HashMap, HashSet},
+    task::Poll,
+};
 
 use super::*;
-
-#[test]
-fn import_checks_are_consistent() {
-    let interface = Interface::default();
-    let state = WorkflowData::from_interface(interface, HashMap::new(), Arc::new(Utc::now));
-    let engine = Engine::default();
-    let mut store = Store::new(&engine, state);
-    let mut linker = Linker::new(&engine);
-
-    WorkflowFunctions
-        .extend_linker(&mut store, &mut linker)
-        .unwrap();
-    let linker_contents: Vec<_> = linker.iter(&mut store).collect();
-    for (module, name, value) in linker_contents {
-        assert_eq!(module, ModuleImports::RT_MODULE);
-        ModuleImports::validate_import(&value.ty(&store), name).unwrap();
-    }
-}
+use crate::{module::WorkflowModule, TaskId, WakerId};
 
 const INTERFACE: &[u8] = br#"{
     "v": 0,
@@ -39,8 +27,8 @@ pub(crate) struct ExportsMock {
     pub next_waker: WakerId,
     pub consumed_wakers: HashSet<WakerId>,
     pub dropped_tasks: HashSet<TaskId>,
-    heap_pos: u32,
-    poll_fns: Answers<MockPollFn>,
+    pub heap_pos: u32,
+    pub poll_fns: Answers<MockPollFn>,
 }
 
 #[allow(clippy::unnecessary_wraps)] // required by mock interface
@@ -73,116 +61,6 @@ impl ExportsMock {
         _: &Module,
         _: &HashMap<String, Interface<()>>,
     ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    pub(super) fn mock_new(
-        this: &Mut<Self>,
-        store: &mut Store<WorkflowData>,
-        _: &Instance,
-        _: &str,
-    ) -> ModuleExports {
-        assert!(!this.borrow().exports_created);
-        this.borrow().exports_created = true;
-
-        let memory = Memory::new(&mut *store, MemoryType::new(1, None)).unwrap();
-        // These functions are never called (we mock their calls), so we use
-        // the simplest implementations possible.
-        ModuleExports {
-            memory,
-            data_location: None,
-            create_main_task: Func::wrap(&mut *store, || 0_u64).typed(&*store).unwrap(),
-            poll_task: Func::wrap(&mut *store, |_: TaskId, _: TaskId| 0_i32)
-                .typed(&*store)
-                .unwrap(),
-            drop_task: Func::wrap(&mut *store, drop::<TaskId>)
-                .typed(&*store)
-                .unwrap(),
-            alloc_bytes: Func::wrap(&mut *store, |_: u32| 0_u32)
-                .typed(&*store)
-                .unwrap(),
-            create_waker: Func::wrap(&mut *store, |_: WasmContextPtr| 0_u64)
-                .typed(&*store)
-                .unwrap(),
-            wake_waker: Func::wrap(&mut *store, drop::<WakerId>)
-                .typed(&*store)
-                .unwrap(),
-        }
-    }
-
-    pub(super) fn create_main_task(
-        _: &Mut<Self>,
-        _: &ModuleExports,
-        _: StoreContextMut<'_, WorkflowData>,
-    ) -> Result<TaskId, Trap> {
-        Ok(0)
-    }
-
-    pub(super) fn poll_task(
-        this: &Mut<Self>,
-        _: &ModuleExports,
-        ctx: StoreContextMut<'_, WorkflowData>,
-        task_id: TaskId,
-    ) -> Result<Poll<()>, Trap> {
-        if task_id == 0 {
-            let poll_fn = this.borrow().poll_fns.next_for(());
-            poll_fn(ctx)
-        } else {
-            Ok(Poll::Pending)
-        }
-    }
-
-    pub(super) fn drop_task(
-        this: &Mut<Self>,
-        _: &ModuleExports,
-        _: StoreContextMut<'_, WorkflowData>,
-        task_id: TaskId,
-    ) -> Result<(), Trap> {
-        assert!(
-            this.borrow().dropped_tasks.insert(task_id),
-            "task {} dropped twice",
-            task_id
-        );
-        Ok(())
-    }
-
-    pub(super) fn alloc_bytes(
-        this: &Mut<Self>,
-        _: &ModuleExports,
-        _: StoreContextMut<'_, WorkflowData>,
-        capacity: u32,
-    ) -> Result<u32, Trap> {
-        let ptr = this.borrow().heap_pos;
-        this.borrow().heap_pos += capacity;
-        Ok(ptr)
-    }
-
-    pub(super) fn create_waker(
-        this: &Mut<Self>,
-        _: &ModuleExports,
-        _: StoreContextMut<'_, WorkflowData>,
-        _: WasmContextPtr,
-    ) -> Result<WakerId, Trap> {
-        let mut this = this.borrow();
-        let next_waker = this.next_waker;
-        this.next_waker += 1;
-        Ok(next_waker)
-    }
-
-    pub(super) fn wake_waker(
-        this: &Mut<Self>,
-        _: &ModuleExports,
-        ctx: StoreContextMut<'_, WorkflowData>,
-        waker_id: WakerId,
-    ) -> Result<(), Trap> {
-        let mut this = this.borrow();
-        assert!(waker_id < this.next_waker);
-        assert!(
-            this.consumed_wakers.insert(waker_id),
-            "waker {} consumed twice",
-            waker_id
-        );
-        WorkflowFunctions::wake_task(ctx, 0).unwrap();
         Ok(())
     }
 }

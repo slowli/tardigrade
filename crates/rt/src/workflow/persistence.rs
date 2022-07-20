@@ -137,7 +137,7 @@ impl PersistedWorkflow {
         let interface = spawner.interface().clone().erase();
         let data = self
             .state
-            .restore(interface, spawner.clone_clock())
+            .restore(interface, spawner.services.clone())
             .context("failed restoring workflow state")?;
         let mut workflow = Workflow::from_state(spawner, data)?;
         self.memory.restore(&mut workflow)?;

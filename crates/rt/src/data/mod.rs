@@ -2,10 +2,7 @@
 
 use wasmtime::{StoreContextMut, Trap};
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::collections::{HashMap, HashSet};
 
 mod channel;
 mod helpers;
@@ -28,7 +25,7 @@ use self::{
     time::Timers,
 };
 use crate::{
-    module::{Clock, ModuleExports},
+    module::{ModuleExports, Services},
     receipt::{PanicInfo, PanicLocation, WakeUpCause},
     utils::{copy_string_from_wasm, WasmAllocator},
     TaskId,
@@ -46,7 +43,7 @@ pub struct WorkflowData {
     outbound_channels: HashMap<String, OutboundChannelState>,
     data_inputs: HashMap<String, Message>,
     timers: Timers,
-    clock: Arc<dyn Clock>,
+    services: Services,
     /// All tasks together with relevant info.
     tasks: HashMap<TaskId, TaskState>,
     /// Data related to the currently executing WASM call.
@@ -63,7 +60,7 @@ impl WorkflowData {
     pub(crate) fn from_interface(
         interface: Interface<()>,
         data_inputs: HashMap<String, Vec<u8>>,
-        clock: Arc<dyn Clock>,
+        services: Services,
     ) -> Self {
         // Sanity-check correspondence of inputs to the interface.
         debug_assert_eq!(
@@ -97,7 +94,7 @@ impl WorkflowData {
             outbound_channels,
             data_inputs,
             timers: Timers::new(),
-            clock,
+            services,
             tasks: HashMap::new(),
             current_execution: None,
             task_queue: TaskQueue::default(),

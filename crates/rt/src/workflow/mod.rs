@@ -71,7 +71,7 @@ impl<W: Initialize<Id = ()>> WorkflowSpawner<W> {
         let state = WorkflowData::from_interface(
             self.interface().clone().erase(),
             raw_inputs.into_inner(),
-            self.clone_clock(),
+            self.services.clone(),
         );
         let mut this = Workflow::from_state(self, state)?;
         this.spawn_main_task()

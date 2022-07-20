@@ -1,27 +1,25 @@
-//! Module utils.
+//! `WorkflowModule`, `WorkflowSpawner` and closely related types.
 
 use anyhow::{anyhow, bail, ensure, Context};
-use chrono::{DateTime, Utc};
 use once_cell::sync::OnceCell;
-use wasmtime::{
-    AsContextMut, Caller, Engine, ExternType, Func, Instance, Linker, Memory, Module, Store,
-    StoreContextMut, Trap, TypedFunc, WasmParams, WasmResults, WasmRet, WasmTy,
-};
+use wasmtime::{Engine, ExternType, Func, Linker, Module, Store, WasmParams, WasmResults};
 
-use std::{collections::HashMap, fmt, str, sync::Arc, task::Poll};
+use std::{collections::HashMap, fmt, str, sync::Arc};
 
+use crate::data::{WorkflowData, WorkflowFunctions};
+use tardigrade::{interface::Interface, workflow::GetInterface};
+
+mod exports;
+mod imports;
+mod services;
 #[cfg(test)]
 mod tests;
+
+use self::imports::ModuleImports;
+pub use self::services::Clock;
 #[cfg(test)]
 pub(crate) use self::tests::{ExportsMock, MockPollFn};
-
-use crate::{
-    data::{WasmContextPtr, WorkflowData, WorkflowFunctions},
-    TaskId, TimerId, WakerId,
-};
-use tardigrade::interface::Interface;
-use tardigrade::workflow::GetInterface;
-use tardigrade_shared::abi::TryFromWasm;
+pub(crate) use self::{exports::ModuleExports, services::Services};
 
 fn ensure_func_ty<Args, Out>(ty: &ExternType, fn_name: &str) -> anyhow::Result<()>
 where
@@ -67,29 +65,6 @@ impl<T: ExtendLinker> LowLevelExtendLinker for T {
             linker.define(Self::MODULE_NAME, name, function)?;
         }
         Ok(())
-    }
-}
-
-/// Wall clock.
-pub trait Clock: Send + Sync + 'static {
-    /// Returns the current timestamp. This is used in [`Workflow`]s when creating new timers.
-    ///
-    /// [`Workflow`]: crate::Workflow
-    fn now(&self) -> DateTime<Utc>;
-}
-
-impl<F> Clock for F
-where
-    F: Fn() -> DateTime<Utc> + Send + Sync + 'static,
-{
-    fn now(&self) -> DateTime<Utc> {
-        self()
-    }
-}
-
-impl fmt::Debug for dyn Clock {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_struct("Clock").finish_non_exhaustive()
     }
 }
 
@@ -160,7 +135,7 @@ impl fmt::Debug for WorkflowModule {
 }
 
 impl WorkflowModule {
-    #[cfg_attr(test, mimicry::mock(using = "tests::ExportsMock"))]
+    #[cfg_attr(test, mimicry::mock(using = "ExportsMock"))]
     fn interfaces_from_wasm(module_bytes: &[u8]) -> anyhow::Result<HashMap<String, Interface<()>>> {
         const INTERFACE_SECTION: &str = "__tardigrade_spec";
         const CUSTOM_SECTION_TYPE: u8 = 0;
@@ -249,7 +224,7 @@ impl WorkflowModule {
         Ok(())
     }
 
-    #[cfg_attr(test, mimicry::mock(using = "tests::ExportsMock"))]
+    #[cfg_attr(test, mimicry::mock(using = "ExportsMock"))]
     fn validate_module(
         module: &Module,
         workflows: &HashMap<String, Interface<()>>,
@@ -335,9 +310,9 @@ impl WorkflowModule {
 /// [`WorkflowModule::for_untyped_workflow`].
 pub struct WorkflowSpawner<W> {
     pub(crate) module: Module,
+    pub(crate) services: Services,
     interface: Interface<W>,
     workflow_name: String,
-    clock: Arc<dyn Clock>,
     linker_extensions: Vec<Box<dyn LowLevelExtendLinker>>,
     data_section: OnceCell<Arc<DataSection>>,
 }
@@ -359,7 +334,7 @@ impl<W> WorkflowSpawner<W> {
             module,
             interface,
             workflow_name: workflow_name.to_owned(),
-            clock: Arc::new(Utc::now),
+            services: Services::default(),
             linker_extensions: vec![Box::new(WorkflowFunctions)],
             data_section: OnceCell::new(),
         }
@@ -413,310 +388,7 @@ impl<W> WorkflowSpawner<W> {
     /// [`Workflow`]: crate::Workflow
     #[must_use]
     pub fn with_clock(mut self, clock: impl Clock) -> Self {
-        self.clock = Arc::new(clock);
+        self.services.clock = Arc::new(clock);
         self
     }
-
-    pub(crate) fn clone_clock(&self) -> Arc<dyn Clock> {
-        Arc::clone(&self.clock)
-    }
 }
-
-#[derive(Clone, Copy)]
-pub(crate) struct ModuleExports {
-    pub memory: Memory,
-    data_location: Option<(u32, u32)>,
-    create_main_task: TypedFunc<(), TaskId>,
-    poll_task: TypedFunc<(TaskId, TaskId), i32>,
-    drop_task: TypedFunc<TaskId, ()>,
-    alloc_bytes: TypedFunc<u32, u32>,
-    create_waker: TypedFunc<WasmContextPtr, WakerId>,
-    wake_waker: TypedFunc<WakerId, ()>,
-}
-
-#[cfg_attr(test, mimicry::mock(using = "tests::ExportsMock"))]
-impl ModuleExports {
-    pub fn create_main_task(&self, ctx: StoreContextMut<'_, WorkflowData>) -> Result<TaskId, Trap> {
-        let result = self.create_main_task.call(ctx, ());
-        crate::log_result!(result, "Created main task")
-    }
-
-    pub fn poll_task(
-        &self,
-        ctx: StoreContextMut<'_, WorkflowData>,
-        task_id: TaskId,
-    ) -> Result<Poll<()>, Trap> {
-        let result = self
-            .poll_task
-            .call(ctx, (task_id, task_id))
-            .and_then(|res| <Poll<()>>::try_from_wasm(res).map_err(Trap::new));
-        crate::log_result!(result, "Polled task {}", task_id)
-    }
-
-    pub fn drop_task(
-        &self,
-        ctx: StoreContextMut<'_, WorkflowData>,
-        task_id: TaskId,
-    ) -> Result<(), Trap> {
-        let result = self.drop_task.call(ctx, task_id);
-        crate::log_result!(result, "Dropped task {}", task_id)
-    }
-
-    pub fn alloc_bytes(
-        &self,
-        ctx: StoreContextMut<'_, WorkflowData>,
-        capacity: u32,
-    ) -> Result<u32, Trap> {
-        let result = self.alloc_bytes.call(ctx, capacity);
-        crate::log_result!(result, "Allocated {} bytes", capacity)
-    }
-
-    pub fn create_waker(
-        &self,
-        ctx: StoreContextMut<'_, WorkflowData>,
-        cx_ptr: WasmContextPtr,
-    ) -> Result<WakerId, Trap> {
-        let result = self.create_waker.call(ctx, cx_ptr);
-        crate::log_result!(result, "Created waker from context {}", cx_ptr)
-    }
-
-    pub fn wake_waker(
-        &self,
-        ctx: StoreContextMut<'_, WorkflowData>,
-        waker_id: WakerId,
-    ) -> Result<(), Trap> {
-        let result = self.wake_waker.call(ctx, waker_id);
-        crate::log_result!(result, "Waked waker {}", waker_id)
-    }
-}
-
-impl fmt::Debug for ModuleExports {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("ModuleExports")
-            .field("memory", &self.memory)
-            .finish()
-    }
-}
-
-impl ModuleExports {
-    fn validate_module(
-        module: &Module,
-        workflows: &HashMap<String, Interface<()>>,
-    ) -> anyhow::Result<()> {
-        let memory_ty = module
-            .get_export("memory")
-            .ok_or_else(|| anyhow!("module does not export memory"))?;
-        ensure!(
-            matches!(memory_ty, ExternType::Memory(_)),
-            "`memory` export is not a memory"
-        );
-
-        for workflow_name in workflows.keys() {
-            Self::ensure_export_ty::<(), TaskId>(
-                module,
-                &format!("tardigrade_rt::spawn::{}", workflow_name),
-            )?;
-        }
-        Self::ensure_export_ty::<(TaskId, TaskId), i32>(module, "tardigrade_rt::poll_task")?;
-        Self::ensure_export_ty::<TaskId, ()>(module, "tardigrade_rt::drop_task")?;
-        Self::ensure_export_ty::<u32, u32>(module, "tardigrade_rt::alloc_bytes")?;
-        Self::ensure_export_ty::<WasmContextPtr, WakerId>(module, "tardigrade_rt::create_waker")?;
-        Self::ensure_export_ty::<WakerId, ()>(module, "tardigrade_rt::wake_waker")?;
-
-        Ok(())
-    }
-
-    fn ensure_export_ty<Args, Out>(module: &Module, fn_name: &str) -> anyhow::Result<()>
-    where
-        Args: WasmParams,
-        Out: WasmResults,
-    {
-        let ty = module
-            .get_export(fn_name)
-            .ok_or_else(|| anyhow!("module does not export `{}` function", fn_name))?;
-        ensure_func_ty::<Args, Out>(&ty, fn_name)
-    }
-
-    #[cfg_attr(test, mimicry::mock(using = "tests::ExportsMock::mock_new"))]
-    pub fn new(store: &mut Store<WorkflowData>, instance: &Instance, workflow_name: &str) -> Self {
-        let memory = instance.get_memory(&mut *store, "memory").unwrap();
-        let global_base = Self::extract_u32_global(&mut *store, instance, "__global_base");
-        let heap_base = Self::extract_u32_global(&mut *store, instance, "__heap_base");
-        let data_location = global_base.and_then(|start| heap_base.map(|end| (start, end)));
-        let main_fn_name = format!("tardigrade_rt::spawn::{}", workflow_name);
-
-        Self {
-            memory,
-            data_location,
-            create_main_task: Self::extract_function(&mut *store, instance, &main_fn_name),
-            poll_task: Self::extract_function(&mut *store, instance, "tardigrade_rt::poll_task"),
-            drop_task: Self::extract_function(&mut *store, instance, "tardigrade_rt::drop_task"),
-            alloc_bytes: Self::extract_function(
-                &mut *store,
-                instance,
-                "tardigrade_rt::alloc_bytes",
-            ),
-            create_waker: Self::extract_function(store, instance, "tardigrade_rt::create_waker"),
-            wake_waker: Self::extract_function(store, instance, "tardigrade_rt::wake_waker"),
-        }
-    }
-
-    #[allow(clippy::cast_sign_loss)] // intentional
-    fn extract_u32_global(
-        store: &mut Store<WorkflowData>,
-        instance: &Instance,
-        name: &str,
-    ) -> Option<u32> {
-        let value = instance.get_global(&mut *store, name)?.get(&mut *store);
-        value.i32().map(|value| value as u32)
-    }
-
-    fn extract_function<Args, Out>(
-        store: &mut Store<WorkflowData>,
-        instance: &Instance,
-        fn_name: &str,
-    ) -> TypedFunc<Args, Out>
-    where
-        Args: WasmParams,
-        Out: WasmResults,
-    {
-        instance
-            .get_func(&mut *store, fn_name)
-            .unwrap_or_else(|| panic!("function `{}` is not exported", fn_name))
-            .typed(&*store)
-            .with_context(|| format!("Function `{}` has incorrect signature", fn_name))
-            .unwrap()
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct ModuleImports;
-
-impl ModuleImports {
-    const RT_MODULE: &'static str = "tardigrade_rt";
-
-    fn validate_module(module: &Module) -> anyhow::Result<()> {
-        let rt_imports = module
-            .imports()
-            .filter(|import| import.module() == Self::RT_MODULE);
-
-        for import in rt_imports {
-            let ty = import.ty();
-            let fn_name = import.name();
-            Self::validate_import(&ty, fn_name)?;
-        }
-
-        Ok(())
-    }
-
-    fn validate_import(ty: &ExternType, fn_name: &str) -> anyhow::Result<()> {
-        match fn_name {
-            "task::poll_completion" => ensure_func_ty::<(TaskId, WasmContextPtr), i64>(ty, fn_name),
-            "task::spawn" => ensure_func_ty::<(u32, u32, TaskId), ()>(ty, fn_name),
-            "task::wake" | "task::abort" => ensure_func_ty::<TaskId, ()>(ty, fn_name),
-
-            "data_input::get" => ensure_func_ty::<(u32, u32), i64>(ty, fn_name),
-
-            "mpsc_receiver::get" | "mpsc_sender::get" => {
-                ensure_func_ty::<(u32, u32), i64>(ty, fn_name)
-            }
-
-            "mpsc_receiver::poll_next" => {
-                ensure_func_ty::<(u32, u32, WasmContextPtr), i64>(ty, fn_name)
-            }
-
-            "mpsc_sender::poll_ready" | "mpsc_sender::poll_flush" => {
-                ensure_func_ty::<(u32, u32, WasmContextPtr), i32>(ty, fn_name)
-            }
-            "mpsc_sender::start_send" => ensure_func_ty::<(u32, u32, u32, u32), ()>(ty, fn_name),
-
-            "timer::now" => ensure_func_ty::<(), i64>(ty, fn_name),
-            "timer::new" => ensure_func_ty::<i64, TimerId>(ty, fn_name),
-            "timer::drop" => ensure_func_ty::<TimerId, ()>(ty, fn_name),
-            "timer::poll" => ensure_func_ty::<(TimerId, WasmContextPtr), i64>(ty, fn_name),
-
-            "panic" => ensure_func_ty::<(u32, u32, u32, u32, u32, u32), ()>(ty, fn_name),
-
-            other => {
-                bail!(
-                    "Unknown import from `{}` module: `{}`",
-                    Self::RT_MODULE,
-                    other
-                );
-            }
-        }
-    }
-}
-
-impl ExtendLinker for WorkflowFunctions {
-    const MODULE_NAME: &'static str = "tardigrade_rt";
-
-    fn functions(&self, store: &mut Store<WorkflowData>) -> Vec<(&'static str, Func)> {
-        vec![
-            // Task functions
-            (
-                "task::poll_completion",
-                wrap2(&mut *store, Self::poll_task_completion),
-            ),
-            ("task::spawn", wrap3(&mut *store, Self::spawn_task)),
-            ("task::wake", wrap1(&mut *store, Self::wake_task)),
-            (
-                "task::abort",
-                wrap1(&mut *store, Self::schedule_task_abortion),
-            ),
-            // Data input functions
-            ("data_input::get", wrap2(&mut *store, Self::get_data_input)),
-            // Channel functions
-            ("mpsc_receiver::get", wrap2(&mut *store, Self::get_receiver)),
-            (
-                "mpsc_receiver::poll_next",
-                wrap3(&mut *store, Self::poll_next_for_receiver),
-            ),
-            ("mpsc_sender::get", wrap2(&mut *store, Self::get_sender)),
-            (
-                "mpsc_sender::poll_ready",
-                wrap3(&mut *store, Self::poll_ready_for_sender),
-            ),
-            (
-                "mpsc_sender::start_send",
-                wrap4(&mut *store, Self::start_send),
-            ),
-            (
-                "mpsc_sender::poll_flush",
-                wrap3(&mut *store, Self::poll_flush_for_sender),
-            ),
-            // Timer functions
-            ("timer::now", wrap0(&mut *store, Self::current_timestamp)),
-            ("timer::new", wrap1(&mut *store, Self::create_timer)),
-            ("timer::drop", wrap1(&mut *store, Self::drop_timer)),
-            ("timer::poll", wrap2(&mut *store, Self::poll_timer)),
-            // Panic hook
-            ("panic", wrap6(&mut *store, Self::report_panic)),
-        ]
-    }
-}
-
-macro_rules! impl_wrapper {
-    ($fn_name:ident => $($arg:ident : $arg_ty:ident),*) => {
-        fn $fn_name<R, $($arg_ty,)*>(
-            store: &mut Store<WorkflowData>,
-            function: fn(StoreContextMut<'_, WorkflowData>, $($arg_ty,)*) -> R,
-        ) -> Func
-        where
-            R: 'static + WasmRet,
-            $($arg_ty: 'static + WasmTy,)*
-        {
-            Func::wrap(store, move |mut caller: Caller<'_, WorkflowData>, $($arg,)*| {
-                function(caller.as_context_mut(), $($arg,)*)
-            })
-        }
-    };
-}
-
-impl_wrapper!(wrap0 =>);
-impl_wrapper!(wrap1 => a: A);
-impl_wrapper!(wrap2 => a: A, b: B);
-impl_wrapper!(wrap3 => a: A, b: B, c: C);
-impl_wrapper!(wrap4 => a: A, b: B, c: C, d: D);
-impl_wrapper!(wrap6 => a: A, b: B, c: C, d: D, e: E, f: F);

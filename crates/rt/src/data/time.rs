@@ -196,7 +196,7 @@ impl WorkflowData {
 impl WorkflowFunctions {
     #[allow(clippy::needless_pass_by_value)] // for uniformity with other functions
     pub fn current_timestamp(ctx: StoreContextMut<'_, WorkflowData>) -> i64 {
-        ctx.data().clock.now().timestamp_millis()
+        ctx.data().services.clock.now().timestamp_millis()
     }
 
     pub fn create_timer(
