@@ -1,4 +1,4 @@
-//! Tests for `AsyncEnv`.
+//! Tests for the `PizzaDelivery` workflow that use `AsyncEnv`.
 
 use assert_matches::assert_matches;
 use async_std::task;
@@ -26,7 +26,7 @@ use tardigrade_test_basic::{
     DomainEvent, Inputs, PizzaDelivery, PizzaDeliveryHandle, PizzaKind, PizzaOrder,
 };
 
-use super::MODULE;
+use super::{TestResult, MODULE};
 
 async fn retry_until_some<T>(mut condition: impl FnMut() -> Option<T>) -> T {
     for _ in 0..5 {
@@ -38,7 +38,7 @@ async fn retry_until_some<T>(mut condition: impl FnMut() -> Option<T>) -> T {
     panic!("Run out of attempts waiting for condition");
 }
 
-async fn test_async_handle(cancel_workflow: bool) -> Result<(), Box<dyn error::Error>> {
+async fn test_async_handle(cancel_workflow: bool) -> TestResult {
     let module = task::spawn_blocking(|| &*MODULE).await;
     let spawner = module.for_workflow::<PizzaDelivery>()?;
 
@@ -103,19 +103,19 @@ async fn test_async_handle(cancel_workflow: bool) -> Result<(), Box<dyn error::E
 }
 
 #[async_std::test]
-async fn async_handle() -> Result<(), Box<dyn error::Error>> {
+async fn async_handle() -> TestResult {
     test_async_handle(false).await
 }
 
 #[async_std::test]
-async fn async_handle_with_cancellation() -> Result<(), Box<dyn error::Error>> {
+async fn async_handle_with_cancellation() -> TestResult {
     test_async_handle(true).await
 }
 
 async fn test_async_handle_with_concurrency(
     spawner: &WorkflowSpawner<PizzaDelivery>,
     inputs: Inputs,
-) -> Result<(), Box<dyn error::Error>> {
+) -> TestResult {
     const ORDER_COUNT: usize = 5;
 
     println!("testing async handle with {:?}", inputs);
@@ -154,7 +154,7 @@ async fn test_async_handle_with_concurrency(
 }
 
 #[async_std::test]
-async fn async_handle_with_concurrency() -> Result<(), Box<dyn error::Error>> {
+async fn async_handle_with_concurrency() -> TestResult {
     let module = task::spawn_blocking(|| &*MODULE).await;
     let spawner = module.for_workflow::<PizzaDelivery>()?;
 
@@ -279,7 +279,7 @@ async fn initialize_workflow(
 }
 
 #[async_std::test]
-async fn async_handle_with_mock_scheduler() -> Result<(), Box<dyn error::Error>> {
+async fn async_handle_with_mock_scheduler() -> TestResult {
     let AsyncRig {
         scheduler,
         mut events,
@@ -348,7 +348,7 @@ async fn async_handle_with_mock_scheduler() -> Result<(), Box<dyn error::Error>>
 }
 
 #[async_std::test]
-async fn async_handle_with_mock_scheduler_and_bulk_update() -> Result<(), Box<dyn error::Error>> {
+async fn async_handle_with_mock_scheduler_and_bulk_update() -> TestResult {
     let AsyncRig {
         scheduler,
         mut events,
@@ -421,7 +421,7 @@ async fn spawn_cancellable_workflow() -> Result<CancellableWorkflow, Box<dyn err
 }
 
 #[async_std::test]
-async fn persisting_workflow() -> Result<(), Box<dyn error::Error>> {
+async fn persisting_workflow() -> TestResult {
     let CancellableWorkflow {
         spawner,
         mut handle,
@@ -483,7 +483,7 @@ async fn persisting_workflow() -> Result<(), Box<dyn error::Error>> {
 }
 
 #[async_std::test]
-async fn dynamically_typed_async_handle() -> Result<(), Box<dyn error::Error>> {
+async fn dynamically_typed_async_handle() -> TestResult {
     let module = task::spawn_blocking(|| &*MODULE).await;
     let spawner = module.for_untyped_workflow("PizzaDelivery").unwrap();
     let mut builder = InputsBuilder::new(spawner.interface());

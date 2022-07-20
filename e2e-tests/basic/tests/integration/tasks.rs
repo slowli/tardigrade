@@ -4,7 +4,7 @@ use assert_matches::assert_matches;
 use async_std::task;
 use futures::{channel::mpsc, future, stream, SinkExt, StreamExt, TryStreamExt};
 
-use std::{cmp, error};
+use std::cmp;
 
 use tardigrade::channel::WithId;
 use tardigrade_rt::handle::future::{AsyncEnv, AsyncIoScheduler, Termination};
@@ -13,13 +13,13 @@ use tardigrade_test_basic::{
     DomainEvent, PizzaKind, PizzaOrder,
 };
 
-use super::MODULE;
+use super::{TestResult, MODULE};
 
 async fn test_external_tasks(
     oven_count: usize,
     order_count: usize,
     task_concurrency: Option<usize>,
-) -> Result<(), Box<dyn error::Error>> {
+) -> TestResult {
     let module = task::spawn_blocking(|| &*MODULE).await;
     let spawner = module.for_workflow::<PizzaDeliveryWithTasks>()?;
 
@@ -112,27 +112,27 @@ async fn test_external_tasks(
 }
 
 #[async_std::test]
-async fn external_task_basics() -> Result<(), Box<dyn error::Error>> {
+async fn external_task_basics() -> TestResult {
     test_external_tasks(1, 1, None).await
 }
 
 #[async_std::test]
-async fn sequential_external_tasks() -> Result<(), Box<dyn error::Error>> {
+async fn sequential_external_tasks() -> TestResult {
     test_external_tasks(1, 4, None).await
 }
 
 #[async_std::test]
-async fn concurrent_external_tasks() -> Result<(), Box<dyn error::Error>> {
+async fn concurrent_external_tasks() -> TestResult {
     test_external_tasks(3, 10, None).await
 }
 
 #[async_std::test]
-async fn tasks_with_concurrency_limited_by_executor() -> Result<(), Box<dyn error::Error>> {
+async fn tasks_with_concurrency_limited_by_executor() -> TestResult {
     test_external_tasks(3, 10, Some(1)).await
 }
 
 #[async_std::test]
-async fn closing_task_responses_on_host() -> Result<(), Box<dyn error::Error>> {
+async fn closing_task_responses_on_host() -> TestResult {
     const ORDER_COUNT: usize = 10;
     const SUCCESSFUL_TASK_COUNT: usize = 3;
 
