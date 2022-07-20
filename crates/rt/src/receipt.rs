@@ -283,6 +283,16 @@ impl<T, E> Receipt<Result<T, E>> {
     }
 }
 
+/// Result of executing a transactional piece of work on the [`Workflow`](crate::Workflow).
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ExecutionResult {
+    /// Execution completed successfully.
+    Ok(Receipt),
+    /// Execution was rolled back after an error.
+    RolledBack(ExecutionError),
+}
+
 #[derive(Debug)]
 pub(crate) struct ExtendedTrap {
     trap: Trap,

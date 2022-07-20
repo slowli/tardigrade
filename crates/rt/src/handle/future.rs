@@ -16,7 +16,7 @@ use std::{
 
 use crate::{
     handle::EnvExtensions,
-    receipt::{ExecutionError, Receipt},
+    receipt::{ExecutionError, ExecutionResult, Receipt},
     workflow::Workflow,
     FutureId,
 };
@@ -76,11 +76,76 @@ impl Schedule for AsyncIoScheduler {
     }
 }
 
+#[derive(Debug)]
+enum ListenedEventOutput {
+    Channel {
+        name: String,
+        message: Option<Vec<u8>>,
+    },
+    Timer(DateTime<Utc>),
+}
+
+/// Terminal status of a [`Workflow`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum Termination {
+    /// The workflow is finished.
+    Finished,
+    /// The workflow has stalled: its progress does not depend on any external futures
+    /// (inbound messages or timers).
+    Stalled,
+}
+
+/// Strategy to rollback a [`Workflow`] if it traps during execution.
+pub trait RollbackStrategy: Send + Sync + 'static {
+    /// Determines whether the specified `error` should lead to a rollback, or to workflow
+    /// termination.
+    fn can_be_rolled_back(&mut self, err: &ExecutionError) -> bool;
+}
+
+/// Reasonable implementation of [`RollbackStrategy`].
+#[derive(Debug)]
+pub struct Rollback {
+    _placeholder: (),
+}
+
+impl Rollback {
+    /// Roll back any trap occurring in the workflow.
+    pub fn any_trap() -> Self {
+        Self { _placeholder: () }
+    }
+}
+
+impl RollbackStrategy for Rollback {
+    fn can_be_rolled_back(&mut self, _: &ExecutionError) -> bool {
+        true
+    }
+}
+
+impl fmt::Debug for dyn RollbackStrategy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RollbackStrategy")
+            .finish_non_exhaustive()
+    }
+}
+
 /// Asynchronous environment for executing [`Workflow`]s.
 ///
 /// This type is used as a type param for the [`TakeHandle`] trait. The returned handles
 /// allow interacting with the workflow (e.g., [send messages](MessageSender) via inbound channels
 /// and [take messages](MessageReceiver) from outbound channels).
+///
+/// # Error handling
+///
+/// By default, workflow execution via [`Self::run()`] terminates immediately after a trap.
+/// Only rudimentary cleanup is performed; thus, the workflow may be in an inconsistent state.
+/// To change this behavior, set a rollback strategy via [`Self::set_rollback_strategy()`],
+/// such as [`Rollback::any_trap()`]. As an example, rolling back receiving a message
+/// means that from the workflow perspective, the message was never received in the first place,
+/// and all progress resulting from receiving the message is lost (new tasks, timers, etc.).
+/// Whether this makes sense, depends on a use case; e.g., it seems reasonable to roll back
+/// deserialization errors for dynamically typed workflows.
 ///
 /// # Examples
 ///
@@ -118,28 +183,9 @@ pub struct AsyncEnv<W> {
     scheduler: Box<dyn Schedule>,
     inbound_channels: HashMap<String, mpsc::Receiver<Vec<u8>>>,
     outbound_channels: HashMap<String, mpsc::UnboundedSender<Vec<u8>>>,
-    receipts: Option<mpsc::UnboundedSender<Receipt>>,
+    results_sx: Option<mpsc::UnboundedSender<ExecutionResult>>,
+    rollback_strategy: Option<Box<dyn RollbackStrategy>>,
     extensions: EnvExtensions,
-}
-
-#[derive(Debug)]
-enum ListenedEventOutput<'a> {
-    Channel {
-        name: &'a str,
-        message: Option<Vec<u8>>,
-    },
-    Timer(DateTime<Utc>),
-}
-
-/// Terminal status of a [`Workflow`].
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum Termination {
-    /// The workflow is finished.
-    Finished,
-    /// The workflow has stalled: its progress does not depend on any external futures
-    /// (inbound messages or timers).
-    Stalled,
 }
 
 impl<W> AsyncEnv<W> {
@@ -151,16 +197,23 @@ impl<W> AsyncEnv<W> {
             scheduler: Box::new(scheduler),
             inbound_channels: HashMap::new(),
             outbound_channels: HashMap::new(),
-            receipts: None,
+            results_sx: None,
+            rollback_strategy: None,
             extensions: EnvExtensions::default(),
         }
     }
 
-    /// Returns the receiver for execution [`Receipt`]s.
-    pub fn receipts(&mut self) -> impl Stream<Item = Receipt> {
+    /// Returns the receiver of [`ExecutionResult`]s generated during workflow execution.
+    pub fn execution_results(&mut self) -> mpsc::UnboundedReceiver<ExecutionResult> {
         let (sx, rx) = mpsc::unbounded();
-        self.receipts = Some(sx);
+        self.results_sx = Some(sx);
         rx
+    }
+
+    /// Sets a strategy allowing to roll back workflow progress if the workflow traps
+    /// instead of terminating workflow execution.
+    pub fn set_rollback_strategy(&mut self, strategy: impl RollbackStrategy) {
+        self.rollback_strategy = Some(Box::new(strategy));
     }
 
     /// Retrieves the underlying workflow, consuming the environment.
@@ -182,7 +235,8 @@ impl<W> AsyncEnv<W> {
     ///
     /// # Errors
     ///
-    /// Returns an error if workflow execution traps.
+    /// Returns an error if workflow execution traps and the [`RollbackStrategy`] (if any)
+    /// determines that the workflow cannot be rolled back.
     ///
     /// [`select`]: futures::select
     pub async fn run(&mut self) -> Result<Termination, ExecutionError> {
@@ -214,7 +268,10 @@ impl<W> AsyncEnv<W> {
             if events.inbound_channels.contains(name) {
                 let fut = rx
                     .next()
-                    .map(|message| ListenedEventOutput::Channel { name, message })
+                    .map(|message| ListenedEventOutput::Channel {
+                        name: name.clone(),
+                        message,
+                    })
                     .left_future();
                 Some(fut)
             } else {
@@ -232,20 +289,23 @@ impl<W> AsyncEnv<W> {
         // This is the only `await` placement in the future, and it happens when the workflow
         // is safe to save: it has no outbound messages.
         let (output, ..) = future::select_all(all_futures).await;
-        let receipt = match output {
+        match output {
             ListenedEventOutput::Channel { name, message } => {
-                if let Some(message) = message {
-                    self.workflow.push_inbound_message(name, message).unwrap();
-                } else {
-                    self.workflow.close_inbound_channel(name).unwrap();
-                }
-                // ^ `unwrap()`s above are safe: we know `workflow` listens to the channel
-                self.workflow.tick()?
+                self.tick_workflow(|workflow| {
+                    if let Some(message) = message {
+                        workflow.push_inbound_message(&name, message).unwrap();
+                    } else {
+                        workflow.close_inbound_channel(&name).unwrap();
+                    }
+                    // ^ `unwrap()`s above are safe: we know `workflow` listens to the channel
+                    workflow.tick()
+                })?;
             }
 
-            ListenedEventOutput::Timer(timestamp) => self.workflow.set_current_time(timestamp)?,
+            ListenedEventOutput::Timer(timestamp) => {
+                self.tick_workflow(|workflow| workflow.set_current_time(timestamp))?;
+            }
         };
-        self.send_receipt(receipt);
 
         Ok(None)
     }
@@ -264,19 +324,44 @@ impl<W> AsyncEnv<W> {
             }
 
             if messages_sent {
-                let receipt = self.workflow.tick()?;
-                self.send_receipt(receipt);
+                // Sending messages cannot be rolled back (they may already be consumed),
+                // so we don't roll back the fact of message flushing in the workflow.
+                // TODO: think about this again
+                self.tick_workflow(Workflow::tick)?;
             } else {
                 break Ok(());
             }
         }
     }
 
-    fn send_receipt(&mut self, receipt: Receipt) {
-        if let Some(receipts) = &mut self.receipts {
-            receipts.unbounded_send(receipt).ok();
-            // ^ We don't care if nobody listens to receipts.
+    /// Executes `action` in a transaction, rolling the workflow back as per the configured
+    /// rollback strategy.
+    fn tick_workflow(
+        &mut self,
+        action: impl FnOnce(&mut Workflow<W>) -> Result<Receipt, ExecutionError>,
+    ) -> Result<(), ExecutionError> {
+        let result = if let Some(strategy) = &mut self.rollback_strategy {
+            let backup = self.workflow.persist().unwrap();
+            match action(&mut self.workflow) {
+                Ok(receipt) => ExecutionResult::Ok(receipt),
+                Err(err) => {
+                    if strategy.can_be_rolled_back(&err) {
+                        backup.restore_to_workflow(&mut self.workflow);
+                        ExecutionResult::RolledBack(err)
+                    } else {
+                        return Err(err);
+                    }
+                }
+            }
+        } else {
+            action(&mut self.workflow).map(ExecutionResult::Ok)?
+        };
+
+        if let Some(receipts) = &mut self.results_sx {
+            receipts.unbounded_send(result).ok();
+            // ^ We don't care if nobody listens to results.
         }
+        Ok(())
     }
 }
 

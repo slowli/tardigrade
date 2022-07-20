@@ -367,7 +367,7 @@ impl<W> Workflow<W> {
     /// # Errors
     ///
     /// Passes through errors returned by the closure.
-    pub fn revert_on_error<T, E>(
+    pub fn rollback_on_error<T, E>(
         &mut self,
         action: impl FnOnce(&mut Self) -> Result<T, E>,
     ) -> Result<T, E> {

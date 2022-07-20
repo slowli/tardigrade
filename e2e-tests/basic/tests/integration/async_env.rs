@@ -3,12 +3,12 @@
 use assert_matches::assert_matches;
 use async_std::task;
 use futures::{
-    channel::oneshot,
+    channel::{mpsc, oneshot},
     future::{self, Either},
     stream, FutureExt, SinkExt, Stream, StreamExt, TryStreamExt,
 };
 
-use std::{error, time::Duration};
+use std::time::Duration;
 
 use tardigrade::{
     interface::{InboundChannel, OutboundChannel},
@@ -17,8 +17,10 @@ use tardigrade::{
     Decoder, Encoder, Json,
 };
 use tardigrade_rt::{
-    handle::future::{AsyncEnv, AsyncIoScheduler, MessageReceiver, Termination, TracerHandle},
-    receipt::{Event, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
+    handle::future::{
+        AsyncEnv, AsyncIoScheduler, MessageReceiver, Rollback, Termination, TracerHandle,
+    },
+    receipt::{Event, ExecutionResult, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
     test::MockScheduler,
     TimerId, Workflow, WorkflowSpawner,
 };
@@ -220,15 +222,14 @@ async fn wait_timer(
         .await
 }
 
-struct AsyncRig<S> {
+struct AsyncRig {
     scheduler: MockScheduler,
     events: MessageReceiver<DomainEvent, Json>,
     tracer: TracerHandle<Json>,
-    receipts: S,
+    results: mpsc::UnboundedReceiver<ExecutionResult>,
 }
 
-async fn initialize_workflow(
-) -> Result<AsyncRig<impl Stream<Item = Receipt>>, Box<dyn error::Error>> {
+async fn initialize_workflow() -> TestResult<AsyncRig> {
     let module = task::spawn_blocking(|| &*MODULE).await;
     let scheduler = MockScheduler::default();
     let spawner = module
@@ -242,7 +243,7 @@ async fn initialize_workflow(
     let workflow = spawner.spawn(inputs)?.into_inner();
     let mut env = AsyncEnv::new(workflow, scheduler.clone());
     let mut handle = env.handle();
-    let receipts = env.receipts();
+    let results = env.execution_results();
     task::spawn(async move { env.run().await });
 
     let orders = [
@@ -274,7 +275,7 @@ async fn initialize_workflow(
         scheduler,
         events: handle.shared.events,
         tracer: handle.shared.tracer,
-        receipts,
+        results,
     })
 }
 
@@ -284,8 +285,12 @@ async fn async_handle_with_mock_scheduler() -> TestResult {
         scheduler,
         mut events,
         mut tracer,
-        mut receipts,
+        results,
     } = initialize_workflow().await?;
+    let mut receipts = results.map(|result| match result {
+        ExecutionResult::Ok(receipt) => receipt,
+        _ => unreachable!(),
+    });
 
     wait_timer(&mut receipts, 1, ResourceEventKind::Created).await;
     let now = scheduler.now();
@@ -352,9 +357,13 @@ async fn async_handle_with_mock_scheduler_and_bulk_update() -> TestResult {
     let AsyncRig {
         scheduler,
         mut events,
-        mut receipts,
+        results,
         ..
     } = initialize_workflow().await?;
+    let mut receipts = results.map(|result| match result {
+        ExecutionResult::Ok(receipt) => receipt,
+        _ => unreachable!(),
+    });
 
     let now = scheduler.now();
     scheduler.set_now(now + chrono::Duration::milliseconds(55));
@@ -388,7 +397,7 @@ struct CancellableWorkflow {
     cancel_sx: oneshot::Sender<()>,
 }
 
-async fn spawn_cancellable_workflow() -> Result<CancellableWorkflow, Box<dyn error::Error>> {
+async fn spawn_cancellable_workflow() -> TestResult<CancellableWorkflow> {
     let module = task::spawn_blocking(|| &*MODULE).await;
     let scheduler = MockScheduler::default();
     let spawner = module
@@ -522,6 +531,54 @@ async fn dynamically_typed_async_handle() -> TestResult {
             DomainEvent::StartedDelivering { .. },
             DomainEvent::Delivered { .. },
         ]
+    );
+
+    join_handle.await?;
+    Ok(())
+}
+
+#[async_std::test]
+async fn rollback_strategy() -> TestResult {
+    let module = task::spawn_blocking(|| &*MODULE).await;
+    let spawner = module.for_untyped_workflow("PizzaDelivery").unwrap();
+    let mut builder = InputsBuilder::new(spawner.interface());
+    builder.insert(
+        "inputs",
+        Json.encode_value(Inputs {
+            oven_count: 1,
+            deliverer_count: 1,
+        }),
+    );
+    let workflow = spawner.spawn(builder.build())?.into_inner();
+
+    let mut env = AsyncEnv::new(workflow, AsyncIoScheduler);
+    env.set_rollback_strategy(Rollback::any_trap());
+    let mut handle = env.handle();
+    let results = env.execution_results();
+    let join_handle = task::spawn(async move { env.run().await });
+
+    handle[InboundChannel("orders")]
+        .send(b"invalid".to_vec())
+        .await?;
+    handle.remove(InboundChannel("orders")); // to terminate the workflow
+
+    let results: Vec<_> = results.collect().await;
+    let err = match results.as_slice() {
+        [ExecutionResult::RolledBack(err), ExecutionResult::Ok(_)] => err,
+        _ => panic!("unexpected results: {:?}", results),
+    };
+    let panic_info = err.panic_info().unwrap();
+    let panic_message = panic_info.message.as_ref().unwrap();
+    assert!(
+        panic_message.starts_with("Cannot decode bytes"),
+        "{}",
+        panic_message
+    );
+    let panic_location = panic_info.location.as_ref().unwrap();
+    assert!(
+        panic_location.filename.ends_with("codec.rs"),
+        "{:?}",
+        panic_location
     );
 
     join_handle.await?;

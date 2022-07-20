@@ -283,7 +283,7 @@ fn workflow_recovery_after_trap() -> TestResult {
 
     for (i, message) in messages.enumerate() {
         workflow.check_persistence()?;
-        let result = workflow.revert_on_error(|workflow| {
+        let result = workflow.rollback_on_error(|workflow| {
             let mut handle = WorkflowEnv::new(workflow).handle();
             let sender = &mut handle.api[InboundChannel("orders")];
             sender.send(message).unwrap().flush()

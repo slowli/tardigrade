@@ -23,7 +23,7 @@ static MODULE: Lazy<WorkflowModule> = Lazy::new(|| {
     WorkflowModule::new(&engine, &module_bytes).unwrap()
 });
 
-type TestResult = Result<(), Box<dyn error::Error>>;
+type TestResult<T = ()> = Result<T, Box<dyn error::Error>>;
 
 #[test]
 fn module_information_is_correct() -> TestResult {
