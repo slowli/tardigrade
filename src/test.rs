@@ -77,7 +77,7 @@
 //! MyWorkflow::test(Input { counter: 1 }, test_workflow);
 //! ```
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use futures::{
     channel::{
         mpsc::{self, UnboundedReceiver, UnboundedSender},
@@ -98,7 +98,6 @@ use std::{
     future::Future,
     marker::PhantomData,
     thread_local,
-    time::Duration,
 };
 
 use crate::{
@@ -153,9 +152,15 @@ impl MockScheduler {
     /// Creates a scheduler with the specified current timestamp.
     pub fn new(now: DateTime<Utc>) -> Self {
         Self {
-            now,
+            now: Self::floor_timestamp(now),
             timers: BinaryHeap::new(),
         }
+    }
+
+    /// Approximates `timestamp` to be presentable as an integer number of milliseconds since
+    /// Unix epoch. This emulates WASM interface which uses millisecond precision.
+    fn floor_timestamp(ts: DateTime<Utc>) -> DateTime<Utc> {
+        Utc.timestamp_millis(ts.timestamp_millis())
     }
 
     /// Returns the expiration for the nearest timer, or `None` if there are no active timers.
@@ -169,6 +174,7 @@ impl MockScheduler {
     ///
     /// Panics if `expires_at` is in the past according to [`Self::now()`].
     pub fn insert_timer(&mut self, expires_at: DateTime<Utc>) -> oneshot::Receiver<DateTime<Utc>> {
+        let expires_at = Self::floor_timestamp(expires_at);
         assert!(expires_at > self.now);
 
         let (sx, rx) = oneshot::channel();
@@ -186,6 +192,7 @@ impl MockScheduler {
 
     /// Sets the current timestamp for the scheduler.
     pub fn set_now(&mut self, now: DateTime<Utc>) {
+        let now = Self::floor_timestamp(now);
         self.now = now;
         while let Some(timer) = self.timers.pop() {
             if timer.expires_at <= now {
@@ -360,9 +367,8 @@ impl Runtime {
             .ok_or_else(|| AccessErrorKind::AlreadyAcquired.with_location(OutboundChannel(name)))
     }
 
-    pub fn insert_timer(&mut self, duration: Duration) -> oneshot::Receiver<DateTime<Utc>> {
-        let duration = chrono::Duration::from_std(duration).expect("duration is too large");
-        self.scheduler.insert_timer(self.scheduler.now() + duration)
+    pub fn scheduler(&mut self) -> &mut MockScheduler {
+        &mut self.scheduler
     }
 
     pub fn spawn_task<T>(&self, task: impl Future<Output = T> + 'static) -> RemoteHandle<T> {

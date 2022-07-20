@@ -74,7 +74,7 @@ pub use crate::{
     data::{Data, RawData},
     ext::FutureExt,
     task::{spawn, yield_now, JoinHandle},
-    time::sleep,
+    time::{now, sleep, Timer},
 };
 
 /// Proc macro attribute for workflow handles.

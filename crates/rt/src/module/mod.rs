@@ -631,7 +631,8 @@ impl ModuleImports {
             }
             "mpsc_sender::start_send" => ensure_func_ty::<(u32, u32, u32, u32), ()>(ty, fn_name),
 
-            "timer::new" => ensure_func_ty::<(i32, i64), TimerId>(ty, fn_name),
+            "timer::now" => ensure_func_ty::<(), i64>(ty, fn_name),
+            "timer::new" => ensure_func_ty::<i64, TimerId>(ty, fn_name),
             "timer::drop" => ensure_func_ty::<TimerId, ()>(ty, fn_name),
             "timer::poll" => ensure_func_ty::<(TimerId, WasmContextPtr), i64>(ty, fn_name),
 
@@ -684,11 +685,24 @@ impl ExtendLinker for WorkflowFunctions {
                 wrap3(&mut *store, Self::poll_flush_for_sender),
             ),
             // Timer functions
-            ("timer::new", wrap2(&mut *store, Self::create_timer)),
+            ("timer::now", wrap0(&mut *store, Self::current_timestamp)),
+            ("timer::new", wrap1(&mut *store, Self::create_timer)),
             ("timer::drop", wrap1(&mut *store, Self::drop_timer)),
             ("timer::poll", wrap2(&mut *store, Self::poll_timer)),
         ]
     }
+}
+
+fn wrap0<R>(
+    store: &mut Store<WorkflowData>,
+    function: fn(StoreContextMut<'_, WorkflowData>) -> R,
+) -> Func
+where
+    R: 'static + WasmRet,
+{
+    Func::wrap(store, move |mut caller: Caller<'_, WorkflowData>| {
+        function(caller.as_context_mut())
+    })
 }
 
 fn wrap1<R, A>(

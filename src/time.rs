@@ -12,21 +12,32 @@ use std::{
 
 #[cfg(target_arch = "wasm32")]
 mod imp {
-    use chrono::{DateTime, Utc};
+    use chrono::{DateTime, TimeZone, Utc};
 
     use std::{
         future::Future,
         pin::Pin,
         task::{Context, Poll},
-        time::Duration,
     };
 
-    use tardigrade_shared::{abi::IntoWasm, TimerId, TimerKind};
+    use tardigrade_shared::{abi::IntoWasm, TimerId};
 
     #[derive(Debug)]
-    pub struct Sleep(TimerId);
+    pub struct Timer(TimerId);
 
-    impl Future for Sleep {
+    impl Timer {
+        pub(super) fn at(timestamp: DateTime<Utc>) -> Self {
+            #[link(wasm_import_module = "tardigrade_rt")]
+            extern "C" {
+                #[link_name = "timer::new"]
+                fn timer_new(timestamp_millis: i64) -> TimerId;
+            }
+
+            Self(unsafe { timer_new(timestamp.timestamp_millis()) })
+        }
+    }
+
+    impl Future for Timer {
         type Output = DateTime<Utc>;
 
         fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -44,7 +55,7 @@ mod imp {
         }
     }
 
-    impl Drop for Sleep {
+    impl Drop for Timer {
         fn drop(&mut self) {
             #[link(wasm_import_module = "tardigrade_rt")]
             extern "C" {
@@ -56,19 +67,14 @@ mod imp {
         }
     }
 
-    pub fn sleep(duration: Duration) -> Sleep {
+    pub(super) fn now() -> DateTime<Utc> {
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
-            #[link_name = "timer::new"]
-            fn timer_new(timer_kind: TimerKind, timer_value: i64) -> TimerId;
+            #[link_name = "timer::now"]
+            fn timer_now() -> i64;
         }
 
-        Sleep(unsafe {
-            timer_new(
-                TimerKind::Duration,
-                i64::try_from(duration.as_millis()).expect("duration is too large"),
-            )
-        })
+        Utc.timestamp_millis(unsafe { timer_now() })
     }
 }
 
@@ -82,7 +88,6 @@ mod imp {
         future::Future,
         pin::Pin,
         task::{Context, Poll},
-        time::Duration,
     };
 
     use crate::test::Runtime;
@@ -90,13 +95,21 @@ mod imp {
     pin_project! {
         #[derive(Debug)]
         #[repr(transparent)]
-        pub struct Sleep {
+        pub struct Timer {
             #[pin]
             inner: oneshot::Receiver<DateTime<Utc>>,
         }
     }
 
-    impl Future for Sleep {
+    impl Timer {
+        pub(super) fn at(timestamp: DateTime<Utc>) -> Self {
+            Runtime::with_mut(|rt| Self {
+                inner: rt.scheduler().insert_timer(timestamp),
+            })
+        }
+    }
+
+    impl Future for Timer {
         type Output = DateTime<Utc>;
 
         fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -107,24 +120,42 @@ mod imp {
         }
     }
 
-    pub fn sleep(duration: Duration) -> Sleep {
-        Runtime::with_mut(|rt| Sleep {
-            inner: rt.insert_timer(duration),
-        })
+    pub(super) fn now() -> DateTime<Utc> {
+        Runtime::with_mut(|rt| rt.scheduler().now())
     }
 }
 
 pin_project! {
-    /// Future returned by [`sleep`].
+    /// A future emitting time events.
     #[derive(Debug)]
     #[repr(transparent)]
-    pub struct Sleep {
+    pub struct Timer {
         #[pin]
-        inner: imp::Sleep,
+        inner: imp::Timer,
     }
 }
 
-impl Future for Sleep {
+impl Timer {
+    /// Creates a timer that wakes up after the specified `duration`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `duration` cannot be represented as `chrono::Duration` (shouldn't normally
+    /// happen).
+    pub fn after(duration: Duration) -> Self {
+        let duration = chrono::Duration::from_std(duration).expect("duration overflow");
+        Self::at(now() + duration)
+    }
+
+    /// Creates a timer that wakes up at the specified `timestamp`.
+    pub fn at(timestamp: DateTime<Utc>) -> Self {
+        Self {
+            inner: imp::Timer::at(timestamp),
+        }
+    }
+}
+
+impl Future for Timer {
     type Output = DateTime<Utc>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -132,9 +163,12 @@ impl Future for Sleep {
     }
 }
 
+/// Returns the current timestamp as per the wall clock associated with the workflow.
+pub fn now() -> DateTime<Utc> {
+    imp::now()
+}
+
 /// Sleeps for the specified `duration`.
-pub fn sleep(duration: Duration) -> Sleep {
-    Sleep {
-        inner: imp::sleep(duration),
-    }
+pub fn sleep(duration: Duration) -> Timer {
+    Timer::after(duration)
 }

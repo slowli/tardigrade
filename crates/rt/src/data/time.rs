@@ -1,6 +1,6 @@
 //! Time utilities.
 
-use chrono::{DateTime, Duration, TimeZone, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use wasmtime::{StoreContextMut, Trap};
 
@@ -19,10 +19,7 @@ use crate::{
     utils::WasmAllocator,
     TimerId, WakerId,
 };
-use tardigrade_shared::{
-    abi::{IntoWasm, TryFromWasm},
-    TimerDefinition, TimerKind,
-};
+use tardigrade_shared::{abi::IntoWasm, TimerDefinition};
 
 /// State of a [`Workflow`](crate::Workflow) timer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,11 +143,8 @@ impl Timers {
 }
 
 impl WorkflowData {
-    fn timer_definition(&self, kind: TimerKind, value: i64) -> TimerDefinition {
-        let expires_at = match kind {
-            TimerKind::Duration => self.clock.now() + Duration::milliseconds(value),
-            TimerKind::Instant => Utc.timestamp_millis(value),
-        };
+    fn timer_definition(timestamp_millis: i64) -> TimerDefinition {
+        let expires_at = Utc.timestamp_millis(timestamp_millis);
         TimerDefinition { expires_at }
     }
 
@@ -200,23 +194,23 @@ impl WorkflowData {
 
 /// Timer-related functions exported to WASM.
 impl WorkflowFunctions {
+    #[allow(clippy::needless_pass_by_value)] // for uniformity with other functions
+    pub fn current_timestamp(ctx: StoreContextMut<'_, WorkflowData>) -> i64 {
+        ctx.data().clock.now().timestamp_millis()
+    }
+
     pub fn create_timer(
         mut ctx: StoreContextMut<'_, WorkflowData>,
-        timer_kind: i32,
-        timer_value: i64,
-    ) -> Result<TimerId, Trap> {
-        let timer_kind =
-            TimerKind::try_from_wasm(timer_kind).map_err(|err| Trap::new(err.to_string()));
-        let timer_kind = crate::log_result!(timer_kind, "Parsed `TimerKind`")?;
-
-        let definition = ctx.data().timer_definition(timer_kind, timer_value);
+        timestamp_millis: i64,
+    ) -> TimerId {
+        let definition = WorkflowData::timer_definition(timestamp_millis);
         let timer_id = ctx.data_mut().create_timer(definition);
         crate::trace!(
             "Created timer {} with definition {:?}",
             timer_id,
             definition
         );
-        Ok(timer_id)
+        timer_id
     }
 
     pub fn drop_timer(

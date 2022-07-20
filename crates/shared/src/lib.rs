@@ -13,6 +13,5 @@ pub mod trace;
 mod types;
 
 pub use crate::types::{
-    FutureId, JoinError, PollMessage, PollTask, TaskId, TimerDefinition, TimerId, TimerKind,
-    WakerId,
+    FutureId, JoinError, PollMessage, PollTask, TaskId, TimerDefinition, TimerId, WakerId,
 };
