@@ -58,15 +58,15 @@ impl TimerState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Timers {
-    current_time: DateTime<Utc>,
+    last_known_time: DateTime<Utc>,
     timers: HashMap<TimerId, TimerState>,
     next_timer_id: TimerId,
 }
 
 impl Timers {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(now: DateTime<Utc>) -> Self {
         Self {
-            current_time: Utc::now(),
+            last_known_time: now,
             timers: HashMap::new(),
             next_timer_id: 0,
         }
@@ -86,7 +86,11 @@ impl Timers {
             id,
             TimerState {
                 definition,
-                completed_at: None,
+                completed_at: if definition.expires_at > self.last_known_time {
+                    None
+                } else {
+                    Some(self.last_known_time)
+                },
                 wakes_on_completion: HashSet::new(),
             },
         );
@@ -122,8 +126,8 @@ impl Timers {
         }
     }
 
-    pub fn current_time(&self) -> DateTime<Utc> {
-        self.current_time
+    pub fn last_known_time(&self) -> DateTime<Utc> {
+        self.last_known_time
     }
 
     /// **NB.** The returned iterator must be completely consumed!
@@ -131,7 +135,7 @@ impl Timers {
         &mut self,
         time: DateTime<Utc>,
     ) -> impl Iterator<Item = (TimerId, HashSet<WakerId>)> + '_ {
-        self.current_time = time;
+        self.last_known_time = time;
         self.timers.iter_mut().filter_map(move |(&id, state)| {
             if state.definition.expires_at <= time {
                 Some((id, state.complete(time)))

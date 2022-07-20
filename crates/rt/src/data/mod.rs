@@ -93,7 +93,7 @@ impl WorkflowData {
             inbound_channels,
             outbound_channels,
             data_inputs,
-            timers: Timers::new(),
+            timers: Timers::new(services.clock.now()),
             services,
             tasks: HashMap::new(),
             current_execution: None,

@@ -97,7 +97,6 @@ use std::{
     fmt,
     future::Future,
     marker::PhantomData,
-    thread_local,
 };
 
 use crate::{
@@ -169,19 +168,18 @@ impl MockScheduler {
     }
 
     /// Inserts a timer into this scheduler.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `expires_at` is in the past according to [`Self::now()`].
     pub fn insert_timer(&mut self, expires_at: DateTime<Utc>) -> oneshot::Receiver<DateTime<Utc>> {
         let expires_at = Self::floor_timestamp(expires_at);
-        assert!(expires_at > self.now);
-
         let (sx, rx) = oneshot::channel();
-        self.timers.push(TimerEntry {
-            expires_at,
-            notifier: sx,
-        });
+        if expires_at > self.now {
+            self.timers.push(TimerEntry {
+                expires_at,
+                notifier: sx,
+            });
+        } else {
+            // Immediately complete the timer; `unwrap()` is safe since `rx` is alive.
+            sx.send(self.now).unwrap();
+        }
         rx
     }
 
@@ -317,6 +315,15 @@ impl Runtime {
         })
     }
 
+    fn with_optional_mut(act: impl FnOnce(&mut Self)) {
+        RT.with(|cell| {
+            let mut borrow = cell.borrow_mut();
+            if let Some(runtime) = borrow.as_mut() {
+                act(runtime);
+            }
+        });
+    }
+
     pub fn data_input(&self, name: &str) -> Option<Vec<u8>> {
         self.data_inputs.get(name).cloned()
     }
@@ -376,6 +383,15 @@ impl Runtime {
             .spawn_local_with_handle(task)
             .expect("failed spawning task")
     }
+
+    fn drop_workflow_resources(&mut self) {
+        for channel_pair in self.inbound_channels.values_mut() {
+            channel_pair.take_rx();
+        }
+        for channel_pair in self.outbound_channels.values_mut() {
+            channel_pair.take_sx();
+        }
+    }
 }
 
 /// Guard that frees up runtime TLS on drop.
@@ -433,14 +449,16 @@ where
     let interface = W::interface();
     let workflow_inputs = Inputs::for_interface(&interface, inputs);
 
-    let (guard, mut local_pool) = Runtime::initialize(&interface, workflow_inputs.into_inner());
+    let (_guard, mut local_pool) = Runtime::initialize(&interface, workflow_inputs.into_inner());
     let mut wasm = Wasm::default();
     let workflow = W::take_handle(&mut wasm, &()).unwrap();
     let test_handle = TestHandle::new();
 
     local_pool
         .spawner()
-        .spawn_local(W::spawn(workflow).into_inner().map(|()| drop(guard)))
+        .spawn_local(W::spawn(workflow).into_inner().map(|()| {
+            Runtime::with_optional_mut(Runtime::drop_workflow_resources);
+        }))
         .expect("cannot spawn workflow");
     local_pool.run_until_stalled();
     local_pool.run_until(test_fn(test_handle))

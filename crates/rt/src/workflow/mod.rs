@@ -313,7 +313,7 @@ impl<W> Workflow<W> {
 
     /// Returns the current time for the workflow.
     pub fn current_time(&self) -> DateTime<Utc> {
-        self.store.data().timers().current_time()
+        self.store.data().timers().last_known_time()
     }
 
     /// Sets the current time for the workflow and completes the relevant timers.
