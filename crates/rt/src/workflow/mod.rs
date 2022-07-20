@@ -16,8 +16,8 @@ use crate::{
     data::{ConsumeError, PersistError, TaskState, TimerState, WorkflowData},
     module::{DataSection, ModuleExports, WorkflowSpawner},
     receipt::{
-        Event, ExecutedFunction, Execution, ExecutionError, Receipt, ResourceEventKind, ResourceId,
-        WakeUpCause,
+        Event, ExecutedFunction, Execution, ExecutionError, ExtendedTrap, Receipt,
+        ResourceEventKind, ResourceId, WakeUpCause,
     },
     TaskId, TimerId,
 };
@@ -171,13 +171,13 @@ impl<W> Workflow<W> {
         &mut self,
         mut function: ExecutedFunction,
         receipt: &mut Receipt,
-    ) -> Result<(), Trap> {
+    ) -> Result<(), ExtendedTrap> {
         self.store
             .data_mut()
             .set_current_execution(function.clone());
 
         let output = self.do_execute(&mut function);
-        let events = self
+        let (events, panic_info) = self
             .store
             .data_mut()
             .remove_current_execution(output.is_err());
@@ -185,7 +185,7 @@ impl<W> Workflow<W> {
         receipt.executions.push(Execution { function, events });
 
         // On error, we don't drop tasks mentioned in `resource_events`.
-        output?;
+        output.map_err(|trap| ExtendedTrap::new(trap, panic_info))?;
 
         for task_id in dropped_tasks {
             let function = ExecutedFunction::TaskDrop { task_id };
@@ -213,7 +213,7 @@ impl<W> Workflow<W> {
         task_id: TaskId,
         wake_up_cause: WakeUpCause,
         receipt: &mut Receipt,
-    ) -> Result<(), Trap> {
+    ) -> Result<(), ExtendedTrap> {
         crate::trace!("Polling task {} because of {:?}", task_id, wake_up_cause);
 
         let function = ExecutedFunction::Task {
@@ -225,7 +225,7 @@ impl<W> Workflow<W> {
         crate::log_result!(poll_result, "Finished polling task {}", task_id)
     }
 
-    fn wake_tasks(&mut self, receipt: &mut Receipt) -> Result<(), Trap> {
+    fn wake_tasks(&mut self, receipt: &mut Receipt) -> Result<(), ExtendedTrap> {
         let wakers = self.store.data_mut().take_wakers();
         for (waker_id, wake_up_cause) in wakers {
             let function = ExecutedFunction::Waker {
@@ -245,7 +245,7 @@ impl<W> Workflow<W> {
         }
     }
 
-    fn do_tick(&mut self, receipt: &mut Receipt) -> Result<(), Trap> {
+    fn do_tick(&mut self, receipt: &mut Receipt) -> Result<(), ExtendedTrap> {
         self.wake_tasks(receipt)?;
 
         while let Some((task_id, wake_up_cause)) = self.store.data_mut().take_next_task() {

@@ -29,7 +29,7 @@ use self::{
 };
 use crate::{
     module::{Clock, ModuleExports},
-    receipt::WakeUpCause,
+    receipt::{PanicInfo, PanicLocation, WakeUpCause},
     utils::{copy_string_from_wasm, WasmAllocator},
     TaskId,
 };
@@ -154,5 +154,47 @@ impl WorkflowFunctions {
             )
         );
         maybe_data.into_wasm(&mut WasmAllocator::new(ctx))
+    }
+
+    pub fn report_panic(
+        mut ctx: StoreContextMut<'_, WorkflowData>,
+        message_ptr: u32,
+        message_len: u32,
+        filename_ptr: u32,
+        filename_len: u32,
+        line: u32,
+        column: u32,
+    ) -> Result<(), Trap> {
+        let memory = ctx.data().exports().memory;
+        let message = if message_ptr == 0 {
+            None
+        } else {
+            Some(copy_string_from_wasm(
+                &ctx,
+                &memory,
+                message_ptr,
+                message_len,
+            )?)
+        };
+        let filename = if filename_ptr == 0 {
+            None
+        } else {
+            Some(copy_string_from_wasm(
+                &ctx,
+                &memory,
+                filename_ptr,
+                filename_len,
+            )?)
+        };
+
+        ctx.data_mut().current_execution().set_panic(PanicInfo {
+            message,
+            location: filename.map(|filename| PanicLocation {
+                filename,
+                line,
+                column,
+            }),
+        });
+        Ok(())
     }
 }

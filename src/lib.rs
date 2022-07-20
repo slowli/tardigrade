@@ -221,6 +221,8 @@ macro_rules! workflow_entry {
             #[export_name = concat!("tardigrade_rt::spawn::", stringify!($workflow))]
             #[doc(hidden)]
             pub extern "C" fn __tardigrade_rt__main() -> $crate::workflow::TaskHandle {
+                $crate::workflow::Wasm::set_panic_hook();
+                // ^ Needs to be set at the very start of the workflow
                 $crate::workflow::TaskHandle::from_workflow::<$workflow>().unwrap()
             }
         };

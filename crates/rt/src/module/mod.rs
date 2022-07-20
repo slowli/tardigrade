@@ -636,6 +636,8 @@ impl ModuleImports {
             "timer::drop" => ensure_func_ty::<TimerId, ()>(ty, fn_name),
             "timer::poll" => ensure_func_ty::<(TimerId, WasmContextPtr), i64>(ty, fn_name),
 
+            "panic" => ensure_func_ty::<(u32, u32, u32, u32, u32, u32), ()>(ty, fn_name),
+
             other => {
                 bail!(
                     "Unknown import from `{}` module: `{}`",
@@ -689,82 +691,32 @@ impl ExtendLinker for WorkflowFunctions {
             ("timer::new", wrap1(&mut *store, Self::create_timer)),
             ("timer::drop", wrap1(&mut *store, Self::drop_timer)),
             ("timer::poll", wrap2(&mut *store, Self::poll_timer)),
+            // Panic hook
+            ("panic", wrap6(&mut *store, Self::report_panic)),
         ]
     }
 }
 
-fn wrap0<R>(
-    store: &mut Store<WorkflowData>,
-    function: fn(StoreContextMut<'_, WorkflowData>) -> R,
-) -> Func
-where
-    R: 'static + WasmRet,
-{
-    Func::wrap(store, move |mut caller: Caller<'_, WorkflowData>| {
-        function(caller.as_context_mut())
-    })
+macro_rules! impl_wrapper {
+    ($fn_name:ident => $($arg:ident : $arg_ty:ident),*) => {
+        fn $fn_name<R, $($arg_ty,)*>(
+            store: &mut Store<WorkflowData>,
+            function: fn(StoreContextMut<'_, WorkflowData>, $($arg_ty,)*) -> R,
+        ) -> Func
+        where
+            R: 'static + WasmRet,
+            $($arg_ty: 'static + WasmTy,)*
+        {
+            Func::wrap(store, move |mut caller: Caller<'_, WorkflowData>, $($arg,)*| {
+                function(caller.as_context_mut(), $($arg,)*)
+            })
+        }
+    };
 }
 
-fn wrap1<R, A>(
-    store: &mut Store<WorkflowData>,
-    function: fn(StoreContextMut<'_, WorkflowData>, A) -> R,
-) -> Func
-where
-    R: 'static + WasmRet,
-    A: 'static + WasmTy,
-{
-    Func::wrap(store, move |mut caller: Caller<'_, WorkflowData>, a| {
-        function(caller.as_context_mut(), a)
-    })
-}
-
-fn wrap2<R, A, B>(
-    store: &mut Store<WorkflowData>,
-    function: fn(StoreContextMut<'_, WorkflowData>, A, B) -> R,
-) -> Func
-where
-    R: 'static + WasmRet,
-    A: 'static + WasmTy,
-    B: 'static + WasmTy,
-{
-    Func::wrap(store, move |mut caller: Caller<'_, WorkflowData>, a, b| {
-        function(caller.as_context_mut(), a, b)
-    })
-}
-
-fn wrap3<R, A, B, C>(
-    store: &mut Store<WorkflowData>,
-    function: fn(StoreContextMut<'_, WorkflowData>, A, B, C) -> R,
-) -> Func
-where
-    R: 'static + WasmRet,
-    A: 'static + WasmTy,
-    B: 'static + WasmTy,
-    C: 'static + WasmTy,
-{
-    Func::wrap(
-        store,
-        move |mut caller: Caller<'_, WorkflowData>, a, b, c| {
-            function(caller.as_context_mut(), a, b, c)
-        },
-    )
-}
-
-fn wrap4<R, A, B, C, D>(
-    store: &mut Store<WorkflowData>,
-    function: fn(StoreContextMut<'_, WorkflowData>, A, B, C, D) -> R,
-) -> Func
-where
-    R: 'static + WasmRet,
-    A: 'static + WasmTy,
-    B: 'static + WasmTy,
-    C: 'static + WasmTy,
-    D: 'static + WasmTy,
-{
-    Func::wrap(
-        store,
-        move |mut caller: Caller<'_, WorkflowData>, a, b, c, d| {
-            function(caller.as_context_mut(), a, b, c, d)
-        },
-    )
-}
+impl_wrapper!(wrap0 =>);
+impl_wrapper!(wrap1 => a: A);
+impl_wrapper!(wrap2 => a: A, b: B);
+impl_wrapper!(wrap3 => a: A, b: B, c: C);
+impl_wrapper!(wrap4 => a: A, b: B, c: C, d: D);
+impl_wrapper!(wrap6 => a: A, b: B, c: C, d: D, e: E, f: F);

@@ -14,7 +14,7 @@ use super::{
     WorkflowData, WorkflowFunctions,
 };
 use crate::{
-    receipt::{Event, ExecutedFunction, ResourceEventKind, ResourceId, WakeUpCause},
+    receipt::{Event, ExecutedFunction, PanicInfo, ResourceEventKind, ResourceId, WakeUpCause},
     utils::{copy_string_from_wasm, drop_value, serde_poll, WasmAllocator},
     TaskId, WakerId,
 };
@@ -104,13 +104,16 @@ impl WorkflowData {
         self.current_execution = Some(CurrentExecution::new(function));
     }
 
-    /// Returns tasks that need to be dropped.
-    pub(crate) fn remove_current_execution(&mut self, revert: bool) -> Vec<Event> {
+    /// Returns tasks that need to be dropped, and panic info, if any.
+    pub(crate) fn remove_current_execution(
+        &mut self,
+        revert: bool,
+    ) -> (Vec<Event>, Option<PanicInfo>) {
         let current_execution = self.current_execution.take().unwrap();
         if revert {
             current_execution.revert(self)
         } else {
-            current_execution.commit(self)
+            (current_execution.commit(self), None)
         }
     }
 

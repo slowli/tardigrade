@@ -290,8 +290,24 @@ fn workflow_recovery_after_trap() -> TestResult {
         });
 
         if i % 2 == 0 {
-            let err = result.unwrap_err().to_string();
+            let err = result.unwrap_err();
+            let panic_info = err.panic_info().unwrap();
+            let panic_message = panic_info.message.as_ref().unwrap();
+            assert!(
+                panic_message.starts_with("Cannot decode bytes"),
+                "{}",
+                panic_message
+            );
+            let panic_location = panic_info.location.as_ref().unwrap();
+            assert!(
+                panic_location.filename.ends_with("codec.rs"),
+                "{:?}",
+                panic_location
+            );
+
+            let err = err.to_string();
             assert!(err.contains("workflow execution failed"), "{}", err);
+            assert!(err.contains("Cannot decode bytes"), "{}", err);
         } else {
             result?;
 
