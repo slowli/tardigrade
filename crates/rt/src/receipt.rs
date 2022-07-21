@@ -61,7 +61,11 @@ pub enum WakeUpCause {
 #[non_exhaustive]
 pub enum ExecutedFunction {
     /// Entry point of the workflow.
-    Entry,
+    #[non_exhaustive]
+    Entry {
+        /// ID of the created task.
+        task_id: TaskId,
+    },
     /// Polling a task.
     #[non_exhaustive]
     Task {
@@ -91,7 +95,7 @@ pub enum ExecutedFunction {
 impl ExecutedFunction {
     fn write_summary(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Entry => formatter.write_str("spawning workflow"),
+            Self::Entry { .. } => formatter.write_str("spawning workflow"),
             Self::Task { task_id, .. } => {
                 write!(formatter, "polling task {}", task_id)
             }
@@ -242,6 +246,10 @@ impl Receipt<()> {
             executions: Vec::new(),
             output: (),
         }
+    }
+
+    pub(crate) fn extend(&mut self, other: Self) {
+        self.executions.extend(other.executions);
     }
 }
 

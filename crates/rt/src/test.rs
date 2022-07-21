@@ -229,7 +229,7 @@ impl ModuleCompiler {
 /// let spawner = spawner.with_clock(scheduler.clone());
 /// let inputs: Inputs = // ...
 /// #   inputs;
-/// let workflow: Workflow<()> = spawner.spawn(inputs)?.into_inner();
+/// let workflow = spawner.spawn(inputs)?.init()?.into_inner();
 ///
 /// // Spin up the environment to execute the `workflow`.
 /// let mut env = AsyncEnv::new(workflow, scheduler.clone());

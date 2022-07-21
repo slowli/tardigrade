@@ -143,16 +143,11 @@ impl WorkflowData {
     }
 
     pub(crate) fn spawn_main_task(&mut self, task_id: TaskId) {
-        debug_assert!(self.tasks.is_empty());
-        debug_assert!(self.task_queue.is_empty());
-        debug_assert!(self.current_execution.is_none());
-
-        let task_state = TaskState::new("_main".to_owned(), &ExecutedFunction::Entry);
+        let spawned_by = ExecutedFunction::Entry { task_id };
+        let task_state = TaskState::new("_main".to_owned(), &spawned_by);
         self.tasks.insert(task_id, task_state);
-        self.task_queue.insert_task(
-            task_id,
-            &WakeUpCause::Spawned(Box::new(ExecutedFunction::Entry)),
-        );
+        self.task_queue
+            .insert_task(task_id, &WakeUpCause::Spawned(Box::new(spawned_by)));
     }
 
     fn poll_task_completion(

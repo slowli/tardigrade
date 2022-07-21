@@ -24,7 +24,7 @@ async fn test_external_tasks(
     let spawner = module.for_workflow::<PizzaDeliveryWithTasks>()?;
 
     let inputs = Inputs { oven_count };
-    let workflow = spawner.spawn(inputs)?.into_inner();
+    let workflow = spawner.spawn(inputs)?.init()?.into_inner();
     let mut env = AsyncEnv::new(workflow, AsyncIoScheduler);
     let mut handle = env.handle();
     let join_handle = task::spawn(async move { env.run().await });
@@ -140,7 +140,7 @@ async fn closing_task_responses_on_host() -> TestResult {
     let spawner = module.for_workflow::<PizzaDeliveryWithTasks>()?;
 
     let inputs = Inputs { oven_count: 2 };
-    let workflow = spawner.spawn(inputs)?.into_inner();
+    let workflow = spawner.spawn(inputs)?.init()?.into_inner();
     let mut env = AsyncEnv::new(workflow, AsyncIoScheduler);
     let mut handle = env.handle();
     let join_handle = task::spawn(async move { env.run().await });

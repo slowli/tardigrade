@@ -40,6 +40,53 @@ impl ListenedEvents {
     }
 }
 
+impl<W: Initialize<Id = ()>> WorkflowSpawner<W> {
+    /// Instantiates a new workflow from the `module` and the provided `inputs`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error in case preparations for instantiation (e.g., extending the WASM linker
+    /// with imports) fails.
+    pub fn spawn(&self, inputs: W::Init) -> anyhow::Result<InitializingWorkflow<W>> {
+        let raw_inputs = Inputs::for_interface(self.interface(), inputs);
+        let state = WorkflowData::from_interface(
+            self.interface().clone().erase(),
+            raw_inputs.into_inner(),
+            self.services.clone(),
+        );
+        let workflow = Workflow::from_state(self, state)?;
+        Ok(InitializingWorkflow { inner: workflow })
+    }
+}
+
+/// [`Workflow`] that has not been initialized yet.
+///
+/// The encapsulated workflow should be initialized by calling [`Self::init()`].
+#[must_use = "Should be initialized by calling `Self::init()`"]
+pub struct InitializingWorkflow<W> {
+    inner: Workflow<W>,
+}
+
+impl<W> fmt::Debug for InitializingWorkflow<W> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("InitializingWorkflow")
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
+impl<W> InitializingWorkflow<W> {
+    /// Initializes the workflow by spawning the main task and polling it. Note that depending
+    /// on the workflow config, other tasks may be immediately spawned as well.
+    pub fn init(mut self) -> Result<Receipt<Workflow<W>>, ExecutionError> {
+        let mut spawn_receipt = self.inner.spawn_main_task()?;
+        let tick_receipt = self.inner.tick()?;
+        spawn_receipt.extend(tick_receipt);
+        Ok(spawn_receipt.map(|()| self.inner))
+    }
+}
+
 /// Workflow instance.
 pub struct Workflow<W> {
     store: Store<WorkflowData>,
@@ -54,30 +101,6 @@ impl<W> fmt::Debug for Workflow<W> {
             .field("store", &self.store)
             .field("data_section", &self.data_section)
             .finish()
-    }
-}
-
-impl<W: Initialize<Id = ()>> WorkflowSpawner<W> {
-    /// Instantiates a new workflow from the `module` and the provided `inputs`.
-    ///
-    /// # Errors
-    ///
-    /// - Returns an error in case preparations for instantiation (e.g., extending the WASM linker
-    ///   with imports) fails.
-    /// - Returns an error if a trap occurs when spawning the main task for the workflow
-    ///   or polling it.
-    pub fn spawn(&self, inputs: W::Init) -> anyhow::Result<Receipt<Workflow<W>>> {
-        let raw_inputs = Inputs::for_interface(self.interface(), inputs);
-        let state = WorkflowData::from_interface(
-            self.interface().clone().erase(),
-            raw_inputs.into_inner(),
-            self.services.clone(),
-        );
-        let mut this = Workflow::from_state(self, state)?;
-        this.spawn_main_task()
-            .context("failed spawning main task")?;
-        let receipt = this.tick().context("failed polling main task")?;
-        Ok(receipt.map(|()| this))
     }
 }
 
@@ -106,11 +129,19 @@ impl<W> Workflow<W> {
         self.store.data().interface()
     }
 
-    fn spawn_main_task(&mut self) -> Result<(), Trap> {
-        let exports = self.store.data().exports();
-        let task_ptr = exports.create_main_task(self.store.as_context_mut())?;
-        self.store.data_mut().spawn_main_task(task_ptr);
-        Ok(())
+    fn spawn_main_task(&mut self) -> Result<Receipt, ExecutionError> {
+        let function = ExecutedFunction::Entry { task_id: 0 };
+        let mut receipt = Receipt::new();
+        if let Err(err) = self.execute(function, &mut receipt) {
+            return Err(ExecutionError::new(err, receipt));
+        }
+
+        let task_id = match &receipt.executions[0].function {
+            ExecutedFunction::Entry { task_id } => *task_id,
+            _ => unreachable!(),
+        };
+        self.store.data_mut().spawn_main_task(task_id);
+        Ok(receipt)
     }
 
     /// Returns the current state of a task with the specified ID.
@@ -163,7 +194,14 @@ impl<W> Workflow<W> {
                 let exports = self.store.data().exports();
                 exports.drop_task(self.store.as_context_mut(), *task_id)
             }
-            ExecutedFunction::Entry => unreachable!(),
+            ExecutedFunction::Entry { task_id } => {
+                let exports = self.store.data().exports();
+                exports
+                    .create_main_task(self.store.as_context_mut())
+                    .map(|new_task_id| {
+                        *task_id = new_task_id;
+                    })
+            }
         }
     }
 

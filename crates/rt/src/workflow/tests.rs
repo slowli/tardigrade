@@ -145,7 +145,7 @@ fn create_workflow(clock: impl Clock) -> Receipt<Workflow<()>> {
         .with_clock(clock);
     let mut inputs = InputsBuilder::new(spawner.interface());
     inputs.insert("inputs", b"test_input".to_vec());
-    spawner.spawn(inputs.build()).unwrap()
+    spawner.spawn(inputs.build()).unwrap().init().unwrap()
 }
 
 #[test]
@@ -156,15 +156,15 @@ fn starting_workflow() {
     let exports_mock = exports_guard.into_inner();
     assert!(exports_mock.exports_created);
 
-    assert_eq!(receipt.executions().len(), 1);
-    let execution = &receipt.executions()[0];
+    assert_eq!(receipt.executions().len(), 2);
+    let execution = &receipt.executions()[1];
     assert_matches!(
         &execution.function,
         ExecutedFunction::Task {
             task_id: 0,
             wake_up_cause: WakeUpCause::Spawned(spawn_fn),
             poll_result: Poll::Pending,
-        } if matches!(spawn_fn.as_ref(), ExecutedFunction::Entry)
+        } if matches!(spawn_fn.as_ref(), ExecutedFunction::Entry { .. })
     );
     assert_eq!(execution.events.len(), 1);
     assert_matches!(
@@ -285,9 +285,10 @@ fn trap_when_starting_workflow() {
     let spawner = module.for_untyped_workflow("TestWorkflow").unwrap();
     let mut inputs = InputsBuilder::new(spawner.interface());
     inputs.insert("inputs", b"test_input".to_vec());
-    let err = spawner.spawn(inputs.build()).unwrap_err().to_string();
+    let workflow = spawner.spawn(inputs.build()).unwrap();
+    let err = workflow.init().unwrap_err().to_string();
 
-    assert!(err.contains("failed polling main task"), "{}", err);
+    assert!(err.contains("failed while polling task 0"), "{}", err);
 }
 
 #[allow(clippy::unnecessary_wraps)] // more convenient for use with mock `Answers`
@@ -313,8 +314,8 @@ fn spawning_and_cancelling_task() {
     let mock_guard = ExportsMock::prepare(poll_fns);
     let receipt = create_workflow(MockScheduler::default());
 
-    assert_eq!(receipt.executions().len(), 2);
-    let task_spawned = receipt.executions()[0].events.iter().any(|event| {
+    assert_eq!(receipt.executions().len(), 3);
+    let task_spawned = receipt.executions()[1].events.iter().any(|event| {
         matches!(
             event,
             Event::Resource(res) if res.resource_id == ResourceId::Task(1)
@@ -323,7 +324,7 @@ fn spawning_and_cancelling_task() {
     });
     assert!(task_spawned, "{:?}", receipt.executions());
     assert_matches!(
-        receipt.executions()[1].function,
+        receipt.executions()[2].function,
         ExecutedFunction::Task {
             task_id: 1,
             wake_up_cause: WakeUpCause::Function(_),

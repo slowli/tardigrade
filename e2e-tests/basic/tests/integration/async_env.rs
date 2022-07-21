@@ -48,7 +48,7 @@ async fn test_async_handle(cancel_workflow: bool) -> TestResult {
         oven_count: 1,
         deliverer_count: 1,
     };
-    let workflow = spawner.spawn(inputs)?.into_inner();
+    let workflow = spawner.spawn(inputs)?.init()?.into_inner();
     let mut env = AsyncEnv::new(workflow, AsyncIoScheduler);
     let mut handle = env.handle();
 
@@ -122,7 +122,7 @@ async fn test_async_handle_with_concurrency(
 
     println!("testing async handle with {:?}", inputs);
 
-    let workflow = spawner.spawn(inputs)?.into_inner();
+    let workflow = spawner.spawn(inputs)?.init()?.into_inner();
     let mut env = AsyncEnv::new(workflow, AsyncIoScheduler);
     let mut handle = env.handle();
     let join_handle = task::spawn(async move { env.run().await });
@@ -240,7 +240,7 @@ async fn initialize_workflow() -> TestResult<AsyncRig> {
         oven_count: 2,
         deliverer_count: 1,
     };
-    let workflow = spawner.spawn(inputs)?.into_inner();
+    let workflow = spawner.spawn(inputs)?.init()?.into_inner();
     let mut env = AsyncEnv::new(workflow, scheduler.clone());
     let mut handle = env.handle();
     let results = env.execution_results();
@@ -408,7 +408,7 @@ async fn spawn_cancellable_workflow() -> TestResult<CancellableWorkflow> {
         oven_count: 1,
         deliverer_count: 1,
     };
-    let workflow = spawner.spawn(inputs)?.into_inner();
+    let workflow = spawner.spawn(inputs)?.init()?.into_inner();
     let mut env = AsyncEnv::new(workflow, scheduler.clone());
     let handle = env.handle();
 
@@ -503,7 +503,7 @@ async fn dynamically_typed_async_handle() -> TestResult {
             deliverer_count: 1,
         }),
     );
-    let workflow = spawner.spawn(builder.build())?.into_inner();
+    let workflow = spawner.spawn(builder.build())?.init()?.into_inner();
 
     let mut env = AsyncEnv::new(workflow, AsyncIoScheduler);
     let mut handle = env.handle();
@@ -549,7 +549,7 @@ async fn rollback_strategy() -> TestResult {
             deliverer_count: 1,
         }),
     );
-    let workflow = spawner.spawn(builder.build())?.into_inner();
+    let workflow = spawner.spawn(builder.build())?.init()?.into_inner();
 
     let mut env = AsyncEnv::new(workflow, AsyncIoScheduler);
     env.set_rollback_strategy(Rollback::any_trap());

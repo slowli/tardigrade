@@ -26,17 +26,21 @@ fn basic_workflow() -> TestResult {
         oven_count: 1,
         deliverer_count: 1,
     };
-    let receipt = spawner.spawn(inputs)?;
+    let receipt = spawner.spawn(inputs)?.init()?;
 
-    assert_eq!(receipt.executions().len(), 1);
-    let execution = &receipt.executions()[0];
+    assert_eq!(receipt.executions().len(), 2);
+    let init_execution = &receipt.executions()[0];
+    assert_matches!(&init_execution.function, ExecutedFunction::Entry { .. });
+
+    // This is the "main" execution of async code.
+    let execution = &receipt.executions()[1];
     assert_matches!(
         &execution.function,
         ExecutedFunction::Task {
             wake_up_cause: WakeUpCause::Spawned(inner_fn),
             poll_result: Poll::Pending,
             ..
-        } if matches!(inner_fn.as_ref(), ExecutedFunction::Entry)
+        } if matches!(inner_fn.as_ref(), ExecutedFunction::Entry { .. })
     );
 
     assert_eq!(execution.events.len(), 1);
@@ -107,7 +111,7 @@ fn workflow_with_concurrency() -> TestResult {
         oven_count: 2,
         deliverer_count: 1,
     };
-    let mut workflow = spawner.spawn(inputs)?.into_inner();
+    let mut workflow = spawner.spawn(inputs)?.init()?.into_inner();
     let mut handle = WorkflowEnv::new(&mut workflow).handle();
 
     let order = PizzaOrder {
@@ -146,7 +150,7 @@ fn restoring_workflow() -> TestResult {
         oven_count: 1,
         deliverer_count: 1,
     };
-    let mut workflow = spawner.spawn(inputs)?.into_inner();
+    let mut workflow = spawner.spawn(inputs)?.init()?.into_inner();
     let mut handle = WorkflowEnv::new(&mut workflow).handle();
 
     let order = PizzaOrder {
@@ -224,9 +228,9 @@ fn untyped_workflow() -> TestResult {
             deliverer_count: 1,
         }),
     );
-    let receipt = spawner.spawn(builder.build())?;
+    let receipt = spawner.spawn(builder.build())?.init()?;
 
-    assert_eq!(receipt.executions().len(), 1);
+    assert_eq!(receipt.executions().len(), 2);
     let mut workflow = receipt.into_inner();
     let mut handle = WorkflowEnv::new(&mut workflow).handle();
 
@@ -267,7 +271,7 @@ fn workflow_recovery_after_trap() -> TestResult {
             deliverer_count: 1,
         }),
     );
-    let mut workflow = spawner.spawn(builder.build())?.into_inner();
+    let mut workflow = spawner.spawn(builder.build())?.init()?.into_inner();
 
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,
