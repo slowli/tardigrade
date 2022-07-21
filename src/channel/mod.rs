@@ -42,7 +42,7 @@ mod requests;
 
 pub use self::{
     broadcast::{BroadcastError, BroadcastPublisher, BroadcastSubscriber},
-    requests::{Requests, WithId},
+    requests::{Requests, RequestsBuilder, WithId},
 };
 
 pin_project! {

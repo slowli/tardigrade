@@ -168,6 +168,7 @@ impl MockScheduler {
     }
 
     /// Inserts a timer into this scheduler.
+    #[allow(clippy::missing_panics_doc)] // false positive
     pub fn insert_timer(&mut self, expires_at: DateTime<Utc>) -> oneshot::Receiver<DateTime<Utc>> {
         let expires_at = Self::floor_timestamp(expires_at);
         let (sx, rx) = oneshot::channel();
