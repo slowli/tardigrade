@@ -141,6 +141,7 @@ impl AccessError {
 
 /// Specification of an inbound channel in the workflow [`Interface`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct InboundChannelSpec {
     /// Human-readable channel description.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -169,6 +170,7 @@ impl OutboundChannelSpec {
 
 /// Specification of a data input in the workflow [`Interface`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct DataInputSpec {
     /// Human-readable data input description.
     #[serde(default, skip_serializing_if = "String::is_empty")]

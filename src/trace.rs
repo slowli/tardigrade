@@ -18,7 +18,7 @@ use crate::{
     channel::Sender,
     interface::{AccessError, AccessErrorKind, Interface, OutboundChannel, ValidateInterface},
     workflow::{EnvExtensions, ExtendEnv, TakeHandle, Wasm},
-    Encoder,
+    Encode,
 };
 use tardigrade_shared::FutureId;
 
@@ -28,7 +28,7 @@ pub struct Tracer<C> {
     sender: Sender<FutureUpdate, C>,
 }
 
-impl<C: Encoder<FutureUpdate> + Clone> Clone for Tracer<C> {
+impl<C: Encode<FutureUpdate> + Clone> Clone for Tracer<C> {
     fn clone(&self) -> Self {
         Self {
             sender: self.sender.clone(),
@@ -36,7 +36,7 @@ impl<C: Encoder<FutureUpdate> + Clone> Clone for Tracer<C> {
     }
 }
 
-impl<C: Encoder<FutureUpdate>> Tracer<C> {
+impl<C: Encode<FutureUpdate>> Tracer<C> {
     fn trace(&mut self, update: FutureUpdate) {
         self.sender
             .feed(update)
@@ -48,7 +48,7 @@ impl<C: Encoder<FutureUpdate>> Tracer<C> {
 
 impl<C> TakeHandle<Wasm> for Tracer<C>
 where
-    C: Encoder<FutureUpdate> + Default,
+    C: Encode<FutureUpdate> + Default,
 {
     type Id = str;
     type Handle = Self;
@@ -60,7 +60,7 @@ where
 
 impl<C> ValidateInterface for Tracer<C>
 where
-    C: Encoder<FutureUpdate> + Default,
+    C: Encode<FutureUpdate> + Default,
 {
     type Id = str;
 
@@ -100,13 +100,13 @@ impl<C> TakeHandle<EnvExtensions> for Tracer<C> {
 
 /// Wrapper around a [`Future`] that traces its progress.
 #[derive(Debug)]
-pub struct Traced<F, C: Encoder<FutureUpdate>> {
+pub struct Traced<F, C: Encode<FutureUpdate>> {
     id: FutureId,
     tracer: Tracer<C>,
     inner: F,
 }
 
-impl<F, C: Encoder<FutureUpdate>> Drop for Traced<F, C> {
+impl<F, C: Encode<FutureUpdate>> Drop for Traced<F, C> {
     fn drop(&mut self) {
         if thread::panicking() {
             return; // If we're in a panicking thread, the trace receiver may be gone.
@@ -119,7 +119,7 @@ impl<F, C: Encoder<FutureUpdate>> Drop for Traced<F, C> {
     }
 }
 
-impl<F: Future, C: Encoder<FutureUpdate>> Traced<F, C> {
+impl<F: Future, C: Encode<FutureUpdate>> Traced<F, C> {
     pub(crate) fn new(inner: F, mut tracer: Tracer<C>, name: String) -> Self {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -145,7 +145,7 @@ impl<F: Future, C: Encoder<FutureUpdate>> Traced<F, C> {
     }
 }
 
-impl<F: Future, C: Encoder<FutureUpdate>> Future for Traced<F, C> {
+impl<F: Future, C: Encode<FutureUpdate>> Future for Traced<F, C> {
     type Output = F::Output;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {

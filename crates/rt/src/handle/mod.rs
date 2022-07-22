@@ -28,7 +28,7 @@ use tardigrade::{
     },
     trace::{FutureUpdate, TracedFutures, Tracer},
     workflow::{EnvExtensions, TakeHandle, UntypedHandle},
-    Data, Decoder, Encoder,
+    Data, Decode, Encode,
 };
 
 /// Environment for executing [`Workflow`]s.
@@ -136,7 +136,7 @@ pub struct MessageSender<'a, T, C, W> {
     _item: PhantomData<fn(T)>,
 }
 
-impl<'a, T, C: Encoder<T>, W> MessageSender<'a, T, C, W> {
+impl<'a, T, C: Encode<T>, W> MessageSender<'a, T, C, W> {
     /// Sends a message.
     ///
     /// # Errors
@@ -189,7 +189,7 @@ impl<W> SentMessage<'_, W> {
 
 impl<'a, T, C, W> TakeHandle<WorkflowEnv<'a, W>> for Receiver<T, C>
 where
-    C: Encoder<T> + Default,
+    C: Encode<T> + Default,
 {
     type Id = str;
     type Handle = MessageSender<'a, T, C, W>;
@@ -220,7 +220,7 @@ pub struct MessageReceiver<'a, T, C, W> {
     _item: PhantomData<fn() -> T>,
 }
 
-impl<T, C: Decoder<T>, W> MessageReceiver<'_, T, C, W> {
+impl<T, C: Decode<T>, W> MessageReceiver<'_, T, C, W> {
     /// Takes messages from the channel and progresses the flow marking the channel as flushed.
     ///
     /// # Errors
@@ -251,7 +251,7 @@ pub struct TakenMessages<'a, T, C> {
     _item: PhantomData<fn() -> T>,
 }
 
-impl<T, C: Decoder<T>> TakenMessages<'_, T, C> {
+impl<T, C: Decode<T>> TakenMessages<'_, T, C> {
     /// Returns zero-based indices of the taken messages.
     pub fn message_indices(&self) -> Range<usize> {
         self.start_idx..(self.start_idx + self.raw_messages.len())
@@ -272,7 +272,7 @@ impl<T, C: Decoder<T>> TakenMessages<'_, T, C> {
 
 impl<'a, T, C, W> TakeHandle<WorkflowEnv<'a, W>> for Sender<T, C>
 where
-    C: Decoder<T> + Default,
+    C: Decode<T> + Default,
 {
     type Id = str;
     type Handle = MessageReceiver<'a, T, C, W>;
@@ -295,7 +295,7 @@ where
 
 impl<'a, T, C, W> TakeHandle<WorkflowEnv<'a, W>> for Data<T, C>
 where
-    C: Decoder<T> + Default,
+    C: Decode<T> + Default,
 {
     type Id = str;
     type Handle = T;
@@ -321,7 +321,7 @@ pub struct TracerHandle<'a, C, W> {
 
 impl<'a, C, W> TracerHandle<'a, C, W>
 where
-    C: Decoder<FutureUpdate>,
+    C: Decode<FutureUpdate>,
 {
     /// Returns a reference to the traced futures.
     pub fn futures(&self) -> &TracedFutures {
@@ -363,7 +363,7 @@ where
 
 impl<'a, C, W> TakeHandle<WorkflowEnv<'a, W>> for Tracer<C>
 where
-    C: Decoder<FutureUpdate> + Default,
+    C: Decode<FutureUpdate> + Default,
 {
     type Id = str;
     type Handle = TracerHandle<'a, C, W>;

@@ -79,6 +79,10 @@ impl<W> fmt::Debug for InitializingWorkflow<W> {
 impl<W> InitializingWorkflow<W> {
     /// Initializes the workflow by spawning the main task and polling it. Note that depending
     /// on the workflow config, other tasks may be immediately spawned as well.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the entry point of the workflow or initially polling it fails.
     pub fn init(mut self) -> Result<Receipt<Workflow<W>>, ExecutionError> {
         let mut spawn_receipt = self.inner.spawn_main_task()?;
         let tick_receipt = self.inner.tick()?;

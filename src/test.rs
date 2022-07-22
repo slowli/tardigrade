@@ -104,7 +104,7 @@ use crate::{
     interface::{AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel},
     trace::Tracer,
     workflow::{Inputs, SpawnWorkflow, TakeHandle, Wasm},
-    Data, Decoder, Encoder,
+    Data, Decode, Encode,
 };
 use tardigrade_shared::trace::{FutureUpdate, TracedFutures};
 
@@ -496,7 +496,7 @@ impl TestHost {
     }
 }
 
-impl<T, C: Encoder<T> + Default> TakeHandle<TestHost> for Receiver<T, C> {
+impl<T, C: Encode<T> + Default> TakeHandle<TestHost> for Receiver<T, C> {
     type Id = str;
     type Handle = Sender<T, C>;
 
@@ -505,7 +505,7 @@ impl<T, C: Encoder<T> + Default> TakeHandle<TestHost> for Receiver<T, C> {
     }
 }
 
-impl<T, C: Decoder<T> + Default> TakeHandle<TestHost> for Sender<T, C> {
+impl<T, C: Decode<T> + Default> TakeHandle<TestHost> for Sender<T, C> {
     type Id = str;
     type Handle = Receiver<T, C>;
 
@@ -514,7 +514,7 @@ impl<T, C: Decoder<T> + Default> TakeHandle<TestHost> for Sender<T, C> {
     }
 }
 
-impl<T, C: Decoder<T> + Default> TakeHandle<TestHost> for Data<T, C> {
+impl<T, C: Decode<T> + Default> TakeHandle<TestHost> for Data<T, C> {
     type Id = str;
     type Handle = Self;
 
@@ -532,7 +532,7 @@ pub struct TracerHandle<C> {
 
 impl<C> TracerHandle<C>
 where
-    C: Decoder<FutureUpdate> + Default,
+    C: Decode<FutureUpdate> + Default,
 {
     /// Returns a reference to the traced futures.
     pub fn futures(&self) -> &TracedFutures {
@@ -554,7 +554,7 @@ where
 
 impl<C> TakeHandle<TestHost> for Tracer<C>
 where
-    C: Decoder<FutureUpdate> + Default,
+    C: Decode<FutureUpdate> + Default,
 {
     type Id = str;
     type Handle = TracerHandle<C>;

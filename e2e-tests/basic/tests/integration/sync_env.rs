@@ -8,7 +8,7 @@ use tardigrade::{
     interface::{InboundChannel, OutboundChannel},
     trace::FutureState,
     workflow::InputsBuilder,
-    Decoder, Encoder, Json,
+    Decode, Encode, Json,
 };
 use tardigrade_rt::{
     handle::WorkflowEnv,

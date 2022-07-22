@@ -27,7 +27,7 @@ use tardigrade::{
     },
     trace::{FutureUpdate, TracedFuture, TracedFutures, Tracer},
     workflow::{TakeHandle, UntypedHandle},
-    Data, Decoder, Encoder,
+    Data, Decode, Encode,
 };
 
 /// Future for [`Schedule::create_timer()`].
@@ -401,7 +401,7 @@ impl<T, C: Clone> Clone for MessageSender<T, C> {
     }
 }
 
-impl<T, C: Encoder<T>> Sink<T> for MessageSender<T, C> {
+impl<T, C: Encode<T>> Sink<T> for MessageSender<T, C> {
     type Error = mpsc::SendError;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -425,7 +425,7 @@ impl<T, C: Encoder<T>> Sink<T> for MessageSender<T, C> {
 
 impl<T, C, W> TakeHandle<AsyncEnv<W>> for Receiver<T, C>
 where
-    C: Encoder<T> + Default,
+    C: Encode<T> + Default,
 {
     type Id = str;
     type Handle = MessageSender<T, C>;
@@ -462,7 +462,7 @@ pin_project! {
     }
 }
 
-impl<T, C: Decoder<T>> Stream for MessageReceiver<T, C> {
+impl<T, C: Decode<T>> Stream for MessageReceiver<T, C> {
     type Item = Result<T, C::Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -477,7 +477,7 @@ impl<T, C: Decoder<T>> Stream for MessageReceiver<T, C> {
 
 impl<T, C, W> TakeHandle<AsyncEnv<W>> for Sender<T, C>
 where
-    C: Decoder<T> + Default,
+    C: Decode<T> + Default,
 {
     type Id = str;
     type Handle = MessageReceiver<T, C>;
@@ -500,7 +500,7 @@ where
 
 impl<T, C, W> TakeHandle<AsyncEnv<W>> for Data<T, C>
 where
-    C: Decoder<T> + Default,
+    C: Decode<T> + Default,
 {
     type Id = str;
     type Handle = T;
@@ -543,7 +543,7 @@ impl<C> TracerHandle<C> {
     }
 }
 
-impl<C: Decoder<FutureUpdate>> Stream for TracerHandle<C> {
+impl<C: Decode<FutureUpdate>> Stream for TracerHandle<C> {
     type Item = anyhow::Result<(FutureId, TracedFuture)>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -568,7 +568,7 @@ impl<C: Decoder<FutureUpdate>> Stream for TracerHandle<C> {
     }
 }
 
-impl<C: Decoder<FutureUpdate> + Default, W> TakeHandle<AsyncEnv<W>> for Tracer<C> {
+impl<C: Decode<FutureUpdate> + Default, W> TakeHandle<AsyncEnv<W>> for Tracer<C> {
     type Id = str;
     type Handle = TracerHandle<C>;
 
