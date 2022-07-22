@@ -5,8 +5,6 @@ use serde::{Deserialize, Serialize};
 
 use std::{error, fmt, task::Poll};
 
-use crate::abi::{FromWasmError, TryFromWasm};
-
 /// Result of polling a receiver end of a channel.
 pub type PollMessage = Poll<Option<Vec<u8>>>;
 /// Result of polling a workflow task.
@@ -41,32 +39,6 @@ impl fmt::Display for JoinError {
 }
 
 impl error::Error for JoinError {}
-
-/// Kind of a timer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(i32)]
-pub enum TimerKind {
-    /// Relative timer: one that expires after the specified duration.
-    Duration = 0,
-    /// Absolute timer: one that expires at the specified instant.
-    Instant = 1,
-}
-
-impl TryFromWasm for TimerKind {
-    type Abi = i32;
-
-    fn into_abi_in_wasm(self) -> Self::Abi {
-        self as i32
-    }
-
-    fn try_from_wasm(value: i32) -> Result<Self, FromWasmError> {
-        match value {
-            0 => Ok(Self::Duration),
-            1 => Ok(Self::Instant),
-            _ => Err(FromWasmError::new("invalid `TimerKind` value")),
-        }
-    }
-}
 
 /// Definition of a timer used by a workflow.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

@@ -2,13 +2,14 @@ use assert_matches::assert_matches;
 use mimicry::Answers;
 use wasmtime::StoreContextMut;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::*;
 use crate::{
     data::{WasmContextPtr, WorkflowFunctions},
-    module::{ExportsMock, MockPollFn, WorkflowEngine, WorkflowModule},
+    module::{Clock, ExportsMock, MockPollFn, WorkflowEngine, WorkflowModule},
     receipt::{ChannelEvent, ChannelEventKind},
+    test::MockScheduler,
     utils::{copy_string_from_wasm, WasmAllocator},
 };
 use tardigrade::workflow::InputsBuilder;
@@ -135,34 +136,35 @@ fn consume_message(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()
     Ok(Poll::Pending)
 }
 
-fn create_workflow() -> Receipt<Workflow<()>> {
+fn create_workflow(clock: impl Clock) -> Receipt<Workflow<()>> {
     let engine = WorkflowEngine::default();
     let spawner = WorkflowModule::new(&engine, ExportsMock::MOCK_MODULE_BYTES)
         .unwrap()
         .for_untyped_workflow("TestWorkflow")
-        .unwrap();
+        .unwrap()
+        .with_clock(clock);
     let mut inputs = InputsBuilder::new(spawner.interface());
     inputs.insert("inputs", b"test_input".to_vec());
-    spawner.spawn(inputs.build()).unwrap()
+    spawner.spawn(inputs.build()).unwrap().init().unwrap()
 }
 
 #[test]
 fn starting_workflow() {
     let poll_fns = Answers::from_value(initialize_task as MockPollFn);
     let exports_guard = ExportsMock::prepare(poll_fns);
-    let receipt = create_workflow();
+    let receipt = create_workflow(MockScheduler::default());
     let exports_mock = exports_guard.into_inner();
     assert!(exports_mock.exports_created);
 
-    assert_eq!(receipt.executions().len(), 1);
-    let execution = &receipt.executions()[0];
+    assert_eq!(receipt.executions().len(), 2);
+    let execution = &receipt.executions()[1];
     assert_matches!(
         &execution.function,
         ExecutedFunction::Task {
             task_id: 0,
             wake_up_cause: WakeUpCause::Spawned(spawn_fn),
             poll_result: Poll::Pending,
-        } if matches!(spawn_fn.as_ref(), ExecutedFunction::Entry)
+        } if matches!(spawn_fn.as_ref(), ExecutedFunction::Entry { .. })
     );
     assert_eq!(execution.events.len(), 1);
     assert_matches!(
@@ -181,7 +183,7 @@ fn starting_workflow() {
 fn receiving_inbound_message() {
     let poll_fns = Answers::from_values([initialize_task, consume_message]);
     let exports_guard = ExportsMock::prepare(poll_fns);
-    let mut workflow = create_workflow().into_inner();
+    let mut workflow = create_workflow(MockScheduler::default()).into_inner();
 
     workflow
         .push_inbound_message("orders", b"order #1".to_vec())
@@ -283,9 +285,10 @@ fn trap_when_starting_workflow() {
     let spawner = module.for_untyped_workflow("TestWorkflow").unwrap();
     let mut inputs = InputsBuilder::new(spawner.interface());
     inputs.insert("inputs", b"test_input".to_vec());
-    let err = spawner.spawn(inputs.build()).unwrap_err().to_string();
+    let workflow = spawner.spawn(inputs.build()).unwrap();
+    let err = workflow.init().unwrap_err().to_string();
 
-    assert!(err.contains("failed polling main task"), "{}", err);
+    assert!(err.contains("failed while polling task 0"), "{}", err);
 }
 
 #[allow(clippy::unnecessary_wraps)] // more convenient for use with mock `Answers`
@@ -309,10 +312,10 @@ fn spawning_and_cancelling_task() {
     };
     let poll_fns = Answers::from_values([initialize_and_spawn_task, abort_task_and_complete]);
     let mock_guard = ExportsMock::prepare(poll_fns);
-    let receipt = create_workflow();
+    let receipt = create_workflow(MockScheduler::default());
 
-    assert_eq!(receipt.executions().len(), 2);
-    let task_spawned = receipt.executions()[0].events.iter().any(|event| {
+    assert_eq!(receipt.executions().len(), 3);
+    let task_spawned = receipt.executions()[1].events.iter().any(|event| {
         matches!(
             event,
             Event::Resource(res) if res.resource_id == ResourceId::Task(1)
@@ -321,7 +324,7 @@ fn spawning_and_cancelling_task() {
     });
     assert!(task_spawned, "{:?}", receipt.executions());
     assert_matches!(
-        receipt.executions()[1].function,
+        receipt.executions()[2].function,
         ExecutedFunction::Task {
             task_id: 1,
             wake_up_cause: WakeUpCause::Function(_),
@@ -380,7 +383,7 @@ fn rolling_back_task_spawning() {
     };
     let poll_fns = Answers::from_values([initialize_task, spawn_task_and_trap]);
     let _guard = ExportsMock::prepare(poll_fns);
-    let mut workflow = create_workflow().into_inner();
+    let mut workflow = create_workflow(MockScheduler::default()).into_inner();
 
     // Push the message in order to tick the main task.
     workflow
@@ -414,7 +417,7 @@ fn rolling_back_task_abort() {
     };
     let poll_fns = Answers::from_values([initialize_and_spawn_task, abort_task_and_trap]);
     let mock_guard = ExportsMock::prepare(poll_fns);
-    let mut workflow = create_workflow().into_inner();
+    let mut workflow = create_workflow(MockScheduler::default()).into_inner();
 
     // Push the message in order to tick the main task.
     workflow
@@ -448,7 +451,7 @@ fn rolling_back_emitting_messages_on_trap() {
     };
     let poll_fns = Answers::from_values([initialize_task, emit_message_and_trap]);
     let _guard = ExportsMock::prepare(poll_fns);
-    let mut workflow = create_workflow().into_inner();
+    let mut workflow = create_workflow(MockScheduler::default()).into_inner();
 
     // Push the message in order to tick the main task.
     workflow
@@ -468,7 +471,7 @@ fn rolling_back_placing_waker_on_trap() {
     };
     let poll_fns = Answers::from_values([initialize_task, flush_event_and_trap]);
     let _guard = ExportsMock::prepare(poll_fns);
-    let mut workflow = create_workflow().into_inner();
+    let mut workflow = create_workflow(MockScheduler::default()).into_inner();
 
     // Push the message in order to tick the main task.
     workflow
@@ -478,4 +481,54 @@ fn rolling_back_placing_waker_on_trap() {
 
     let wakers: Vec<_> = workflow.store.data().outbound_channel_wakers().collect();
     assert!(wakers.is_empty(), "{:?}", wakers);
+}
+
+#[test]
+fn timers_basics() {
+    let create_timers: MockPollFn = |mut ctx| {
+        let ts = WorkflowFunctions::current_timestamp(ctx.as_context_mut());
+        let timer_id = WorkflowFunctions::create_timer(ctx.as_context_mut(), ts - 100);
+        assert_eq!(timer_id, 0);
+        // ^ implementation detail, but it's used in code later
+        let result =
+            WorkflowFunctions::poll_timer(ctx.as_context_mut(), timer_id, POLL_CX).unwrap();
+        assert_eq!(result, ts);
+
+        let timer_id = WorkflowFunctions::create_timer(ctx.as_context_mut(), ts + 100);
+        assert_eq!(timer_id, 1);
+        let result =
+            WorkflowFunctions::poll_timer(ctx.as_context_mut(), timer_id, POLL_CX).unwrap();
+        assert_eq!(result, -1); // Poll::Pending
+
+        Ok(Poll::Pending)
+    };
+    let poll_timers_and_drop: MockPollFn = |mut ctx| {
+        let result = WorkflowFunctions::poll_timer(ctx.as_context_mut(), 0, POLL_CX).unwrap();
+        assert_ne!(result, -1);
+        WorkflowFunctions::drop_timer(ctx.as_context_mut(), 0).unwrap();
+
+        let result = WorkflowFunctions::poll_timer(ctx.as_context_mut(), 1, POLL_CX).unwrap();
+        let ts = WorkflowFunctions::current_timestamp(ctx.as_context_mut());
+        assert_eq!(result, ts);
+        WorkflowFunctions::drop_timer(ctx.as_context_mut(), 1).unwrap();
+
+        Ok(Poll::Pending)
+    };
+
+    let poll_fns = Answers::from_values([create_timers, poll_timers_and_drop]);
+    let _guard = ExportsMock::prepare(poll_fns);
+    let scheduler = MockScheduler::default();
+    let mut workflow = create_workflow(scheduler.clone()).into_inner();
+
+    workflow.tick().unwrap();
+    let timers: HashMap<_, _> = workflow.timers().collect();
+    assert_eq!(timers.len(), 2, "{:?}", timers);
+    assert!(timers[&0].completed_at().is_some());
+    assert!(timers[&1].completed_at().is_none());
+
+    scheduler.set_now(scheduler.now() + chrono::Duration::seconds(1));
+    workflow.set_current_time(scheduler.now()).unwrap();
+
+    let timers: HashMap<_, _> = workflow.timers().collect();
+    assert!(timers.is_empty(), "{:?}", timers); // timers are cleared on drop
 }

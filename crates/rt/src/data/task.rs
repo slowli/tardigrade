@@ -14,7 +14,7 @@ use super::{
     WorkflowData, WorkflowFunctions,
 };
 use crate::{
-    receipt::{Event, ExecutedFunction, ResourceEventKind, ResourceId, WakeUpCause},
+    receipt::{Event, ExecutedFunction, PanicInfo, ResourceEventKind, ResourceId, WakeUpCause},
     utils::{copy_string_from_wasm, drop_value, serde_poll, WasmAllocator},
     TaskId, WakerId,
 };
@@ -104,13 +104,16 @@ impl WorkflowData {
         self.current_execution = Some(CurrentExecution::new(function));
     }
 
-    /// Returns tasks that need to be dropped.
-    pub(crate) fn remove_current_execution(&mut self, revert: bool) -> Vec<Event> {
+    /// Returns tasks that need to be dropped, and panic info, if any.
+    pub(crate) fn remove_current_execution(
+        &mut self,
+        revert: bool,
+    ) -> (Vec<Event>, Option<PanicInfo>) {
         let current_execution = self.current_execution.take().unwrap();
         if revert {
             current_execution.revert(self)
         } else {
-            current_execution.commit(self)
+            (current_execution.commit(self), None)
         }
     }
 
@@ -140,16 +143,11 @@ impl WorkflowData {
     }
 
     pub(crate) fn spawn_main_task(&mut self, task_id: TaskId) {
-        debug_assert!(self.tasks.is_empty());
-        debug_assert!(self.task_queue.is_empty());
-        debug_assert!(self.current_execution.is_none());
-
-        let task_state = TaskState::new("_main".to_owned(), &ExecutedFunction::Entry);
+        let spawned_by = ExecutedFunction::Entry { task_id };
+        let task_state = TaskState::new("_main".to_owned(), &spawned_by);
         self.tasks.insert(task_id, task_state);
-        self.task_queue.insert_task(
-            task_id,
-            &WakeUpCause::Spawned(Box::new(ExecutedFunction::Entry)),
-        );
+        self.task_queue
+            .insert_task(task_id, &WakeUpCause::Spawned(Box::new(spawned_by)));
     }
 
     fn poll_task_completion(

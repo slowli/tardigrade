@@ -77,7 +77,7 @@
 //! MyWorkflow::test(Input { counter: 1 }, test_workflow);
 //! ```
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use futures::{
     channel::{
         mpsc::{self, UnboundedReceiver, UnboundedSender},
@@ -97,8 +97,6 @@ use std::{
     fmt,
     future::Future,
     marker::PhantomData,
-    thread_local,
-    time::Duration,
 };
 
 use crate::{
@@ -106,7 +104,7 @@ use crate::{
     interface::{AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel},
     trace::Tracer,
     workflow::{Inputs, SpawnWorkflow, TakeHandle, Wasm},
-    Data, Decoder, Encoder,
+    Data, Decode, Encode,
 };
 use tardigrade_shared::trace::{FutureUpdate, TracedFutures};
 
@@ -153,9 +151,15 @@ impl MockScheduler {
     /// Creates a scheduler with the specified current timestamp.
     pub fn new(now: DateTime<Utc>) -> Self {
         Self {
-            now,
+            now: Self::floor_timestamp(now),
             timers: BinaryHeap::new(),
         }
+    }
+
+    /// Approximates `timestamp` to be presentable as an integer number of milliseconds since
+    /// Unix epoch. This emulates WASM interface which uses millisecond precision.
+    fn floor_timestamp(ts: DateTime<Utc>) -> DateTime<Utc> {
+        Utc.timestamp_millis(ts.timestamp_millis())
     }
 
     /// Returns the expiration for the nearest timer, or `None` if there are no active timers.
@@ -164,18 +168,19 @@ impl MockScheduler {
     }
 
     /// Inserts a timer into this scheduler.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `expires_at` is in the past according to [`Self::now()`].
+    #[allow(clippy::missing_panics_doc)] // false positive
     pub fn insert_timer(&mut self, expires_at: DateTime<Utc>) -> oneshot::Receiver<DateTime<Utc>> {
-        assert!(expires_at > self.now);
-
+        let expires_at = Self::floor_timestamp(expires_at);
         let (sx, rx) = oneshot::channel();
-        self.timers.push(TimerEntry {
-            expires_at,
-            notifier: sx,
-        });
+        if expires_at > self.now {
+            self.timers.push(TimerEntry {
+                expires_at,
+                notifier: sx,
+            });
+        } else {
+            // Immediately complete the timer; `unwrap()` is safe since `rx` is alive.
+            sx.send(self.now).unwrap();
+        }
         rx
     }
 
@@ -186,6 +191,7 @@ impl MockScheduler {
 
     /// Sets the current timestamp for the scheduler.
     pub fn set_now(&mut self, now: DateTime<Utc>) {
+        let now = Self::floor_timestamp(now);
         self.now = now;
         while let Some(timer) = self.timers.pop() {
             if timer.expires_at <= now {
@@ -310,6 +316,15 @@ impl Runtime {
         })
     }
 
+    fn with_optional_mut(act: impl FnOnce(&mut Self)) {
+        RT.with(|cell| {
+            let mut borrow = cell.borrow_mut();
+            if let Some(runtime) = borrow.as_mut() {
+                act(runtime);
+            }
+        });
+    }
+
     pub fn data_input(&self, name: &str) -> Option<Vec<u8>> {
         self.data_inputs.get(name).cloned()
     }
@@ -360,15 +375,23 @@ impl Runtime {
             .ok_or_else(|| AccessErrorKind::AlreadyAcquired.with_location(OutboundChannel(name)))
     }
 
-    pub fn insert_timer(&mut self, duration: Duration) -> oneshot::Receiver<DateTime<Utc>> {
-        let duration = chrono::Duration::from_std(duration).expect("duration is too large");
-        self.scheduler.insert_timer(self.scheduler.now() + duration)
+    pub fn scheduler(&mut self) -> &mut MockScheduler {
+        &mut self.scheduler
     }
 
     pub fn spawn_task<T>(&self, task: impl Future<Output = T> + 'static) -> RemoteHandle<T> {
         self.spawner
             .spawn_local_with_handle(task)
             .expect("failed spawning task")
+    }
+
+    fn drop_workflow_resources(&mut self) {
+        for channel_pair in self.inbound_channels.values_mut() {
+            channel_pair.take_rx();
+        }
+        for channel_pair in self.outbound_channels.values_mut() {
+            channel_pair.take_sx();
+        }
     }
 }
 
@@ -427,14 +450,16 @@ where
     let interface = W::interface();
     let workflow_inputs = Inputs::for_interface(&interface, inputs);
 
-    let (guard, mut local_pool) = Runtime::initialize(&interface, workflow_inputs.into_inner());
+    let (_guard, mut local_pool) = Runtime::initialize(&interface, workflow_inputs.into_inner());
     let mut wasm = Wasm::default();
     let workflow = W::take_handle(&mut wasm, &()).unwrap();
     let test_handle = TestHandle::new();
 
     local_pool
         .spawner()
-        .spawn_local(W::spawn(workflow).into_inner().map(|()| drop(guard)))
+        .spawn_local(W::spawn(workflow).into_inner().map(|()| {
+            Runtime::with_optional_mut(Runtime::drop_workflow_resources);
+        }))
         .expect("cannot spawn workflow");
     local_pool.run_until_stalled();
     local_pool.run_until(test_fn(test_handle))
@@ -471,7 +496,7 @@ impl TestHost {
     }
 }
 
-impl<T, C: Encoder<T> + Default> TakeHandle<TestHost> for Receiver<T, C> {
+impl<T, C: Encode<T> + Default> TakeHandle<TestHost> for Receiver<T, C> {
     type Id = str;
     type Handle = Sender<T, C>;
 
@@ -480,7 +505,7 @@ impl<T, C: Encoder<T> + Default> TakeHandle<TestHost> for Receiver<T, C> {
     }
 }
 
-impl<T, C: Decoder<T> + Default> TakeHandle<TestHost> for Sender<T, C> {
+impl<T, C: Decode<T> + Default> TakeHandle<TestHost> for Sender<T, C> {
     type Id = str;
     type Handle = Receiver<T, C>;
 
@@ -489,7 +514,7 @@ impl<T, C: Decoder<T> + Default> TakeHandle<TestHost> for Sender<T, C> {
     }
 }
 
-impl<T, C: Decoder<T> + Default> TakeHandle<TestHost> for Data<T, C> {
+impl<T, C: Decode<T> + Default> TakeHandle<TestHost> for Data<T, C> {
     type Id = str;
     type Handle = Self;
 
@@ -507,7 +532,7 @@ pub struct TracerHandle<C> {
 
 impl<C> TracerHandle<C>
 where
-    C: Decoder<FutureUpdate> + Default,
+    C: Decode<FutureUpdate> + Default,
 {
     /// Returns a reference to the traced futures.
     pub fn futures(&self) -> &TracedFutures {
@@ -529,7 +554,7 @@ where
 
 impl<C> TakeHandle<TestHost> for Tracer<C>
 where
-    C: Decoder<FutureUpdate> + Default,
+    C: Decode<FutureUpdate> + Default,
 {
     type Id = str;
     type Handle = TracerHandle<C>;

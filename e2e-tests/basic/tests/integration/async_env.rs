@@ -1,24 +1,26 @@
-//! Tests for `AsyncEnv`.
+//! Tests for the `PizzaDelivery` workflow that use `AsyncEnv`.
 
 use assert_matches::assert_matches;
 use async_std::task;
 use futures::{
-    channel::oneshot,
+    channel::{mpsc, oneshot},
     future::{self, Either},
     stream, FutureExt, SinkExt, Stream, StreamExt, TryStreamExt,
 };
 
-use std::{error, time::Duration};
+use std::time::Duration;
 
 use tardigrade::{
     interface::{InboundChannel, OutboundChannel},
     trace::FutureState,
     workflow::InputsBuilder,
-    Decoder, Encoder, Json,
+    Decode, Encode, Json,
 };
 use tardigrade_rt::{
-    handle::future::{AsyncEnv, AsyncIoScheduler, MessageReceiver, Termination, TracerHandle},
-    receipt::{Event, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
+    handle::future::{
+        AsyncEnv, AsyncIoScheduler, MessageReceiver, Rollback, Termination, TracerHandle,
+    },
+    receipt::{Event, ExecutionResult, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
     test::MockScheduler,
     TimerId, Workflow, WorkflowSpawner,
 };
@@ -26,7 +28,7 @@ use tardigrade_test_basic::{
     DomainEvent, Inputs, PizzaDelivery, PizzaDeliveryHandle, PizzaKind, PizzaOrder,
 };
 
-use super::MODULE;
+use super::{TestResult, MODULE};
 
 async fn retry_until_some<T>(mut condition: impl FnMut() -> Option<T>) -> T {
     for _ in 0..5 {
@@ -38,7 +40,7 @@ async fn retry_until_some<T>(mut condition: impl FnMut() -> Option<T>) -> T {
     panic!("Run out of attempts waiting for condition");
 }
 
-async fn test_async_handle(cancel_workflow: bool) -> Result<(), Box<dyn error::Error>> {
+async fn test_async_handle(cancel_workflow: bool) -> TestResult {
     let module = task::spawn_blocking(|| &*MODULE).await;
     let spawner = module.for_workflow::<PizzaDelivery>()?;
 
@@ -46,7 +48,7 @@ async fn test_async_handle(cancel_workflow: bool) -> Result<(), Box<dyn error::E
         oven_count: 1,
         deliverer_count: 1,
     };
-    let workflow = spawner.spawn(inputs)?.into_inner();
+    let workflow = spawner.spawn(inputs)?.init()?.into_inner();
     let mut env = AsyncEnv::new(workflow, AsyncIoScheduler);
     let mut handle = env.handle();
 
@@ -103,24 +105,24 @@ async fn test_async_handle(cancel_workflow: bool) -> Result<(), Box<dyn error::E
 }
 
 #[async_std::test]
-async fn async_handle() -> Result<(), Box<dyn error::Error>> {
+async fn async_handle() -> TestResult {
     test_async_handle(false).await
 }
 
 #[async_std::test]
-async fn async_handle_with_cancellation() -> Result<(), Box<dyn error::Error>> {
+async fn async_handle_with_cancellation() -> TestResult {
     test_async_handle(true).await
 }
 
 async fn test_async_handle_with_concurrency(
     spawner: &WorkflowSpawner<PizzaDelivery>,
     inputs: Inputs,
-) -> Result<(), Box<dyn error::Error>> {
+) -> TestResult {
     const ORDER_COUNT: usize = 5;
 
     println!("testing async handle with {:?}", inputs);
 
-    let workflow = spawner.spawn(inputs)?.into_inner();
+    let workflow = spawner.spawn(inputs)?.init()?.into_inner();
     let mut env = AsyncEnv::new(workflow, AsyncIoScheduler);
     let mut handle = env.handle();
     let join_handle = task::spawn(async move { env.run().await });
@@ -154,7 +156,7 @@ async fn test_async_handle_with_concurrency(
 }
 
 #[async_std::test]
-async fn async_handle_with_concurrency() -> Result<(), Box<dyn error::Error>> {
+async fn async_handle_with_concurrency() -> TestResult {
     let module = task::spawn_blocking(|| &*MODULE).await;
     let spawner = module.for_workflow::<PizzaDelivery>()?;
 
@@ -220,15 +222,14 @@ async fn wait_timer(
         .await
 }
 
-struct AsyncRig<S> {
+struct AsyncRig {
     scheduler: MockScheduler,
     events: MessageReceiver<DomainEvent, Json>,
     tracer: TracerHandle<Json>,
-    receipts: S,
+    results: mpsc::UnboundedReceiver<ExecutionResult>,
 }
 
-async fn initialize_workflow(
-) -> Result<AsyncRig<impl Stream<Item = Receipt>>, Box<dyn error::Error>> {
+async fn initialize_workflow() -> TestResult<AsyncRig> {
     let module = task::spawn_blocking(|| &*MODULE).await;
     let scheduler = MockScheduler::default();
     let spawner = module
@@ -239,10 +240,10 @@ async fn initialize_workflow(
         oven_count: 2,
         deliverer_count: 1,
     };
-    let workflow = spawner.spawn(inputs)?.into_inner();
+    let workflow = spawner.spawn(inputs)?.init()?.into_inner();
     let mut env = AsyncEnv::new(workflow, scheduler.clone());
     let mut handle = env.handle();
-    let receipts = env.receipts();
+    let results = env.execution_results();
     task::spawn(async move { env.run().await });
 
     let orders = [
@@ -274,18 +275,22 @@ async fn initialize_workflow(
         scheduler,
         events: handle.shared.events,
         tracer: handle.shared.tracer,
-        receipts,
+        results,
     })
 }
 
 #[async_std::test]
-async fn async_handle_with_mock_scheduler() -> Result<(), Box<dyn error::Error>> {
+async fn async_handle_with_mock_scheduler() -> TestResult {
     let AsyncRig {
         scheduler,
         mut events,
         mut tracer,
-        mut receipts,
+        results,
     } = initialize_workflow().await?;
+    let mut receipts = results.map(|result| match result {
+        ExecutionResult::Ok(receipt) => receipt,
+        _ => unreachable!(),
+    });
 
     wait_timer(&mut receipts, 1, ResourceEventKind::Created).await;
     let now = scheduler.now();
@@ -348,13 +353,17 @@ async fn async_handle_with_mock_scheduler() -> Result<(), Box<dyn error::Error>>
 }
 
 #[async_std::test]
-async fn async_handle_with_mock_scheduler_and_bulk_update() -> Result<(), Box<dyn error::Error>> {
+async fn async_handle_with_mock_scheduler_and_bulk_update() -> TestResult {
     let AsyncRig {
         scheduler,
         mut events,
-        mut receipts,
+        results,
         ..
     } = initialize_workflow().await?;
+    let mut receipts = results.map(|result| match result {
+        ExecutionResult::Ok(receipt) => receipt,
+        _ => unreachable!(),
+    });
 
     let now = scheduler.now();
     scheduler.set_now(now + chrono::Duration::milliseconds(55));
@@ -388,7 +397,7 @@ struct CancellableWorkflow {
     cancel_sx: oneshot::Sender<()>,
 }
 
-async fn spawn_cancellable_workflow() -> Result<CancellableWorkflow, Box<dyn error::Error>> {
+async fn spawn_cancellable_workflow() -> TestResult<CancellableWorkflow> {
     let module = task::spawn_blocking(|| &*MODULE).await;
     let scheduler = MockScheduler::default();
     let spawner = module
@@ -399,7 +408,7 @@ async fn spawn_cancellable_workflow() -> Result<CancellableWorkflow, Box<dyn err
         oven_count: 1,
         deliverer_count: 1,
     };
-    let workflow = spawner.spawn(inputs)?.into_inner();
+    let workflow = spawner.spawn(inputs)?.init()?.into_inner();
     let mut env = AsyncEnv::new(workflow, scheduler.clone());
     let handle = env.handle();
 
@@ -421,7 +430,7 @@ async fn spawn_cancellable_workflow() -> Result<CancellableWorkflow, Box<dyn err
 }
 
 #[async_std::test]
-async fn persisting_workflow() -> Result<(), Box<dyn error::Error>> {
+async fn persisting_workflow() -> TestResult {
     let CancellableWorkflow {
         spawner,
         mut handle,
@@ -483,7 +492,7 @@ async fn persisting_workflow() -> Result<(), Box<dyn error::Error>> {
 }
 
 #[async_std::test]
-async fn dynamically_typed_async_handle() -> Result<(), Box<dyn error::Error>> {
+async fn dynamically_typed_async_handle() -> TestResult {
     let module = task::spawn_blocking(|| &*MODULE).await;
     let spawner = module.for_untyped_workflow("PizzaDelivery").unwrap();
     let mut builder = InputsBuilder::new(spawner.interface());
@@ -494,7 +503,7 @@ async fn dynamically_typed_async_handle() -> Result<(), Box<dyn error::Error>> {
             deliverer_count: 1,
         }),
     );
-    let workflow = spawner.spawn(builder.build())?.into_inner();
+    let workflow = spawner.spawn(builder.build())?.init()?.into_inner();
 
     let mut env = AsyncEnv::new(workflow, AsyncIoScheduler);
     let mut handle = env.handle();
@@ -522,6 +531,54 @@ async fn dynamically_typed_async_handle() -> Result<(), Box<dyn error::Error>> {
             DomainEvent::StartedDelivering { .. },
             DomainEvent::Delivered { .. },
         ]
+    );
+
+    join_handle.await?;
+    Ok(())
+}
+
+#[async_std::test]
+async fn rollback_strategy() -> TestResult {
+    let module = task::spawn_blocking(|| &*MODULE).await;
+    let spawner = module.for_untyped_workflow("PizzaDelivery").unwrap();
+    let mut builder = InputsBuilder::new(spawner.interface());
+    builder.insert(
+        "inputs",
+        Json.encode_value(Inputs {
+            oven_count: 1,
+            deliverer_count: 1,
+        }),
+    );
+    let workflow = spawner.spawn(builder.build())?.init()?.into_inner();
+
+    let mut env = AsyncEnv::new(workflow, AsyncIoScheduler);
+    env.set_rollback_strategy(Rollback::any_trap());
+    let mut handle = env.handle();
+    let results = env.execution_results();
+    let join_handle = task::spawn(async move { env.run().await });
+
+    handle[InboundChannel("orders")]
+        .send(b"invalid".to_vec())
+        .await?;
+    handle.remove(InboundChannel("orders")); // to terminate the workflow
+
+    let results: Vec<_> = results.collect().await;
+    let err = match results.as_slice() {
+        [ExecutionResult::RolledBack(err), ExecutionResult::Ok(_)] => err,
+        _ => panic!("unexpected results: {:?}", results),
+    };
+    let panic_info = err.panic_info().unwrap();
+    let panic_message = panic_info.message.as_ref().unwrap();
+    assert!(
+        panic_message.starts_with("Cannot decode bytes"),
+        "{}",
+        panic_message
+    );
+    let panic_location = panic_info.location.as_ref().unwrap();
+    assert!(
+        panic_location.filename.ends_with("codec.rs"),
+        "{:?}",
+        panic_location
     );
 
     join_handle.await?;

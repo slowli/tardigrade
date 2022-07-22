@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     error, fmt,
-    sync::Arc,
 };
 
 use super::{
@@ -15,7 +14,7 @@ use super::{
     time::Timers,
     WorkflowData,
 };
-use crate::{module::Clock, TaskId, WakerId};
+use crate::{module::Services, TaskId, WakerId};
 use tardigrade::interface::Interface;
 
 /// Error persisting a [`Workflow`](crate::Workflow).
@@ -160,7 +159,7 @@ impl WorkflowState {
     pub fn restore(
         self,
         interface: Interface<()>,
-        clock: Arc<dyn Clock>,
+        services: Services,
     ) -> anyhow::Result<WorkflowData> {
         let maybe_missing_data_input = interface
             .data_inputs()
@@ -214,7 +213,7 @@ impl WorkflowState {
             inbound_channels,
             outbound_channels,
             timers: self.timers,
-            clock,
+            services,
             data_inputs: self.data_inputs,
             tasks: self.tasks,
             current_execution: None,

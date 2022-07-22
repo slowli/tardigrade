@@ -63,9 +63,11 @@ impl SpawnWorkflow for TestedWorkflow {
     fn spawn(handle: TestHandle<Wasm>) -> TaskHandle {
         let strings = handle.strings.into_inner();
         let options = handle.options.into_inner();
-        TaskHandle::new(async move {
-            let requests = Requests::new(options.capacity, handle.requests, handle.responses);
+        let requests = Requests::builder(handle.requests, handle.responses)
+            .with_capacity(options.capacity)
+            .build();
 
+        TaskHandle::new(async move {
             if options.drop_requests {
                 let expected_responses: Vec<_> = strings.iter().map(String::len).collect();
 

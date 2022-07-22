@@ -3,7 +3,16 @@
 use std::{convert::Infallible, error};
 
 /// Decoder for a particular type.
-pub trait Decoder<T> {
+///
+/// When used in workflows (e.g., in [`Receiver`] or [`Data`]), [`Self::decode_bytes()`] method
+/// is used. That is, decoding operations panic if an error occurs during decoding. This is usually
+/// the intended behavior, since the primary reason of such a panic would be an incorrect input
+/// supplied via a data input / channel. The workflow runtime is expected to roll back
+/// the workflow state in this case.
+///
+/// [`Receiver`]: crate::channel::Receiver
+/// [`Data`]: crate::Data
+pub trait Decode<T> {
     /// Decoding error.
     type Error: error::Error + Send + Sync + 'static;
 
@@ -27,8 +36,8 @@ pub trait Decoder<T> {
 
 /// Encoder of a particular type.
 ///
-/// Unlike [`Decoder`]s, `Encoder`s are assumed to be infallible.
-pub trait Encoder<T> {
+/// Unlike [`Decode`]rs, `Encode`rs are assumed to be infallible.
+pub trait Encode<T> {
     /// Encodes `value`.
     fn encode_value(&mut self, value: T) -> Vec<u8>;
 }
@@ -37,13 +46,13 @@ pub trait Encoder<T> {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Raw;
 
-impl Encoder<Vec<u8>> for Raw {
+impl Encode<Vec<u8>> for Raw {
     fn encode_value(&mut self, value: Vec<u8>) -> Vec<u8> {
         value
     }
 }
 
-impl Decoder<Vec<u8>> for Raw {
+impl Decode<Vec<u8>> for Raw {
     type Error = Infallible;
 
     fn try_decode_bytes(&mut self, bytes: Vec<u8>) -> Result<Vec<u8>, Self::Error> {
@@ -55,7 +64,7 @@ impl Decoder<Vec<u8>> for Raw {
 mod json {
     use serde::{de::DeserializeOwned, Serialize};
 
-    use super::{Decoder, Encoder};
+    use super::{Decode, Encode};
 
     /// JSON codec.
     #[derive(Debug, Clone, Copy, Default)]
@@ -64,13 +73,13 @@ mod json {
 
     /// Panics if the value cannot be serialized. Serialization errors are usually confined
     /// to edge cases (e.g., very deeply nested / recursive objects).
-    impl<T: Serialize> Encoder<T> for Json {
+    impl<T: Serialize> Encode<T> for Json {
         fn encode_value(&mut self, value: T) -> Vec<u8> {
             serde_json::to_vec(&value).expect("cannot serialize value")
         }
     }
 
-    impl<T: DeserializeOwned> Decoder<T> for Json {
+    impl<T: DeserializeOwned> Decode<T> for Json {
         type Error = serde_json::Error;
 
         fn try_decode_bytes(&mut self, bytes: Vec<u8>) -> Result<T, Self::Error> {

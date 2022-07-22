@@ -61,7 +61,11 @@ pub enum WakeUpCause {
 #[non_exhaustive]
 pub enum ExecutedFunction {
     /// Entry point of the workflow.
-    Entry,
+    #[non_exhaustive]
+    Entry {
+        /// ID of the created task.
+        task_id: TaskId,
+    },
     /// Polling a task.
     #[non_exhaustive]
     Task {
@@ -91,7 +95,7 @@ pub enum ExecutedFunction {
 impl ExecutedFunction {
     fn write_summary(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Entry => formatter.write_str("spawning workflow"),
+            Self::Entry { .. } => formatter.write_str("spawning workflow"),
             Self::Task { task_id, .. } => {
                 write!(formatter, "polling task {}", task_id)
             }
@@ -243,6 +247,10 @@ impl Receipt<()> {
             output: (),
         }
     }
+
+    pub(crate) fn extend(&mut self, other: Self) {
+        self.executions.extend(other.executions);
+    }
 }
 
 impl<T> Receipt<T> {
@@ -283,6 +291,38 @@ impl<T, E> Receipt<Result<T, E>> {
     }
 }
 
+/// Result of executing a transactional piece of work on the [`Workflow`](crate::Workflow).
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ExecutionResult {
+    /// Execution completed successfully.
+    Ok(Receipt),
+    /// Execution was rolled back after an error.
+    RolledBack(ExecutionError),
+}
+
+#[derive(Debug)]
+pub(crate) struct ExtendedTrap {
+    trap: Trap,
+    panic_info: Option<PanicInfo>,
+}
+
+impl ExtendedTrap {
+    pub fn new(trap: Trap, panic_info: Option<PanicInfo>) -> Self {
+        Self { trap, panic_info }
+    }
+}
+
+impl fmt::Display for ExtendedTrap {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(panic_info) = &self.panic_info {
+            write!(formatter, "{}; trap info: {}", panic_info, self.trap)
+        } else {
+            fmt::Display::fmt(&self.trap, formatter)
+        }
+    }
+}
+
 /// Error occurring during [`Workflow`](crate::Workflow) execution.
 ///
 /// An error is caused by the executed WASM code [`Trap`]ping, which can be caused by a panic
@@ -291,17 +331,28 @@ impl<T, E> Receipt<Result<T, E>> {
 #[derive(Debug)]
 pub struct ExecutionError {
     trap: Trap,
+    panic_info: Option<PanicInfo>,
     receipt: Receipt,
 }
 
 impl ExecutionError {
-    pub(crate) fn new(trap: Trap, receipt: Receipt) -> Self {
-        Self { trap, receipt }
+    pub(crate) fn new(trap: ExtendedTrap, receipt: Receipt) -> Self {
+        Self {
+            trap: trap.trap,
+            panic_info: trap.panic_info,
+            receipt,
+        }
     }
 
     /// Returns a [`Trap`] that has led to an error.
     pub fn trap(&self) -> &Trap {
         &self.trap
+    }
+
+    /// Returns information about a panic, if any. The panic info may be absent depending
+    /// on the workflow config.
+    pub fn panic_info(&self) -> Option<&PanicInfo> {
+        self.panic_info.as_ref()
     }
 
     /// Returns a [`Receipt`] for the execution. The last [`Execution`] in the receipt
@@ -316,12 +367,57 @@ impl fmt::Display for ExecutionError {
         write!(formatter, "workflow execution failed while ")?;
         let execution = self.receipt.executions.last().unwrap();
         execution.function.write_summary(formatter)?;
-        write!(formatter, ": {}", self.trap)
+        if let Some(panic_info) = &self.panic_info {
+            write!(formatter, ": {}", panic_info)
+        } else {
+            write!(formatter, ": {}", self.trap.display_reason())
+        }
     }
 }
 
 impl error::Error for ExecutionError {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         Some(&self.trap)
+    }
+}
+
+/// Information about a panic in the workflow code.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct PanicInfo {
+    /// Human-readable panic message.
+    pub message: Option<String>,
+    /// Location where the panic has occurred.
+    pub location: Option<PanicLocation>,
+}
+
+impl fmt::Display for PanicInfo {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (&self.message, &self.location) {
+            (Some(message), Some(location)) => {
+                write!(formatter, "panic at {}: {}", location, message)
+            }
+            (Some(message), None) => formatter.write_str(message),
+            (None, Some(location)) => write!(formatter, "panic at {}", location),
+            (None, None) => formatter.write_str("panic at unknown location"),
+        }
+    }
+}
+
+/// Location of a panic in the workflow code.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct PanicLocation {
+    /// Name of the file where a panic has occurred.
+    pub filename: String,
+    /// Line number in the file.
+    pub line: u32,
+    /// Column number on the line.
+    pub column: u32,
+}
+
+impl fmt::Display for PanicLocation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}:{}:{}", self.filename, self.line, self.column)
     }
 }

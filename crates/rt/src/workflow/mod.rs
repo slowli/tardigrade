@@ -16,8 +16,8 @@ use crate::{
     data::{ConsumeError, PersistError, TaskState, TimerState, WorkflowData},
     module::{DataSection, ModuleExports, WorkflowSpawner},
     receipt::{
-        Event, ExecutedFunction, Execution, ExecutionError, Receipt, ResourceEventKind, ResourceId,
-        WakeUpCause,
+        Event, ExecutedFunction, Execution, ExecutionError, ExtendedTrap, Receipt,
+        ResourceEventKind, ResourceId, WakeUpCause,
     },
     TaskId, TimerId,
 };
@@ -40,6 +40,57 @@ impl ListenedEvents {
     }
 }
 
+impl<W: Initialize<Id = ()>> WorkflowSpawner<W> {
+    /// Instantiates a new workflow from the `module` and the provided `inputs`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error in case preparations for instantiation (e.g., extending the WASM linker
+    /// with imports) fails.
+    pub fn spawn(&self, inputs: W::Init) -> anyhow::Result<InitializingWorkflow<W>> {
+        let raw_inputs = Inputs::for_interface(self.interface(), inputs);
+        let state = WorkflowData::from_interface(
+            self.interface().clone().erase(),
+            raw_inputs.into_inner(),
+            self.services.clone(),
+        );
+        let workflow = Workflow::from_state(self, state)?;
+        Ok(InitializingWorkflow { inner: workflow })
+    }
+}
+
+/// [`Workflow`] that has not been initialized yet.
+///
+/// The encapsulated workflow should be initialized by calling [`Self::init()`].
+#[must_use = "Should be initialized by calling `Self::init()`"]
+pub struct InitializingWorkflow<W> {
+    inner: Workflow<W>,
+}
+
+impl<W> fmt::Debug for InitializingWorkflow<W> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("InitializingWorkflow")
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
+impl<W> InitializingWorkflow<W> {
+    /// Initializes the workflow by spawning the main task and polling it. Note that depending
+    /// on the workflow config, other tasks may be immediately spawned as well.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the entry point of the workflow or initially polling it fails.
+    pub fn init(mut self) -> Result<Receipt<Workflow<W>>, ExecutionError> {
+        let mut spawn_receipt = self.inner.spawn_main_task()?;
+        let tick_receipt = self.inner.tick()?;
+        spawn_receipt.extend(tick_receipt);
+        Ok(spawn_receipt.map(|()| self.inner))
+    }
+}
+
 /// Workflow instance.
 pub struct Workflow<W> {
     store: Store<WorkflowData>,
@@ -54,30 +105,6 @@ impl<W> fmt::Debug for Workflow<W> {
             .field("store", &self.store)
             .field("data_section", &self.data_section)
             .finish()
-    }
-}
-
-impl<W: Initialize<Id = ()>> WorkflowSpawner<W> {
-    /// Instantiates a new workflow from the `module` and the provided `inputs`.
-    ///
-    /// # Errors
-    ///
-    /// - Returns an error in case preparations for instantiation (e.g., extending the WASM linker
-    ///   with imports) fails.
-    /// - Returns an error if a trap occurs when spawning the main task for the workflow
-    ///   or polling it.
-    pub fn spawn(&self, inputs: W::Init) -> anyhow::Result<Receipt<Workflow<W>>> {
-        let raw_inputs = Inputs::for_interface(self.interface(), inputs);
-        let state = WorkflowData::from_interface(
-            self.interface().clone().erase(),
-            raw_inputs.into_inner(),
-            self.clone_clock(),
-        );
-        let mut this = Workflow::from_state(self, state)?;
-        this.spawn_main_task()
-            .context("failed spawning main task")?;
-        let receipt = this.tick().context("failed polling main task")?;
-        Ok(receipt.map(|()| this))
     }
 }
 
@@ -106,11 +133,19 @@ impl<W> Workflow<W> {
         self.store.data().interface()
     }
 
-    fn spawn_main_task(&mut self) -> Result<(), Trap> {
-        let exports = self.store.data().exports();
-        let task_ptr = exports.create_main_task(self.store.as_context_mut())?;
-        self.store.data_mut().spawn_main_task(task_ptr);
-        Ok(())
+    fn spawn_main_task(&mut self) -> Result<Receipt, ExecutionError> {
+        let function = ExecutedFunction::Entry { task_id: 0 };
+        let mut receipt = Receipt::new();
+        if let Err(err) = self.execute(function, &mut receipt) {
+            return Err(ExecutionError::new(err, receipt));
+        }
+
+        let task_id = match &receipt.executions[0].function {
+            ExecutedFunction::Entry { task_id } => *task_id,
+            _ => unreachable!(),
+        };
+        self.store.data_mut().spawn_main_task(task_id);
+        Ok(receipt)
     }
 
     /// Returns the current state of a task with the specified ID.
@@ -163,7 +198,14 @@ impl<W> Workflow<W> {
                 let exports = self.store.data().exports();
                 exports.drop_task(self.store.as_context_mut(), *task_id)
             }
-            ExecutedFunction::Entry => unreachable!(),
+            ExecutedFunction::Entry { task_id } => {
+                let exports = self.store.data().exports();
+                exports
+                    .create_main_task(self.store.as_context_mut())
+                    .map(|new_task_id| {
+                        *task_id = new_task_id;
+                    })
+            }
         }
     }
 
@@ -171,13 +213,13 @@ impl<W> Workflow<W> {
         &mut self,
         mut function: ExecutedFunction,
         receipt: &mut Receipt,
-    ) -> Result<(), Trap> {
+    ) -> Result<(), ExtendedTrap> {
         self.store
             .data_mut()
             .set_current_execution(function.clone());
 
         let output = self.do_execute(&mut function);
-        let events = self
+        let (events, panic_info) = self
             .store
             .data_mut()
             .remove_current_execution(output.is_err());
@@ -185,7 +227,7 @@ impl<W> Workflow<W> {
         receipt.executions.push(Execution { function, events });
 
         // On error, we don't drop tasks mentioned in `resource_events`.
-        output?;
+        output.map_err(|trap| ExtendedTrap::new(trap, panic_info))?;
 
         for task_id in dropped_tasks {
             let function = ExecutedFunction::TaskDrop { task_id };
@@ -213,7 +255,7 @@ impl<W> Workflow<W> {
         task_id: TaskId,
         wake_up_cause: WakeUpCause,
         receipt: &mut Receipt,
-    ) -> Result<(), Trap> {
+    ) -> Result<(), ExtendedTrap> {
         crate::trace!("Polling task {} because of {:?}", task_id, wake_up_cause);
 
         let function = ExecutedFunction::Task {
@@ -225,7 +267,7 @@ impl<W> Workflow<W> {
         crate::log_result!(poll_result, "Finished polling task {}", task_id)
     }
 
-    fn wake_tasks(&mut self, receipt: &mut Receipt) -> Result<(), Trap> {
+    fn wake_tasks(&mut self, receipt: &mut Receipt) -> Result<(), ExtendedTrap> {
         let wakers = self.store.data_mut().take_wakers();
         for (waker_id, wake_up_cause) in wakers {
             let function = ExecutedFunction::Waker {
@@ -245,7 +287,7 @@ impl<W> Workflow<W> {
         }
     }
 
-    fn do_tick(&mut self, receipt: &mut Receipt) -> Result<(), Trap> {
+    fn do_tick(&mut self, receipt: &mut Receipt) -> Result<(), ExtendedTrap> {
         self.wake_tasks(receipt)?;
 
         while let Some((task_id, wake_up_cause)) = self.store.data_mut().take_next_task() {
@@ -313,7 +355,7 @@ impl<W> Workflow<W> {
 
     /// Returns the current time for the workflow.
     pub fn current_time(&self) -> DateTime<Utc> {
-        self.store.data().timers().current_time()
+        self.store.data().timers().last_known_time()
     }
 
     /// Sets the current time for the workflow and completes the relevant timers.
@@ -367,7 +409,7 @@ impl<W> Workflow<W> {
     /// # Errors
     ///
     /// Passes through errors returned by the closure.
-    pub fn revert_on_error<T, E>(
+    pub fn rollback_on_error<T, E>(
         &mut self,
         action: impl FnOnce(&mut Self) -> Result<T, E>,
     ) -> Result<T, E> {

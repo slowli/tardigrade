@@ -13,7 +13,7 @@ use futures::{
 };
 use serde::{Deserialize, Serialize};
 
-use std::{collections::HashMap, convert::Infallible, future::Future};
+use std::{collections::HashMap, convert::Infallible, future::Future, marker::PhantomData};
 
 /// Container for a value together with a numeric ID.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -101,6 +101,60 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 }
 
 /// Request sender based on a pair of channels. Can be used to call to external task executors.
+///
+/// # Examples
+///
+/// `Requests` instance can be built from a pair of inbound / outbound channels:
+///
+/// ```
+/// # use serde::{Deserialize, Serialize};
+/// # use tardigrade::{
+/// #     channel::{Requests, Sender, Receiver, WithId},
+/// #     workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm},
+/// #     Json,
+/// # };
+/// #[derive(Debug, Serialize, Deserialize)]
+/// pub struct Request {
+///     // request fields...
+/// }
+/// #[derive(Debug, Serialize, Deserialize)]
+/// pub struct Response {
+///     // response fields...
+/// }
+///
+/// #[derive(Debug, GetInterface)]
+/// # #[tardigrade(interface = r#"{
+/// #     "v":0,
+/// #     "in": { "responses": {} },
+/// #     "out": { "requests": {} }
+/// # }"#)]
+/// pub struct MyWorkflow(());
+///
+/// #[tardigrade::handle(for = "MyWorkflow")]
+/// #[derive(Debug)]
+/// pub struct MyHandle<Env> {
+///     pub requests: Handle<Sender<WithId<Request>, Json>, Env>,
+///     pub responses: Handle<Receiver<WithId<Response>, Json>, Env>,
+/// }
+/// # #[tardigrade::init(for = "MyWorkflow", codec = "Json")]
+/// # #[derive(Debug, Serialize, Deserialize)]
+/// # pub struct Input {}
+///
+/// impl SpawnWorkflow for MyWorkflow {
+///     fn spawn(handle: MyHandle<Wasm>) -> TaskHandle {
+///         let requests = Requests::builder(handle.requests, handle.responses)
+///             .with_capacity(4)
+///             .with_task_name("handling_requests")
+///             .build();
+///         TaskHandle::new(async move {
+///             match requests.request(Request { /* ... */ }).await {
+///                 Ok(response) => { /* do something with response */ }
+///                 Err(_) => { /* request has been cancelled */ }
+///             }
+///         })
+///     }
+/// }
+/// ```
 #[derive(Debug)]
 pub struct Requests<Req, Resp> {
     requests_sx: mpsc::Sender<(Req, oneshot::Sender<Resp>)>,
@@ -108,20 +162,20 @@ pub struct Requests<Req, Resp> {
 
 impl<Req: 'static, Resp: 'static> Requests<Req, Resp> {
     /// Creates a new sender based on the specified channels.
-    pub fn new<Sx, Rx>(capacity: usize, requests_sx: Sx, responses_rx: Rx) -> Self
+    pub fn builder<Sx, Rx>(
+        requests_sx: Sx,
+        responses_rx: Rx,
+    ) -> RequestsBuilder<'static, Req, Sx, Rx>
     where
         Sx: Sink<WithId<Req>, Error = Infallible> + Unpin + 'static,
         Rx: Stream<Item = WithId<Resp>> + Unpin + 'static,
     {
-        let (inner_sx, inner_rx) = mpsc::channel(capacity);
-        let handle = RequestsHandle {
-            requests_rx: inner_rx,
-            capacity,
-        };
-        crate::spawn("_requests", handle.run(requests_sx, responses_rx));
-
-        Self {
-            requests_sx: inner_sx,
+        RequestsBuilder {
+            requests_sx,
+            responses_rx,
+            capacity: 1,
+            task_name: "_requests",
+            _req: PhantomData,
         }
     }
 
@@ -140,6 +194,63 @@ impl<Req: 'static, Resp: 'static> Requests<Req, Resp> {
                 .await
                 .map_err(|_| Canceled)?;
             response_rx.await
+        }
+    }
+}
+
+/// Builder for [`Requests`].
+#[derive(Debug)]
+pub struct RequestsBuilder<'a, Req, Sx, Rx> {
+    requests_sx: Sx,
+    responses_rx: Rx,
+    capacity: usize,
+    task_name: &'a str,
+    _req: PhantomData<Req>,
+}
+
+impl<'a, Req, Resp, Sx, Rx> RequestsBuilder<'a, Req, Sx, Rx>
+where
+    Req: 'static,
+    Resp: 'static,
+    Sx: Sink<WithId<Req>, Error = Infallible> + Unpin + 'static,
+    Rx: Stream<Item = WithId<Resp>> + Unpin + 'static,
+{
+    /// Specifies the capacity (max number of concurrently processed requests).
+    /// The default requests capacity is 1.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `capacity` is 0.
+    #[must_use]
+    pub fn with_capacity(mut self, capacity: usize) -> Self {
+        assert!(capacity > 0);
+        self.capacity = capacity;
+        self
+    }
+
+    /// Specifies a task name to use when [spawning a task](crate::spawn) to support
+    /// request / response processing. The default task name is `_requests`.
+    #[must_use]
+    pub fn with_task_name(mut self, task_name: &'a str) -> Self {
+        self.task_name = task_name;
+        self
+    }
+
+    /// Converts this builder into a [`Requests`] instance and launches the background task
+    /// to support request / response processing.
+    pub fn build(self) -> Requests<Req, Resp> {
+        let (inner_sx, inner_rx) = mpsc::channel(self.capacity);
+        let handle = RequestsHandle {
+            requests_rx: inner_rx,
+            capacity: self.capacity,
+        };
+        crate::spawn(
+            self.task_name,
+            handle.run(self.requests_sx, self.responses_rx),
+        );
+
+        Requests {
+            requests_sx: inner_sx,
         }
     }
 }

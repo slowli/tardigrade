@@ -2,10 +2,7 @@
 
 use wasmtime::{StoreContextMut, Trap};
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::collections::{HashMap, HashSet};
 
 mod channel;
 mod helpers;
@@ -28,8 +25,8 @@ use self::{
     time::Timers,
 };
 use crate::{
-    module::{Clock, ModuleExports},
-    receipt::WakeUpCause,
+    module::{ModuleExports, Services},
+    receipt::{PanicInfo, PanicLocation, WakeUpCause},
     utils::{copy_string_from_wasm, WasmAllocator},
     TaskId,
 };
@@ -46,7 +43,7 @@ pub struct WorkflowData {
     outbound_channels: HashMap<String, OutboundChannelState>,
     data_inputs: HashMap<String, Message>,
     timers: Timers,
-    clock: Arc<dyn Clock>,
+    services: Services,
     /// All tasks together with relevant info.
     tasks: HashMap<TaskId, TaskState>,
     /// Data related to the currently executing WASM call.
@@ -63,7 +60,7 @@ impl WorkflowData {
     pub(crate) fn from_interface(
         interface: Interface<()>,
         data_inputs: HashMap<String, Vec<u8>>,
-        clock: Arc<dyn Clock>,
+        services: Services,
     ) -> Self {
         // Sanity-check correspondence of inputs to the interface.
         debug_assert_eq!(
@@ -96,8 +93,8 @@ impl WorkflowData {
             inbound_channels,
             outbound_channels,
             data_inputs,
-            timers: Timers::new(),
-            clock,
+            timers: Timers::new(services.clock.now()),
+            services,
             tasks: HashMap::new(),
             current_execution: None,
             task_queue: TaskQueue::default(),
@@ -154,5 +151,47 @@ impl WorkflowFunctions {
             )
         );
         maybe_data.into_wasm(&mut WasmAllocator::new(ctx))
+    }
+
+    pub fn report_panic(
+        mut ctx: StoreContextMut<'_, WorkflowData>,
+        message_ptr: u32,
+        message_len: u32,
+        filename_ptr: u32,
+        filename_len: u32,
+        line: u32,
+        column: u32,
+    ) -> Result<(), Trap> {
+        let memory = ctx.data().exports().memory;
+        let message = if message_ptr == 0 {
+            None
+        } else {
+            Some(copy_string_from_wasm(
+                &ctx,
+                &memory,
+                message_ptr,
+                message_len,
+            )?)
+        };
+        let filename = if filename_ptr == 0 {
+            None
+        } else {
+            Some(copy_string_from_wasm(
+                &ctx,
+                &memory,
+                filename_ptr,
+                filename_len,
+            )?)
+        };
+
+        ctx.data_mut().current_execution().set_panic(PanicInfo {
+            message,
+            location: filename.map(|filename| PanicLocation {
+                filename,
+                line,
+                column,
+            }),
+        });
+        Ok(())
     }
 }

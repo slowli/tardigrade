@@ -28,6 +28,24 @@ macro_rules! trace {
 #[cfg(feature = "log")]
 #[macro_export]
 #[doc(hidden)] // not public
+macro_rules! warn {
+    ($($arg:tt)*) => {
+        log::warn!(target: "tardigrade_rt", $($arg)*);
+    };
+}
+
+#[cfg(not(feature = "log"))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! warn {
+    ($($arg:tt)*) => {{
+        let _ = format_args!($($arg)*);
+    }}
+}
+
+#[cfg(feature = "log")]
+#[macro_export]
+#[doc(hidden)] // not public
 macro_rules! log_result {
     ($result:tt, $($arg:tt)*) => {{
         match &$result {

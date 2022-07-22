@@ -3,7 +3,7 @@
 use std::marker::PhantomData;
 
 use crate::{
-    codec::{Decoder, Encoder, Raw},
+    codec::{Decode, Encode, Raw},
     interface::{AccessError, AccessErrorKind, DataInput, Interface, ValidateInterface},
     workflow::{Initialize, InputsBuilder, TakeHandle, Wasm},
 };
@@ -37,8 +37,8 @@ mod imp {
 
 /// Data input for a workflow.
 ///
-/// A data input is characterized by data type that it holds, and a codec used to [decode](Decoder)
-/// this data type from raw bytes (in case of the WASM environment), or [encode](Encoder) it
+/// A data input is characterized by data type that it holds, and a codec used to [decode](Decode)
+/// this data type from raw bytes (in case of the WASM environment), or [encode](Encode) it
 /// to bytes (in case of usage on host).
 #[derive(Debug, Clone)]
 pub struct Data<T, C> {
@@ -65,7 +65,7 @@ impl<T, C> AsMut<T> for Data<T, C> {
     }
 }
 
-impl<T, C: Decoder<T> + Default> Data<T, C> {
+impl<T, C: Decode<T> + Default> Data<T, C> {
     pub(crate) fn from_env(id: &str) -> Result<Self, AccessError> {
         let raw = imp::try_get_raw_data(id)
             .ok_or_else(|| AccessErrorKind::Unknown.with_location(DataInput(id)))?;
@@ -76,7 +76,7 @@ impl<T, C: Decoder<T> + Default> Data<T, C> {
     }
 }
 
-impl<T, C: Decoder<T> + Default> From<T> for Data<T, C> {
+impl<T, C: Decode<T> + Default> From<T> for Data<T, C> {
     fn from(inner: T) -> Self {
         Self {
             inner,
@@ -87,7 +87,7 @@ impl<T, C: Decoder<T> + Default> From<T> for Data<T, C> {
 
 impl<T, C> TakeHandle<Wasm> for Data<T, C>
 where
-    C: Decoder<T> + Default,
+    C: Decode<T> + Default,
 {
     type Id = str;
     type Handle = Self;
@@ -97,7 +97,7 @@ where
     }
 }
 
-impl<T, C: Encoder<T> + Default> Initialize for Data<T, C> {
+impl<T, C: Encode<T> + Default> Initialize for Data<T, C> {
     type Init = T;
     type Id = str;
 
@@ -112,7 +112,7 @@ pub type RawData = Data<Vec<u8>, Raw>;
 
 impl<T, C> ValidateInterface for Data<T, C>
 where
-    C: Encoder<T> + Decoder<T>,
+    C: Encode<T> + Decode<T>,
 {
     type Id = str;
 

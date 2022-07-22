@@ -84,14 +84,6 @@
 
 use std::{collections::HashMap, fmt, future::Future, mem, ops};
 
-mod handle;
-mod init;
-
-pub use self::{
-    handle::{EnvExtensions, ExtendEnv, Handle, TakeHandle},
-    init::{Init, Initialize, Inputs, InputsBuilder},
-};
-
 /// Derives the [`GetInterface`] trait for a workflow type.
 ///
 /// [`GetInterface`]: trait@GetInterface
@@ -106,11 +98,68 @@ use crate::{
     RawData,
 };
 
+mod handle;
+mod init;
+
+pub use self::{
+    handle::{EnvExtensions, ExtendEnv, Handle, TakeHandle},
+    init::{Init, Initialize, Inputs, InputsBuilder},
+};
+
 #[cfg(target_arch = "wasm32")]
 mod imp {
+    use std::{panic::PanicInfo, ptr};
+
     use crate::task::imp::RawTaskHandle;
 
     pub(super) type TaskHandle = RawTaskHandle;
+
+    #[link(wasm_import_module = "tardigrade_rt")]
+    extern "C" {
+        #[link_name = "panic"]
+        fn report_panic(
+            message_ptr: *const u8,
+            message_len: usize,
+            filename_ptr: *const u8,
+            filename_len: usize,
+            line: u32,
+            column: u32,
+        );
+    }
+
+    pub(super) fn handle_panic(panic_info: &PanicInfo<'_>) {
+        let message = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            Some(*s)
+        } else {
+            panic_info
+                .payload()
+                .downcast_ref::<String>()
+                .map(String::as_str)
+        };
+        if let Some(location) = panic_info.location() {
+            unsafe {
+                report_panic(
+                    message.map_or_else(ptr::null, str::as_ptr),
+                    message.map_or(0, str::len),
+                    location.file().as_ptr(),
+                    location.file().len(),
+                    location.line(),
+                    location.column(),
+                );
+            }
+        } else {
+            unsafe {
+                report_panic(
+                    message.map_or_else(ptr::null, str::as_ptr),
+                    message.map_or(0, str::len),
+                    ptr::null(),
+                    0,
+                    0, // line
+                    0, // column
+                );
+            }
+        }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -152,7 +201,14 @@ pub trait GetInterface: ValidateInterface<Id = ()> {
 pub struct Wasm(());
 
 impl Wasm {
-    #[doc(hidden)]
+    /// Sets the panic hook to pass panic messages to the host.
+    #[doc(hidden)] // used by the `workflow_entry!` macro
+    pub fn set_panic_hook() {
+        #[cfg(target_arch = "wasm32")]
+        std::panic::set_hook(Box::new(imp::handle_panic));
+    }
+
+    #[doc(hidden)] // used only by proc macros
     pub const fn custom_section_len(name: &str, serialized_interface: &[u8]) -> usize {
         Self::leb128_len(name.len())
             + name.len()
@@ -191,7 +247,7 @@ impl Wasm {
         (buffer, pos)
     }
 
-    #[doc(hidden)]
+    #[doc(hidden)] // used only by proc macros
     pub const fn custom_section<const N: usize>(
         name: &str,
         serialized_interface: &[u8],

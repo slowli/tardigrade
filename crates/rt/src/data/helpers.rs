@@ -8,8 +8,8 @@ use std::{collections::HashSet, fmt, mem, task::Poll};
 use crate::{
     data::WorkflowData,
     receipt::{
-        ChannelEvent, ChannelEventKind, Event, ExecutedFunction, ResourceEvent, ResourceEventKind,
-        ResourceId, WakeUpCause,
+        ChannelEvent, ChannelEventKind, Event, ExecutedFunction, PanicInfo, ResourceEvent,
+        ResourceEventKind, ResourceId, WakeUpCause,
     },
     utils::serde_b64,
     TaskId, TimerId, WakerId,
@@ -146,6 +146,8 @@ pub(super) struct CurrentExecution {
     tasks_to_be_awoken: HashSet<TaskId>,
     /// Tasks to be aborted after the task finishes polling.
     tasks_to_be_aborted: HashSet<TaskId>,
+    /// Information about a panic that has occurred during execution.
+    panic_info: Option<PanicInfo>,
     /// Wakers created during execution, together with their placement.
     new_wakers: HashSet<WakerId>,
     /// Log of events.
@@ -158,6 +160,7 @@ impl CurrentExecution {
             function,
             tasks_to_be_awoken: HashSet::new(),
             tasks_to_be_aborted: HashSet::new(),
+            panic_info: None,
             new_wakers: HashSet::new(),
             events: Vec::new(),
         }
@@ -210,6 +213,15 @@ impl CurrentExecution {
         self.push_event(ResourceEvent { resource_id, kind });
     }
 
+    pub fn set_panic(&mut self, panic_info: PanicInfo) {
+        crate::warn!(
+            "Execution {:?} led to a panic: {:?}",
+            self.function,
+            panic_info
+        );
+        self.panic_info = Some(panic_info);
+    }
+
     fn resource_events(events: &[Event]) -> impl Iterator<Item = &ResourceEvent> {
         events.iter().filter_map(Event::as_resource_event)
     }
@@ -246,7 +258,7 @@ impl CurrentExecution {
         self.events
     }
 
-    pub fn revert(self, state: &mut WorkflowData) -> Vec<Event> {
+    pub fn revert(self, state: &mut WorkflowData) -> (Vec<Event>, Option<PanicInfo>) {
         use self::ResourceEventKind::Created;
 
         crate::trace!("Reverting {:?} from {:?}", self, state);
@@ -277,7 +289,7 @@ impl CurrentExecution {
         }
 
         crate::trace!("Reverted CurrentTask from {:?}", state);
-        self.events
+        (self.events, self.panic_info)
     }
 }
 

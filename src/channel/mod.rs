@@ -24,7 +24,7 @@ use std::{
 };
 
 use crate::{
-    codec::{Decoder, Encoder, Raw},
+    codec::{Decode, Encode, Raw},
     interface::{
         AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel, ValidateInterface,
     },
@@ -42,7 +42,7 @@ mod requests;
 
 pub use self::{
     broadcast::{BroadcastError, BroadcastPublisher, BroadcastSubscriber},
-    requests::{Requests, WithId},
+    requests::{Requests, RequestsBuilder, WithId},
 };
 
 pin_project! {
@@ -71,7 +71,7 @@ impl<T, C: fmt::Debug> fmt::Debug for Receiver<T, C> {
     }
 }
 
-impl<T, C: Decoder<T>> Receiver<T, C> {
+impl<T, C: Decode<T>> Receiver<T, C> {
     pub(crate) fn new(raw: imp::MpscReceiver, codec: C) -> Self {
         Self {
             raw,
@@ -81,7 +81,7 @@ impl<T, C: Decoder<T>> Receiver<T, C> {
     }
 }
 
-impl<T, C: Decoder<T>> Stream for Receiver<T, C> {
+impl<T, C: Decode<T>> Stream for Receiver<T, C> {
     type Item = T;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -100,7 +100,7 @@ impl<T, C: Decoder<T>> Stream for Receiver<T, C> {
 
 impl<T, C> TakeHandle<Wasm> for Receiver<T, C>
 where
-    C: Decoder<T> + Default,
+    C: Decode<T> + Default,
 {
     type Id = str;
     type Handle = Self;
@@ -112,7 +112,7 @@ where
 
 impl<T, C> ValidateInterface for Receiver<T, C>
 where
-    C: Encoder<T> + Decoder<T>,
+    C: Encode<T> + Decode<T>,
 {
     type Id = str;
 
@@ -156,7 +156,7 @@ impl<T, C: fmt::Debug> fmt::Debug for Sender<T, C> {
     }
 }
 
-impl<T, C: Encoder<T> + Clone> Clone for Sender<T, C> {
+impl<T, C: Encode<T> + Clone> Clone for Sender<T, C> {
     fn clone(&self) -> Self {
         Self {
             raw: self.raw.clone(),
@@ -166,7 +166,7 @@ impl<T, C: Encoder<T> + Clone> Clone for Sender<T, C> {
     }
 }
 
-impl<T, C: Encoder<T>> Sender<T, C> {
+impl<T, C: Encode<T>> Sender<T, C> {
     pub(crate) fn new(raw: imp::MpscSender, codec: C) -> Self {
         Self {
             raw,
@@ -184,7 +184,7 @@ impl<T, C: Encoder<T>> Sender<T, C> {
 
 impl<T, C> TakeHandle<Wasm> for Sender<T, C>
 where
-    C: Encoder<T> + Default,
+    C: Encode<T> + Default,
 {
     type Id = str;
     type Handle = Self;
@@ -194,7 +194,7 @@ where
     }
 }
 
-impl<T, C: Encoder<T>> Sink<T> for Sender<T, C> {
+impl<T, C: Encode<T>> Sink<T> for Sender<T, C> {
     type Error = Infallible;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -218,7 +218,7 @@ impl<T, C: Encoder<T>> Sink<T> for Sender<T, C> {
 
 impl<T, C> ValidateInterface for Sender<T, C>
 where
-    C: Encoder<T> + Decoder<T>,
+    C: Encode<T> + Decode<T>,
 {
     type Id = str;
 

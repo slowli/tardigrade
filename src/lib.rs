@@ -40,7 +40,7 @@
 //!
 //! *(On by default)*
 //!
-//! Exposes [`Json`] [codec](crate::Encoder) for messages received by a workflow.
+//! Exposes [`Json`] [codec](crate::Encode) for messages received by a workflow.
 //!
 //! ## `derive`
 //!
@@ -70,11 +70,11 @@ pub mod workflow;
 #[cfg(feature = "serde_json")]
 pub use crate::codec::Json;
 pub use crate::{
-    codec::{Decoder, Encoder, Raw},
+    codec::{Decode, Encode, Raw},
     data::{Data, RawData},
     ext::FutureExt,
     task::{spawn, yield_now, JoinHandle},
-    time::sleep,
+    time::{now, sleep, Timer},
 };
 
 /// Proc macro attribute for workflow handles.
@@ -155,7 +155,7 @@ pub use tardigrade_derive::handle;
 ///
 /// ## `codec`
 ///
-/// Specifies path to the [codec](Decoder) used to encode / decode data. This is only applicable
+/// Specifies path to the [codec](Decode) used to encode / decode data. This is only applicable
 /// if a single data input needs initialization.
 ///
 /// ## `rename`
@@ -221,6 +221,8 @@ macro_rules! workflow_entry {
             #[export_name = concat!("tardigrade_rt::spawn::", stringify!($workflow))]
             #[doc(hidden)]
             pub extern "C" fn __tardigrade_rt__main() -> $crate::workflow::TaskHandle {
+                $crate::workflow::Wasm::set_panic_hook();
+                // ^ Needs to be set at the very start of the workflow
                 $crate::workflow::TaskHandle::from_workflow::<$workflow>().unwrap()
             }
         };

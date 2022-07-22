@@ -1,7 +1,7 @@
 //! Version of the `PizzaDelivery` workflow with timers replaced with external tasks.
 //! Also, we don't do delivery.
 
-use futures::StreamExt;
+use futures::{Future, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::{DomainEvent, PizzaOrder, Shared, SharedHandle};
@@ -46,19 +46,24 @@ impl SpawnWorkflow for PizzaDeliveryWithTasks {
 tardigrade::workflow_entry!(PizzaDeliveryWithTasks);
 
 impl WorkflowHandle<Wasm> {
-    async fn spawn(self) {
+    fn spawn(self) -> impl Future<Output = ()> {
         let inputs = self.inputs.into_inner();
-        let requests = Requests::new(inputs.oven_count, self.baking_tasks, self.baking_responses);
+        let requests = Requests::builder(self.baking_tasks, self.baking_responses)
+            .with_capacity(inputs.oven_count)
+            .with_task_name("baking_requests")
+            .build();
         let shared = self.shared;
 
         let mut counter = 0;
-        let order_processing = self.orders.for_each_concurrent(None, |order| {
-            counter += 1;
-            shared
-                .bake_with_requests(&requests, order, counter)
-                .trace(&shared.tracer, format!("baking order {}", counter))
-        });
-        order_processing.await;
+        async move {
+            let order_processing = self.orders.for_each_concurrent(None, |order| {
+                counter += 1;
+                shared
+                    .bake_with_requests(&requests, order, counter)
+                    .trace(&shared.tracer, format!("baking order {}", counter))
+            });
+            order_processing.await
+        }
     }
 }
 

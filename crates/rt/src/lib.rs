@@ -72,7 +72,7 @@
 //! let mut inputs = InputsBuilder::new(&spawner.interface());
 //! println!("{:?}", inputs.missing_input_names().collect::<Vec<_>>());
 //! // After filling inputs somehow...
-//! let receipt = spawner.spawn(inputs.build())?;
+//! let receipt = spawner.spawn(inputs.build())?.init()?;
 //! // `receipt` contains information about WASM code execution. E.g.,
 //! // this will print the executed functions and a list of important
 //! // events for each of executions:
@@ -127,6 +127,6 @@ mod workflow;
 pub use crate::{
     data::{ConsumeError, ConsumeErrorKind, PersistError, TaskState, TimerState},
     module::{Clock, ExtendLinker, WorkflowEngine, WorkflowModule, WorkflowSpawner},
-    workflow::{PersistedWorkflow, Workflow},
+    workflow::{InitializingWorkflow, PersistedWorkflow, Workflow},
 };
 pub use tardigrade_shared::{FutureId, TaskId, TimerId, WakerId};
