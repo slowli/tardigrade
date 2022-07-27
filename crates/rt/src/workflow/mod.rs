@@ -366,6 +366,7 @@ impl<W> Workflow<W> {
     pub fn set_current_time(&mut self, time: DateTime<Utc>) -> Result<Receipt, ExecutionError> {
         self.store.data_mut().set_current_time(time);
         crate::trace!("Set current time to {}", time);
+        dbg!(self.store.data());
         self.tick()
     }
 

@@ -71,66 +71,64 @@ fn initialize_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()
 
     // ...then getting the inbound channel
     let (ptr, len) = StaticStr::Orders.ptr_and_len();
-    WorkflowFunctions::get_receiver(ctx.as_context_mut(), ptr, len).unwrap();
+    let orders = WorkflowFunctions::get_receiver(ctx.as_context_mut(), ptr, len).unwrap();
 
     // ...then polling this channel
     let poll_res =
-        WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), ptr, len, POLL_CX).unwrap();
+        WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX).unwrap();
     assert_eq!(poll_res, -1); // Poll::Pending
 
     Ok(Poll::Pending)
 }
 
-fn emit_event_and_flush(ctx: &mut StoreContextMut<'_, WorkflowData>) {
-    let (ptr, len) = StaticStr::Events.ptr_and_len();
+fn emit_event_and_flush(ctx: &mut StoreContextMut<'_, WorkflowData>) -> Result<(), Trap> {
+    let events = Some(WorkflowData::outbound_channel_ref("events"));
+
     let poll_res =
-        WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), ptr, len, POLL_CX).unwrap();
+        WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), events.clone(), POLL_CX)?;
     assert_eq!(poll_res, 0); // Poll::Ready
 
-    let (event_ptr, event_len) = WasmAllocator::new(ctx.as_context_mut())
-        .copy_to_wasm(b"event #1")
-        .unwrap();
-    WorkflowFunctions::start_send(ctx.as_context_mut(), ptr, len, event_ptr, event_len).unwrap();
+    let (event_ptr, event_len) =
+        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"event #1")?;
+    WorkflowFunctions::start_send(ctx.as_context_mut(), events.clone(), event_ptr, event_len)?;
 
-    let poll_res =
-        WorkflowFunctions::poll_flush_for_sender(ctx.as_context_mut(), ptr, len, POLL_CX).unwrap();
+    let poll_res = WorkflowFunctions::poll_flush_for_sender(ctx.as_context_mut(), events, POLL_CX)?;
     assert_eq!(poll_res, -1); // Poll::Pending
+    Ok(())
 }
 
 #[allow(clippy::unnecessary_wraps)] // more convenient for use with mock `Answers`
 fn consume_message(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
+    let orders = Some(WorkflowData::inbound_channel_ref("orders"));
+    let events = Some(WorkflowData::outbound_channel_ref("events"));
+    let traces = Some(WorkflowData::outbound_channel_ref("traces"));
+
     // Poll the channel again, since we yielded on this previously
-    let (ptr, len) = StaticStr::Orders.ptr_and_len();
     let poll_res =
-        WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), ptr, len, POLL_CX).unwrap();
+        WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
 
     let (msg_ptr, msg_len) = decode_message_poll(poll_res);
     let memory = ctx.data().exports().memory;
-    let message = copy_string_from_wasm(&ctx, &memory, msg_ptr, msg_len).unwrap();
+    let message = copy_string_from_wasm(&ctx, &memory, msg_ptr, msg_len)?;
     assert_eq!(message, "order #1");
 
     // Emit a trace (shouldn't block the task).
-    let (ptr, len) = StaticStr::Traces.ptr_and_len();
     let poll_res =
-        WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), ptr, len, POLL_CX).unwrap();
+        WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), traces.clone(), POLL_CX)?;
     assert_eq!(poll_res, 0); // Poll::Ready
 
     let (trace_ptr, trace_len) = WasmAllocator::new(ctx.as_context_mut())
         .copy_to_wasm(b"trace #1")
         .unwrap();
-    WorkflowFunctions::start_send(ctx.as_context_mut(), ptr, len, trace_ptr, trace_len).unwrap();
+    WorkflowFunctions::start_send(ctx.as_context_mut(), traces.clone(), trace_ptr, trace_len)?;
 
-    emit_event_and_flush(&mut ctx);
+    emit_event_and_flush(&mut ctx)?;
     // Check that sending events is no longer possible.
-    let (ptr, len) = StaticStr::Events.ptr_and_len();
-    let poll_res =
-        WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), ptr, len, POLL_CX).unwrap();
+    let poll_res = WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), events, POLL_CX)?;
     assert_eq!(poll_res, -1); // Poll::Pending
 
     // Check that sending traces is still possible
-    let (ptr, len) = StaticStr::Traces.ptr_and_len();
-    let poll_res =
-        WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), ptr, len, POLL_CX).unwrap();
+    let poll_res = WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), traces, POLL_CX)?;
     assert_eq!(poll_res, 0); // Poll::Ready
 
     Ok(Poll::Pending)
@@ -435,17 +433,17 @@ fn rolling_back_task_abort() {
 #[test]
 fn rolling_back_emitting_messages_on_trap() {
     let emit_message_and_trap: MockPollFn = |mut ctx| {
-        let (ptr, len) = StaticStr::Traces.ptr_and_len();
-        let poll_res =
-            WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), ptr, len, POLL_CX)
-                .unwrap();
+        let traces = Some(WorkflowData::outbound_channel_ref("traces"));
+        let poll_res = WorkflowFunctions::poll_ready_for_sender(
+            ctx.as_context_mut(),
+            traces.clone(),
+            POLL_CX,
+        )?;
         assert_eq!(poll_res, 0); // Poll::Ready
 
-        let (trace_ptr, trace_len) = WasmAllocator::new(ctx.as_context_mut())
-            .copy_to_wasm(b"trace #1")
-            .unwrap();
-        WorkflowFunctions::start_send(ctx.as_context_mut(), ptr, len, trace_ptr, trace_len)
-            .unwrap();
+        let (trace_ptr, trace_len) =
+            WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"trace #1")?;
+        WorkflowFunctions::start_send(ctx.as_context_mut(), traces, trace_ptr, trace_len)?;
 
         Err(Trap::new("boom"))
     };
@@ -466,7 +464,7 @@ fn rolling_back_emitting_messages_on_trap() {
 #[test]
 fn rolling_back_placing_waker_on_trap() {
     let flush_event_and_trap: MockPollFn = |mut ctx| {
-        emit_event_and_flush(&mut ctx);
+        emit_event_and_flush(&mut ctx)?;
         Err(Trap::new("boom"))
     };
     let poll_fns = Answers::from_values([initialize_task, flush_event_and_trap]);

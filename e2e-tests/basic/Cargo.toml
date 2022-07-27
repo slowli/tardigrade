@@ -24,6 +24,7 @@ tardigrade = { version = "0.1.0", path = "../..", features = ["derive"] }
 assert_matches = "1.5.0"
 async-std = { version = "1.12.0", features = ["attributes"] }
 chrono = "0.4.19"
+externref-processor = { path = "../../../externref/crates/processor" }
 once_cell = "1.12.0"
 serde_json = "1.0"
 wasmtime = "0.37.0"

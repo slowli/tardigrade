@@ -1,11 +1,11 @@
 //! Functionality to manage channel state.
 
-use wasmtime::{AsContextMut, StoreContextMut, Trap};
+use wasmtime::{AsContextMut, ExternRef, StoreContextMut, Trap};
 
 use std::{collections::HashSet, error, fmt, mem, task::Poll};
 
 use super::{
-    helpers::{Message, WakeIfPending, WakerPlacement, WasmContext, WasmContextPtr},
+    helpers::{HostResource, Message, WakeIfPending, WakerPlacement, WasmContext, WasmContextPtr},
     WorkflowData, WorkflowFunctions,
 };
 use crate::{
@@ -324,36 +324,36 @@ impl WorkflowData {
 }
 
 /// Channel-related functions exported to WASM.
+#[allow(clippy::needless_pass_by_value)] // required for WASM function wrappers
 impl WorkflowFunctions {
     pub fn get_receiver(
         mut ctx: StoreContextMut<'_, WorkflowData>,
         channel_name_ptr: u32,
         channel_name_len: u32,
-    ) -> Result<i64, Trap> {
+    ) -> Result<Option<ExternRef>, Trap> {
         let mut ctx = ctx.as_context_mut();
         let memory = ctx.data().exports().memory;
         let channel_name =
             copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
         let result = ctx.data_mut().acquire_inbound_channel(&channel_name);
 
-        crate::log_result!(result, "Acquired inbound channel `{}`", channel_name)
-            .into_wasm(&mut WasmAllocator::new(ctx))
+        let channel_ref = crate::log_result!(result, "Acquired inbound channel `{}`", channel_name)
+            .ok()
+            .map(|()| HostResource::InboundChannel(channel_name).into_ref());
+        Ok(channel_ref)
     }
 
     pub fn poll_next_for_receiver(
         mut ctx: StoreContextMut<'_, WorkflowData>,
-        channel_name_ptr: u32,
-        channel_name_len: u32,
+        channel_ref: Option<ExternRef>,
         poll_cx: WasmContextPtr,
     ) -> Result<i64, Trap> {
-        let memory = ctx.data().exports().memory;
-        let channel_name =
-            copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
+        let channel_name = HostResource::from_ref(channel_ref.as_ref())?.as_inbound_channel()?;
 
         let mut poll_cx = WasmContext::new(poll_cx);
         let poll_result = ctx
             .data_mut()
-            .poll_inbound_channel(&channel_name, &mut poll_cx);
+            .poll_inbound_channel(channel_name, &mut poll_cx);
         let poll_result = crate::log_result!(
             poll_result,
             "Polled inbound channel `{}` with context {:?}",
@@ -369,7 +369,7 @@ impl WorkflowFunctions {
         ctx: StoreContextMut<'_, WorkflowData>,
         channel_name_ptr: u32,
         channel_name_len: u32,
-    ) -> Result<i64, Trap> {
+    ) -> Result<Option<ExternRef>, Trap> {
         let memory = ctx.data().exports().memory;
         let channel_name =
             copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
@@ -378,24 +378,25 @@ impl WorkflowFunctions {
         } else {
             Err(AccessErrorKind::Unknown)
         };
-        crate::log_result!(result, "Acquired outbound channel `{}`", channel_name)
-            .into_wasm(&mut WasmAllocator::new(ctx))
+
+        let channel_ref =
+            crate::log_result!(result, "Acquired outbound channel `{}`", channel_name)
+                .ok()
+                .map(|()| HostResource::OutboundChannel(channel_name).into_ref());
+        Ok(channel_ref)
     }
 
     pub fn poll_ready_for_sender(
         mut ctx: StoreContextMut<'_, WorkflowData>,
-        channel_name_ptr: u32,
-        channel_name_len: u32,
+        channel_ref: Option<ExternRef>,
         cx: WasmContextPtr,
     ) -> Result<i32, Trap> {
-        let memory = ctx.data().exports().memory;
-        let channel_name =
-            copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
+        let channel_name = HostResource::from_ref(channel_ref.as_ref())?.as_outbound_channel()?;
 
         let mut cx = WasmContext::new(cx);
         let poll_result = ctx
             .data_mut()
-            .poll_outbound_channel(&channel_name, false, &mut cx);
+            .poll_outbound_channel(channel_name, false, &mut cx);
         let poll_result = crate::log_result!(
             poll_result,
             "Polled outbound channel `{}` for readiness",
@@ -408,17 +409,15 @@ impl WorkflowFunctions {
 
     pub fn start_send(
         mut ctx: StoreContextMut<'_, WorkflowData>,
-        channel_name_ptr: u32,
-        channel_name_len: u32,
+        channel_ref: Option<ExternRef>,
         message_ptr: u32,
         message_len: u32,
     ) -> Result<(), Trap> {
+        let channel_name = HostResource::from_ref(channel_ref.as_ref())?.as_outbound_channel()?;
         let memory = ctx.data().exports().memory;
-        let channel_name =
-            copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
         let message = copy_bytes_from_wasm(&ctx, &memory, message_ptr, message_len)?;
 
-        let result = ctx.data_mut().push_outbound_message(&channel_name, message);
+        let result = ctx.data_mut().push_outbound_message(channel_name, message);
         crate::log_result!(
             result,
             "Started sending message ({} bytes) over outbound channel `{}`",
@@ -429,18 +428,15 @@ impl WorkflowFunctions {
 
     pub fn poll_flush_for_sender(
         mut ctx: StoreContextMut<'_, WorkflowData>,
-        channel_name_ptr: u32,
-        channel_name_len: u32,
+        channel_ref: Option<ExternRef>,
         poll_cx: WasmContextPtr,
     ) -> Result<i32, Trap> {
-        let memory = ctx.data().exports().memory;
-        let channel_name =
-            copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
+        let channel_name = HostResource::from_ref(channel_ref.as_ref())?.as_outbound_channel()?;
 
         let mut poll_cx = WasmContext::new(poll_cx);
         let poll_result = ctx
             .data_mut()
-            .poll_outbound_channel(&channel_name, true, &mut poll_cx);
+            .poll_outbound_channel(channel_name, true, &mut poll_cx);
         let poll_result = crate::log_result!(
             poll_result,
             "Polled outbound channel `{}` for flush",

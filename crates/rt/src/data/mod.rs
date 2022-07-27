@@ -127,6 +127,18 @@ impl WorkflowData {
             .flat_map(|state| &state.wakes_on_flush)
             .copied()
     }
+
+    #[cfg(test)]
+    pub(crate) fn inbound_channel_ref(name: impl Into<String>) -> wasmtime::ExternRef {
+        use self::helpers::HostResource;
+        HostResource::InboundChannel(name.into()).into_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn outbound_channel_ref(name: impl Into<String>) -> wasmtime::ExternRef {
+        use self::helpers::HostResource;
+        HostResource::OutboundChannel(name.into()).into_ref()
+    }
 }
 
 /// Functions operating on `WorkflowData` exported to WASM.

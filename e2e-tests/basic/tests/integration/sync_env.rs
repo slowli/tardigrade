@@ -82,7 +82,7 @@ fn basic_workflow() -> TestResult {
         assert!(timer.completed_at().is_none());
         assert!(timer.definition().expires_at > workflow.current_time());
 
-        let new_time = workflow.current_time() + chrono::Duration::milliseconds(100);
+        let new_time = timer.definition().expires_at;
         workflow.set_current_time(new_time)
     })?;
     dbg!(&receipt); // FIXME: assert on receipt
@@ -187,7 +187,7 @@ fn restoring_workflow() -> TestResult {
     let mut handle = env.handle();
 
     handle.with(|workflow| {
-        let new_time = workflow.current_time() + chrono::Duration::milliseconds(100);
+        let new_time = workflow.current_time() + chrono::Duration::seconds(1);
         workflow.set_current_time(new_time)
     })?;
 

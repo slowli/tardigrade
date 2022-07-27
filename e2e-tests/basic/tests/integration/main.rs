@@ -19,6 +19,7 @@ static MODULE: Lazy<WorkflowModule> = Lazy::new(|| {
         .set_profile("wasm")
         .set_wasm_opt(WasmOpt::default())
         .compile();
+    let module_bytes = externref_processor::process_bytes(&module_bytes).unwrap();
     let engine = WorkflowEngine::default();
     WorkflowModule::new(&engine, &module_bytes).unwrap()
 });
