@@ -22,7 +22,7 @@ pub(crate) struct ModuleExports {
     pub data_location: Option<(u32, u32)>,
     pub ref_table: Table,
     create_main_task: TypedFunc<(), TaskId>,
-    poll_task: TypedFunc<(TaskId, TaskId), i32>,
+    poll_task: TypedFunc<TaskId, i32>,
     drop_task: TypedFunc<TaskId, ()>,
     alloc_bytes: TypedFunc<u32, u32>,
     create_waker: TypedFunc<WasmContextPtr, WakerId>,
@@ -43,7 +43,7 @@ impl ModuleExports {
     ) -> Result<Poll<()>, Trap> {
         let result = self
             .poll_task
-            .call(ctx, (task_id, task_id))
+            .call(ctx, task_id)
             .and_then(|res| <Poll<()>>::try_from_wasm(res).map_err(Trap::new));
         crate::log_result!(result, "Polled task {}", task_id)
     }
@@ -124,7 +124,7 @@ impl ModuleExports {
                 &format!("tardigrade_rt::spawn::{}", workflow_name),
             )?;
         }
-        Self::ensure_export_ty::<(TaskId, TaskId), i32>(module, "tardigrade_rt::poll_task")?;
+        Self::ensure_export_ty::<TaskId, i32>(module, "tardigrade_rt::poll_task")?;
         Self::ensure_export_ty::<TaskId, ()>(module, "tardigrade_rt::drop_task")?;
         Self::ensure_export_ty::<u32, u32>(module, "tardigrade_rt::alloc_bytes")?;
         Self::ensure_export_ty::<WasmContextPtr, WakerId>(module, "tardigrade_rt::create_waker")?;
@@ -230,7 +230,7 @@ mod tests {
                 data_location: None,
                 ref_table: ref_table.unwrap(),
                 create_main_task: Func::wrap(&mut *store, || 0_u64).typed(&*store).unwrap(),
-                poll_task: Func::wrap(&mut *store, |_: TaskId, _: TaskId| 0_i32)
+                poll_task: Func::wrap(&mut *store, |_: TaskId| 0_i32)
                     .typed(&*store)
                     .unwrap(),
                 drop_task: Func::wrap(&mut *store, drop::<TaskId>)

@@ -222,8 +222,8 @@ pub(super) fn spawn<T: 'static>(
 /// Calls to this method and `__drop_task` must be linearly ordered (no recursion).
 #[no_mangle]
 #[export_name = "tardigrade_rt::poll_task"]
-pub extern "C" fn __tardigrade_rt__poll_task(task: RawTaskHandle, cx: HostContext) -> i32 {
-    let waker = Waker::from(Arc::new(cx));
+pub extern "C" fn __tardigrade_rt__poll_task(task: RawTaskHandle) -> i32 {
+    let waker = Waker::from(Arc::new(HostContext(task.0)));
     let mut cx = Context::from_waker(&waker);
     TryFromWasm::into_abi_in_wasm(task.deref_and_poll(&mut cx))
 }
