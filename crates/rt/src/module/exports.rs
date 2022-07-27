@@ -2,8 +2,8 @@
 
 use anyhow::{anyhow, ensure, Context};
 use wasmtime::{
-    ExternType, Instance, Memory, Module, Store, StoreContextMut, Trap, TypedFunc, WasmParams,
-    WasmResults,
+    ExternType, Instance, Memory, Module, Store, StoreContextMut, Table, Trap, TypedFunc, ValType,
+    WasmParams, WasmResults,
 };
 
 use std::{collections::HashMap, fmt, str, task::Poll};
@@ -20,6 +20,7 @@ use tardigrade_shared::abi::TryFromWasm;
 pub(crate) struct ModuleExports {
     pub memory: Memory,
     pub data_location: Option<(u32, u32)>,
+    pub ref_table: Table,
     create_main_task: TypedFunc<(), TaskId>,
     poll_task: TypedFunc<(TaskId, TaskId), i32>,
     drop_task: TypedFunc<TaskId, ()>,
@@ -106,6 +107,17 @@ impl ModuleExports {
             "`memory` export is not a memory"
         );
 
+        let refs_ty = module
+            .get_export("externrefs")
+            .ok_or_else(|| anyhow!("module does not export externrefs table"))?;
+        ensure!(
+            matches!(
+                refs_ty,
+                ExternType::Table(table_ty) if table_ty.element() == ValType::ExternRef
+            ),
+            "`externrefs` export is not a table of `externref`s"
+        );
+
         for workflow_name in workflows.keys() {
             Self::ensure_export_ty::<(), TaskId>(
                 module,
@@ -135,6 +147,7 @@ impl ModuleExports {
     #[cfg_attr(test, mimicry::mock(using = "super::tests::ExportsMock::mock_new"))]
     pub fn new(store: &mut Store<WorkflowData>, instance: &Instance, workflow_name: &str) -> Self {
         let memory = instance.get_memory(&mut *store, "memory").unwrap();
+        let ref_table = instance.get_table(&mut *store, "externrefs").unwrap();
         let global_base = Self::extract_u32_global(&mut *store, instance, "__global_base");
         let heap_base = Self::extract_u32_global(&mut *store, instance, "__heap_base");
         let data_location = global_base.and_then(|start| heap_base.map(|end| (start, end)));
@@ -143,6 +156,7 @@ impl ModuleExports {
         Self {
             memory,
             data_location,
+            ref_table,
             create_main_task: Self::extract_function(&mut *store, instance, &main_fn_name),
             poll_task: Self::extract_function(&mut *store, instance, "tardigrade_rt::poll_task"),
             drop_task: Self::extract_function(&mut *store, instance, "tardigrade_rt::drop_task"),
@@ -187,7 +201,7 @@ impl ModuleExports {
 #[cfg(test)]
 mod tests {
     use mimicry::Mut;
-    use wasmtime::{Func, MemoryType};
+    use wasmtime::{Func, MemoryType, TableType, Val};
 
     use super::*;
     use crate::{data::WorkflowFunctions, module::ExportsMock};
@@ -204,11 +218,17 @@ mod tests {
             this.borrow().exports_created = true;
 
             let memory = Memory::new(&mut *store, MemoryType::new(1, None)).unwrap();
+            let ref_table = Table::new(
+                &mut *store,
+                TableType::new(ValType::ExternRef, 0, None),
+                Val::ExternRef(None),
+            );
             // These functions are never called (we mock their calls), so we use
             // the simplest implementations possible.
             ModuleExports {
                 memory,
                 data_location: None,
+                ref_table: ref_table.unwrap(),
                 create_main_task: Func::wrap(&mut *store, || 0_u64).typed(&*store).unwrap(),
                 poll_task: Func::wrap(&mut *store, |_: TaskId, _: TaskId| 0_i32)
                     .typed(&*store)

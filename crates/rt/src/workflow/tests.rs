@@ -173,7 +173,7 @@ fn starting_workflow() {
         }) if channel_name == "orders"
     );
 
-    let workflow = receipt.into_inner();
+    let mut workflow = receipt.into_inner();
     workflow.persist().unwrap();
 }
 

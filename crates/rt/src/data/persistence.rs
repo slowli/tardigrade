@@ -7,6 +7,7 @@ use std::{
     collections::{HashMap, HashSet},
     error, fmt,
 };
+use wasmtime::{Store, Val};
 
 use super::{
     helpers::Message,
@@ -14,6 +15,7 @@ use super::{
     time::Timers,
     WorkflowData,
 };
+use crate::data::helpers::HostResource;
 use crate::{module::Services, TaskId, WakerId};
 use tardigrade::interface::Interface;
 
@@ -105,6 +107,7 @@ impl From<InboundChannelState> for super::InboundChannelState {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct OutboundChannelState {
+    is_acquired: bool,
     flushed_messages: usize,
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     wakes_on_flush: HashSet<WakerId>,
@@ -114,6 +117,7 @@ impl OutboundChannelState {
     fn new(state: &super::OutboundChannelState) -> Self {
         debug_assert!(state.messages.is_empty());
         Self {
+            is_acquired: state.is_acquired,
             flushed_messages: state.flushed_messages,
             wakes_on_flush: state.wakes_on_flush.clone(),
         }
@@ -138,6 +142,7 @@ impl OutboundChannelState {
 impl From<OutboundChannelState> for super::OutboundChannelState {
     fn from(persisted: OutboundChannelState) -> Self {
         Self {
+            is_acquired: persisted.is_acquired,
             flushed_messages: persisted.flushed_messages,
             messages: Vec::new(),
             wakes_on_flush: persisted.wakes_on_flush,
@@ -289,5 +294,49 @@ impl WorkflowData {
             data_inputs: self.data_inputs.clone(),
             tasks: self.tasks.clone(),
         }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct Refs {
+    inner: HashMap<u32, HostResource>,
+}
+
+impl Refs {
+    pub fn new(store: &mut Store<WorkflowData>) -> Self {
+        let ref_table = store.data().exports().ref_table;
+        let ref_count = ref_table.size(&mut *store);
+        let refs = (0..ref_count).filter_map(|idx| {
+            let val = ref_table.get(&mut *store, idx).unwrap();
+            // ^ `unwrap()` is safe: we know that the index is in bounds
+            val.externref().and_then(|reference| {
+                HostResource::from_ref(reference.as_ref())
+                    .ok()
+                    .cloned()
+                    .map(|res| (idx, res))
+            })
+        });
+
+        Self {
+            inner: refs.collect(),
+        }
+    }
+
+    pub fn restore(self, store: &mut Store<WorkflowData>) -> anyhow::Result<()> {
+        let ref_table = store.data().exports().ref_table;
+        let expected_size = self.inner.keys().copied().max().map_or(0, |idx| idx + 1);
+        let current_size = ref_table.size(&mut *store);
+        if current_size < expected_size {
+            ref_table.grow(
+                &mut *store,
+                expected_size - current_size,
+                Val::ExternRef(None),
+            )?;
+        }
+        for (idx, resource) in self.inner {
+            ref_table.set(&mut *store, idx, resource.into_ref().into())?;
+        }
+        Ok(())
     }
 }

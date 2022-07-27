@@ -30,8 +30,6 @@ impl ModuleImports {
             let fn_name = import.name();
             Self::validate_import(&ty, fn_name)?;
         }
-        dbg!("/imports");
-
         Ok(())
     }
 

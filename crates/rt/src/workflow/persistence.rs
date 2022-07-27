@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use wasmtime::Store;
 
 use crate::{
-    data::{PersistError, WorkflowData, WorkflowState},
+    data::{PersistError, Refs, WorkflowData, WorkflowState},
     module::{DataSection, WorkflowSpawner},
     workflow::Workflow,
 };
@@ -116,15 +116,21 @@ impl Memory {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PersistedWorkflow {
     state: WorkflowState,
+    refs: Refs,
     memory: Memory,
 }
 
 impl PersistedWorkflow {
-    pub(super) fn new<W>(workflow: &Workflow<W>) -> Result<Self, PersistError> {
+    pub(super) fn new<W>(workflow: &mut Workflow<W>) -> Result<Self, PersistError> {
         workflow.store.data().check_persistence()?;
         let state = workflow.store.data().persist();
+        let refs = Refs::new(&mut workflow.store);
         let memory = Memory::new(&workflow.store, workflow.data_section.as_deref());
-        Ok(Self { state, memory })
+        Ok(Self {
+            state,
+            refs,
+            memory,
+        })
     }
 
     /// Restores a workflow from the persisted state and the `spawner` defining the workflow.
@@ -141,6 +147,7 @@ impl PersistedWorkflow {
             .context("failed restoring workflow state")?;
         let mut workflow = Workflow::from_state(spawner, data)?;
         self.memory.restore(&mut workflow)?;
+        self.refs.restore(&mut workflow.store)?;
         Ok(workflow)
     }
 

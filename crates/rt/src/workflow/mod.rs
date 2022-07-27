@@ -366,7 +366,6 @@ impl<W> Workflow<W> {
     pub fn set_current_time(&mut self, time: DateTime<Utc>) -> Result<Receipt, ExecutionError> {
         self.store.data_mut().set_current_time(time);
         crate::trace!("Set current time to {}", time);
-        dbg!(self.store.data());
         self.tick()
     }
 
@@ -396,7 +395,7 @@ impl<W> Workflow<W> {
     ///
     /// Returns an error if the workflow is in such a state that it cannot be persisted
     /// right now.
-    pub fn persist(&self) -> Result<PersistedWorkflow, PersistError> {
+    pub fn persist(&mut self) -> Result<PersistedWorkflow, PersistError> {
         PersistedWorkflow::new(self)
     }
 

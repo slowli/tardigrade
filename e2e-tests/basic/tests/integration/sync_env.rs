@@ -13,6 +13,7 @@ use tardigrade::{
 use tardigrade_rt::{
     handle::WorkflowEnv,
     receipt::{ChannelEvent, ChannelEventKind, Event, ExecutedFunction, WakeUpCause},
+    test::MockScheduler,
     PersistError, PersistedWorkflow,
 };
 use tardigrade_test_basic::{DomainEvent, Inputs, PizzaDelivery, PizzaKind, PizzaOrder};
@@ -21,7 +22,10 @@ use super::{TestResult, MODULE};
 
 #[test]
 fn basic_workflow() -> TestResult {
-    let spawner = MODULE.for_workflow::<PizzaDelivery>()?;
+    let clock = MockScheduler::default();
+    let spawner = MODULE
+        .for_workflow::<PizzaDelivery>()?
+        .with_clock(clock.clone());
     let inputs = Inputs {
         oven_count: 1,
         deliverer_count: 1,
@@ -83,6 +87,7 @@ fn basic_workflow() -> TestResult {
         assert!(timer.definition().expires_at > workflow.current_time());
 
         let new_time = timer.definition().expires_at;
+        clock.set_now(new_time);
         workflow.set_current_time(new_time)
     })?;
     dbg!(&receipt); // FIXME: assert on receipt
@@ -144,8 +149,11 @@ fn workflow_with_concurrency() -> TestResult {
 }
 
 #[test]
-fn restoring_workflow() -> TestResult {
-    let spawner = MODULE.for_workflow::<PizzaDelivery>()?;
+fn persisting_workflow() -> TestResult {
+    let clock = MockScheduler::default();
+    let spawner = MODULE
+        .for_workflow::<PizzaDelivery>()?
+        .with_clock(clock.clone());
     let inputs = Inputs {
         oven_count: 1,
         deliverer_count: 1,
@@ -187,7 +195,8 @@ fn restoring_workflow() -> TestResult {
     let mut handle = env.handle();
 
     handle.with(|workflow| {
-        let new_time = workflow.current_time() + chrono::Duration::seconds(1);
+        let new_time = workflow.current_time() + chrono::Duration::milliseconds(100);
+        clock.set_now(new_time);
         workflow.set_current_time(new_time)
     })?;
 

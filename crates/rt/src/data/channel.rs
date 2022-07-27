@@ -125,6 +125,7 @@ impl InboundChannelState {
 
 #[derive(Debug, Default)]
 pub(super) struct OutboundChannelState {
+    pub is_acquired: bool,
     pub flushed_messages: usize,
     pub messages: Vec<Message>,
     pub wakes_on_flush: HashSet<WakerId>,
@@ -215,6 +216,18 @@ impl WorkflowData {
     fn acquire_inbound_channel(&mut self, channel_name: &str) -> Result<(), AccessErrorKind> {
         let channel_state = self
             .inbound_channels
+            .get_mut(channel_name)
+            .ok_or(AccessErrorKind::Unknown)?;
+        if mem::replace(&mut channel_state.is_acquired, true) {
+            Err(AccessErrorKind::AlreadyAcquired)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn acquire_outbound_channel(&mut self, channel_name: &str) -> Result<(), AccessErrorKind> {
+        let channel_state = self
+            .outbound_channels
             .get_mut(channel_name)
             .ok_or(AccessErrorKind::Unknown)?;
         if mem::replace(&mut channel_state.is_acquired, true) {
@@ -366,18 +379,14 @@ impl WorkflowFunctions {
     }
 
     pub fn get_sender(
-        ctx: StoreContextMut<'_, WorkflowData>,
+        mut ctx: StoreContextMut<'_, WorkflowData>,
         channel_name_ptr: u32,
         channel_name_len: u32,
     ) -> Result<Option<ExternRef>, Trap> {
         let memory = ctx.data().exports().memory;
         let channel_name =
             copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
-        let result = if ctx.data().outbound_channels.contains_key(&channel_name) {
-            Ok(())
-        } else {
-            Err(AccessErrorKind::Unknown)
-        };
+        let result = ctx.data_mut().acquire_outbound_channel(&channel_name);
 
         let channel_ref =
             crate::log_result!(result, "Acquired outbound channel `{}`", channel_name)

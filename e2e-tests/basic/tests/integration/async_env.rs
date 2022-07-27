@@ -456,7 +456,7 @@ async fn persisting_workflow() -> TestResult {
 
     // Cancel the workflow.
     cancel_sx.send(()).unwrap();
-    let workflow = join_handle.await;
+    let mut workflow = join_handle.await;
     let mut tracer = handle.shared.tracer;
     tracer
         .by_ref()

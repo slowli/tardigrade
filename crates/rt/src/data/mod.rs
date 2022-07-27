@@ -16,7 +16,10 @@ pub use self::{
     task::TaskState,
     time::TimerState,
 };
-pub(crate) use self::{helpers::WasmContextPtr, persistence::WorkflowState};
+pub(crate) use self::{
+    helpers::WasmContextPtr,
+    persistence::{Refs, WorkflowState},
+};
 
 use self::{
     channel::{InboundChannelState, OutboundChannelState},
