@@ -44,7 +44,7 @@ impl ModuleImports {
             "data_input::get" => ensure_func_ty::<(u32, u32), i64>(ty, fn_name),
 
             "mpsc_receiver::get" | "mpsc_sender::get" => {
-                ensure_func_ty::<(u32, u32), Ref>(ty, fn_name)
+                ensure_func_ty::<(u32, u32, u32), Ref>(ty, fn_name)
             }
 
             "mpsc_receiver::poll_next" => ensure_func_ty::<(Ref, WasmContextPtr), i64>(ty, fn_name),
@@ -91,12 +91,12 @@ impl ExtendLinker for WorkflowFunctions {
             // Data input functions
             ("data_input::get", wrap2(&mut *store, Self::get_data_input)),
             // Channel functions
-            ("mpsc_receiver::get", wrap2(&mut *store, Self::get_receiver)),
+            ("mpsc_receiver::get", wrap3(&mut *store, Self::get_receiver)),
             (
                 "mpsc_receiver::poll_next",
                 wrap2(&mut *store, Self::poll_next_for_receiver),
             ),
-            ("mpsc_sender::get", wrap2(&mut *store, Self::get_sender)),
+            ("mpsc_sender::get", wrap3(&mut *store, Self::get_sender)),
             (
                 "mpsc_sender::poll_ready",
                 wrap2(&mut *store, Self::poll_ready_for_sender),

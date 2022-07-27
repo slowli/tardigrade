@@ -15,7 +15,8 @@ use crate::{
 use tardigrade::workflow::InputsBuilder;
 use tardigrade_shared::{abi::AllocateBytes, JoinError};
 
-const POLL_CX: WasmContextPtr = 1234;
+const POLL_CX: WasmContextPtr = 1_234;
+const ERROR_PTR: u32 = 1_024; // enough to not intersect with "real" memory
 
 #[derive(Debug, Clone, Copy)]
 enum StaticStr {
@@ -71,7 +72,8 @@ fn initialize_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()
 
     // ...then getting the inbound channel
     let (ptr, len) = StaticStr::Orders.ptr_and_len();
-    let orders = WorkflowFunctions::get_receiver(ctx.as_context_mut(), ptr, len).unwrap();
+    let orders =
+        WorkflowFunctions::get_receiver(ctx.as_context_mut(), ptr, len, ERROR_PTR).unwrap();
 
     // ...then polling this channel
     let poll_res =

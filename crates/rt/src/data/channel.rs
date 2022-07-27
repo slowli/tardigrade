@@ -339,20 +339,35 @@ impl WorkflowData {
 /// Channel-related functions exported to WASM.
 #[allow(clippy::needless_pass_by_value)] // required for WASM function wrappers
 impl WorkflowFunctions {
+    fn write_access_result(
+        ctx: &mut StoreContextMut<'_, WorkflowData>,
+        result: Result<(), AccessErrorKind>,
+        error_ptr: u32,
+    ) -> Result<(), Trap> {
+        let memory = ctx.data().exports().memory;
+        let result_abi = result.into_wasm(&mut WasmAllocator::new(ctx.as_context_mut()))?;
+        memory
+            .write(ctx, error_ptr as usize, &result_abi.to_le_bytes())
+            .map_err(|err| Trap::new(format!("cannot write to WASM memory: {}", err)))
+    }
+
     pub fn get_receiver(
         mut ctx: StoreContextMut<'_, WorkflowData>,
         channel_name_ptr: u32,
         channel_name_len: u32,
+        error_ptr: u32,
     ) -> Result<Option<ExternRef>, Trap> {
-        let mut ctx = ctx.as_context_mut();
         let memory = ctx.data().exports().memory;
         let channel_name =
             copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
         let result = ctx.data_mut().acquire_inbound_channel(&channel_name);
+        let result = crate::log_result!(result, "Acquired inbound channel `{}`", channel_name);
 
-        let channel_ref = crate::log_result!(result, "Acquired inbound channel `{}`", channel_name)
+        let channel_ref = result
+            .as_ref()
             .ok()
             .map(|()| HostResource::InboundChannel(channel_name).into_ref());
+        Self::write_access_result(&mut ctx, result, error_ptr)?;
         Ok(channel_ref)
     }
 
@@ -382,16 +397,19 @@ impl WorkflowFunctions {
         mut ctx: StoreContextMut<'_, WorkflowData>,
         channel_name_ptr: u32,
         channel_name_len: u32,
+        error_ptr: u32,
     ) -> Result<Option<ExternRef>, Trap> {
         let memory = ctx.data().exports().memory;
         let channel_name =
             copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
         let result = ctx.data_mut().acquire_outbound_channel(&channel_name);
+        let result = crate::log_result!(result, "Acquired outbound channel `{}`", channel_name);
 
-        let channel_ref =
-            crate::log_result!(result, "Acquired outbound channel `{}`", channel_name)
-                .ok()
-                .map(|()| HostResource::OutboundChannel(channel_name).into_ref());
+        let channel_ref = result
+            .as_ref()
+            .ok()
+            .map(|()| HostResource::OutboundChannel(channel_name).into_ref());
+        Self::write_access_result(&mut ctx, result, error_ptr)?;
         Ok(channel_ref)
     }
 

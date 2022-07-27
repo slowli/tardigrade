@@ -17,6 +17,8 @@ use crate::{
 };
 use tardigrade_shared::abi::IntoWasm;
 
+static mut ACCESS_ERROR_PAD: i64 = 0;
+
 #[derive(Debug)]
 pub struct MpscReceiver {
     resource: Resource<Self>,
@@ -34,15 +36,17 @@ impl TakeHandle<Wasm> for MpscReceiver {
             fn mpsc_receiver_get(
                 channel_name_ptr: *const u8,
                 channel_name_len: usize,
+                error_ptr: *mut i64,
             ) -> Option<Resource<MpscReceiver>>;
         }
 
-        // FIXME: distinguish errors somehow
         unsafe {
-            let result = mpsc_receiver_get(id.as_ptr(), id.len());
-            result
-                .map(|resource| Self { resource })
-                .ok_or_else(|| AccessErrorKind::Unknown.with_location(InboundChannel(id)))
+            let resource = mpsc_receiver_get(id.as_ptr(), id.len(), &mut ACCESS_ERROR_PAD);
+            Result::<(), AccessErrorKind>::from_abi_in_wasm(ACCESS_ERROR_PAD)
+                .map(|()| Self {
+                    resource: resource.unwrap(),
+                })
+                .map_err(|kind| kind.with_location(InboundChannel(id)))
         }
     }
 }
@@ -87,16 +91,17 @@ impl TakeHandle<Wasm> for MpscSender {
             fn mpsc_sender_get(
                 channel_name_ptr: *const u8,
                 channel_name_len: usize,
+                error_ptr: *mut i64,
             ) -> Option<Resource<MpscSender>>;
         }
 
         unsafe {
-            let result = mpsc_sender_get(id.as_ptr(), id.len());
-            result
-                .map(|resource| Self {
-                    resource: Arc::new(resource),
+            let resource = mpsc_sender_get(id.as_ptr(), id.len(), &mut ACCESS_ERROR_PAD);
+            Result::<(), AccessErrorKind>::from_abi_in_wasm(ACCESS_ERROR_PAD)
+                .map(|()| Self {
+                    resource: Arc::new(resource.unwrap()),
                 })
-                .ok_or_else(|| AccessErrorKind::Unknown.with_location(OutboundChannel(id)))
+                .map_err(|kind| kind.with_location(OutboundChannel(id)))
         }
     }
 }
