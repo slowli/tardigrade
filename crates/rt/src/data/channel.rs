@@ -177,7 +177,6 @@ impl WorkflowData {
     pub(crate) fn close_inbound_channel(&mut self, channel_name: &str) -> Result<(), ConsumeError> {
         let channel_state = self.inbound_channels.get_mut(channel_name).unwrap();
         // ^ `unwrap()` safety is guaranteed by previous checks.
-
         if channel_state.is_closed {
             return Ok(()); // no further actions required
         }
@@ -200,6 +199,15 @@ impl WorkflowData {
             },
         );
         Ok(())
+    }
+
+    pub(crate) fn handle_inbound_channel_closure(
+        &mut self,
+        channel_name: &str,
+    ) -> HashSet<WakerId> {
+        let channel_state = self.inbound_channels.get_mut(channel_name).unwrap();
+        // ^ `unwrap()` safety is guaranteed by previous checks.
+        mem::take(&mut channel_state.wakes_on_next_element)
     }
 
     #[cfg(feature = "async")]

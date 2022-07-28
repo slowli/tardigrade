@@ -188,6 +188,7 @@ pub struct AsyncEnv<W> {
     extensions: EnvExtensions,
 }
 
+// FIXME: drop inbound channel rxs on closure
 impl<W> AsyncEnv<W> {
     /// Creates an async environment for a `workflow` that uses the specified `scheduler`
     /// for timers.

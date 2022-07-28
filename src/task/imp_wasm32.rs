@@ -260,3 +260,10 @@ pub extern "C" fn __tardigrade_rt__wake_waker(waker: WakerId) {
     let waker = unsafe { WAKERS.remove(waker) };
     waker.wake();
 }
+
+/// Equivalent of `drop(waker)`.
+#[no_mangle]
+#[export_name = "tardigrade_rt::drop_waker"]
+pub extern "C" fn __tardigrade_rt__drop_waker(waker: WakerId) {
+    unsafe { WAKERS.remove(waker) };
+}

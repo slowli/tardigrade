@@ -532,3 +532,20 @@ fn timers_basics() {
     let timers: HashMap<_, _> = workflow.timers().collect();
     assert!(timers.is_empty(), "{:?}", timers); // timers are cleared on drop
 }
+
+#[test]
+fn dropping_inbound_channel_in_workflow() {
+    let drop_channel: MockPollFn = |mut ctx| {
+        let _ = initialize_task(ctx.as_context_mut())?;
+        let orders = WorkflowData::inbound_channel_ref("orders");
+        WorkflowFunctions::drop_ref(ctx, Some(orders))?;
+        Ok(Poll::Pending)
+    };
+    let poll_fns = Answers::from_value(drop_channel);
+    let guard = ExportsMock::prepare(poll_fns);
+    let mut workflow = create_workflow(MockScheduler::default()).into_inner();
+
+    workflow.tick().unwrap();
+    let mock = guard.into_inner();
+    assert_eq!(mock.consumed_wakers.len(), 1, "{:?}", mock.consumed_wakers);
+}

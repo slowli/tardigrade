@@ -27,6 +27,7 @@ pub(crate) struct ModuleExports {
     alloc_bytes: TypedFunc<u32, u32>,
     create_waker: TypedFunc<WasmContextPtr, WakerId>,
     wake_waker: TypedFunc<WakerId, ()>,
+    drop_waker: TypedFunc<WakerId, ()>,
 }
 
 #[cfg_attr(test, mimicry::mock(using = "super::tests::ExportsMock"))]
@@ -83,6 +84,15 @@ impl ModuleExports {
         let result = self.wake_waker.call(ctx, waker_id);
         crate::log_result!(result, "Waked waker {}", waker_id)
     }
+
+    pub fn drop_waker(
+        &self,
+        ctx: StoreContextMut<'_, WorkflowData>,
+        waker_id: WakerId,
+    ) -> Result<(), Trap> {
+        let result = self.drop_waker.call(ctx, waker_id);
+        crate::log_result!(result, "Dropped waker {}", waker_id)
+    }
 }
 
 impl fmt::Debug for ModuleExports {
@@ -129,6 +139,7 @@ impl ModuleExports {
         Self::ensure_export_ty::<u32, u32>(module, "tardigrade_rt::alloc_bytes")?;
         Self::ensure_export_ty::<WasmContextPtr, WakerId>(module, "tardigrade_rt::create_waker")?;
         Self::ensure_export_ty::<WakerId, ()>(module, "tardigrade_rt::wake_waker")?;
+        Self::ensure_export_ty::<WakerId, ()>(module, "tardigrade_rt::drop_waker")?;
 
         Ok(())
     }
@@ -167,6 +178,7 @@ impl ModuleExports {
             ),
             create_waker: Self::extract_function(store, instance, "tardigrade_rt::create_waker"),
             wake_waker: Self::extract_function(store, instance, "tardigrade_rt::wake_waker"),
+            drop_waker: Self::extract_function(store, instance, "tardigrade_rt::drop_waker"),
         }
     }
 
@@ -245,6 +257,9 @@ mod tests {
                 wake_waker: Func::wrap(&mut *store, drop::<WakerId>)
                     .typed(&*store)
                     .unwrap(),
+                drop_waker: Func::wrap(&mut *store, drop::<WakerId>)
+                    .typed(&*store)
+                    .unwrap(),
             }
         }
 
@@ -313,14 +328,27 @@ mod tests {
             ctx: StoreContextMut<'_, WorkflowData>,
             waker_id: WakerId,
         ) -> Result<(), Trap> {
-            let mut this = this.borrow();
-            assert!(waker_id < this.next_waker);
+            this.borrow().consume_waker(waker_id);
+            WorkflowFunctions::wake_task(ctx, 0).unwrap();
+            Ok(())
+        }
+
+        fn consume_waker(&mut self, waker_id: WakerId) {
+            assert!(waker_id < self.next_waker);
             assert!(
-                this.consumed_wakers.insert(waker_id),
+                self.consumed_wakers.insert(waker_id),
                 "waker {} consumed twice",
                 waker_id
             );
-            WorkflowFunctions::wake_task(ctx, 0).unwrap();
+        }
+
+        pub(super) fn drop_waker(
+            this: &Mut<Self>,
+            _: &ModuleExports,
+            _: StoreContextMut<'_, WorkflowData>,
+            waker_id: WakerId,
+        ) -> Result<(), Trap> {
+            this.borrow().consume_waker(waker_id);
             Ok(())
         }
     }

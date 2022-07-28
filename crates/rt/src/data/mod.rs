@@ -1,6 +1,6 @@
 //! Workflow state.
 
-use wasmtime::{StoreContextMut, Trap};
+use wasmtime::{AsContextMut, ExternRef, StoreContextMut, Trap};
 
 use std::collections::{HashMap, HashSet};
 
@@ -27,6 +27,7 @@ use self::{
     task::TaskQueue,
     time::Timers,
 };
+use crate::data::helpers::HostResource;
 use crate::{
     module::{ModuleExports, Services},
     receipt::{PanicInfo, PanicLocation, WakeUpCause},
@@ -133,13 +134,11 @@ impl WorkflowData {
 
     #[cfg(test)]
     pub(crate) fn inbound_channel_ref(name: impl Into<String>) -> wasmtime::ExternRef {
-        use self::helpers::HostResource;
         HostResource::InboundChannel(name.into()).into_ref()
     }
 
     #[cfg(test)]
     pub(crate) fn outbound_channel_ref(name: impl Into<String>) -> wasmtime::ExternRef {
-        use self::helpers::HostResource;
         HostResource::OutboundChannel(name.into()).into_ref()
     }
 }
@@ -166,6 +165,29 @@ impl WorkflowFunctions {
             )
         );
         maybe_data.into_wasm(&mut WasmAllocator::new(ctx))
+    }
+
+    #[allow(clippy::needless_pass_by_value)] // required by wasmtime
+    pub fn drop_ref(
+        mut ctx: StoreContextMut<'_, WorkflowData>,
+        dropped: Option<ExternRef>,
+    ) -> Result<(), Trap> {
+        let dropped = HostResource::from_ref(dropped.as_ref())?;
+        if let HostResource::InboundChannel(name) = dropped {
+            let wakers = ctx.data_mut().handle_inbound_channel_closure(name);
+            let exports = ctx.data().exports();
+            for waker in wakers {
+                let result = exports.drop_waker(ctx.as_context_mut(), waker);
+                let result = crate::log_result!(
+                    result,
+                    "Dropped waker {} for inbound channel `{}` closed by the workflow",
+                    waker,
+                    name
+                );
+                result.ok();
+            }
+        }
+        Ok(())
     }
 
     pub fn report_panic(

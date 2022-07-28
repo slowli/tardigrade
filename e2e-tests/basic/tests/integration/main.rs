@@ -1,5 +1,6 @@
 //! E2E tests for sample workflows.
 
+use externref_processor::Processor;
 use once_cell::sync::Lazy;
 
 use std::{collections::HashMap, error};
@@ -19,7 +20,10 @@ static MODULE: Lazy<WorkflowModule> = Lazy::new(|| {
         .set_profile("wasm")
         .set_wasm_opt(WasmOpt::default())
         .compile();
-    let module_bytes = externref_processor::process_bytes(&module_bytes).unwrap();
+    let module_bytes = Processor::default()
+        .set_drop_fn("tardigrade_rt", "drop_ref")
+        .process_bytes(&module_bytes)
+        .unwrap();
     let engine = WorkflowEngine::default();
     WorkflowModule::new(&engine, &module_bytes).unwrap()
 });
