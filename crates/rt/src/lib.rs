@@ -125,7 +125,9 @@ mod utils;
 mod workflow;
 
 pub use crate::{
-    data::{ConsumeError, ConsumeErrorKind, PersistError, TaskState, TimerState},
+    data::{
+        ConsumeError, ConsumeErrorKind, InboundChannelState, PersistError, TaskState, TimerState,
+    },
     module::{Clock, ExtendLinker, WorkflowEngine, WorkflowModule, WorkflowSpawner},
     workflow::{InitializingWorkflow, PersistedWorkflow, Workflow},
 };

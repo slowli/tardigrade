@@ -11,7 +11,7 @@ mod task;
 mod time;
 
 pub use self::{
-    channel::{ConsumeError, ConsumeErrorKind},
+    channel::{ConsumeError, ConsumeErrorKind, InboundChannelState},
     persistence::PersistError,
     task::TaskState,
     time::TimerState,
@@ -22,7 +22,7 @@ pub(crate) use self::{
 };
 
 use self::{
-    channel::{InboundChannelState, OutboundChannelState},
+    channel::OutboundChannelState,
     helpers::{CurrentExecution, Message, Wakers},
     task::TaskQueue,
     time::Timers,

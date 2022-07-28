@@ -13,7 +13,7 @@ mod tests;
 pub use self::persistence::PersistedWorkflow;
 
 use crate::{
-    data::{ConsumeError, PersistError, TaskState, TimerState, WorkflowData},
+    data::{ConsumeError, InboundChannelState, PersistError, TaskState, TimerState, WorkflowData},
     module::{DataSection, ModuleExports, WorkflowSpawner},
     receipt::{
         Event, ExecutedFunction, Execution, ExecutionError, ExtendedTrap, Receipt,
@@ -299,6 +299,11 @@ impl<W> Workflow<W> {
 
     pub(crate) fn data_input(&self, input_name: &str) -> Option<Vec<u8>> {
         self.store.data().data_input(input_name)
+    }
+
+    /// Returns the current state of an inbound channel with the specified name.
+    pub fn inbound_channel(&self, channel_name: &str) -> Option<&InboundChannelState> {
+        self.store.data().inbound_channel(channel_name)
     }
 
     pub(crate) fn push_inbound_message(

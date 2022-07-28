@@ -137,12 +137,22 @@ pub struct MessageSender<'a, T, C, W> {
 }
 
 impl<'a, T, C: Encode<T>, W> MessageSender<'a, T, C, W> {
-    /// Sends a message.
+    /// Checks if the channel is closed.
+    #[allow(clippy::missing_panics_doc)] // false positive
+    pub fn is_closed(&self) -> bool {
+        self.workflow
+            .borrow()
+            .inbound_channel(&self.channel_name)
+            .unwrap()
+            .is_closed()
+    }
+
+    /// Sends a message over the channel.
     ///
     /// # Errors
     ///
     /// Returns an error if the workflow is currently not waiting for messages
-    /// on the associated inbound channel.
+    /// on the associated channel, or if the channel is closed.
     pub fn send(&mut self, message: T) -> Result<SentMessage<'a, W>, ConsumeError> {
         let raw_message = self.codec.encode_value(message);
         self.workflow
@@ -153,7 +163,7 @@ impl<'a, T, C: Encode<T>, W> MessageSender<'a, T, C, W> {
         })
     }
 
-    /// Closes this channel.
+    /// Closes this channel from the host side.
     ///
     /// # Errors
     ///
