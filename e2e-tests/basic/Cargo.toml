@@ -24,12 +24,18 @@ tardigrade = { version = "0.1.0", path = "../..", features = ["derive"] }
 assert_matches = "1.5.0"
 async-std = { version = "1.12.0", features = ["attributes"] }
 chrono = "0.4.19"
-externref-processor = { path = "../../../externref/crates/processor" }
+env_logger = "0.9.0"
 once_cell = "1.12.0"
 serde_json = "1.0"
 wasmtime = "0.37.0"
 
+[dev-dependencies.externref]
+version = "0.1.0"
+git = "https://github.com/slowli/externref.git"
+rev = "2737e549d882c6309989d11cb8aa5befc99dd261"
+features = ["processor-log"]
+
 [dev-dependencies.tardigrade-rt]
 version = "0.1.0"
 path = "../../crates/rt"
-features = ["async", "async-io"]
+features = ["async", "async-io", "log"]
