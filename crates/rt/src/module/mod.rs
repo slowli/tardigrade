@@ -82,10 +82,19 @@ impl fmt::Debug for WorkflowEngine {
     }
 }
 
-#[derive(Debug)]
 pub(crate) struct DataSection {
     start: u32,
     section: Vec<u8>,
+}
+
+impl fmt::Debug for DataSection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DataSection")
+            .field("start", &self.start)
+            .field("section_len", &self.section.len())
+            .finish()
+    }
 }
 
 impl DataSection {

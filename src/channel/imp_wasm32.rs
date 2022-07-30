@@ -1,11 +1,13 @@
 //! WASM implementation of MPSC channels.
 
+use externref::{externref, Resource};
 use futures::{Sink, Stream};
 
 use std::{
     convert::Infallible,
     mem::ManuallyDrop,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -15,9 +17,11 @@ use crate::{
 };
 use tardigrade_shared::abi::IntoWasm;
 
+static mut ACCESS_ERROR_PAD: i64 = 0;
+
 #[derive(Debug)]
 pub struct MpscReceiver {
-    channel_name: String,
+    resource: Resource<Self>,
 }
 
 impl TakeHandle<Wasm> for MpscReceiver {
@@ -25,17 +29,22 @@ impl TakeHandle<Wasm> for MpscReceiver {
     type Handle = Self;
 
     fn take_handle(_env: &mut Wasm, id: &str) -> Result<Self, AccessError> {
+        #[externref]
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
             #[link_name = "mpsc_receiver::get"]
-            fn mpsc_receiver_get(channel_name_ptr: *const u8, channel_name_len: usize) -> i64;
+            fn mpsc_receiver_get(
+                channel_name_ptr: *const u8,
+                channel_name_len: usize,
+                error_ptr: *mut i64,
+            ) -> Option<Resource<MpscReceiver>>;
         }
 
         unsafe {
-            let result = mpsc_receiver_get(id.as_ptr(), id.len());
-            Result::<(), AccessErrorKind>::from_abi_in_wasm(result)
+            let resource = mpsc_receiver_get(id.as_ptr(), id.len(), &mut ACCESS_ERROR_PAD);
+            Result::<(), AccessErrorKind>::from_abi_in_wasm(ACCESS_ERROR_PAD)
                 .map(|()| Self {
-                    channel_name: id.to_owned(),
+                    resource: resource.unwrap(),
                 })
                 .map_err(|kind| kind.with_location(InboundChannel(id)))
         }
@@ -46,20 +55,19 @@ impl Stream for MpscReceiver {
     type Item = Vec<u8>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        #[externref]
         #[link(wasm_import_module = "tardigrade_rt")]
         #[allow(improper_ctypes)]
         extern "C" {
             #[link_name = "mpsc_receiver::poll_next"]
             fn mpsc_receiver_poll_next(
-                channel_name_ptr: *const u8,
-                channel_name_len: usize,
+                receiver: &Resource<MpscReceiver>,
                 cx: *mut Context<'_>,
             ) -> i64;
         }
 
         unsafe {
-            let result =
-                mpsc_receiver_poll_next(self.channel_name.as_ptr(), self.channel_name.len(), cx);
+            let result = mpsc_receiver_poll_next(&self.resource, cx);
             IntoWasm::from_abi_in_wasm(result)
         }
     }
@@ -68,7 +76,7 @@ impl Stream for MpscReceiver {
 /// Unbounded sender end of an MPSC channel. Guaranteed to never close.
 #[derive(Debug, Clone)]
 pub struct MpscSender {
-    channel_name: String,
+    resource: Arc<Resource<Self>>,
 }
 
 impl TakeHandle<Wasm> for MpscSender {
@@ -76,17 +84,22 @@ impl TakeHandle<Wasm> for MpscSender {
     type Handle = Self;
 
     fn take_handle(_env: &mut Wasm, id: &str) -> Result<Self, AccessError> {
+        #[externref]
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
             #[link_name = "mpsc_sender::get"]
-            fn mpsc_sender_get(channel_name_ptr: *const u8, channel_name_len: usize) -> i64;
+            fn mpsc_sender_get(
+                channel_name_ptr: *const u8,
+                channel_name_len: usize,
+                error_ptr: *mut i64,
+            ) -> Option<Resource<MpscSender>>;
         }
 
         unsafe {
-            let result = mpsc_sender_get(id.as_ptr(), id.len());
-            Result::<(), AccessErrorKind>::from_abi_in_wasm(result)
+            let resource = mpsc_sender_get(id.as_ptr(), id.len(), &mut ACCESS_ERROR_PAD);
+            Result::<(), AccessErrorKind>::from_abi_in_wasm(ACCESS_ERROR_PAD)
                 .map(|()| Self {
-                    channel_name: id.to_owned(),
+                    resource: Arc::new(resource.unwrap()),
                 })
                 .map_err(|kind| kind.with_location(OutboundChannel(id)))
         }
@@ -95,24 +108,19 @@ impl TakeHandle<Wasm> for MpscSender {
 
 impl MpscSender {
     fn do_send(&self, message: &[u8]) {
+        #[externref]
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
             #[link_name = "mpsc_sender::start_send"]
             fn mpsc_sender_start_send(
-                channel_name_ptr: *const u8,
-                channel_name_len: usize,
+                sender: &Resource<MpscSender>,
                 message_ptr: *const u8,
                 message_len: usize,
             );
         }
 
         unsafe {
-            mpsc_sender_start_send(
-                self.channel_name.as_ptr(),
-                self.channel_name.len(),
-                message.as_ptr(),
-                message.len(),
-            );
+            mpsc_sender_start_send(&self.resource, message.as_ptr(), message.len());
         }
     }
 }
@@ -121,20 +129,16 @@ impl Sink<&[u8]> for MpscSender {
     type Error = Infallible;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        #[externref]
         #[link(wasm_import_module = "tardigrade_rt")]
         #[allow(improper_ctypes)]
         extern "C" {
             #[link_name = "mpsc_sender::poll_ready"]
-            fn mpsc_sender_poll_ready(
-                channel_name_ptr: *const u8,
-                channel_name_len: usize,
-                cx: *mut Context<'_>,
-            ) -> i32;
+            fn mpsc_sender_poll_ready(sender: &Resource<MpscSender>, cx: *mut Context<'_>) -> i32;
         }
 
         unsafe {
-            let poll_result =
-                mpsc_sender_poll_ready(self.channel_name.as_ptr(), self.channel_name.len(), cx);
+            let poll_result = mpsc_sender_poll_ready(&self.resource, cx);
             Poll::<()>::from_abi_in_wasm(poll_result).map(Ok)
         }
     }
@@ -145,20 +149,16 @@ impl Sink<&[u8]> for MpscSender {
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        #[externref]
         #[link(wasm_import_module = "tardigrade_rt")]
         #[allow(improper_ctypes)]
         extern "C" {
             #[link_name = "mpsc_sender::poll_flush"]
-            fn mpsc_sender_poll_flush(
-                channel_name_ptr: *const u8,
-                channel_name_len: usize,
-                cx: *mut Context<'_>,
-            ) -> i32;
+            fn mpsc_sender_poll_flush(sender: &Resource<MpscSender>, cx: *mut Context<'_>) -> i32;
         }
 
         unsafe {
-            let poll_result =
-                mpsc_sender_poll_flush(self.channel_name.as_ptr(), self.channel_name.len(), cx);
+            let poll_result = mpsc_sender_poll_flush(&self.resource, cx);
             Poll::<()>::from_abi_in_wasm(poll_result).map(Ok)
         }
     }

@@ -28,7 +28,7 @@ impl fmt::Display for ChannelKind {
 pub enum AccessErrorKind {
     /// Channel was not registered in the workflow interface.
     Unknown,
-    /// An inbound channel was already acquired by the workflow.
+    /// Channel was already acquired by the workflow.
     AlreadyAcquired,
     /// Custom error.
     Custom(Box<dyn error::Error + Send + Sync>),

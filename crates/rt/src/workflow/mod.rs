@@ -13,7 +13,10 @@ mod tests;
 pub use self::persistence::PersistedWorkflow;
 
 use crate::{
-    data::{ConsumeError, PersistError, TaskState, TimerState, WorkflowData},
+    data::{
+        ConsumeError, InboundChannelState, OutboundChannelState, PersistError, TaskState,
+        TimerState, WorkflowData,
+    },
     module::{DataSection, ModuleExports, WorkflowSpawner},
     receipt::{
         Event, ExecutedFunction, Execution, ExecutionError, ExtendedTrap, Receipt,
@@ -301,6 +304,17 @@ impl<W> Workflow<W> {
         self.store.data().data_input(input_name)
     }
 
+    /// Returns the current state of an inbound channel with the specified name.
+    // TODO: better interface (maybe, via an immutable handle?)
+    pub fn inbound_channel(&self, channel_name: &str) -> Option<&InboundChannelState> {
+        self.store.data().inbound_channel(channel_name)
+    }
+
+    /// Returns the current state of an outbound channel with the specified name.
+    pub fn outbound_channel(&self, channel_name: &str) -> Option<&OutboundChannelState> {
+        self.store.data().outbound_channel(channel_name)
+    }
+
     pub(crate) fn push_inbound_message(
         &mut self,
         channel_name: &str,
@@ -395,7 +409,7 @@ impl<W> Workflow<W> {
     ///
     /// Returns an error if the workflow is in such a state that it cannot be persisted
     /// right now.
-    pub fn persist(&self) -> Result<PersistedWorkflow, PersistError> {
+    pub fn persist(&mut self) -> Result<PersistedWorkflow, PersistError> {
         PersistedWorkflow::new(self)
     }
 

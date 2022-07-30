@@ -258,6 +258,9 @@ impl<W> AsyncEnv<W> {
             return Ok(Some(Termination::Finished));
         }
 
+        // Garbage-collect closed inbound channels.
+        self.gc();
+
         // Determine external events listened by the workflow.
         let events = self.workflow.listened_events();
         if events.is_empty() {
@@ -362,6 +365,13 @@ impl<W> AsyncEnv<W> {
             // ^ We don't care if nobody listens to results.
         }
         Ok(())
+    }
+
+    /// Garbage-collect receivers for closed inbound channels. This will signal
+    /// to the consumers that the channel cannot be written to.
+    fn gc(&mut self) {
+        self.inbound_channels
+            .retain(|name, _| !self.workflow.inbound_channel(name).unwrap().is_closed());
     }
 }
 

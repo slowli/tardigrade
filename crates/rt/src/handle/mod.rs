@@ -137,12 +137,12 @@ pub struct MessageSender<'a, T, C, W> {
 }
 
 impl<'a, T, C: Encode<T>, W> MessageSender<'a, T, C, W> {
-    /// Sends a message.
+    /// Sends a message over the channel.
     ///
     /// # Errors
     ///
     /// Returns an error if the workflow is currently not waiting for messages
-    /// on the associated inbound channel.
+    /// on the associated channel, or if the channel is closed.
     pub fn send(&mut self, message: T) -> Result<SentMessage<'a, W>, ConsumeError> {
         let raw_message = self.codec.encode_value(message);
         self.workflow
@@ -153,7 +153,7 @@ impl<'a, T, C: Encode<T>, W> MessageSender<'a, T, C, W> {
         })
     }
 
-    /// Closes this channel.
+    /// Closes this channel from the host side.
     ///
     /// # Errors
     ///

@@ -94,7 +94,7 @@
 //! ```
 //! # use tardigrade_rt::{PersistedWorkflow, Workflow, WorkflowSpawner};
 //! # fn test_wrapper(spawner: WorkflowSpawner<()>, workflow: Workflow<()>) -> anyhow::Result<()> {
-//! let workflow: Workflow<()> = // ...
+//! let mut workflow: Workflow<()> = // ...
 //! #   workflow;
 //! let persisted: PersistedWorkflow = workflow.persist()?;
 //! // The persisted workflow can be serialized:
@@ -125,7 +125,10 @@ mod utils;
 mod workflow;
 
 pub use crate::{
-    data::{ConsumeError, ConsumeErrorKind, PersistError, TaskState, TimerState},
+    data::{
+        ConsumeError, ConsumeErrorKind, InboundChannelState, OutboundChannelState, PersistError,
+        TaskState, TimerState,
+    },
     module::{Clock, ExtendLinker, WorkflowEngine, WorkflowModule, WorkflowSpawner},
     workflow::{InitializingWorkflow, PersistedWorkflow, Workflow},
 };

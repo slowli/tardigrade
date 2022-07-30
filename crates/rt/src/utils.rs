@@ -47,7 +47,7 @@ macro_rules! warn {
 #[macro_export]
 #[doc(hidden)] // not public
 macro_rules! log_result {
-    ($result:tt, $($arg:tt)*) => {{
+    ($result:ident, $($arg:tt)*) => {{
         match &$result {
             Ok(val) => {
                 log::trace!(target: "tardigrade_rt", "{}: {:?}", format_args!($($arg)*), val);

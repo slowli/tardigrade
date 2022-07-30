@@ -22,6 +22,11 @@ slab = "0.4.6"
 tardigrade-shared = { version = "0.1.0", path = "crates/shared" }
 tardigrade-derive = { version = "0.1.0", path = "crates/derive", optional = true }
 
+[dependencies.externref]
+version = "0.1.0"
+git = "https://github.com/slowli/externref.git"
+rev = "2737e549d882c6309989d11cb8aa5befc99dd261"
+
 [dev-dependencies]
 assert_matches = "1.5.0"
 async-io = "1.7.0"

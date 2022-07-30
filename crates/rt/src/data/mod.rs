@@ -1,6 +1,6 @@
 //! Workflow state.
 
-use wasmtime::{StoreContextMut, Trap};
+use wasmtime::{AsContextMut, ExternRef, StoreContextMut, Trap};
 
 use std::collections::{HashMap, HashSet};
 
@@ -11,27 +11,29 @@ mod task;
 mod time;
 
 pub use self::{
-    channel::{ConsumeError, ConsumeErrorKind},
+    channel::{ConsumeError, ConsumeErrorKind, InboundChannelState, OutboundChannelState},
     persistence::PersistError,
     task::TaskState,
     time::TimerState,
 };
-pub(crate) use self::{helpers::WasmContextPtr, persistence::WorkflowState};
+pub(crate) use self::{
+    helpers::WasmContextPtr,
+    persistence::{Refs, WorkflowState},
+};
 
 use self::{
-    channel::{InboundChannelState, OutboundChannelState},
     helpers::{CurrentExecution, Message, Wakers},
     task::TaskQueue,
     time::Timers,
 };
 use crate::{
+    data::helpers::HostResource,
     module::{ModuleExports, Services},
     receipt::{PanicInfo, PanicLocation, WakeUpCause},
     utils::{copy_string_from_wasm, WasmAllocator},
     TaskId,
 };
-use tardigrade::interface::Interface;
-use tardigrade_shared::abi::IntoWasm;
+use tardigrade_shared::{abi::IntoWasm, interface::Interface};
 
 #[derive(Debug)]
 pub struct WorkflowData {
@@ -127,6 +129,16 @@ impl WorkflowData {
             .flat_map(|state| &state.wakes_on_flush)
             .copied()
     }
+
+    #[cfg(test)]
+    pub(crate) fn inbound_channel_ref(name: impl Into<String>) -> ExternRef {
+        HostResource::InboundChannel(name.into()).into_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn outbound_channel_ref(name: impl Into<String>) -> ExternRef {
+        HostResource::OutboundChannel(name.into()).into_ref()
+    }
 }
 
 /// Functions operating on `WorkflowData` exported to WASM.
@@ -151,6 +163,29 @@ impl WorkflowFunctions {
             )
         );
         maybe_data.into_wasm(&mut WasmAllocator::new(ctx))
+    }
+
+    #[allow(clippy::needless_pass_by_value)] // required by wasmtime
+    pub fn drop_ref(
+        mut ctx: StoreContextMut<'_, WorkflowData>,
+        dropped: Option<ExternRef>,
+    ) -> Result<(), Trap> {
+        let dropped = HostResource::from_ref(dropped.as_ref())?;
+        if let HostResource::InboundChannel(name) = dropped {
+            let wakers = ctx.data_mut().handle_inbound_channel_closure(name);
+            let exports = ctx.data().exports();
+            for waker in wakers {
+                let result = exports.drop_waker(ctx.as_context_mut(), waker);
+                let result = crate::log_result!(
+                    result,
+                    "Dropped waker {} for inbound channel `{}` closed by the workflow",
+                    waker,
+                    name
+                );
+                result.ok();
+            }
+        }
+        Ok(())
     }
 
     pub fn report_panic(

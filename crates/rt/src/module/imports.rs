@@ -2,7 +2,8 @@
 
 use anyhow::bail;
 use wasmtime::{
-    AsContextMut, Caller, ExternType, Func, Module, Store, StoreContextMut, WasmRet, WasmTy,
+    AsContextMut, Caller, ExternRef, ExternType, Func, Module, Store, StoreContextMut, WasmRet,
+    WasmTy,
 };
 
 use std::str;
@@ -29,11 +30,12 @@ impl ModuleImports {
             let fn_name = import.name();
             Self::validate_import(&ty, fn_name)?;
         }
-
         Ok(())
     }
 
     fn validate_import(ty: &ExternType, fn_name: &str) -> anyhow::Result<()> {
+        type Ref = Option<ExternRef>;
+
         match fn_name {
             "task::poll_completion" => ensure_func_ty::<(TaskId, WasmContextPtr), i64>(ty, fn_name),
             "task::spawn" => ensure_func_ty::<(u32, u32, TaskId), ()>(ty, fn_name),
@@ -42,23 +44,22 @@ impl ModuleImports {
             "data_input::get" => ensure_func_ty::<(u32, u32), i64>(ty, fn_name),
 
             "mpsc_receiver::get" | "mpsc_sender::get" => {
-                ensure_func_ty::<(u32, u32), i64>(ty, fn_name)
+                ensure_func_ty::<(u32, u32, u32), Ref>(ty, fn_name)
             }
 
-            "mpsc_receiver::poll_next" => {
-                ensure_func_ty::<(u32, u32, WasmContextPtr), i64>(ty, fn_name)
-            }
+            "mpsc_receiver::poll_next" => ensure_func_ty::<(Ref, WasmContextPtr), i64>(ty, fn_name),
 
             "mpsc_sender::poll_ready" | "mpsc_sender::poll_flush" => {
-                ensure_func_ty::<(u32, u32, WasmContextPtr), i32>(ty, fn_name)
+                ensure_func_ty::<(Ref, WasmContextPtr), i32>(ty, fn_name)
             }
-            "mpsc_sender::start_send" => ensure_func_ty::<(u32, u32, u32, u32), ()>(ty, fn_name),
+            "mpsc_sender::start_send" => ensure_func_ty::<(Ref, u32, u32), ()>(ty, fn_name),
 
             "timer::now" => ensure_func_ty::<(), i64>(ty, fn_name),
             "timer::new" => ensure_func_ty::<i64, TimerId>(ty, fn_name),
             "timer::drop" => ensure_func_ty::<TimerId, ()>(ty, fn_name),
             "timer::poll" => ensure_func_ty::<(TimerId, WasmContextPtr), i64>(ty, fn_name),
 
+            "drop_ref" => ensure_func_ty::<Ref, ()>(ty, fn_name),
             "panic" => ensure_func_ty::<(u32, u32, u32, u32, u32, u32), ()>(ty, fn_name),
 
             other => {
@@ -91,29 +92,31 @@ impl ExtendLinker for WorkflowFunctions {
             // Data input functions
             ("data_input::get", wrap2(&mut *store, Self::get_data_input)),
             // Channel functions
-            ("mpsc_receiver::get", wrap2(&mut *store, Self::get_receiver)),
+            ("mpsc_receiver::get", wrap3(&mut *store, Self::get_receiver)),
             (
                 "mpsc_receiver::poll_next",
-                wrap3(&mut *store, Self::poll_next_for_receiver),
+                wrap2(&mut *store, Self::poll_next_for_receiver),
             ),
-            ("mpsc_sender::get", wrap2(&mut *store, Self::get_sender)),
+            ("mpsc_sender::get", wrap3(&mut *store, Self::get_sender)),
             (
                 "mpsc_sender::poll_ready",
-                wrap3(&mut *store, Self::poll_ready_for_sender),
+                wrap2(&mut *store, Self::poll_ready_for_sender),
             ),
             (
                 "mpsc_sender::start_send",
-                wrap4(&mut *store, Self::start_send),
+                wrap3(&mut *store, Self::start_send),
             ),
             (
                 "mpsc_sender::poll_flush",
-                wrap3(&mut *store, Self::poll_flush_for_sender),
+                wrap2(&mut *store, Self::poll_flush_for_sender),
             ),
             // Timer functions
             ("timer::now", wrap0(&mut *store, Self::current_timestamp)),
             ("timer::new", wrap1(&mut *store, Self::create_timer)),
             ("timer::drop", wrap1(&mut *store, Self::drop_timer)),
             ("timer::poll", wrap2(&mut *store, Self::poll_timer)),
+            // Resource management
+            ("drop_ref", wrap1(&mut *store, Self::drop_ref)),
             // Panic hook
             ("panic", wrap6(&mut *store, Self::report_panic)),
         ]
@@ -141,7 +144,6 @@ impl_wrapper!(wrap0 =>);
 impl_wrapper!(wrap1 => a: A);
 impl_wrapper!(wrap2 => a: A, b: B);
 impl_wrapper!(wrap3 => a: A, b: B, c: C);
-impl_wrapper!(wrap4 => a: A, b: B, c: C, d: D);
 impl_wrapper!(wrap6 => a: A, b: B, c: C, d: D, e: E, f: F);
 
 #[cfg(test)]

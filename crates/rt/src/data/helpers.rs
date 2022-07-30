@@ -1,7 +1,7 @@
 //! Various helpers for workflow state.
 
 use serde::{Deserialize, Serialize};
-use wasmtime::{AsContextMut, Store, StoreContextMut, Trap};
+use wasmtime::{AsContextMut, ExternRef, Store, StoreContextMut, Trap};
 
 use std::{collections::HashSet, fmt, mem, task::Poll};
 
@@ -51,6 +51,51 @@ impl From<Message> for Vec<u8> {
 impl Message {
     pub fn to_vec(&self) -> Vec<u8> {
         self.0.clone()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum HostResource {
+    InboundChannel(String),
+    OutboundChannel(String),
+}
+
+impl HostResource {
+    pub fn from_ref(reference: Option<&ExternRef>) -> Result<&Self, Trap> {
+        let reference = reference.ok_or_else(|| Trap::new("null reference provided to runtime"))?;
+        reference
+            .data()
+            .downcast_ref::<Self>()
+            .ok_or_else(|| Trap::new("reference of unexpected type"))
+    }
+
+    pub fn into_ref(self) -> ExternRef {
+        ExternRef::new(self)
+    }
+
+    pub fn as_inbound_channel(&self) -> Result<&str, Trap> {
+        if let Self::InboundChannel(name) = self {
+            Ok(name)
+        } else {
+            let message = format!(
+                "unexpected reference type: expected inbound channel, got {:?}",
+                self
+            );
+            Err(Trap::new(message))
+        }
+    }
+
+    pub fn as_outbound_channel(&self) -> Result<&str, Trap> {
+        if let Self::OutboundChannel(name) = self {
+            Ok(name)
+        } else {
+            let message = format!(
+                "unexpected reference type: expected outbound channel, got {:?}",
+                self
+            );
+            Err(Trap::new(message))
+        }
     }
 }
 
