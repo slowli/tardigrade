@@ -263,6 +263,13 @@ fn untyped_workflow() -> TestResult {
         .collect();
     assert_eq!(events, [DomainEvent::OrderTaken { index: 1, order }]);
 
+    let chan = workflow.inbound_channel("orders").unwrap();
+    assert!(!chan.is_closed());
+    assert_eq!(chan.received_messages(), 1);
+    let chan = workflow.outbound_channel("events").unwrap();
+    assert_eq!(chan.flushed_messages(), 1);
+    let chan = workflow.outbound_channel("traces").unwrap();
+    assert_eq!(chan.flushed_messages(), 0);
     Ok(())
 }
 

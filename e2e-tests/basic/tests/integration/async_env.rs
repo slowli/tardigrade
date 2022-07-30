@@ -507,7 +507,7 @@ async fn dynamically_typed_async_handle() -> TestResult {
 
     let mut env = AsyncEnv::new(workflow, AsyncIoScheduler);
     let mut handle = env.handle();
-    let join_handle = task::spawn(async move { env.run().await });
+    let join_handle = task::spawn(async move { env.run().await.map(|_| env.into_inner()) });
 
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,
@@ -533,7 +533,14 @@ async fn dynamically_typed_async_handle() -> TestResult {
         ]
     );
 
-    join_handle.await?;
+    let workflow = join_handle.await?;
+    let chan = workflow.inbound_channel("orders").unwrap();
+    assert!(chan.is_closed());
+    assert_eq!(chan.received_messages(), 1);
+    let chan = workflow.outbound_channel("events").unwrap();
+    assert_eq!(chan.flushed_messages(), 4);
+    let chan = workflow.outbound_channel("traces").unwrap();
+    assert_eq!(chan.flushed_messages(), 22);
     Ok(())
 }
 

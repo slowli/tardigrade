@@ -103,7 +103,7 @@ impl ConsumeError {
 }
 
 /// State of an inbound workflow channel.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct InboundChannelState {
     pub(super) is_acquired: bool,
     pub(super) is_closed: bool,
@@ -116,6 +116,12 @@ impl InboundChannelState {
     /// Checks whether this channel is closed.
     pub fn is_closed(&self) -> bool {
         self.is_closed
+    }
+
+    /// Returns the total number of messages received by this channel. Only processed messages
+    /// are counted, the pending message (if any) is not.
+    pub fn received_messages(&self) -> usize {
+        self.received_messages
     }
 
     fn acquire(&mut self) -> Result<(), AccessErrorKind> {
@@ -137,15 +143,21 @@ impl InboundChannelState {
     }
 }
 
-#[derive(Debug, Default)]
-pub(super) struct OutboundChannelState {
-    pub is_acquired: bool,
-    pub flushed_messages: usize,
-    pub messages: Vec<Message>,
-    pub wakes_on_flush: HashSet<WakerId>,
+/// State of an outbound workflow channel.
+#[derive(Debug, Clone, Default)]
+pub struct OutboundChannelState {
+    pub(super) is_acquired: bool,
+    pub(super) flushed_messages: usize,
+    pub(super) messages: Vec<Message>,
+    pub(super) wakes_on_flush: HashSet<WakerId>,
 }
 
 impl OutboundChannelState {
+    /// Returns the number of messages flushed to this channel.
+    pub fn flushed_messages(&self) -> usize {
+        self.flushed_messages
+    }
+
     fn acquire(&mut self) -> Result<(), AccessErrorKind> {
         if mem::replace(&mut self.is_acquired, true) {
             Err(AccessErrorKind::AlreadyAcquired)
@@ -251,12 +263,17 @@ impl WorkflowData {
         self.inbound_channels.get_mut(channel_name)
     }
 
+    pub(crate) fn outbound_channel(&self, channel_name: &str) -> Option<&OutboundChannelState> {
+        self.outbound_channels.get(channel_name)
+    }
+
     fn outbound_channel_mut(&mut self, channel_name: &str) -> Option<&mut OutboundChannelState> {
         self.outbound_channels.get_mut(channel_name)
     }
 
     fn push_outbound_message(&mut self, channel_name: &str, message: Vec<u8>) {
         let channel_state = self.outbound_channel_mut(channel_name).unwrap();
+        // ^ `unwrap()` safety is guaranteed by resource handling
         let message_len = message.len();
         channel_state.messages.push(message.into());
         self.current_execution()
@@ -266,7 +283,6 @@ impl WorkflowData {
     fn poll_inbound_channel(&mut self, channel_name: &str, cx: &mut WasmContext) -> PollMessage {
         let channel_state = self.inbound_channel_mut(channel_name).unwrap();
         // ^ `unwrap()` safety is guaranteed by resource handling
-
         let poll_result = channel_state.poll_next();
         self.current_execution()
             .push_inbound_channel_event(channel_name, &poll_result);

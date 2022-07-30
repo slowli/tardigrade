@@ -11,7 +11,7 @@ mod task;
 mod time;
 
 pub use self::{
-    channel::{ConsumeError, ConsumeErrorKind, InboundChannelState},
+    channel::{ConsumeError, ConsumeErrorKind, InboundChannelState, OutboundChannelState},
     persistence::PersistError,
     task::TaskState,
     time::TimerState,
@@ -22,20 +22,18 @@ pub(crate) use self::{
 };
 
 use self::{
-    channel::OutboundChannelState,
     helpers::{CurrentExecution, Message, Wakers},
     task::TaskQueue,
     time::Timers,
 };
-use crate::data::helpers::HostResource;
 use crate::{
+    data::helpers::HostResource,
     module::{ModuleExports, Services},
     receipt::{PanicInfo, PanicLocation, WakeUpCause},
     utils::{copy_string_from_wasm, WasmAllocator},
     TaskId,
 };
-use tardigrade::interface::Interface;
-use tardigrade_shared::abi::IntoWasm;
+use tardigrade_shared::{abi::IntoWasm, interface::Interface};
 
 #[derive(Debug)]
 pub struct WorkflowData {
@@ -133,12 +131,12 @@ impl WorkflowData {
     }
 
     #[cfg(test)]
-    pub(crate) fn inbound_channel_ref(name: impl Into<String>) -> wasmtime::ExternRef {
+    pub(crate) fn inbound_channel_ref(name: impl Into<String>) -> ExternRef {
         HostResource::InboundChannel(name.into()).into_ref()
     }
 
     #[cfg(test)]
-    pub(crate) fn outbound_channel_ref(name: impl Into<String>) -> wasmtime::ExternRef {
+    pub(crate) fn outbound_channel_ref(name: impl Into<String>) -> ExternRef {
         HostResource::OutboundChannel(name.into()).into_ref()
     }
 }

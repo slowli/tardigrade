@@ -137,16 +137,6 @@ pub struct MessageSender<'a, T, C, W> {
 }
 
 impl<'a, T, C: Encode<T>, W> MessageSender<'a, T, C, W> {
-    /// Checks if the channel is closed.
-    #[allow(clippy::missing_panics_doc)] // false positive
-    pub fn is_closed(&self) -> bool {
-        self.workflow
-            .borrow()
-            .inbound_channel(&self.channel_name)
-            .unwrap()
-            .is_closed()
-    }
-
     /// Sends a message over the channel.
     ///
     /// # Errors
