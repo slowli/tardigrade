@@ -225,7 +225,7 @@ impl From<OutboundChannel<'_>> for InterfaceLocation {
 /// # const INTERFACE_BYTES: &[u8] = br#"{
 /// #     "v": 0,
 /// #     "in": { "commands": {} },
-/// #     "out": { "events": {} },
+/// #     "out": { "events": {} }
 /// # }"#;
 /// let interface: Interface<()> = // ...
 /// #     Interface::from_bytes(INTERFACE_BYTES);
@@ -238,7 +238,7 @@ impl From<OutboundChannel<'_>> for InterfaceLocation {
 ///     .all(|(_, spec)| spec.capacity == Some(1)));
 /// // Indexing is also possible using newtype wrappers from the module
 /// let commands = &interface[InboundChannel("commands")];
-/// println!("{}", inputs.commands);
+/// println!("{}", commands.description);
 /// ```
 #[derive(Serialize, Deserialize)]
 pub struct Interface<W: ?Sized> {

@@ -17,7 +17,6 @@ extern crate proc_macro;
 
 use proc_macro::TokenStream;
 
-mod init;
 mod interface;
 mod take_handle;
 mod utils;
@@ -25,11 +24,6 @@ mod utils;
 #[proc_macro_attribute]
 pub fn handle(attr: TokenStream, input: TokenStream) -> TokenStream {
     take_handle::impl_take_handle(attr, input)
-}
-
-#[proc_macro_attribute]
-pub fn init(attr: TokenStream, input: TokenStream) -> TokenStream {
-    init::impl_initialize(attr, input)
 }
 
 #[proc_macro_derive(GetInterface, attributes(tardigrade))]

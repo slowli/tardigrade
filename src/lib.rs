@@ -113,7 +113,6 @@ pub use crate::{
 /// #[tardigrade::handle(for = "MyWorkflow")]
 /// #[derive(Debug)]
 /// pub struct MyHandle<Env> {
-///     pub inputs: Handle<Data<String, Json>, Env>,
 ///     pub inbound: Handle<Receiver<i64, Json>, Env>,
 ///     pub outbound: Handle<Sender<i64, Json>, Env>,
 /// }
@@ -127,80 +126,6 @@ pub use crate::{
 #[cfg(feature = "derive")]
 #[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
 pub use tardigrade_derive::handle;
-
-/// Proc macro attribute for workflow initializers.
-///
-/// There are 2 variations of the macro target:
-///
-/// - The attribute can be placed on a struct with initializers for the workflow interface elements,
-///   such as [data inputs](Data). These initializers must be specified using
-///   the [`Init`] type alias.
-/// - If a single data input needs initialization, then the macro can be put directly on the
-///   data payload type.
-///
-/// The second case is distinguished by the present [`codec`](#codec) attribute.
-///
-/// The attribute will transform the input as follows:
-///
-/// - Derive [`Initialize`] for the workflow type using the init struct as the initializer
-///
-/// # Attributes
-///
-/// Attributes are specified according to standard Rust conventions:
-/// `#[tardigrade::handle(attr1 = "value1", ...)]`.
-///
-/// ## `for`
-///
-/// Specifies the workflow type that the initializer should be attached to.
-///
-/// ## `codec`
-///
-/// Specifies path to the [codec](Decode) used to encode / decode data. This is only applicable
-/// if a single data input needs initialization.
-///
-/// ## `rename`
-///
-/// Overrides the name of a single data input. By default, its name is the name
-/// of the struct / enum that the attribute is placed on, converted to `snake_case`
-/// (e.g., `MyInput` is converted to `my_input`).
-///
-/// # Examples
-///
-/// Single-input initializer:
-///
-/// ```
-/// # use serde::{Deserialize, Serialize};
-/// /// Workflow type.
-/// pub struct MyWorkflow;
-///
-/// #[tardigrade::init(for = "MyWorkflow", codec = "tardigrade::Json")]
-/// #[derive(Serialize, Deserialize)]
-/// pub enum MyInput {
-///     Nothing,
-///     Data { data: Vec<u8> },
-/// }
-/// ```
-///
-/// Multi-input initializer:
-///
-/// ```
-/// use tardigrade::{workflow::Init, Data, Json};
-///
-/// # pub struct MyWorkflow;
-/// #[tardigrade::init(for = "MyWorkflow")]
-/// pub struct MyInputs {
-///     number: Init<Data<i64, Json>>,
-///     string: Init<Data<String, Json>>,
-/// }
-/// ```
-///
-/// See the [`workflow`](crate::workflow) module docs for an end-to-end example of usage.
-///
-/// [`Init`]: crate::workflow::Init
-/// [`Initialize`]: crate::workflow::Initialize
-#[cfg(feature = "derive")]
-#[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
-pub use tardigrade_derive::init;
 
 pub use tardigrade_shared::interface;
 

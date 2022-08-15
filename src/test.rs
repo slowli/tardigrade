@@ -13,15 +13,14 @@
 //! # use serde::{Deserialize, Serialize};
 //! # use tardigrade::{
 //! #     channel::Sender,
-//! #     workflow::{Handle, GetInterface, SpawnWorkflow, TaskHandle, Wasm},
+//! #     workflow::{Handle, GetInterface, SpawnWorkflow, TaskHandle, Wasm, WorkflowFn},
 //! #     Data, Json,
 //! # };
 //! // Assume we want to test a workflow.
 //! #[derive(Debug, GetInterface)]
 //! # #[tardigrade(interface = r#"{
 //! #     "v": 0,
-//! #     "out": { "events": {} },
-//! #     "data": { "input": {} }
+//! #     "out": { "events": {} }
 //! # }"#)]
 //! pub struct MyWorkflow(());
 //!
@@ -29,12 +28,10 @@
 //! #[tardigrade::handle(for = "MyWorkflow")]
 //! #[derive(Debug)]
 //! pub struct MyHandle<Env> {
-//!     pub input: Handle<Data<Input, Json>, Env>,
 //!     pub events: Handle<Sender<Event, Json>, Env>,
 //! }
 //!
 //! /// Input provided to the workflow.
-//! #[tardigrade::init(for = "MyWorkflow", codec = "Json")]
 //! #[derive(Debug, Serialize, Deserialize)]
 //! pub struct Input {
 //!     pub counter: u32,
@@ -46,10 +43,15 @@
 //!     Count(u32),
 //! }
 //!
+//! impl WorkflowFn for MyWorkflow {
+//!     type Args = Input;
+//!     type Codec = Json;
+//! }
+//!
 //! // Workflow logic
 //! impl SpawnWorkflow for MyWorkflow {
-//!     fn spawn(handle: MyHandle<Wasm>) -> TaskHandle {
-//!         let counter = handle.input.into_inner().counter;
+//!     fn spawn(input: Input, handle: MyHandle<Wasm>) -> TaskHandle {
+//!         let counter = input.counter;
 //!         let mut events = handle.events;
 //!         TaskHandle::new(async move {
 //!             for i in 0..counter {

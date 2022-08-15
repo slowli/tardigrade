@@ -11,7 +11,7 @@
 //! # use serde::{Deserialize, Serialize};
 //! use tardigrade::{
 //!     channel::{Sender, Receiver},
-//!     workflow::{GetInterface, Handle, Init, SpawnWorkflow, TaskHandle, Wasm},
+//!     workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm, WorkflowFn},
 //!     Data, Json,
 //! };
 //!
@@ -24,17 +24,13 @@
 //! #[tardigrade::handle(for = "MyWorkflow")]
 //! #[derive(Debug)]
 //! pub struct MyHandle<Env> {
-//!     /// Data input.
-//!     pub input: Handle<Data<Input, Json>, Env>,
 //!     /// Inbound channel with commands.
 //!     pub commands: Handle<Receiver<Command, Json>, Env>,
 //!     /// Outbound channel with events.
 //!     pub events: Handle<Sender<Event, Json>, Env>,
 //! }
 //!
-//! /// Input provided to the workflow. Since it's a single input,
-//! /// it also acts as the initializer.
-//! #[tardigrade::init(for = "MyWorkflow", codec = "Json")]
+//! /// Input provided to the workflow.
 //! #[derive(Debug, Serialize, Deserialize)]
 //! pub struct Input {
 //!     pub start_counter: u32,
@@ -55,10 +51,9 @@
 //! }
 //!
 //! impl MyHandle<Wasm> {
-//!     async fn process_command(&mut self, command: &Command) {
+//!     async fn process_command(&mut self, command: &Command, counter: &mut u32) {
 //!         match command {
 //!             Command::Ping(ping) => {
-//!                 let counter = &mut self.input.as_mut().start_counter;
 //!                 let pong = format!("{}, counter={}", ping, *counter);
 //!                 *counter += 1;
 //!                 self.events.send(Event::Pong(pong)).await;
@@ -68,12 +63,18 @@
 //!     }
 //! }
 //!
+//! // Workflow interface declaration.
+//! impl WorkflowFn for MyWorkflow {
+//!     type Args = Input;
+//!     type Codec = Json;
+//! }
+//!
 //! // Actual workflow logic.
 //! impl SpawnWorkflow for MyWorkflow {
-//!     fn spawn(mut handle: MyHandle<Wasm>) -> TaskHandle {
+//!     fn spawn(mut input: Input, mut handle: MyHandle<Wasm>) -> TaskHandle {
 //!         TaskHandle::new(async move {
 //!             while let Some(command) = handle.commands.next().await {
-//!                 handle.process_command(&command).await;
+//!                 handle.process_command(&command, &mut input.start_counter).await;
 //!             }
 //!         })
 //!     }
