@@ -10,15 +10,15 @@ use tardigrade::{
     channel::{Receiver, Sender},
     sleep,
     trace::Tracer,
-    workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm},
-    Data, FutureExt as _, Json,
+    workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm, WorkflowFn},
+    FutureExt as _, Json,
 };
 
 pub mod tasks;
 #[cfg(test)]
 mod tests;
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PizzaKind {
     Pepperoni,
     Margherita,
@@ -36,14 +36,14 @@ impl PizzaKind {
 }
 
 /// Orders sent to the workflow via an inbound channel (see [`PizzaDeliveryHandle`]).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PizzaOrder {
     pub kind: PizzaKind,
     pub delivery_distance: u64,
 }
 
 /// Domain events emitted by the workflow and sent via the corresponding outbound channel.
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DomainEvent {
     OrderTaken { index: usize, order: PizzaOrder },
     Baked { index: usize, order: PizzaOrder },
@@ -63,8 +63,6 @@ impl DomainEvent {
 }
 
 /// Data inputs necessary for the workflow initialization.
-#[tardigrade::init(for = "PizzaDelivery", codec = "Json")]
-// ^ Proc macro that defines `Inputs` as an initializer for the workflow type (`PizzaDelivery`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Inputs {
     pub oven_count: usize,
@@ -99,7 +97,6 @@ pub struct PizzaDelivery(());
 #[tardigrade::handle(for = "PizzaDelivery")]
 #[derive(Debug)]
 pub struct PizzaDeliveryHandle<Env = Wasm> {
-    pub inputs: Handle<Data<Inputs, Json>, Env>,
     pub orders: Handle<Receiver<PizzaOrder, Json>, Env>,
     #[tardigrade(flatten)]
     pub shared: Handle<Shared, Env>,
@@ -114,10 +111,16 @@ fn interface_agrees_between_declaration_and_handle() {
     PizzaDelivery::interface(); // Checks are performed internally
 }
 
+/// Defines workflow interface.
+impl WorkflowFn for PizzaDelivery {
+    type Args = Inputs;
+    type Codec = Json;
+}
+
 /// Defines how workflow instances are spawned.
 impl SpawnWorkflow for PizzaDelivery {
-    fn spawn(handle: Self::Handle) -> TaskHandle {
-        TaskHandle::new(handle.spawn())
+    fn spawn(inputs: Inputs, handle: Self::Handle) -> TaskHandle {
+        TaskHandle::new(handle.spawn(inputs))
     }
 }
 
@@ -127,10 +130,8 @@ tardigrade::workflow_entry!(PizzaDelivery);
 impl PizzaDeliveryHandle<Wasm> {
     /// This is where the actual workflow logic is contained. We pass incoming orders
     /// through 2 unordered buffers with the capacities defined by the data inputs.
-    async fn spawn(self) {
-        let inputs = self.inputs.into_inner();
+    async fn spawn(self, inputs: Inputs) {
         let shared = self.shared;
-
         let mut counter = 0;
         let baked_pizzas = self
             .orders

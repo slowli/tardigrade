@@ -12,48 +12,10 @@ use crate::{
     test::MockScheduler,
     utils::{copy_string_from_wasm, WasmAllocator},
 };
-use tardigrade::workflow::InputsBuilder;
 use tardigrade_shared::{abi::AllocateBytes, JoinError};
 
 const POLL_CX: WasmContextPtr = 1_234;
 const ERROR_PTR: u32 = 1_024; // enough to not intersect with "real" memory
-
-#[derive(Debug, Clone, Copy)]
-enum StaticStr {
-    Inputs,
-    Orders,
-    Traces,
-    Events,
-}
-
-impl StaticStr {
-    fn alloc(ctx: &mut StoreContextMut<'_, WorkflowData>) {
-        for str in [Self::Inputs, Self::Orders, Self::Traces, Self::Events] {
-            let allocated = WasmAllocator::new(ctx.as_context_mut())
-                .copy_to_wasm(str.as_str().as_bytes())
-                .unwrap();
-            assert_eq!(allocated, str.ptr_and_len());
-        }
-    }
-
-    const fn ptr_and_len(self) -> (u32, u32) {
-        match self {
-            Self::Inputs => (0, 6),
-            Self::Orders => (6, 6),
-            Self::Traces => (12, 6),
-            Self::Events => (18, 6),
-        }
-    }
-
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Inputs => "inputs",
-            Self::Orders => "orders",
-            Self::Traces => "traces",
-            Self::Events => "events",
-        }
-    }
-}
 
 #[allow(clippy::cast_sign_loss)]
 fn decode_message_poll(poll_res: i64) -> (u32, u32) {
@@ -64,14 +26,8 @@ fn decode_message_poll(poll_res: i64) -> (u32, u32) {
 
 #[allow(clippy::unnecessary_wraps)] // more convenient for use with mock `Answers`
 fn initialize_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
-    StaticStr::alloc(&mut ctx);
-
-    // Emulate basic task startup: getting inputs...
-    let (ptr, len) = StaticStr::Inputs.ptr_and_len();
-    WorkflowFunctions::get_data_input(ctx.as_context_mut(), ptr, len).unwrap();
-
-    // ...then getting the inbound channel
-    let (ptr, len) = StaticStr::Orders.ptr_and_len();
+    // Emulate basic task startup: getting the inbound channel
+    let (ptr, len) = WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"orders")?;
     let orders =
         WorkflowFunctions::get_receiver(ctx.as_context_mut(), ptr, len, ERROR_PTR).unwrap();
 
@@ -143,9 +99,11 @@ fn create_workflow(clock: impl Clock) -> Receipt<Workflow<()>> {
         .for_untyped_workflow("TestWorkflow")
         .unwrap()
         .with_clock(clock);
-    let mut inputs = InputsBuilder::new(spawner.interface());
-    inputs.insert("inputs", b"test_input".to_vec());
-    spawner.spawn(inputs.build()).unwrap().init().unwrap()
+    spawner
+        .spawn(b"test_input".to_vec())
+        .unwrap()
+        .init()
+        .unwrap()
 }
 
 #[test]
@@ -283,9 +241,7 @@ fn trap_when_starting_workflow() {
     let engine = WorkflowEngine::default();
     let module = WorkflowModule::new(&engine, ExportsMock::MOCK_MODULE_BYTES).unwrap();
     let spawner = module.for_untyped_workflow("TestWorkflow").unwrap();
-    let mut inputs = InputsBuilder::new(spawner.interface());
-    inputs.insert("inputs", b"test_input".to_vec());
-    let workflow = spawner.spawn(inputs.build()).unwrap();
+    let workflow = spawner.spawn(b"test_input".to_vec()).unwrap();
     let err = workflow.init().unwrap_err().to_string();
 
     assert!(err.contains("failed while polling task 0"), "{}", err);

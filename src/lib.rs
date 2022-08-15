@@ -220,10 +220,14 @@ macro_rules! workflow_entry {
             #[no_mangle]
             #[export_name = concat!("tardigrade_rt::spawn::", stringify!($workflow))]
             #[doc(hidden)]
-            pub extern "C" fn __tardigrade_rt__main() -> $crate::workflow::TaskHandle {
+            pub unsafe extern "C" fn __tardigrade_rt__main(
+                data_ptr: *mut u8,
+                data_len: usize,
+            ) -> $crate::workflow::TaskHandle {
                 $crate::workflow::Wasm::set_panic_hook();
                 // ^ Needs to be set at the very start of the workflow
-                $crate::workflow::TaskHandle::from_workflow::<$workflow>().unwrap()
+                let data = std::vec::Vec::from_raw_parts(data_ptr, data_len, data_len);
+                $crate::workflow::TaskHandle::from_workflow::<$workflow>(data).unwrap()
             }
         };
     };

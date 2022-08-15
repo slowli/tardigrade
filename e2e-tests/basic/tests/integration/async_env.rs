@@ -13,7 +13,6 @@ use std::time::Duration;
 use tardigrade::{
     interface::{InboundChannel, OutboundChannel},
     trace::FutureState,
-    workflow::InputsBuilder,
     Decode, Encode, Json,
 };
 use tardigrade_rt::{
@@ -495,15 +494,11 @@ async fn persisting_workflow() -> TestResult {
 async fn dynamically_typed_async_handle() -> TestResult {
     let module = task::spawn_blocking(|| &*MODULE).await;
     let spawner = module.for_untyped_workflow("PizzaDelivery").unwrap();
-    let mut builder = InputsBuilder::new(spawner.interface());
-    builder.insert(
-        "inputs",
-        Json.encode_value(Inputs {
-            oven_count: 1,
-            deliverer_count: 1,
-        }),
-    );
-    let workflow = spawner.spawn(builder.build())?.init()?.into_inner();
+    let data = Json.encode_value(Inputs {
+        oven_count: 1,
+        deliverer_count: 1,
+    });
+    let workflow = spawner.spawn(data)?.init()?.into_inner();
 
     let mut env = AsyncEnv::new(workflow, AsyncIoScheduler);
     let mut handle = env.handle();
@@ -548,15 +543,11 @@ async fn dynamically_typed_async_handle() -> TestResult {
 async fn rollback_strategy() -> TestResult {
     let module = task::spawn_blocking(|| &*MODULE).await;
     let spawner = module.for_untyped_workflow("PizzaDelivery").unwrap();
-    let mut builder = InputsBuilder::new(spawner.interface());
-    builder.insert(
-        "inputs",
-        Json.encode_value(Inputs {
-            oven_count: 1,
-            deliverer_count: 1,
-        }),
-    );
-    let workflow = spawner.spawn(builder.build())?.init()?.into_inner();
+    let data = Json.encode_value(Inputs {
+        oven_count: 1,
+        deliverer_count: 1,
+    });
+    let workflow = spawner.spawn(data)?.init()?.into_inner();
 
     let mut env = AsyncEnv::new(workflow, AsyncIoScheduler);
     env.set_rollback_strategy(Rollback::any_trap());

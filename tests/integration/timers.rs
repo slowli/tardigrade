@@ -4,10 +4,11 @@ use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use std::time::Duration;
 
+use tardigrade::workflow::WorkflowFn;
 use tardigrade::{
     channel::Sender,
     test::TestWorkflow,
-    workflow::{GetInterface, Handle, Initialize, InputsBuilder, SpawnWorkflow, TaskHandle, Wasm},
+    workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm},
     Json, Timer,
 };
 use tardigrade_shared::interface::Interface;
@@ -30,17 +31,13 @@ struct TimersHandle<Env> {
     timestamps: Handle<Sender<DateTime<Utc>, Json>, Env>,
 }
 
-impl Initialize for TimersWorkflow {
-    type Init = ();
-    type Id = ();
-
-    fn initialize(_builder: &mut InputsBuilder, _init: Self::Init, _id: &Self::Id) {
-        // Do nothing
-    }
+impl WorkflowFn for TimersWorkflow {
+    type Args = ();
+    type Codec = Json;
 }
 
 impl SpawnWorkflow for TimersWorkflow {
-    fn spawn(mut handle: TimersHandle<Wasm>) -> TaskHandle {
+    fn spawn(_data: (), mut handle: TimersHandle<Wasm>) -> TaskHandle {
         TaskHandle::new(async move {
             let now = tardigrade::now();
             let completion_time = Timer::at(now - chrono::Duration::milliseconds(100)).await;

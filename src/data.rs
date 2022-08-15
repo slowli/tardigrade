@@ -3,37 +3,10 @@
 use std::marker::PhantomData;
 
 use crate::{
-    codec::{Decode, Encode, Raw},
-    interface::{AccessError, AccessErrorKind, DataInput, Interface, ValidateInterface},
-    workflow::{Initialize, InputsBuilder, TakeHandle, Wasm},
+    codec::{Decode, Raw},
+    interface::{AccessError, AccessErrorKind, InterfaceLocation},
+    Encode,
 };
-
-#[cfg(target_arch = "wasm32")]
-mod imp {
-    use tardigrade_shared::abi::IntoWasm;
-
-    #[link(wasm_import_module = "tardigrade_rt")]
-    extern "C" {
-        #[link_name = "data_input::get"]
-        fn data_input_get(input_name_ptr: *const u8, input_name_len: usize) -> i64;
-    }
-
-    pub fn try_get_raw_data(id: &str) -> Option<Vec<u8>> {
-        unsafe {
-            let result = data_input_get(id.as_ptr(), id.len());
-            IntoWasm::from_abi_in_wasm(result)
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-mod imp {
-    use crate::test::Runtime;
-
-    pub fn try_get_raw_data(id: &str) -> Option<Vec<u8>> {
-        Runtime::with_mut(|rt| rt.data_input(id))
-    }
-}
 
 /// Data input for a workflow.
 ///
@@ -53,6 +26,21 @@ impl<T, C> Data<T, C> {
     }
 }
 
+impl<T, C: Encode<T> + Default> Data<T, C> {
+    /// Creates a new data instance wrapping the provided data.
+    pub fn new(inner: T) -> Self {
+        Self {
+            inner,
+            codec: PhantomData,
+        }
+    }
+
+    /// Converts this data into raw binary presentation.
+    pub fn into_raw(self) -> Vec<u8> {
+        C::default().encode_value(self.inner)
+    }
+}
+
 impl<T, C> AsRef<T> for Data<T, C> {
     fn as_ref(&self) -> &T {
         &self.inner
@@ -66,13 +54,13 @@ impl<T, C> AsMut<T> for Data<T, C> {
 }
 
 impl<T, C: Decode<T> + Default> Data<T, C> {
-    pub(crate) fn from_env(id: &str) -> Result<Self, AccessError> {
-        let raw = imp::try_get_raw_data(id)
-            .ok_or_else(|| AccessErrorKind::Unknown.with_location(DataInput(id)))?;
+    pub(crate) fn from_raw(raw: Vec<u8>) -> Result<Self, AccessError> {
         C::default()
             .try_decode_bytes(raw)
             .map(Self::from)
-            .map_err(|err| AccessErrorKind::Custom(Box::new(err)).with_location(DataInput(id)))
+            .map_err(|err| {
+                AccessErrorKind::Custom(Box::new(err)).with_location(InterfaceLocation::DataInput)
+            })
     }
 }
 
@@ -85,42 +73,5 @@ impl<T, C: Decode<T> + Default> From<T> for Data<T, C> {
     }
 }
 
-impl<T, C> TakeHandle<Wasm> for Data<T, C>
-where
-    C: Decode<T> + Default,
-{
-    type Id = str;
-    type Handle = Self;
-
-    fn take_handle(_env: &mut Wasm, id: &str) -> Result<Self, AccessError> {
-        Self::from_env(id)
-    }
-}
-
-impl<T, C: Encode<T> + Default> Initialize for Data<T, C> {
-    type Init = T;
-    type Id = str;
-
-    fn initialize(builder: &mut InputsBuilder, init: T, id: &str) {
-        let raw_data = C::default().encode_value(init);
-        builder.insert(id, raw_data);
-    }
-}
-
 /// [`Data`] input of raw bytes.
 pub type RawData = Data<Vec<u8>, Raw>;
-
-impl<T, C> ValidateInterface for Data<T, C>
-where
-    C: Encode<T> + Decode<T>,
-{
-    type Id = str;
-
-    fn validate_interface(interface: &Interface<()>, id: &str) -> Result<(), AccessError> {
-        if interface.data_input(id).is_none() {
-            Err(AccessErrorKind::Unknown.with_location(DataInput(id)))
-        } else {
-            Ok(())
-        }
-    }
-}

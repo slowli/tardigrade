@@ -41,8 +41,6 @@ impl ModuleImports {
             "task::spawn" => ensure_func_ty::<(u32, u32, TaskId), ()>(ty, fn_name),
             "task::wake" | "task::abort" => ensure_func_ty::<TaskId, ()>(ty, fn_name),
 
-            "data_input::get" => ensure_func_ty::<(u32, u32), i64>(ty, fn_name),
-
             "mpsc_receiver::get" | "mpsc_sender::get" => {
                 ensure_func_ty::<(u32, u32, u32), Ref>(ty, fn_name)
             }
@@ -89,8 +87,6 @@ impl ExtendLinker for WorkflowFunctions {
                 "task::abort",
                 wrap1(&mut *store, Self::schedule_task_abortion),
             ),
-            // Data input functions
-            ("data_input::get", wrap2(&mut *store, Self::get_data_input)),
             // Channel functions
             ("mpsc_receiver::get", wrap3(&mut *store, Self::get_receiver)),
             (
@@ -148,7 +144,6 @@ impl_wrapper!(wrap6 => a: A, b: B, c: C, d: D, e: E, f: F);
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use wasmtime::{Engine, Linker};
 
     use super::*;
@@ -158,7 +153,7 @@ mod tests {
     #[test]
     fn import_checks_are_consistent() {
         let interface = Interface::default();
-        let state = WorkflowData::from_interface(interface, HashMap::new(), Services::default());
+        let state = WorkflowData::from_interface(interface, Services::default());
         let engine = Engine::default();
         let mut store = Store::new(&engine, state);
         let mut linker = Linker::new(&engine);

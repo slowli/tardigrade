@@ -24,10 +24,7 @@ use crate::{
     },
     TaskId, TimerId,
 };
-use tardigrade::{
-    interface::Interface,
-    workflow::{Initialize, Inputs},
-};
+use tardigrade::{interface::Interface, workflow::WorkflowFn, Data};
 
 #[cfg(feature = "async")]
 #[derive(Debug)]
@@ -43,22 +40,22 @@ impl ListenedEvents {
     }
 }
 
-impl<W: Initialize<Id = ()>> WorkflowSpawner<W> {
+impl<W: WorkflowFn> WorkflowSpawner<W> {
     /// Instantiates a new workflow from the `module` and the provided `inputs`.
     ///
     /// # Errors
     ///
     /// Returns an error in case preparations for instantiation (e.g., extending the WASM linker
     /// with imports) fails.
-    pub fn spawn(&self, inputs: W::Init) -> anyhow::Result<InitializingWorkflow<W>> {
-        let raw_inputs = Inputs::for_interface(self.interface(), inputs);
-        let state = WorkflowData::from_interface(
-            self.interface().clone().erase(),
-            raw_inputs.into_inner(),
-            self.services.clone(),
-        );
+    pub fn spawn(&self, data: W::Args) -> anyhow::Result<InitializingWorkflow<W>> {
+        let raw_data = Data::<_, W::Codec>::new(data).into_raw();
+        let state =
+            WorkflowData::from_interface(self.interface().clone().erase(), self.services.clone());
         let workflow = Workflow::from_state(self, state)?;
-        Ok(InitializingWorkflow { inner: workflow })
+        Ok(InitializingWorkflow {
+            inner: workflow,
+            raw_data,
+        })
     }
 }
 
@@ -68,6 +65,7 @@ impl<W: Initialize<Id = ()>> WorkflowSpawner<W> {
 #[must_use = "Should be initialized by calling `Self::init()`"]
 pub struct InitializingWorkflow<W> {
     inner: Workflow<W>,
+    raw_data: Vec<u8>,
 }
 
 impl<W> fmt::Debug for InitializingWorkflow<W> {
@@ -75,6 +73,7 @@ impl<W> fmt::Debug for InitializingWorkflow<W> {
         formatter
             .debug_struct("InitializingWorkflow")
             .field("inner", &self.inner)
+            .field("raw_data_len", &self.raw_data.len())
             .finish()
     }
 }
@@ -87,7 +86,7 @@ impl<W> InitializingWorkflow<W> {
     ///
     /// Returns an error if the entry point of the workflow or initially polling it fails.
     pub fn init(mut self) -> Result<Receipt<Workflow<W>>, ExecutionError> {
-        let mut spawn_receipt = self.inner.spawn_main_task()?;
+        let mut spawn_receipt = self.inner.spawn_main_task(self.raw_data)?;
         let tick_receipt = self.inner.tick()?;
         spawn_receipt.extend(tick_receipt);
         Ok(spawn_receipt.map(|()| self.inner))
@@ -136,15 +135,18 @@ impl<W> Workflow<W> {
         self.store.data().interface()
     }
 
-    fn spawn_main_task(&mut self) -> Result<Receipt, ExecutionError> {
-        let function = ExecutedFunction::Entry { task_id: 0 };
+    fn spawn_main_task(&mut self, raw_data: Vec<u8>) -> Result<Receipt, ExecutionError> {
+        let function = ExecutedFunction::Entry {
+            task_id: 0,
+            raw_data,
+        };
         let mut receipt = Receipt::new();
         if let Err(err) = self.execute(function, &mut receipt) {
             return Err(ExecutionError::new(err, receipt));
         }
 
         let task_id = match &receipt.executions[0].function {
-            ExecutedFunction::Entry { task_id } => *task_id,
+            ExecutedFunction::Entry { task_id, .. } => *task_id,
             _ => unreachable!(),
         };
         self.store.data_mut().spawn_main_task(task_id);
@@ -201,10 +203,10 @@ impl<W> Workflow<W> {
                 let exports = self.store.data().exports();
                 exports.drop_task(self.store.as_context_mut(), *task_id)
             }
-            ExecutedFunction::Entry { task_id } => {
+            ExecutedFunction::Entry { task_id, raw_data } => {
                 let exports = self.store.data().exports();
                 exports
-                    .create_main_task(self.store.as_context_mut())
+                    .create_main_task(self.store.as_context_mut(), raw_data)
                     .map(|new_task_id| {
                         *task_id = new_task_id;
                     })
@@ -298,10 +300,6 @@ impl<W> Workflow<W> {
             self.wake_tasks(receipt)?;
         }
         Ok(())
-    }
-
-    pub(crate) fn data_input(&self, input_name: &str) -> Option<Vec<u8>> {
-        self.store.data().data_input(input_name)
     }
 
     /// Returns the current state of an inbound channel with the specified name.

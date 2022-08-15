@@ -48,12 +48,6 @@ impl From<Message> for Vec<u8> {
     }
 }
 
-impl Message {
-    pub fn to_vec(&self) -> Vec<u8> {
-        self.0.clone()
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum HostResource {

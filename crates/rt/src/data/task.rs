@@ -143,7 +143,10 @@ impl WorkflowData {
     }
 
     pub(crate) fn spawn_main_task(&mut self, task_id: TaskId) {
-        let spawned_by = ExecutedFunction::Entry { task_id };
+        let spawned_by = ExecutedFunction::Entry {
+            task_id,
+            raw_data: vec![],
+        };
         let task_state = TaskState::new("_main".to_owned(), &spawned_by);
         self.tasks.insert(task_id, task_state);
         self.task_queue

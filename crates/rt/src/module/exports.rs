@@ -2,8 +2,8 @@
 
 use anyhow::{anyhow, ensure, Context};
 use wasmtime::{
-    ExternType, Instance, Memory, Module, Store, StoreContextMut, Table, Trap, TypedFunc, ValType,
-    WasmParams, WasmResults,
+    AsContextMut, ExternType, Instance, Memory, Module, Store, StoreContextMut, Table, Trap,
+    TypedFunc, ValType, WasmParams, WasmResults,
 };
 
 use std::{collections::HashMap, fmt, str, task::Poll};
@@ -21,7 +21,7 @@ pub(crate) struct ModuleExports {
     pub memory: Memory,
     pub data_location: Option<(u32, u32)>,
     pub ref_table: Table,
-    create_main_task: TypedFunc<(), TaskId>,
+    create_main_task: TypedFunc<(u32, u32), TaskId>,
     poll_task: TypedFunc<TaskId, i32>,
     drop_task: TypedFunc<TaskId, ()>,
     alloc_bytes: TypedFunc<u32, u32>,
@@ -32,8 +32,20 @@ pub(crate) struct ModuleExports {
 
 #[cfg_attr(test, mimicry::mock(using = "super::tests::ExportsMock"))]
 impl ModuleExports {
-    pub fn create_main_task(&self, ctx: StoreContextMut<'_, WorkflowData>) -> Result<TaskId, Trap> {
-        let result = self.create_main_task.call(ctx, ());
+    pub fn create_main_task(
+        &self,
+        mut ctx: StoreContextMut<'_, WorkflowData>,
+        raw_data: &[u8],
+    ) -> Result<TaskId, Trap> {
+        let data_len = u32::try_from(raw_data.len()).expect("data is too large");
+        let data_ptr = self.alloc_bytes(ctx.as_context_mut(), data_len)?;
+        self.memory
+            .write(ctx.as_context_mut(), data_ptr as usize, raw_data)
+            .map_err(|err| {
+                let message = format!("cannot write to WASM memory: {}", err);
+                Trap::new(message)
+            })?;
+        let result = self.create_main_task.call(ctx, (data_ptr, data_len));
         crate::log_result!(result, "Created main task")
     }
 
@@ -129,7 +141,7 @@ impl ModuleExports {
         );
 
         for workflow_name in workflows.keys() {
-            Self::ensure_export_ty::<(), TaskId>(
+            Self::ensure_export_ty::<(u32, u32), TaskId>(
                 module,
                 &format!("tardigrade_rt::spawn::{}", workflow_name),
             )?;
@@ -241,7 +253,9 @@ mod tests {
                 memory,
                 data_location: None,
                 ref_table: ref_table.unwrap(),
-                create_main_task: Func::wrap(&mut *store, || 0_u64).typed(&*store).unwrap(),
+                create_main_task: Func::wrap(&mut *store, |_: u32, _: u32| 0_u64)
+                    .typed(&*store)
+                    .unwrap(),
                 poll_task: Func::wrap(&mut *store, |_: TaskId| 0_i32)
                     .typed(&*store)
                     .unwrap(),
@@ -267,6 +281,7 @@ mod tests {
             _: &Mut<Self>,
             _: &ModuleExports,
             _: StoreContextMut<'_, WorkflowData>,
+            _: &[u8],
         ) -> Result<TaskId, Trap> {
             Ok(0)
         }

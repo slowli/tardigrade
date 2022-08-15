@@ -22,12 +22,10 @@ use crate::{
 };
 use tardigrade::{
     channel::{Receiver, Sender},
-    interface::{
-        AccessError, AccessErrorKind, DataInput, InboundChannel, Interface, OutboundChannel,
-    },
+    interface::{AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel},
     trace::{FutureUpdate, TracedFuture, TracedFutures, Tracer},
     workflow::{TakeHandle, UntypedHandle},
-    Data, Decode, Encode,
+    Decode, Encode,
 };
 
 /// Future for [`Schedule::create_timer()`].
@@ -504,25 +502,6 @@ where
             })
         } else {
             Err(AccessErrorKind::Unknown.with_location(OutboundChannel(id)))
-        }
-    }
-}
-
-impl<T, C, W> TakeHandle<AsyncEnv<W>> for Data<T, C>
-where
-    C: Decode<T> + Default,
-{
-    type Id = str;
-    type Handle = T;
-
-    fn take_handle(env: &mut AsyncEnv<W>, id: &str) -> Result<Self::Handle, AccessError> {
-        let input_bytes = env.workflow.data_input(id);
-        if let Some(bytes) = input_bytes {
-            C::default()
-                .try_decode_bytes(bytes)
-                .map_err(|err| AccessErrorKind::Custom(Box::new(err)).with_location(DataInput(id)))
-        } else {
-            Err(AccessErrorKind::Unknown.with_location(DataInput(id)))
         }
     }
 }
