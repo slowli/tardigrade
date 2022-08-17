@@ -58,7 +58,6 @@
 
 pub mod channel;
 mod codec;
-mod data;
 mod ext;
 mod task;
 #[cfg(not(target_arch = "wasm32"))]
@@ -71,7 +70,6 @@ pub mod workflow;
 pub use crate::codec::Json;
 pub use crate::{
     codec::{Decode, Encode, Raw},
-    data::{Data, RawData},
     ext::FutureExt,
     task::{spawn, yield_now, JoinHandle},
     time::{now, sleep, Timer},

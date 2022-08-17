@@ -24,7 +24,7 @@ use crate::{
     },
     TaskId, TimerId,
 };
-use tardigrade::{interface::Interface, workflow::WorkflowFn, Data};
+use tardigrade::{interface::Interface, workflow::WorkflowFn, Encode};
 
 #[cfg(feature = "async")]
 #[derive(Debug)]
@@ -48,7 +48,7 @@ impl<W: WorkflowFn> WorkflowSpawner<W> {
     /// Returns an error in case preparations for instantiation (e.g., extending the WASM linker
     /// with imports) fails.
     pub fn spawn(&self, data: W::Args) -> anyhow::Result<InitializingWorkflow<W>> {
-        let raw_data = Data::<_, W::Codec>::new(data).into_raw();
+        let raw_data = W::Codec::default().encode_value(data);
         let state =
             WorkflowData::from_interface(self.interface().clone().erase(), self.services.clone());
         let workflow = Workflow::from_state(self, state)?;

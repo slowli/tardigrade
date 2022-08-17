@@ -91,12 +91,14 @@ use std::{collections::HashMap, fmt, future::Future, mem, ops};
 #[cfg(feature = "derive")]
 #[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
 pub use tardigrade_derive::GetInterface;
-use tardigrade_shared::interface::ValidateInterface;
 
 use crate::{
     channel::{RawReceiver, RawSender},
-    interface::{AccessError, InboundChannel, Interface, OutboundChannel},
-    Data, Decode, Encode, Raw,
+    interface::{
+        AccessError, AccessErrorKind, InboundChannel, Interface, InterfaceLocation,
+        OutboundChannel, ValidateInterface,
+    },
+    Decode, Encode, Raw,
 };
 
 mod handle;
@@ -301,10 +303,14 @@ impl TaskHandle {
 
     #[doc(hidden)] // only used in the `workflow_entry` macro
     pub fn from_workflow<W: SpawnWorkflow>(raw_data: Vec<u8>) -> Result<Self, AccessError> {
-        let data = Data::<_, W::Codec>::from_raw(raw_data)?;
+        let data = W::Codec::default()
+            .try_decode_bytes(raw_data)
+            .map_err(|err| {
+                AccessErrorKind::Custom(Box::new(err)).with_location(InterfaceLocation::DataInput)
+            })?;
         let mut wasm = Wasm::default();
         let handle = <W as TakeHandle<Wasm>>::take_handle(&mut wasm, &())?;
-        Ok(W::spawn(data.into_inner(), handle))
+        Ok(W::spawn(data, handle))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
