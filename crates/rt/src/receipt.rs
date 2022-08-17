@@ -65,8 +65,6 @@ pub enum ExecutedFunction {
     Entry {
         /// ID of the created task.
         task_id: TaskId,
-        #[doc(hidden)]
-        raw_data: Vec<u8>,
     },
     /// Polling a task.
     #[non_exhaustive]
