@@ -72,7 +72,7 @@ async fn test_workflow_basics(handle: TestHandle<PizzaDelivery>) {
 
 #[test]
 fn workflow_basics() {
-    let inputs = Inputs {
+    let inputs = Args {
         oven_count: 1,
         deliverer_count: 1,
     };
@@ -136,7 +136,7 @@ async fn test_concurrency_in_workflow(handle: TestHandle<PizzaDelivery>) {
 
 #[test]
 fn concurrency_in_workflow() {
-    let inputs = Inputs {
+    let inputs = Args {
         oven_count: 2,
         deliverer_count: 1,
     };

@@ -6,14 +6,14 @@
 //! A workflow is a essentially a [`Future`] with `()` output that interacts with the external
 //! world via well-defined interfaces:
 //!
-//! - [Data inputs](Data) provided to the workflow on creation
+//! - Arguments provided to the workflow on creation
 //! - Message [channels](crate::channel) similar [to ones from the `future` crate][future-chan]
 //! - Timers
 //! - Tasks
 //!
 //! Timers [can be created dynamically](sleep) during workflow operation; likewise, tasks
 //! can be [`spawn`]ed to achieve concurrency (but not parallelism!). In contrast, the
-//! set of channels and their direction (inbound or outbound), and the set of data inputs
+//! set of channels and their direction (inbound or outbound)
 //! are static / predefined in the workflow [`Interface`].
 //!
 //! A workflow is sandboxed by the virtue of being implemented as a WASM module.
@@ -78,7 +78,7 @@ pub use crate::{
 /// Proc macro attribute for workflow handles.
 ///
 /// The attribute should be placed on a struct with handles to the workflow interface elements,
-/// such as channels and data inputs. These handles must be specified using the [`Handle`] type
+/// such as channels. These handles must be specified using the [`Handle`] type
 /// alias, with the second type arg (the environment) being the only type arg of the struct.
 ///
 /// The attribute will transform the input as follows:
@@ -103,7 +103,7 @@ pub use crate::{
 /// # Examples
 ///
 /// ```
-/// # use tardigrade::{channel::{Sender, Receiver}, workflow::Handle, Data, Json};
+/// # use tardigrade::{channel::{Sender, Receiver}, workflow::Handle, Json};
 /// /// Workflow type.
 /// pub struct MyWorkflow;
 ///

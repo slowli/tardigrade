@@ -26,7 +26,7 @@ pub struct WorkflowHandle<Env> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Inputs {
+pub struct Args {
     pub oven_count: usize,
 }
 
@@ -36,7 +36,7 @@ fn interface_agrees_between_declaration_and_handle() {
 }
 
 impl WorkflowFn for PizzaDeliveryWithTasks {
-    type Args = Inputs;
+    type Args = Args;
     type Codec = Json;
 }
 
@@ -49,9 +49,9 @@ impl SpawnWorkflow for PizzaDeliveryWithTasks {
 tardigrade::workflow_entry!(PizzaDeliveryWithTasks);
 
 impl WorkflowHandle<Wasm> {
-    fn spawn(self, inputs: Inputs) -> impl Future<Output = ()> {
+    fn spawn(self, args: Args) -> impl Future<Output = ()> {
         let requests = Requests::builder(self.baking_tasks, self.baking_responses)
-            .with_capacity(inputs.oven_count)
+            .with_capacity(args.oven_count)
             .with_task_name("baking_requests")
             .build();
         let shared = self.shared;

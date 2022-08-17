@@ -62,9 +62,9 @@ impl DomainEvent {
     }
 }
 
-/// Data inputs necessary for the workflow initialization.
+/// Arguments necessary for the workflow initialization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Inputs {
+pub struct Args {
     pub oven_count: usize,
     pub deliverer_count: usize,
 }
@@ -113,14 +113,14 @@ fn interface_agrees_between_declaration_and_handle() {
 
 /// Defines workflow interface.
 impl WorkflowFn for PizzaDelivery {
-    type Args = Inputs;
+    type Args = Args;
     type Codec = Json;
 }
 
 /// Defines how workflow instances are spawned.
 impl SpawnWorkflow for PizzaDelivery {
-    fn spawn(inputs: Inputs, handle: Self::Handle) -> TaskHandle {
-        TaskHandle::new(handle.spawn(inputs))
+    fn spawn(args: Args, handle: Self::Handle) -> TaskHandle {
+        TaskHandle::new(handle.spawn(args))
     }
 }
 
@@ -129,8 +129,8 @@ tardigrade::workflow_entry!(PizzaDelivery);
 
 impl PizzaDeliveryHandle<Wasm> {
     /// This is where the actual workflow logic is contained. We pass incoming orders
-    /// through 2 unordered buffers with the capacities defined by the data inputs.
-    async fn spawn(self, inputs: Inputs) {
+    /// through 2 unordered buffers with the capacities defined by the workflow arguments.
+    async fn spawn(self, args: Args) {
         let shared = self.shared;
         let mut counter = 0;
         let baked_pizzas = self
@@ -145,11 +145,11 @@ impl PizzaDeliveryHandle<Wasm> {
                 // for the target. Internally, it passes updates to the host
                 // via an outbound channel.
             })
-            .buffer_unordered(inputs.oven_count);
+            .buffer_unordered(args.oven_count);
 
         baked_pizzas
             .map(|(index, order)| shared.deliver(index, order))
-            .buffer_unordered(inputs.deliverer_count)
+            .buffer_unordered(args.deliverer_count)
             .for_each(|()| async { /* do nothing, just await */ })
             .await;
     }

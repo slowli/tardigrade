@@ -14,7 +14,7 @@
 //! # use tardigrade::{
 //! #     channel::Sender,
 //! #     workflow::{Handle, GetInterface, SpawnWorkflow, TaskHandle, Wasm, WorkflowFn},
-//! #     Data, Json,
+//! #     Json,
 //! # };
 //! // Assume we want to test a workflow.
 //! #[derive(Debug, GetInterface)]
@@ -31,9 +31,9 @@
 //!     pub events: Handle<Sender<Event, Json>, Env>,
 //! }
 //!
-//! /// Input provided to the workflow.
+//! /// Arguments provided to the workflow on creation.
 //! #[derive(Debug, Serialize, Deserialize)]
-//! pub struct Input {
+//! pub struct Args {
 //!     pub counter: u32,
 //! }
 //!
@@ -44,14 +44,14 @@
 //! }
 //!
 //! impl WorkflowFn for MyWorkflow {
-//!     type Args = Input;
+//!     type Args = Args;
 //!     type Codec = Json;
 //! }
 //!
 //! // Workflow logic
 //! impl SpawnWorkflow for MyWorkflow {
-//!     fn spawn(input: Input, handle: MyHandle<Wasm>) -> TaskHandle {
-//!         let counter = input.counter;
+//!     fn spawn(args: Args, handle: MyHandle<Wasm>) -> TaskHandle {
+//!         let counter = args.counter;
 //!         let mut events = handle.events;
 //!         TaskHandle::new(async move {
 //!             for i in 0..counter {
@@ -76,7 +76,7 @@
 //!     let event = handle.api.events.next().await.unwrap();
 //!     assert_matches!(event, Event::Count(0));
 //! }
-//! MyWorkflow::test(Input { counter: 1 }, test_workflow);
+//! MyWorkflow::test(Args { counter: 1 }, test_workflow);
 //! ```
 
 use chrono::{DateTime, TimeZone, Utc};
@@ -404,7 +404,7 @@ impl Drop for RuntimeGuard {
 /// to a closure in [`TestWorkflow::test()`].
 #[non_exhaustive]
 pub struct TestHandle<W: TestWorkflow> {
-    /// Handle to the workflow interface (channels, data inputs etc.).
+    /// Handle to the workflow interface, such as channels.
     pub api: <W as TakeHandle<TestHost>>::Handle,
     /// Handle to manipulate time in the test environment.
     pub timers: TimersHandle,

@@ -12,7 +12,7 @@
 //! use tardigrade::{
 //!     channel::{Sender, Receiver},
 //!     workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm, WorkflowFn},
-//!     Data, Json,
+//!     Json,
 //! };
 //!
 //! /// Workflow type. Usually, this should be a unit / empty struct.
@@ -30,9 +30,9 @@
 //!     pub events: Handle<Sender<Event, Json>, Env>,
 //! }
 //!
-//! /// Input provided to the workflow.
+//! /// Args provided to the workflow on creation.
 //! #[derive(Debug, Serialize, Deserialize)]
-//! pub struct Input {
+//! pub struct Args {
 //!     pub start_counter: u32,
 //! }
 //!
@@ -65,16 +65,16 @@
 //!
 //! // Workflow interface declaration.
 //! impl WorkflowFn for MyWorkflow {
-//!     type Args = Input;
+//!     type Args = Args;
 //!     type Codec = Json;
 //! }
 //!
 //! // Actual workflow logic.
 //! impl SpawnWorkflow for MyWorkflow {
-//!     fn spawn(mut input: Input, mut handle: MyHandle<Wasm>) -> TaskHandle {
+//!     fn spawn(mut args: Args, mut handle: MyHandle<Wasm>) -> TaskHandle {
 //!         TaskHandle::new(async move {
 //!             while let Some(command) = handle.commands.next().await {
-//!                 handle.process_command(&command, &mut input.start_counter).await;
+//!                 handle.process_command(&command, &mut args.start_counter).await;
 //!             }
 //!         })
 //!     }
@@ -275,7 +275,8 @@ impl Wasm {
 pub trait WorkflowFn {
     /// Argument(s) supplied to the workflow on its creation.
     type Args;
-    /// Codec used for [`Self::Args`].
+    /// Codec used for [`Self::Args`] to encode / decode the arguments in order to pass them from
+    /// the host to WASM.
     type Codec: Default + Encode<Self::Args> + Decode<Self::Args>;
 }
 
@@ -306,7 +307,7 @@ impl TaskHandle {
         let data = W::Codec::default()
             .try_decode_bytes(raw_data)
             .map_err(|err| {
-                AccessErrorKind::Custom(Box::new(err)).with_location(InterfaceLocation::DataInput)
+                AccessErrorKind::Custom(Box::new(err)).with_location(InterfaceLocation::Args)
             })?;
         let mut wasm = Wasm::default();
         let handle = <W as TakeHandle<Wasm>>::take_handle(&mut wasm, &())?;

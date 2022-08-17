@@ -39,7 +39,7 @@ use tardigrade::interface::Interface;
 pub struct WorkflowData {
     /// Functions exported by the `Instance`. Instantiated immediately after instance.
     exports: Option<ModuleExports>,
-    // Interfaces (channels, data inputs).
+    // Workflow interface, such as channels.
     interface: Interface<()>,
     inbound_channels: HashMap<String, InboundChannelState>,
     outbound_channels: HashMap<String, OutboundChannelState>,

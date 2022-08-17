@@ -70,8 +70,8 @@ pub enum InterfaceLocation {
         /// Channel name.
         name: String,
     },
-    /// Data input.
-    DataInput,
+    /// Arguments supplied to the workflow on creation.
+    Args,
     /// Extension with the specified name.
     Extension(String),
 }
@@ -82,7 +82,7 @@ impl fmt::Display for InterfaceLocation {
             Self::Channel { kind, name } => {
                 write!(formatter, "{} channel `{}`", kind, name)
             }
-            Self::DataInput => write!(formatter, "data input"),
+            Self::Args => write!(formatter, "arguments"),
             Self::Extension(name) => write!(formatter, "extension `{}`", name),
         }
     }
@@ -168,11 +168,11 @@ impl OutboundChannelSpec {
     }
 }
 
-/// Specification of a data input in the workflow [`Interface`].
+/// Specification of the arguments in the workflow [`Interface`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[non_exhaustive]
-pub struct DataInputSpec {
-    /// Human-readable data input description.
+pub struct ArgsSpec {
+    /// Human-readable arguments description.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
 }
@@ -216,7 +216,7 @@ impl From<OutboundChannel<'_>> for InterfaceLocation {
 }
 
 /// Specification of a workflow interface. Contains info about inbound / outbound channels,
-/// data inputs etc.
+/// arguments etc.
 ///
 /// # Examples
 ///
@@ -248,8 +248,8 @@ pub struct Interface<W: ?Sized> {
     inbound_channels: HashMap<String, InboundChannelSpec>,
     #[serde(rename = "out", default, skip_serializing_if = "HashMap::is_empty")]
     outbound_channels: HashMap<String, OutboundChannelSpec>,
-    #[serde(rename = "data", default)]
-    data_input: DataInputSpec,
+    #[serde(rename = "args", default)]
+    args: ArgsSpec,
     #[serde(skip, default)]
     _workflow: PhantomData<fn(W)>,
 }
@@ -261,7 +261,7 @@ impl<W: ?Sized> fmt::Debug for Interface<W> {
             .field("version", &self.version)
             .field("inbound_channels", &self.inbound_channels)
             .field("outbound_channels", &self.outbound_channels)
-            .field("data_input", &self.data_input)
+            .field("args", &self.args)
             .finish()
     }
 }
@@ -272,7 +272,7 @@ impl<W: ?Sized> Clone for Interface<W> {
             version: self.version,
             inbound_channels: self.inbound_channels.clone(),
             outbound_channels: self.outbound_channels.clone(),
-            data_input: self.data_input.clone(),
+            args: self.args.clone(),
             _workflow: PhantomData,
         }
     }
@@ -284,7 +284,7 @@ impl Default for Interface<()> {
             version: 0,
             inbound_channels: HashMap::new(),
             outbound_channels: HashMap::new(),
-            data_input: DataInputSpec::default(),
+            args: ArgsSpec::default(),
             _workflow: PhantomData,
         }
     }
@@ -327,9 +327,9 @@ impl<W> Interface<W> {
             .map(|(name, spec)| (name.as_str(), spec))
     }
 
-    /// Returns spec for the data input.
-    pub fn data_input(&self) -> &DataInputSpec {
-        &self.data_input
+    /// Returns spec for the arguments.
+    pub fn args(&self) -> &ArgsSpec {
+        &self.args
     }
 
     /// Erases the type of this interface.
@@ -338,7 +338,7 @@ impl<W> Interface<W> {
             version: self.version,
             inbound_channels: self.inbound_channels,
             outbound_channels: self.outbound_channels,
-            data_input: self.data_input,
+            args: self.args,
             _workflow: PhantomData,
         }
     }
@@ -389,7 +389,7 @@ impl Interface<()> {
     /// # Errors
     ///
     /// Returns an error if there is a mismatch between the interface of the workflow type
-    /// and this interface, e.g., if the workflow type relies on a channel / data input
+    /// and this interface, e.g., if the workflow type relies on a channel
     /// not present in this interface.
     pub fn downcast<W>(self) -> Result<Interface<W>, AccessError>
     where
@@ -400,7 +400,7 @@ impl Interface<()> {
             version: self.version,
             inbound_channels: self.inbound_channels,
             outbound_channels: self.outbound_channels,
-            data_input: self.data_input,
+            args: self.args,
             _workflow: PhantomData,
         })
     }

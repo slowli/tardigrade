@@ -355,7 +355,7 @@ where
     }
 }
 
-/// Handle for a [`Workflow`] allowing to access inbound / outbound channels and data inputs.
+/// Handle for a [`Workflow`] allowing to access inbound / outbound channels.
 pub struct WorkflowHandle<'a, W>
 where
     W: TakeHandle<WorkflowEnv<'a, W>, Id = ()> + 'a,

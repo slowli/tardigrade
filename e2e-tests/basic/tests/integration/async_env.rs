@@ -24,7 +24,7 @@ use tardigrade_rt::{
     TimerId, Workflow, WorkflowSpawner,
 };
 use tardigrade_test_basic::{
-    DomainEvent, Inputs, PizzaDelivery, PizzaDeliveryHandle, PizzaKind, PizzaOrder,
+    Args, DomainEvent, PizzaDelivery, PizzaDeliveryHandle, PizzaKind, PizzaOrder,
 };
 
 use super::{TestResult, MODULE};
@@ -43,7 +43,7 @@ async fn test_async_handle(cancel_workflow: bool) -> TestResult {
     let module = task::spawn_blocking(|| &*MODULE).await;
     let spawner = module.for_workflow::<PizzaDelivery>()?;
 
-    let inputs = Inputs {
+    let inputs = Args {
         oven_count: 1,
         deliverer_count: 1,
     };
@@ -115,7 +115,7 @@ async fn async_handle_with_cancellation() -> TestResult {
 
 async fn test_async_handle_with_concurrency(
     spawner: &WorkflowSpawner<PizzaDelivery>,
-    inputs: Inputs,
+    inputs: Args,
 ) -> TestResult {
     const ORDER_COUNT: usize = 5;
 
@@ -160,27 +160,27 @@ async fn async_handle_with_concurrency() -> TestResult {
     let spawner = module.for_workflow::<PizzaDelivery>()?;
 
     let sample_inputs = [
-        Inputs {
+        Args {
             oven_count: 1,
             deliverer_count: 2,
         },
-        Inputs {
+        Args {
             oven_count: 2,
             deliverer_count: 1,
         },
-        Inputs {
+        Args {
             oven_count: 2,
             deliverer_count: 2,
         },
-        Inputs {
+        Args {
             oven_count: 3,
             deliverer_count: 3,
         },
-        Inputs {
+        Args {
             oven_count: 5,
             deliverer_count: 7,
         },
-        Inputs {
+        Args {
             oven_count: 10,
             deliverer_count: 1,
         },
@@ -235,7 +235,7 @@ async fn initialize_workflow() -> TestResult<AsyncRig> {
         .for_workflow::<PizzaDelivery>()?
         .with_clock(scheduler.clone());
 
-    let inputs = Inputs {
+    let inputs = Args {
         oven_count: 2,
         deliverer_count: 1,
     };
@@ -403,7 +403,7 @@ async fn spawn_cancellable_workflow() -> TestResult<CancellableWorkflow> {
         .for_workflow::<PizzaDelivery>()?
         .with_clock(scheduler.clone());
 
-    let inputs = Inputs {
+    let inputs = Args {
         oven_count: 1,
         deliverer_count: 1,
     };
@@ -494,7 +494,7 @@ async fn persisting_workflow() -> TestResult {
 async fn dynamically_typed_async_handle() -> TestResult {
     let module = task::spawn_blocking(|| &*MODULE).await;
     let spawner = module.for_untyped_workflow("PizzaDelivery").unwrap();
-    let data = Json.encode_value(Inputs {
+    let data = Json.encode_value(Args {
         oven_count: 1,
         deliverer_count: 1,
     });
@@ -543,7 +543,7 @@ async fn dynamically_typed_async_handle() -> TestResult {
 async fn rollback_strategy() -> TestResult {
     let module = task::spawn_blocking(|| &*MODULE).await;
     let spawner = module.for_untyped_workflow("PizzaDelivery").unwrap();
-    let data = Json.encode_value(Inputs {
+    let data = Json.encode_value(Args {
         oven_count: 1,
         deliverer_count: 1,
     });

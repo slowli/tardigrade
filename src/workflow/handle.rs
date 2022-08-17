@@ -6,7 +6,7 @@ use tardigrade_shared::interface::{AccessError, AccessErrorKind, InterfaceLocati
 
 /// Type with a handle in a certain environment.
 ///
-/// This trait is implemented for elements of the workflow interface (channels, data inputs),
+/// This trait is implemented for elements of the workflow interface, such as channels,
 /// and can be derived for workflow types using the corresponding macro.
 pub trait TakeHandle<Env> {
     /// ID of the handle, usually a `str` (for named handles) or `()` (for singleton handles).
