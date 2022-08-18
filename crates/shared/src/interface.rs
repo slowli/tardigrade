@@ -60,7 +60,7 @@ impl AccessErrorKind {
 }
 
 /// Location in a workflow [`Interface`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum InterfaceLocation {
     /// Channel in the workflow interface.
@@ -70,8 +70,8 @@ pub enum InterfaceLocation {
         /// Channel name.
         name: String,
     },
-    /// Data input with the specified name.
-    DataInput(String),
+    /// Arguments supplied to the workflow on creation.
+    Args,
     /// Extension with the specified name.
     Extension(String),
 }
@@ -82,7 +82,7 @@ impl fmt::Display for InterfaceLocation {
             Self::Channel { kind, name } => {
                 write!(formatter, "{} channel `{}`", kind, name)
             }
-            Self::DataInput(name) => write!(formatter, "data input `{}`", name),
+            Self::Args => write!(formatter, "arguments"),
             Self::Extension(name) => write!(formatter, "extension `{}`", name),
         }
     }
@@ -168,29 +168,13 @@ impl OutboundChannelSpec {
     }
 }
 
-/// Specification of a data input in the workflow [`Interface`].
+/// Specification of the arguments in the workflow [`Interface`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[non_exhaustive]
-pub struct DataInputSpec {
-    /// Human-readable data input description.
+pub struct ArgsSpec {
+    /// Human-readable arguments description.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
-}
-
-/// Newtype for indexing data inputs, e.g., in an [`Interface`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DataInput<'a>(pub &'a str);
-
-impl fmt::Display for DataInput<'_> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "data input `{}`", self.0)
-    }
-}
-
-impl From<DataInput<'_>> for InterfaceLocation {
-    fn from(data_input: DataInput<'_>) -> Self {
-        Self::DataInput(data_input.0.to_owned())
-    }
 }
 
 /// Newtype for indexing inbound channels, e.g., in an [`Interface`].
@@ -232,7 +216,7 @@ impl From<OutboundChannel<'_>> for InterfaceLocation {
 }
 
 /// Specification of a workflow interface. Contains info about inbound / outbound channels,
-/// data inputs etc.
+/// arguments etc.
 ///
 /// # Examples
 ///
@@ -241,8 +225,7 @@ impl From<OutboundChannel<'_>> for InterfaceLocation {
 /// # const INTERFACE_BYTES: &[u8] = br#"{
 /// #     "v": 0,
 /// #     "in": { "commands": {} },
-/// #     "out": { "events": {} },
-/// #     "data": { "inputs": {} }
+/// #     "out": { "events": {} }
 /// # }"#;
 /// let interface: Interface<()> = // ...
 /// #     Interface::from_bytes(INTERFACE_BYTES);
@@ -254,8 +237,8 @@ impl From<OutboundChannel<'_>> for InterfaceLocation {
 ///     .outbound_channels()
 ///     .all(|(_, spec)| spec.capacity == Some(1)));
 /// // Indexing is also possible using newtype wrappers from the module
-/// let inputs = &interface[DataInput("inputs")];
-/// println!("{}", inputs.description);
+/// let commands = &interface[InboundChannel("commands")];
+/// println!("{}", commands.description);
 /// ```
 #[derive(Serialize, Deserialize)]
 pub struct Interface<W: ?Sized> {
@@ -265,8 +248,8 @@ pub struct Interface<W: ?Sized> {
     inbound_channels: HashMap<String, InboundChannelSpec>,
     #[serde(rename = "out", default, skip_serializing_if = "HashMap::is_empty")]
     outbound_channels: HashMap<String, OutboundChannelSpec>,
-    #[serde(rename = "data", default, skip_serializing_if = "HashMap::is_empty")]
-    data_inputs: HashMap<String, DataInputSpec>,
+    #[serde(rename = "args", default)]
+    args: ArgsSpec,
     #[serde(skip, default)]
     _workflow: PhantomData<fn(W)>,
 }
@@ -278,7 +261,7 @@ impl<W: ?Sized> fmt::Debug for Interface<W> {
             .field("version", &self.version)
             .field("inbound_channels", &self.inbound_channels)
             .field("outbound_channels", &self.outbound_channels)
-            .field("data_inputs", &self.data_inputs)
+            .field("args", &self.args)
             .finish()
     }
 }
@@ -289,7 +272,7 @@ impl<W: ?Sized> Clone for Interface<W> {
             version: self.version,
             inbound_channels: self.inbound_channels.clone(),
             outbound_channels: self.outbound_channels.clone(),
-            data_inputs: self.data_inputs.clone(),
+            args: self.args.clone(),
             _workflow: PhantomData,
         }
     }
@@ -301,7 +284,7 @@ impl Default for Interface<()> {
             version: 0,
             inbound_channels: HashMap::new(),
             outbound_channels: HashMap::new(),
-            data_inputs: HashMap::new(),
+            args: ArgsSpec::default(),
             _workflow: PhantomData,
         }
     }
@@ -344,17 +327,9 @@ impl<W> Interface<W> {
             .map(|(name, spec)| (name.as_str(), spec))
     }
 
-    /// Returns spec for a data input, or `None` if a data input with the specified `name`
-    /// is not present in this interface.
-    pub fn data_input(&self, name: &str) -> Option<&DataInputSpec> {
-        self.data_inputs.get(name)
-    }
-
-    /// Lists all data inputs in this interface.
-    pub fn data_inputs(&self) -> impl ExactSizeIterator<Item = (&str, &DataInputSpec)> + '_ {
-        self.data_inputs
-            .iter()
-            .map(|(name, spec)| (name.as_str(), spec))
+    /// Returns spec for the arguments.
+    pub fn args(&self) -> &ArgsSpec {
+        &self.args
     }
 
     /// Erases the type of this interface.
@@ -363,18 +338,9 @@ impl<W> Interface<W> {
             version: self.version,
             inbound_channels: self.inbound_channels,
             outbound_channels: self.outbound_channels,
-            data_inputs: self.data_inputs,
+            args: self.args,
             _workflow: PhantomData,
         }
-    }
-}
-
-impl<W> ops::Index<DataInput<'_>> for Interface<W> {
-    type Output = DataInputSpec;
-
-    fn index(&self, index: DataInput<'_>) -> &Self::Output {
-        self.data_input(index.0)
-            .unwrap_or_else(|| panic!("{} is not defined", index))
     }
 }
 
@@ -423,7 +389,7 @@ impl Interface<()> {
     /// # Errors
     ///
     /// Returns an error if there is a mismatch between the interface of the workflow type
-    /// and this interface, e.g., if the workflow type relies on a channel / data input
+    /// and this interface, e.g., if the workflow type relies on a channel
     /// not present in this interface.
     pub fn downcast<W>(self) -> Result<Interface<W>, AccessError>
     where
@@ -434,7 +400,7 @@ impl Interface<()> {
             version: self.version,
             inbound_channels: self.inbound_channels,
             outbound_channels: self.outbound_channels,
-            data_inputs: self.data_inputs,
+            args: self.args,
             _workflow: PhantomData,
         })
     }

@@ -23,12 +23,10 @@ use crate::{
 };
 use tardigrade::{
     channel::{Receiver, Sender},
-    interface::{
-        AccessError, AccessErrorKind, DataInput, InboundChannel, Interface, OutboundChannel,
-    },
+    interface::{AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel},
     trace::{FutureUpdate, TracedFutures, Tracer},
     workflow::{EnvExtensions, TakeHandle, UntypedHandle},
-    Data, Decode, Encode,
+    Decode, Encode,
 };
 
 /// Environment for executing [`Workflow`]s.
@@ -293,25 +291,6 @@ where
     }
 }
 
-impl<'a, T, C, W> TakeHandle<WorkflowEnv<'a, W>> for Data<T, C>
-where
-    C: Decode<T> + Default,
-{
-    type Id = str;
-    type Handle = T;
-
-    fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
-        let input_bytes = env.with(|workflow| workflow.data_input(id));
-        if let Some(bytes) = input_bytes {
-            C::default()
-                .try_decode_bytes(bytes)
-                .map_err(|err| AccessErrorKind::Custom(Box::new(err)).with_location(DataInput(id)))
-        } else {
-            Err(AccessErrorKind::Unknown.with_location(DataInput(id)))
-        }
-    }
-}
-
 /// Handle allowing to trace futures.
 #[derive(Debug)]
 pub struct TracerHandle<'a, C, W> {
@@ -376,7 +355,7 @@ where
     }
 }
 
-/// Handle for a [`Workflow`] allowing to access inbound / outbound channels and data inputs.
+/// Handle for a [`Workflow`] allowing to access inbound / outbound channels.
 pub struct WorkflowHandle<'a, W>
 where
     W: TakeHandle<WorkflowEnv<'a, W>, Id = ()> + 'a,

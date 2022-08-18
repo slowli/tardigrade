@@ -13,15 +13,14 @@
 //! # use serde::{Deserialize, Serialize};
 //! # use tardigrade::{
 //! #     channel::Sender,
-//! #     workflow::{Handle, GetInterface, SpawnWorkflow, TaskHandle, Wasm},
-//! #     Data, Json,
+//! #     workflow::{Handle, GetInterface, SpawnWorkflow, TaskHandle, Wasm, WorkflowFn},
+//! #     Json,
 //! # };
 //! // Assume we want to test a workflow.
 //! #[derive(Debug, GetInterface)]
 //! # #[tardigrade(interface = r#"{
 //! #     "v": 0,
-//! #     "out": { "events": {} },
-//! #     "data": { "input": {} }
+//! #     "out": { "events": {} }
 //! # }"#)]
 //! pub struct MyWorkflow(());
 //!
@@ -29,14 +28,12 @@
 //! #[tardigrade::handle(for = "MyWorkflow")]
 //! #[derive(Debug)]
 //! pub struct MyHandle<Env> {
-//!     pub input: Handle<Data<Input, Json>, Env>,
 //!     pub events: Handle<Sender<Event, Json>, Env>,
 //! }
 //!
-//! /// Input provided to the workflow.
-//! #[tardigrade::init(for = "MyWorkflow", codec = "Json")]
+//! /// Arguments provided to the workflow on creation.
 //! #[derive(Debug, Serialize, Deserialize)]
-//! pub struct Input {
+//! pub struct Args {
 //!     pub counter: u32,
 //! }
 //!
@@ -46,10 +43,15 @@
 //!     Count(u32),
 //! }
 //!
+//! impl WorkflowFn for MyWorkflow {
+//!     type Args = Args;
+//!     type Codec = Json;
+//! }
+//!
 //! // Workflow logic
 //! impl SpawnWorkflow for MyWorkflow {
-//!     fn spawn(handle: MyHandle<Wasm>) -> TaskHandle {
-//!         let counter = handle.input.into_inner().counter;
+//!     fn spawn(args: Args, handle: MyHandle<Wasm>) -> TaskHandle {
+//!         let counter = args.counter;
 //!         let mut events = handle.events;
 //!         TaskHandle::new(async move {
 //!             for i in 0..counter {
@@ -74,7 +76,7 @@
 //!     let event = handle.api.events.next().await.unwrap();
 //!     assert_matches!(event, Event::Count(0));
 //! }
-//! MyWorkflow::test(Input { counter: 1 }, test_workflow);
+//! MyWorkflow::test(Args { counter: 1 }, test_workflow);
 //! ```
 
 use chrono::{DateTime, TimeZone, Utc};
@@ -103,8 +105,8 @@ use crate::{
     channel::{imp as channel_imp, Receiver, Sender},
     interface::{AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel},
     trace::Tracer,
-    workflow::{Inputs, SpawnWorkflow, TakeHandle, Wasm},
-    Data, Decode, Encode,
+    workflow::{SpawnWorkflow, TakeHandle, Wasm},
+    Decode, Encode,
 };
 use tardigrade_shared::trace::{FutureUpdate, TracedFutures};
 
@@ -263,7 +265,6 @@ impl ChannelPair {
 #[derive(Debug)]
 pub(crate) struct Runtime {
     spawner: LocalSpawner,
-    data_inputs: HashMap<String, Vec<u8>>,
     inbound_channels: HashMap<String, ChannelPair>,
     outbound_channels: HashMap<String, ChannelPair>,
     scheduler: MockScheduler,
@@ -274,10 +275,7 @@ thread_local! {
 }
 
 impl Runtime {
-    fn initialize<W>(
-        interface: &Interface<W>,
-        data_inputs: HashMap<String, Vec<u8>>,
-    ) -> (RuntimeGuard, LocalPool) {
+    fn initialize<W>(interface: &Interface<W>) -> (RuntimeGuard, LocalPool) {
         let local_pool = LocalPool::new();
 
         let inbound = interface
@@ -289,7 +287,6 @@ impl Runtime {
 
         let rt = Self {
             spawner: local_pool.spawner(),
-            data_inputs,
             inbound_channels: inbound.collect(),
             outbound_channels: outbound.collect(),
             scheduler: MockScheduler::default(),
@@ -323,10 +320,6 @@ impl Runtime {
                 act(runtime);
             }
         });
-    }
-
-    pub fn data_input(&self, name: &str) -> Option<Vec<u8>> {
-        self.data_inputs.get(name).cloned()
     }
 
     pub fn take_inbound_channel(
@@ -411,7 +404,7 @@ impl Drop for RuntimeGuard {
 /// to a closure in [`TestWorkflow::test()`].
 #[non_exhaustive]
 pub struct TestHandle<W: TestWorkflow> {
-    /// Handle to the workflow interface (channels, data inputs etc.).
+    /// Handle to the workflow interface, such as channels.
     pub api: <W as TakeHandle<TestHost>>::Handle,
     /// Handle to manipulate time in the test environment.
     pub timers: TimersHandle,
@@ -441,23 +434,21 @@ impl<W: TestWorkflow> TestHandle<W> {
     }
 }
 
-fn test<W, F, Fut, E>(inputs: W::Init, test_fn: F) -> Result<(), E>
+fn test<W, F, Fut, E>(data: W::Args, test_fn: F) -> Result<(), E>
 where
     W: TestWorkflow,
     F: FnOnce(TestHandle<W>) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
     let interface = W::interface();
-    let workflow_inputs = Inputs::for_interface(&interface, inputs);
-
-    let (_guard, mut local_pool) = Runtime::initialize(&interface, workflow_inputs.into_inner());
+    let (_guard, mut local_pool) = Runtime::initialize(&interface);
     let mut wasm = Wasm::default();
     let workflow = W::take_handle(&mut wasm, &()).unwrap();
     let test_handle = TestHandle::new();
 
     local_pool
         .spawner()
-        .spawn_local(W::spawn(workflow).into_inner().map(|()| {
+        .spawn_local(W::spawn(data, workflow).into_inner().map(|()| {
             Runtime::with_optional_mut(Runtime::drop_workflow_resources);
         }))
         .expect("cannot spawn workflow");
@@ -468,11 +459,11 @@ where
 /// Extension trait for testing workflows.
 pub trait TestWorkflow: Sized + SpawnWorkflow + TakeHandle<TestHost, Id = ()> {
     /// Runs the specified test function for a workflow instantiated from the provided `inputs`.
-    fn test<F>(inputs: Self::Init, test_fn: impl FnOnce(TestHandle<Self>) -> F)
+    fn test<F>(data: Self::Args, test_fn: impl FnOnce(TestHandle<Self>) -> F)
     where
         F: Future<Output = ()> + 'static,
     {
-        test::<Self, _, _, _>(inputs, |handle| async {
+        test::<Self, _, _, _>(data, |handle| async {
             test_fn(handle).await;
             Ok::<_, ()>(())
         })
@@ -511,15 +502,6 @@ impl<T, C: Decode<T> + Default> TakeHandle<TestHost> for Sender<T, C> {
 
     fn take_handle(env: &mut TestHost, id: &str) -> Result<Self::Handle, AccessError> {
         channel_imp::MpscSender::take_handle(env, id).map(|raw| Receiver::new(raw, C::default()))
-    }
-}
-
-impl<T, C: Decode<T> + Default> TakeHandle<TestHost> for Data<T, C> {
-    type Id = str;
-    type Handle = Self;
-
-    fn take_handle(_env: &mut TestHost, id: &str) -> Result<Self, AccessError> {
-        Self::from_env(id)
     }
 }
 

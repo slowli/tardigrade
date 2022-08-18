@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::{DomainEvent, PizzaOrder, Shared, SharedHandle};
 use tardigrade::{
     channel::{Receiver, Requests, Sender, WithId},
-    workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm},
-    Data, FutureExt as _, Json,
+    workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm, WorkflowFn},
+    FutureExt as _, Json,
 };
 
 #[derive(Debug, GetInterface)]
@@ -18,7 +18,6 @@ pub struct PizzaDeliveryWithTasks(());
 #[tardigrade::handle(for = "PizzaDeliveryWithTasks")]
 #[derive(Debug)]
 pub struct WorkflowHandle<Env> {
-    pub inputs: Handle<Data<Inputs, Json>, Env>,
     pub orders: Handle<Receiver<PizzaOrder, Json>, Env>,
     #[tardigrade(flatten)]
     pub shared: Handle<Shared, Env>,
@@ -26,9 +25,8 @@ pub struct WorkflowHandle<Env> {
     pub baking_responses: Handle<Receiver<WithId<()>, Json>, Env>,
 }
 
-#[tardigrade::init(for = "PizzaDeliveryWithTasks", codec = "Json")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Inputs {
+pub struct Args {
     pub oven_count: usize,
 }
 
@@ -37,19 +35,23 @@ fn interface_agrees_between_declaration_and_handle() {
     PizzaDeliveryWithTasks::interface(); // Checks are performed internally
 }
 
+impl WorkflowFn for PizzaDeliveryWithTasks {
+    type Args = Args;
+    type Codec = Json;
+}
+
 impl SpawnWorkflow for PizzaDeliveryWithTasks {
-    fn spawn(handle: Self::Handle) -> TaskHandle {
-        TaskHandle::new(handle.spawn())
+    fn spawn(args: Self::Args, handle: Self::Handle) -> TaskHandle {
+        TaskHandle::new(handle.spawn(args))
     }
 }
 
 tardigrade::workflow_entry!(PizzaDeliveryWithTasks);
 
 impl WorkflowHandle<Wasm> {
-    fn spawn(self) -> impl Future<Output = ()> {
-        let inputs = self.inputs.into_inner();
+    fn spawn(self, args: Args) -> impl Future<Output = ()> {
         let requests = Requests::builder(self.baking_tasks, self.baking_responses)
-            .with_capacity(inputs.oven_count)
+            .with_capacity(args.oven_count)
             .with_task_name("baking_requests")
             .build();
         let shared = self.shared;

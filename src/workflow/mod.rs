@@ -11,8 +11,8 @@
 //! # use serde::{Deserialize, Serialize};
 //! use tardigrade::{
 //!     channel::{Sender, Receiver},
-//!     workflow::{GetInterface, Handle, Init, SpawnWorkflow, TaskHandle, Wasm},
-//!     Data, Json,
+//!     workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm, WorkflowFn},
+//!     Json,
 //! };
 //!
 //! /// Workflow type. Usually, this should be a unit / empty struct.
@@ -24,19 +24,15 @@
 //! #[tardigrade::handle(for = "MyWorkflow")]
 //! #[derive(Debug)]
 //! pub struct MyHandle<Env> {
-//!     /// Data input.
-//!     pub input: Handle<Data<Input, Json>, Env>,
 //!     /// Inbound channel with commands.
 //!     pub commands: Handle<Receiver<Command, Json>, Env>,
 //!     /// Outbound channel with events.
 //!     pub events: Handle<Sender<Event, Json>, Env>,
 //! }
 //!
-//! /// Input provided to the workflow. Since it's a single input,
-//! /// it also acts as the initializer.
-//! #[tardigrade::init(for = "MyWorkflow", codec = "Json")]
+//! /// Args provided to the workflow on creation.
 //! #[derive(Debug, Serialize, Deserialize)]
-//! pub struct Input {
+//! pub struct Args {
 //!     pub start_counter: u32,
 //! }
 //!
@@ -55,10 +51,9 @@
 //! }
 //!
 //! impl MyHandle<Wasm> {
-//!     async fn process_command(&mut self, command: &Command) {
+//!     async fn process_command(&mut self, command: &Command, counter: &mut u32) {
 //!         match command {
 //!             Command::Ping(ping) => {
-//!                 let counter = &mut self.input.as_mut().start_counter;
 //!                 let pong = format!("{}, counter={}", ping, *counter);
 //!                 *counter += 1;
 //!                 self.events.send(Event::Pong(pong)).await;
@@ -68,12 +63,18 @@
 //!     }
 //! }
 //!
+//! // Workflow interface declaration.
+//! impl WorkflowFn for MyWorkflow {
+//!     type Args = Args;
+//!     type Codec = Json;
+//! }
+//!
 //! // Actual workflow logic.
 //! impl SpawnWorkflow for MyWorkflow {
-//!     fn spawn(mut handle: MyHandle<Wasm>) -> TaskHandle {
+//!     fn spawn(mut args: Args, mut handle: MyHandle<Wasm>) -> TaskHandle {
 //!         TaskHandle::new(async move {
 //!             while let Some(command) = handle.commands.next().await {
-//!                 handle.process_command(&command).await;
+//!                 handle.process_command(&command, &mut args.start_counter).await;
 //!             }
 //!         })
 //!     }
@@ -90,21 +91,19 @@ use std::{collections::HashMap, fmt, future::Future, mem, ops};
 #[cfg(feature = "derive")]
 #[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
 pub use tardigrade_derive::GetInterface;
-use tardigrade_shared::interface::ValidateInterface;
 
 use crate::{
     channel::{RawReceiver, RawSender},
-    interface::{AccessError, DataInput, InboundChannel, Interface, OutboundChannel},
-    RawData,
+    interface::{
+        AccessError, AccessErrorKind, InboundChannel, Interface, InterfaceLocation,
+        OutboundChannel, ValidateInterface,
+    },
+    Decode, Encode, Raw,
 };
 
 mod handle;
-mod init;
 
-pub use self::{
-    handle::{EnvExtensions, ExtendEnv, Handle, TakeHandle},
-    init::{Init, Initialize, Inputs, InputsBuilder},
-};
+pub use self::handle::{EnvExtensions, ExtendEnv, Handle, TakeHandle};
 
 #[cfg(target_arch = "wasm32")]
 mod imp {
@@ -272,19 +271,24 @@ impl Wasm {
     }
 }
 
+/// Functional interface of a workflow.
+pub trait WorkflowFn {
+    /// Argument(s) supplied to the workflow on its creation.
+    type Args;
+    /// Codec used for [`Self::Args`] to encode / decode the arguments in order to pass them from
+    /// the host to WASM.
+    type Codec: Default + Encode<Self::Args> + Decode<Self::Args>;
+}
+
+impl WorkflowFn for () {
+    type Args = Vec<u8>;
+    type Codec = Raw;
+}
+
 /// Workflow that can be spawned.
-///
-/// As the supertraits imply, the workflow needs to be able to:
-///
-/// - Describe its interface
-/// - Take necessary channel / data input handles from the [`Wasm`] environment
-/// - Initialize from data inputs.
-///
-/// The supertraits are usually derived for workflow types using the corresponding macros,
-/// while `SpawnWorkflow` itself is easy to implement manually.
-pub trait SpawnWorkflow: GetInterface + TakeHandle<Wasm, Id = ()> + Initialize<Id = ()> {
+pub trait SpawnWorkflow: GetInterface + TakeHandle<Wasm, Id = ()> + WorkflowFn {
     /// Spawns a workflow instance.
-    fn spawn(handle: Self::Handle) -> TaskHandle;
+    fn spawn(args: Self::Args, handle: Self::Handle) -> TaskHandle;
 }
 
 /// Handle to a task, essentially equivalent to a boxed [`Future`].
@@ -299,10 +303,15 @@ impl TaskHandle {
     }
 
     #[doc(hidden)] // only used in the `workflow_entry` macro
-    pub fn from_workflow<W: SpawnWorkflow>() -> Result<Self, AccessError> {
+    pub fn from_workflow<W: SpawnWorkflow>(raw_data: Vec<u8>) -> Result<Self, AccessError> {
+        let data = W::Codec::default()
+            .try_decode_bytes(raw_data)
+            .map_err(|err| {
+                AccessErrorKind::Custom(Box::new(err)).with_location(InterfaceLocation::Args)
+            })?;
         let mut wasm = Wasm::default();
         let handle = <W as TakeHandle<Wasm>>::take_handle(&mut wasm, &())?;
-        Ok(W::spawn(handle))
+        Ok(W::spawn(data, handle))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -315,11 +324,9 @@ impl TaskHandle {
 /// and channels.
 pub struct UntypedHandle<Env>
 where
-    RawData: TakeHandle<Env, Id = str>,
     RawReceiver: TakeHandle<Env, Id = str>,
     RawSender: TakeHandle<Env, Id = str>,
 {
-    data_inputs: HashMap<String, <RawData as TakeHandle<Env>>::Handle>,
     inbound_channels: HashMap<String, <RawReceiver as TakeHandle<Env>>::Handle>,
     outbound_channels: HashMap<String, <RawSender as TakeHandle<Env>>::Handle>,
 }
@@ -327,8 +334,6 @@ where
 #[allow(clippy::type_repetition_in_bounds, clippy::trait_duplication_in_bounds)] // false positive
 impl<Env> fmt::Debug for UntypedHandle<Env>
 where
-    RawData: TakeHandle<Env, Id = str>,
-    <RawData as TakeHandle<Env>>::Handle: fmt::Debug,
     RawReceiver: TakeHandle<Env, Id = str>,
     <RawReceiver as TakeHandle<Env>>::Handle: fmt::Debug,
     RawSender: TakeHandle<Env, Id = str>,
@@ -337,7 +342,6 @@ where
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("UntypedHandle")
-            .field("data_inputs", &self.data_inputs)
             .field("inbound_channels", &self.inbound_channels)
             .field("outbound_channels", &self.outbound_channels)
             .finish()
@@ -346,7 +350,6 @@ where
 
 impl<Env> UntypedHandle<Env>
 where
-    RawData: TakeHandle<Env, Id = str>,
     RawReceiver: TakeHandle<Env, Id = str>,
     RawSender: TakeHandle<Env, Id = str>,
 {
@@ -362,7 +365,6 @@ where
 
 impl<Env> TakeHandle<Env> for UntypedHandle<Env>
 where
-    RawData: TakeHandle<Env, Id = str>,
     RawReceiver: TakeHandle<Env, Id = str>,
     RawSender: TakeHandle<Env, Id = str>,
     Interface<()>: TakeHandle<Env, Id = (), Handle = Interface<()>>,
@@ -373,10 +375,6 @@ where
     fn take_handle(env: &mut Env, _id: &()) -> Result<Self, AccessError> {
         let interface = Interface::<()>::take_handle(env, &())?;
 
-        let data_inputs = interface
-            .data_inputs()
-            .map(|(name, _)| Ok((name.to_owned(), RawData::take_handle(&mut *env, name)?)))
-            .collect::<Result<_, AccessError>>()?;
         let inbound_channels = interface
             .inbound_channels()
             .map(|(name, _)| Ok((name.to_owned(), RawReceiver::take_handle(&mut *env, name)?)))
@@ -387,7 +385,6 @@ where
             .collect::<Result<_, AccessError>>()?;
 
         Ok(Self {
-            data_inputs,
             inbound_channels,
             outbound_channels,
         })
@@ -397,7 +394,6 @@ where
 /// Types that can be used for indexing [`UntypedHandle`].
 pub trait UntypedHandleIndex<Env>: Copy + fmt::Display
 where
-    RawData: TakeHandle<Env, Id = str>,
     RawReceiver: TakeHandle<Env, Id = str>,
     RawSender: TakeHandle<Env, Id = str>,
 {
@@ -418,7 +414,6 @@ macro_rules! impl_index {
     ($target:ty => $raw:ty, $field:ident) => {
         impl<Env> UntypedHandleIndex<Env> for $target
         where
-            RawData: TakeHandle<Env, Id = str>,
             RawReceiver: TakeHandle<Env, Id = str>,
             RawSender: TakeHandle<Env, Id = str>,
         {
@@ -439,14 +434,12 @@ macro_rules! impl_index {
     };
 }
 
-impl_index!(DataInput<'_> => RawData, data_inputs);
 impl_index!(InboundChannel<'_> => RawReceiver, inbound_channels);
 impl_index!(OutboundChannel<'_> => RawSender, outbound_channels);
 
 impl<Env, I> ops::Index<I> for UntypedHandle<Env>
 where
     I: UntypedHandleIndex<Env>,
-    RawData: TakeHandle<Env, Id = str>,
     RawReceiver: TakeHandle<Env, Id = str>,
     RawSender: TakeHandle<Env, Id = str>,
 {
@@ -462,7 +455,6 @@ where
 impl<Env, I> ops::IndexMut<I> for UntypedHandle<Env>
 where
     I: UntypedHandleIndex<Env>,
-    RawData: TakeHandle<Env, Id = str>,
     RawReceiver: TakeHandle<Env, Id = str>,
     RawSender: TakeHandle<Env, Id = str>,
 {

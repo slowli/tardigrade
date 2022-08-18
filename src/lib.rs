@@ -6,14 +6,14 @@
 //! A workflow is a essentially a [`Future`] with `()` output that interacts with the external
 //! world via well-defined interfaces:
 //!
-//! - [Data inputs](Data) provided to the workflow on creation
+//! - Arguments provided to the workflow on creation
 //! - Message [channels](crate::channel) similar [to ones from the `future` crate][future-chan]
 //! - Timers
 //! - Tasks
 //!
 //! Timers [can be created dynamically](sleep) during workflow operation; likewise, tasks
 //! can be [`spawn`]ed to achieve concurrency (but not parallelism!). In contrast, the
-//! set of channels and their direction (inbound or outbound), and the set of data inputs
+//! set of channels and their direction (inbound or outbound)
 //! are static / predefined in the workflow [`Interface`].
 //!
 //! A workflow is sandboxed by the virtue of being implemented as a WASM module.
@@ -58,7 +58,6 @@
 
 pub mod channel;
 mod codec;
-mod data;
 mod ext;
 mod task;
 #[cfg(not(target_arch = "wasm32"))]
@@ -71,7 +70,6 @@ pub mod workflow;
 pub use crate::codec::Json;
 pub use crate::{
     codec::{Decode, Encode, Raw},
-    data::{Data, RawData},
     ext::FutureExt,
     task::{spawn, yield_now, JoinHandle},
     time::{now, sleep, Timer},
@@ -80,7 +78,7 @@ pub use crate::{
 /// Proc macro attribute for workflow handles.
 ///
 /// The attribute should be placed on a struct with handles to the workflow interface elements,
-/// such as channels and data inputs. These handles must be specified using the [`Handle`] type
+/// such as channels. These handles must be specified using the [`Handle`] type
 /// alias, with the second type arg (the environment) being the only type arg of the struct.
 ///
 /// The attribute will transform the input as follows:
@@ -105,7 +103,7 @@ pub use crate::{
 /// # Examples
 ///
 /// ```
-/// # use tardigrade::{channel::{Sender, Receiver}, workflow::Handle, Data, Json};
+/// # use tardigrade::{channel::{Sender, Receiver}, workflow::Handle, Json};
 /// /// Workflow type.
 /// pub struct MyWorkflow;
 ///
@@ -113,7 +111,6 @@ pub use crate::{
 /// #[tardigrade::handle(for = "MyWorkflow")]
 /// #[derive(Debug)]
 /// pub struct MyHandle<Env> {
-///     pub inputs: Handle<Data<String, Json>, Env>,
 ///     pub inbound: Handle<Receiver<i64, Json>, Env>,
 ///     pub outbound: Handle<Sender<i64, Json>, Env>,
 /// }
@@ -127,80 +124,6 @@ pub use crate::{
 #[cfg(feature = "derive")]
 #[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
 pub use tardigrade_derive::handle;
-
-/// Proc macro attribute for workflow initializers.
-///
-/// There are 2 variations of the macro target:
-///
-/// - The attribute can be placed on a struct with initializers for the workflow interface elements,
-///   such as [data inputs](Data). These initializers must be specified using
-///   the [`Init`] type alias.
-/// - If a single data input needs initialization, then the macro can be put directly on the
-///   data payload type.
-///
-/// The second case is distinguished by the present [`codec`](#codec) attribute.
-///
-/// The attribute will transform the input as follows:
-///
-/// - Derive [`Initialize`] for the workflow type using the init struct as the initializer
-///
-/// # Attributes
-///
-/// Attributes are specified according to standard Rust conventions:
-/// `#[tardigrade::handle(attr1 = "value1", ...)]`.
-///
-/// ## `for`
-///
-/// Specifies the workflow type that the initializer should be attached to.
-///
-/// ## `codec`
-///
-/// Specifies path to the [codec](Decode) used to encode / decode data. This is only applicable
-/// if a single data input needs initialization.
-///
-/// ## `rename`
-///
-/// Overrides the name of a single data input. By default, its name is the name
-/// of the struct / enum that the attribute is placed on, converted to `snake_case`
-/// (e.g., `MyInput` is converted to `my_input`).
-///
-/// # Examples
-///
-/// Single-input initializer:
-///
-/// ```
-/// # use serde::{Deserialize, Serialize};
-/// /// Workflow type.
-/// pub struct MyWorkflow;
-///
-/// #[tardigrade::init(for = "MyWorkflow", codec = "tardigrade::Json")]
-/// #[derive(Serialize, Deserialize)]
-/// pub enum MyInput {
-///     Nothing,
-///     Data { data: Vec<u8> },
-/// }
-/// ```
-///
-/// Multi-input initializer:
-///
-/// ```
-/// use tardigrade::{workflow::Init, Data, Json};
-///
-/// # pub struct MyWorkflow;
-/// #[tardigrade::init(for = "MyWorkflow")]
-/// pub struct MyInputs {
-///     number: Init<Data<i64, Json>>,
-///     string: Init<Data<String, Json>>,
-/// }
-/// ```
-///
-/// See the [`workflow`](crate::workflow) module docs for an end-to-end example of usage.
-///
-/// [`Init`]: crate::workflow::Init
-/// [`Initialize`]: crate::workflow::Initialize
-#[cfg(feature = "derive")]
-#[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
-pub use tardigrade_derive::init;
 
 pub use tardigrade_shared::interface;
 
@@ -220,10 +143,14 @@ macro_rules! workflow_entry {
             #[no_mangle]
             #[export_name = concat!("tardigrade_rt::spawn::", stringify!($workflow))]
             #[doc(hidden)]
-            pub extern "C" fn __tardigrade_rt__main() -> $crate::workflow::TaskHandle {
+            pub unsafe extern "C" fn __tardigrade_rt__main(
+                data_ptr: *mut u8,
+                data_len: usize,
+            ) -> $crate::workflow::TaskHandle {
                 $crate::workflow::Wasm::set_panic_hook();
                 // ^ Needs to be set at the very start of the workflow
-                $crate::workflow::TaskHandle::from_workflow::<$workflow>().unwrap()
+                let data = std::vec::Vec::from_raw_parts(data_ptr, data_len, data_len);
+                $crate::workflow::TaskHandle::from_workflow::<$workflow>(data).unwrap()
             }
         };
     };

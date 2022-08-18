@@ -2,7 +2,7 @@
 
 use wasmtime::{AsContextMut, ExternRef, StoreContextMut, Trap};
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 mod channel;
 mod helpers;
@@ -22,7 +22,7 @@ pub(crate) use self::{
 };
 
 use self::{
-    helpers::{CurrentExecution, Message, Wakers},
+    helpers::{CurrentExecution, Wakers},
     task::TaskQueue,
     time::Timers,
 };
@@ -30,20 +30,19 @@ use crate::{
     data::helpers::HostResource,
     module::{ModuleExports, Services},
     receipt::{PanicInfo, PanicLocation, WakeUpCause},
-    utils::{copy_string_from_wasm, WasmAllocator},
+    utils::copy_string_from_wasm,
     TaskId,
 };
-use tardigrade_shared::{abi::IntoWasm, interface::Interface};
+use tardigrade::interface::Interface;
 
 #[derive(Debug)]
 pub struct WorkflowData {
     /// Functions exported by the `Instance`. Instantiated immediately after instance.
     exports: Option<ModuleExports>,
-    // Interfaces (channels, data inputs).
+    // Workflow interface, such as channels.
     interface: Interface<()>,
     inbound_channels: HashMap<String, InboundChannelState>,
     outbound_channels: HashMap<String, OutboundChannelState>,
-    data_inputs: HashMap<String, Message>,
     timers: Timers,
     services: Services,
     /// All tasks together with relevant info.
@@ -59,23 +58,7 @@ pub struct WorkflowData {
 }
 
 impl WorkflowData {
-    pub(crate) fn from_interface(
-        interface: Interface<()>,
-        data_inputs: HashMap<String, Vec<u8>>,
-        services: Services,
-    ) -> Self {
-        // Sanity-check correspondence of inputs to the interface.
-        debug_assert_eq!(
-            data_inputs
-                .keys()
-                .map(String::as_str)
-                .collect::<HashSet<_>>(),
-            interface
-                .data_inputs()
-                .map(|(name, _)| name)
-                .collect::<HashSet<_>>()
-        );
-
+    pub(crate) fn from_interface(interface: Interface<()>, services: Services) -> Self {
         let inbound_channels = interface
             .inbound_channels()
             .map(|(name, _)| (name.to_owned(), InboundChannelState::default()))
@@ -84,17 +67,12 @@ impl WorkflowData {
             .outbound_channels()
             .map(|(name, _)| (name.to_owned(), OutboundChannelState::default()))
             .collect();
-        let data_inputs = data_inputs
-            .into_iter()
-            .map(|(name, bytes)| (name, bytes.into()))
-            .collect();
 
         Self {
             exports: None,
             interface,
             inbound_channels,
             outbound_channels,
-            data_inputs,
             timers: Timers::new(services.clock.now()),
             services,
             tasks: HashMap::new(),
@@ -116,10 +94,6 @@ impl WorkflowData {
 
     pub(crate) fn interface(&self) -> &Interface<()> {
         &self.interface
-    }
-
-    pub(crate) fn data_input(&self, input_name: &str) -> Option<Vec<u8>> {
-        self.data_inputs.get(input_name).map(Message::to_vec)
     }
 
     #[cfg(test)]
@@ -145,26 +119,6 @@ impl WorkflowData {
 pub(crate) struct WorkflowFunctions;
 
 impl WorkflowFunctions {
-    pub fn get_data_input(
-        ctx: StoreContextMut<'_, WorkflowData>,
-        input_name_ptr: u32,
-        input_name_len: u32,
-    ) -> Result<i64, Trap> {
-        let memory = ctx.data().exports().memory;
-        let input_name = copy_string_from_wasm(&ctx, &memory, input_name_ptr, input_name_len)?;
-        let maybe_data = ctx.data().data_input(&input_name);
-
-        crate::trace!(
-            "Acquired data input `{}`: {}",
-            input_name,
-            maybe_data.as_ref().map_or_else(
-                || "(no data)".to_owned(),
-                |bytes| format!("{} bytes", bytes.len())
-            )
-        );
-        maybe_data.into_wasm(&mut WasmAllocator::new(ctx))
-    }
-
     #[allow(clippy::needless_pass_by_value)] // required by wasmtime
     pub fn drop_ref(
         mut ctx: StoreContextMut<'_, WorkflowData>,

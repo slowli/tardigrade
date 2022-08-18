@@ -26,7 +26,7 @@ and boundary events in [BPMN]).
 Workflow definition is a WASM module that has well-defined imports / exports.
 On the high level, imports define the following functionality:
 
-- Acquiring data inputs and channels
+- Acquiring workflow arguments and channels
 - Implementation of [`Stream`] / [`Sink`] interfaces for inbound / outbound channels,
   respectively
 - Runtime interface (spawning tasks, creating timers, polling timers, 
@@ -66,7 +66,7 @@ as JSON in a custom WASM section, similar to how it is done in `wasm-bindgen`.
 ## Typed workflows
 
 To interact with workflows, Tardigrade uses a concept of a *handle*. A workflow
-handle is composed of the handles of its elements (channels, data inputs, etc.),
+handle is composed of the handles of its elements, such as channels,
 usually using the proc macros from the corresponding crate. Handle type is parameterized
 by the *environment*; besides WASM client env, there are environments
 for workflow testing and for interacting with a workflow executing in a runtime

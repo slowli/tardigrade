@@ -216,19 +216,19 @@ impl ModuleCompiler {
 /// ```
 /// # use async_std::task;
 /// # use futures::TryStreamExt;
-/// use tardigrade::{interface::OutboundChannel, workflow::Inputs};
+/// use tardigrade::interface::OutboundChannel;
 /// use tardigrade_rt::{test::MockScheduler, Workflow, WorkflowModule};
 /// use tardigrade_rt::handle::future::AsyncEnv;
 ///
-/// # async fn test_wrapper(module: WorkflowModule, inputs: Inputs) -> anyhow::Result<()> {
+/// # async fn test_wrapper(module: WorkflowModule) -> anyhow::Result<()> {
 /// let module: WorkflowModule = // ...
 /// #   module;
 /// let scheduler = MockScheduler::default();
 /// let spawner = module.for_untyped_workflow("TestWorkflow").unwrap();
 /// // Set the mocked wall clock for the workflow spawner.
 /// let spawner = spawner.with_clock(scheduler.clone());
-/// let inputs: Inputs = // ...
-/// #   inputs;
+/// let inputs: Vec<u8> = // ...
+/// #   vec![];
 /// let workflow = spawner.spawn(inputs)?.init()?.into_inner();
 ///
 /// // Spin up the environment to execute the `workflow`.

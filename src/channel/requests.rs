@@ -110,7 +110,7 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 /// # use serde::{Deserialize, Serialize};
 /// # use tardigrade::{
 /// #     channel::{Requests, Sender, Receiver, WithId},
-/// #     workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm},
+/// #     workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm, WorkflowFn},
 /// #     Json,
 /// # };
 /// #[derive(Debug, Serialize, Deserialize)]
@@ -136,12 +136,13 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 ///     pub requests: Handle<Sender<WithId<Request>, Json>, Env>,
 ///     pub responses: Handle<Receiver<WithId<Response>, Json>, Env>,
 /// }
-/// # #[tardigrade::init(for = "MyWorkflow", codec = "Json")]
-/// # #[derive(Debug, Serialize, Deserialize)]
-/// # pub struct Input {}
+/// # impl WorkflowFn for MyWorkflow {
+/// #     type Args = ();
+/// #     type Codec = Json;
+/// # }
 ///
 /// impl SpawnWorkflow for MyWorkflow {
-///     fn spawn(handle: MyHandle<Wasm>) -> TaskHandle {
+///     fn spawn(_data: (), handle: MyHandle<Wasm>) -> TaskHandle {
 ///         let requests = Requests::builder(handle.requests, handle.responses)
 ///             .with_capacity(4)
 ///             .with_task_name("handling_requests")

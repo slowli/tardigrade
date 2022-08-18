@@ -9,7 +9,7 @@ mod timers;
 use tardigrade::{
     channel::{Receiver, Sender},
     test::TestWorkflow,
-    workflow::{GetInterface, Handle, Initialize, InputsBuilder, SpawnWorkflow, TaskHandle, Wasm},
+    workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm, WorkflowFn},
     Json,
 };
 use tardigrade_shared::interface::Interface;
@@ -33,17 +33,13 @@ struct TestHandle<Env> {
     events: Handle<Sender<i32, Json>, Env>,
 }
 
-impl Initialize for TestedWorkflow {
-    type Init = ();
-    type Id = ();
-
-    fn initialize(_builder: &mut InputsBuilder, _init: Self::Init, _id: &Self::Id) {
-        // Do nothing
-    }
+impl WorkflowFn for TestedWorkflow {
+    type Args = ();
+    type Codec = Json;
 }
 
 impl SpawnWorkflow for TestedWorkflow {
-    fn spawn(handle: TestHandle<Wasm>) -> TaskHandle {
+    fn spawn(_data: (), handle: TestHandle<Wasm>) -> TaskHandle {
         TaskHandle::new(async move {
             let commands = handle.commands.map(Ok);
             commands.forward(handle.events).await.unwrap();

@@ -7,7 +7,6 @@ use std::task::Poll;
 use tardigrade::{
     interface::{InboundChannel, OutboundChannel},
     trace::FutureState,
-    workflow::InputsBuilder,
     Decode, Encode, Json,
 };
 use tardigrade_rt::{
@@ -16,7 +15,7 @@ use tardigrade_rt::{
     test::MockScheduler,
     PersistError, PersistedWorkflow,
 };
-use tardigrade_test_basic::{DomainEvent, Inputs, PizzaDelivery, PizzaKind, PizzaOrder};
+use tardigrade_test_basic::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOrder};
 
 use super::{TestResult, MODULE};
 
@@ -26,7 +25,7 @@ fn basic_workflow() -> TestResult {
     let spawner = MODULE
         .for_workflow::<PizzaDelivery>()?
         .with_clock(clock.clone());
-    let inputs = Inputs {
+    let inputs = Args {
         oven_count: 1,
         deliverer_count: 1,
     };
@@ -112,7 +111,7 @@ fn basic_workflow() -> TestResult {
 #[test]
 fn workflow_with_concurrency() -> TestResult {
     let spawner = MODULE.for_workflow::<PizzaDelivery>()?;
-    let inputs = Inputs {
+    let inputs = Args {
         oven_count: 2,
         deliverer_count: 1,
     };
@@ -154,7 +153,7 @@ fn persisting_workflow() -> TestResult {
     let spawner = MODULE
         .for_workflow::<PizzaDelivery>()?
         .with_clock(clock.clone());
-    let inputs = Inputs {
+    let inputs = Args {
         oven_count: 1,
         deliverer_count: 1,
     };
@@ -229,15 +228,11 @@ fn persisting_workflow() -> TestResult {
 fn untyped_workflow() -> TestResult {
     let spawner = MODULE.for_untyped_workflow("PizzaDelivery").unwrap();
 
-    let mut builder = InputsBuilder::new(spawner.interface());
-    builder.insert(
-        "inputs",
-        Json.encode_value(Inputs {
-            oven_count: 1,
-            deliverer_count: 1,
-        }),
-    );
-    let receipt = spawner.spawn(builder.build())?.init()?;
+    let data = Json.encode_value(Args {
+        oven_count: 1,
+        deliverer_count: 1,
+    });
+    let receipt = spawner.spawn(data)?.init()?;
 
     assert_eq!(receipt.executions().len(), 2);
     let mut workflow = receipt.into_inner();
@@ -278,16 +273,11 @@ fn workflow_recovery_after_trap() -> TestResult {
     const SAMPLES: usize = 5;
 
     let spawner = MODULE.for_untyped_workflow("PizzaDelivery").unwrap();
-
-    let mut builder = InputsBuilder::new(spawner.interface());
-    builder.insert(
-        "inputs",
-        Json.encode_value(Inputs {
-            oven_count: SAMPLES,
-            deliverer_count: 1,
-        }),
-    );
-    let mut workflow = spawner.spawn(builder.build())?.init()?.into_inner();
+    let data = Json.encode_value(Args {
+        oven_count: SAMPLES,
+        deliverer_count: 1,
+    });
+    let mut workflow = spawner.spawn(data)?.init()?.into_inner();
 
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,

@@ -53,7 +53,6 @@
 //! ## Instantiating workflow
 //!
 //! ```no_run
-//! use tardigrade::workflow::InputsBuilder;
 //! use tardigrade_rt::{Workflow, WorkflowEngine, WorkflowModule};
 //!
 //! let module_bytes: Vec<u8> = // e.g., take from a file
@@ -69,10 +68,7 @@
 //! // (which requires depending on the workflow crate), and dynamically typed
 //! // workflows. The code below uses the second approach.
 //! let spawner = module.for_untyped_workflow("TestWorkflow").unwrap();
-//! let mut inputs = InputsBuilder::new(&spawner.interface());
-//! println!("{:?}", inputs.missing_input_names().collect::<Vec<_>>());
-//! // After filling inputs somehow...
-//! let receipt = spawner.spawn(inputs.build())?.init()?;
+//! let receipt = spawner.spawn(br#"{ "data": "..." }"#.to_vec())?.init()?;
 //! // `receipt` contains information about WASM code execution. E.g.,
 //! // this will print the executed functions and a list of important
 //! // events for each of executions:

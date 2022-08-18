@@ -1,6 +1,6 @@
 //! Persistence for `State`.
 
-use anyhow::{anyhow, bail, ensure};
+use anyhow::{anyhow, ensure};
 use serde::{Deserialize, Serialize};
 
 use std::{
@@ -10,7 +10,6 @@ use std::{
 use wasmtime::{Store, Val};
 
 use super::{
-    helpers::Message,
     task::{TaskQueue, TaskState},
     time::Timers,
     WorkflowData,
@@ -156,7 +155,6 @@ pub(crate) struct WorkflowState {
     inbound_channels: HashMap<String, InboundChannelState>,
     outbound_channels: HashMap<String, OutboundChannelState>,
     timers: Timers,
-    data_inputs: HashMap<String, Message>,
     tasks: HashMap<TaskId, TaskState>,
 }
 
@@ -166,24 +164,6 @@ impl WorkflowState {
         interface: Interface<()>,
         services: Services,
     ) -> anyhow::Result<WorkflowData> {
-        let maybe_missing_data_input = interface
-            .data_inputs()
-            .find(|&(name, _)| !self.data_inputs.contains_key(name));
-        if let Some((name, _)) = maybe_missing_data_input {
-            bail!(
-                "data input `{}` is present in persisted state, but not in workflow interface",
-                name
-            );
-        }
-        let data_inputs_len = interface.data_inputs().len();
-        ensure!(
-            data_inputs_len == self.data_inputs.len(),
-            "mismatch between number of data inputs in workflow interface ({}) \
-             and in persisted state ({})",
-            data_inputs_len,
-            self.data_inputs.len()
-        );
-
         let inbound_channels_len = interface.inbound_channels().len();
         ensure!(
             inbound_channels_len == self.inbound_channels.len(),
@@ -219,7 +199,6 @@ impl WorkflowState {
             outbound_channels,
             timers: self.timers,
             services,
-            data_inputs: self.data_inputs,
             tasks: self.tasks,
             current_execution: None,
             task_queue: TaskQueue::default(),
@@ -243,7 +222,6 @@ impl WorkflowState {
 
         data.timers = self.timers;
         data.tasks = self.tasks;
-        data.data_inputs = self.data_inputs;
         data.current_execution = None;
         data.task_queue = TaskQueue::default();
         data.waker_queue = Vec::new();
@@ -291,7 +269,6 @@ impl WorkflowData {
             inbound_channels,
             outbound_channels,
             timers: self.timers.clone(),
-            data_inputs: self.data_inputs.clone(),
             tasks: self.tasks.clone(),
         }
     }

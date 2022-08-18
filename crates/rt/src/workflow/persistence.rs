@@ -138,7 +138,7 @@ impl PersistedWorkflow {
     /// # Errors
     ///
     /// Returns an error if the workflow definition from `module` and the `persisted` state
-    /// do not match (e.g., differ in defined channels / data inputs).
+    /// do not match (e.g., differ in defined channels).
     pub fn restore<W>(self, spawner: &WorkflowSpawner<W>) -> anyhow::Result<Workflow<W>> {
         let interface = spawner.interface().clone().erase();
         let data = self

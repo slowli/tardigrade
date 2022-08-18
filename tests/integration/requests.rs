@@ -3,11 +3,12 @@
 use futures::{future, stream, FutureExt, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 
+use tardigrade::workflow::WorkflowFn;
 use tardigrade::{
     channel::{Receiver, Requests, Sender, WithId},
     test::TestWorkflow,
-    workflow::{GetInterface, Handle, Init, SpawnWorkflow, TaskHandle, Wasm},
-    Data, Json,
+    workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm},
+    Json,
 };
 use tardigrade_shared::interface::Interface;
 
@@ -47,22 +48,25 @@ impl GetInterface for TestedWorkflow {
 
 #[tardigrade::handle(for = "TestedWorkflow")]
 struct TestHandle<Env> {
-    strings: Handle<Data<Vec<String>, Json>, Env>,
-    options: Handle<Data<Options, Json>, Env>,
     requests: Handle<Sender<WithId<String>, Json>, Env>,
     responses: Handle<Receiver<WithId<usize>, Json>, Env>,
 }
 
-#[tardigrade::init(for = "TestedWorkflow")]
+#[derive(Debug, Serialize, Deserialize)]
 struct TestInit {
-    strings: Init<Data<Vec<String>, Json>>,
-    options: Init<Data<Options, Json>>,
+    strings: Vec<String>,
+    options: Options,
+}
+
+impl WorkflowFn for TestedWorkflow {
+    type Args = TestInit;
+    type Codec = Json;
 }
 
 impl SpawnWorkflow for TestedWorkflow {
-    fn spawn(handle: TestHandle<Wasm>) -> TaskHandle {
-        let strings = handle.strings.into_inner();
-        let options = handle.options.into_inner();
+    fn spawn(args: TestInit, handle: TestHandle<Wasm>) -> TaskHandle {
+        let strings = args.strings;
+        let options = args.options;
         let requests = Requests::builder(handle.requests, handle.responses)
             .with_capacity(options.capacity)
             .build();

@@ -142,7 +142,7 @@ pub struct ResourceEvent {
 }
 
 /// Kind of a [`ChannelEvent`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ChannelEventKind {
     /// Inbound channel was polled for messages.
@@ -382,7 +382,7 @@ impl error::Error for ExecutionError {
 }
 
 /// Information about a panic in the workflow code.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct PanicInfo {
     /// Human-readable panic message.
@@ -405,7 +405,7 @@ impl fmt::Display for PanicInfo {
 }
 
 /// Location of a panic in the workflow code.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct PanicLocation {
     /// Name of the file where a panic has occurred.
