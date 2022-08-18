@@ -14,7 +14,7 @@ use crate::{
     utils::serde_b64,
     TaskId, TimerId, WakerId,
 };
-use tardigrade_shared::{JoinError, PollMessage};
+use tardigrade_shared::{JoinError, PollMessage, SendError};
 
 /// Thin wrapper around `Vec<u8>`.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -225,7 +225,12 @@ impl CurrentExecution {
         });
     }
 
-    pub fn push_outbound_poll_event(&mut self, channel_name: &str, flush: bool, result: Poll<()>) {
+    pub fn push_outbound_poll_event(
+        &mut self,
+        channel_name: &str,
+        flush: bool,
+        result: Poll<Result<(), SendError>>,
+    ) {
         self.push_event(ChannelEvent {
             kind: if flush {
                 ChannelEventKind::OutboundChannelFlushed { result }

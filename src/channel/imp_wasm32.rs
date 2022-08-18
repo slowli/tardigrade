@@ -4,7 +4,6 @@ use externref::{externref, Resource};
 use futures::{Sink, Stream};
 
 use std::{
-    convert::Infallible,
     mem::ManuallyDrop,
     pin::Pin,
     sync::Arc,
@@ -12,6 +11,7 @@ use std::{
 };
 
 use crate::{
+    channel::SendError,
     interface::{AccessError, AccessErrorKind, InboundChannel, OutboundChannel},
     workflow::{TakeHandle, Wasm},
 };
@@ -106,27 +106,8 @@ impl TakeHandle<Wasm> for MpscSender {
     }
 }
 
-impl MpscSender {
-    fn do_send(&self, message: &[u8]) {
-        #[externref]
-        #[link(wasm_import_module = "tardigrade_rt")]
-        extern "C" {
-            #[link_name = "mpsc_sender::start_send"]
-            fn mpsc_sender_start_send(
-                sender: &Resource<MpscSender>,
-                message_ptr: *const u8,
-                message_len: usize,
-            );
-        }
-
-        unsafe {
-            mpsc_sender_start_send(&self.resource, message.as_ptr(), message.len());
-        }
-    }
-}
-
 impl Sink<&[u8]> for MpscSender {
-    type Error = Infallible;
+    type Error = SendError;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         #[externref]
@@ -139,13 +120,26 @@ impl Sink<&[u8]> for MpscSender {
 
         unsafe {
             let poll_result = mpsc_sender_poll_ready(&self.resource, cx);
-            Poll::<()>::from_abi_in_wasm(poll_result).map(Ok)
+            Poll::<Result<(), SendError>>::from_abi_in_wasm(poll_result)
         }
     }
 
     fn start_send(self: Pin<&mut Self>, item: &[u8]) -> Result<(), Self::Error> {
-        self.do_send(item.as_ref());
-        Ok(())
+        #[externref]
+        #[link(wasm_import_module = "tardigrade_rt")]
+        extern "C" {
+            #[link_name = "mpsc_sender::start_send"]
+            fn mpsc_sender_start_send(
+                sender: &Resource<MpscSender>,
+                message_ptr: *const u8,
+                message_len: usize,
+            ) -> i32;
+        }
+
+        unsafe {
+            let result = mpsc_sender_start_send(&self.resource, item.as_ptr(), item.len());
+            Result::<(), SendError>::from_abi_in_wasm(result)
+        }
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -159,7 +153,7 @@ impl Sink<&[u8]> for MpscSender {
 
         unsafe {
             let poll_result = mpsc_sender_poll_flush(&self.resource, cx);
-            Poll::<()>::from_abi_in_wasm(poll_result).map(Ok)
+            Poll::<Result<(), SendError>>::from_abi_in_wasm(poll_result)
         }
     }
 

@@ -61,11 +61,11 @@ fn dropping_inbound_channel_handle_in_test_code() {
 #[test]
 fn dropping_outbound_channel_handle_in_test_code() {
     TestedWorkflow::test((), |mut handle| async move {
-        handle.api.commands.send(23).await;
+        handle.api.commands.send(23).await.unwrap();
         let echo = handle.api.events.next().await.unwrap();
         assert_eq!(echo, 23);
 
         drop(handle.api.events);
-        handle.api.commands.send(42).await;
+        handle.api.commands.send(42).await.unwrap();
     });
 }

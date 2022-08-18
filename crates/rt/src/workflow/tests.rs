@@ -208,7 +208,9 @@ fn assert_inbound_message_receipt(receipt: &Receipt) {
                 channel_name: orders,
             },
             ChannelEvent {
-                kind: ChannelEventKind::OutboundChannelReady { result: Poll::Ready(()) },
+                kind: ChannelEventKind::OutboundChannelReady {
+                    result: Poll::Ready(Ok(())),
+                },
                 channel_name: traces,
             },
             ChannelEvent {
@@ -216,7 +218,9 @@ fn assert_inbound_message_receipt(receipt: &Receipt) {
                 channel_name: traces2,
             },
             ChannelEvent {
-                kind: ChannelEventKind::OutboundChannelReady { result: Poll::Ready(()) },
+                kind: ChannelEventKind::OutboundChannelReady {
+                    result: Poll::Ready(Ok(())),
+                },
                 channel_name: events,
             },
             ChannelEvent {

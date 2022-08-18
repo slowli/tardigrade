@@ -1,7 +1,7 @@
 //! Timer-related tests.
 
 use chrono::{DateTime, Utc};
-use futures::StreamExt;
+use futures::{SinkExt, StreamExt};
 use std::time::Duration;
 
 use tardigrade::workflow::WorkflowFn;
@@ -41,9 +41,9 @@ impl SpawnWorkflow for TimersWorkflow {
         TaskHandle::new(async move {
             let now = tardigrade::now();
             let completion_time = Timer::at(now - chrono::Duration::milliseconds(100)).await;
-            handle.timestamps.send(completion_time).await;
+            handle.timestamps.send(completion_time).await.unwrap();
             let completion_time = Timer::after(Duration::from_millis(100)).await;
-            handle.timestamps.send(completion_time).await;
+            handle.timestamps.send(completion_time).await.unwrap();
         })
     }
 }

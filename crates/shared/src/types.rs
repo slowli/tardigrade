@@ -46,3 +46,24 @@ pub struct TimerDefinition {
     /// Expiration timestamp of the timer.
     pub expires_at: DateTime<Utc>,
 }
+
+/// Errors that can occur when sending a message over a channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SendError {
+    /// The channel is full.
+    Full,
+    /// The channel is closed.
+    Closed,
+}
+
+impl fmt::Display for SendError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Full => formatter.write_str("channel is full"),
+            Self::Closed => formatter.write_str("channel is closed"),
+        }
+    }
+}
+
+impl error::Error for SendError {}

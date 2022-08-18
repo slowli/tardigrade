@@ -50,7 +50,7 @@ impl ModuleImports {
             "mpsc_sender::poll_ready" | "mpsc_sender::poll_flush" => {
                 ensure_func_ty::<(Ref, WasmContextPtr), i32>(ty, fn_name)
             }
-            "mpsc_sender::start_send" => ensure_func_ty::<(Ref, u32, u32), ()>(ty, fn_name),
+            "mpsc_sender::start_send" => ensure_func_ty::<(Ref, u32, u32), i32>(ty, fn_name),
 
             "timer::now" => ensure_func_ty::<(), i64>(ty, fn_name),
             "timer::new" => ensure_func_ty::<i64, TimerId>(ty, fn_name),

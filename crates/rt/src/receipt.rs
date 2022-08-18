@@ -13,6 +13,7 @@ use wasmtime::Trap;
 use std::{error, fmt, ops::Range, task::Poll};
 
 use crate::{TaskId, TimerId, WakerId};
+use tardigrade_shared::SendError;
 
 /// Cause of waking up a [`Workflow`](crate::Workflow) task.
 #[derive(Debug, Clone)]
@@ -153,7 +154,7 @@ pub enum ChannelEventKind {
     /// Outbound channel was polled for readiness.
     OutboundChannelReady {
         /// Result of a poll.
-        result: Poll<()>,
+        result: Poll<Result<(), SendError>>,
     },
     /// Message was sent via an outbound channel.
     OutboundMessageSent {
@@ -163,7 +164,7 @@ pub enum ChannelEventKind {
     /// Outbound channel was polled for flush.
     OutboundChannelFlushed {
         /// Result of a poll.
-        result: Poll<()>,
+        result: Poll<Result<(), SendError>>,
     },
 }
 

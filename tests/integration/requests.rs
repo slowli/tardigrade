@@ -1,6 +1,6 @@
 //! Tests for `Requests`.
 
-use futures::{future, stream, FutureExt, StreamExt, TryStreamExt};
+use futures::{future, stream, FutureExt, SinkExt, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 
 use tardigrade::workflow::WorkflowFn;
@@ -122,7 +122,7 @@ fn test_requests(init: TestInit) {
                 data: data.len(),
             };
             strings.push(data);
-            handle.api.responses.send(response).await;
+            handle.api.responses.send(response).await.ok();
         }
         assert_eq!(strings, expected_strings);
     });

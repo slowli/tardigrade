@@ -14,7 +14,7 @@ use crate::{
     WakerId,
 };
 use tardigrade::interface::{AccessErrorKind, OutboundChannelSpec};
-use tardigrade_shared::{abi::IntoWasm, PollMessage};
+use tardigrade_shared::{abi::IntoWasm, PollMessage, SendError};
 
 /// Kind of a [`ConsumeError`].
 #[derive(Debug, Clone)]
@@ -147,6 +147,7 @@ impl InboundChannelState {
 #[derive(Debug, Clone, Default)]
 pub struct OutboundChannelState {
     pub(super) is_acquired: bool,
+    pub(super) is_closed: bool,
     pub(super) flushed_messages: usize,
     pub(super) messages: Vec<Message>,
     pub(super) wakes_on_flush: HashSet<WakerId>,
@@ -168,7 +169,7 @@ impl OutboundChannelState {
 
     /// Is this channel ready to receive another message?
     fn is_ready(&self, spec: &OutboundChannelSpec) -> bool {
-        spec.capacity.map_or(true, |cap| self.messages.len() < cap)
+        !self.is_closed && spec.capacity.map_or(true, |cap| self.messages.len() < cap)
     }
 }
 
@@ -267,17 +268,25 @@ impl WorkflowData {
         self.outbound_channels.get(channel_name)
     }
 
-    fn outbound_channel_mut(&mut self, channel_name: &str) -> Option<&mut OutboundChannelState> {
-        self.outbound_channels.get_mut(channel_name)
-    }
-
-    fn push_outbound_message(&mut self, channel_name: &str, message: Vec<u8>) {
-        let channel_state = self.outbound_channel_mut(channel_name).unwrap();
+    fn push_outbound_message(
+        &mut self,
+        channel_name: &str,
+        message: Vec<u8>,
+    ) -> Result<(), SendError> {
+        let channel_state = self.outbound_channels.get_mut(channel_name).unwrap();
+        let spec = self.interface.outbound_channel(channel_name).unwrap();
         // ^ `unwrap()` safety is guaranteed by resource handling
+        if channel_state.is_closed {
+            return Err(SendError::Closed);
+        } else if !channel_state.is_ready(spec) {
+            return Err(SendError::Full);
+        }
+
         let message_len = message.len();
         channel_state.messages.push(message.into());
         self.current_execution()
             .push_outbound_message_event(channel_name, message_len);
+        Ok(())
     }
 
     fn poll_inbound_channel(&mut self, channel_name: &str, cx: &mut WasmContext) -> PollMessage {
@@ -296,20 +305,22 @@ impl WorkflowData {
         channel_name: &str,
         flush: bool,
         cx: &mut WasmContext,
-    ) -> Poll<()> {
+    ) -> Poll<Result<(), SendError>> {
         let channel_state = &self.outbound_channels[channel_name];
         let spec = self.interface.outbound_channel(channel_name).unwrap();
 
         let should_block =
             !channel_state.is_ready(spec) || (flush && !channel_state.messages.is_empty());
-        let poll_result = if should_block {
+        let poll_result = if channel_state.is_closed {
+            Poll::Ready(Err(SendError::Closed))
+        } else if should_block {
             Poll::Pending
         } else {
-            Poll::Ready(())
+            Poll::Ready(Ok(()))
         };
 
         self.current_execution()
-            .push_outbound_poll_event(channel_name, flush, poll_result);
+            .push_outbound_poll_event(channel_name, flush, poll_result.clone());
         poll_result.wake_if_pending(cx, || {
             WakerPlacement::OutboundChannel(channel_name.to_owned())
         })
@@ -408,7 +419,8 @@ impl WorkflowFunctions {
             copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
         let result = ctx
             .data_mut()
-            .outbound_channel_mut(&channel_name)
+            .outbound_channels
+            .get_mut(&channel_name)
             .ok_or(AccessErrorKind::Unknown)
             .and_then(OutboundChannelState::acquire);
         let result = crate::log_result!(result, "Acquired outbound channel `{}`", channel_name);
@@ -447,13 +459,20 @@ impl WorkflowFunctions {
         channel_ref: Option<ExternRef>,
         message_ptr: u32,
         message_len: u32,
-    ) -> Result<(), Trap> {
+    ) -> Result<i32, Trap> {
         let channel_name = HostResource::from_ref(channel_ref.as_ref())?.as_outbound_channel()?;
         let memory = ctx.data().exports().memory;
         let message = copy_bytes_from_wasm(&ctx, &memory, message_ptr, message_len)?;
 
-        ctx.data_mut().push_outbound_message(channel_name, message);
-        Ok(())
+        let message_len = message.len();
+        let result = ctx.data_mut().push_outbound_message(channel_name, message);
+        crate::trace!(
+            "Sent message ({} bytes) over outbound channel `{}`: {:?}",
+            message_len,
+            channel_name,
+            result
+        );
+        result.into_wasm(&mut WasmAllocator::new(ctx))
     }
 
     pub fn poll_flush_for_sender(

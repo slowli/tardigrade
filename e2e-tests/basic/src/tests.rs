@@ -19,7 +19,7 @@ async fn test_workflow_basics(handle: TestHandle<PizzaDelivery>) {
         kind: PizzaKind::Pepperoni,
         delivery_distance: 10,
     };
-    api.orders.send(order).await;
+    api.orders.send(order).await.unwrap();
 
     let event = api.shared.events.next().await.unwrap();
     assert_eq!(event, DomainEvent::OrderTaken { index: 1, order });

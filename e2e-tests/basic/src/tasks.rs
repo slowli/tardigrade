@@ -1,7 +1,7 @@
 //! Version of the `PizzaDelivery` workflow with timers replaced with external tasks.
 //! Also, we don't do delivery.
 
-use futures::{Future, StreamExt};
+use futures::{Future, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::{DomainEvent, PizzaOrder, Shared, SharedHandle};
@@ -77,10 +77,13 @@ impl SharedHandle<Wasm> {
         index: usize,
     ) {
         let mut events = self.events.clone();
-        events.send(DomainEvent::OrderTaken { index, order }).await;
+        events
+            .send(DomainEvent::OrderTaken { index, order })
+            .await
+            .ok();
         if requests.request(order).await.is_err() {
             return; // The request loop was terminated; thus, the pizza will never be baked :(
         }
-        events.send(DomainEvent::Baked { index, order }).await;
+        events.send(DomainEvent::Baked { index, order }).await.ok();
     }
 }

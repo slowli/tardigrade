@@ -12,7 +12,7 @@ use std::{error, fmt, task::Poll};
 
 use crate::{
     interface::AccessErrorKind,
-    types::{JoinError, PollMessage, PollTask},
+    types::{JoinError, PollMessage, PollTask, SendError},
 };
 
 /// Value directly representable in WASM ABI, e.g., `i64`.
@@ -264,5 +264,44 @@ impl IntoWasm for Result<(), AccessErrorKind> {
                 AccessErrorKind::Custom(message.into())
             }
         })
+    }
+}
+
+impl IntoWasm for Result<(), SendError> {
+    type Abi = i32;
+
+    fn into_wasm<A: AllocateBytes>(self, _: &mut A) -> Result<Self::Abi, A::Error> {
+        Ok(match self {
+            Ok(()) => 0,
+            Err(SendError::Full) => 1,
+            Err(SendError::Closed) => 2,
+        })
+    }
+
+    unsafe fn from_abi_in_wasm(abi: i32) -> Self {
+        Err(match abi {
+            0 => return Ok(()),
+            1 => SendError::Full,
+            2 => SendError::Closed,
+            _ => panic!("Unexpected ABI value"),
+        })
+    }
+}
+
+impl IntoWasm for Poll<Result<(), SendError>> {
+    type Abi = i32;
+
+    fn into_wasm<A: AllocateBytes>(self, alloc: &mut A) -> Result<Self::Abi, A::Error> {
+        match self {
+            Poll::Ready(value) => value.into_wasm(alloc),
+            Poll::Pending => Ok(-1),
+        }
+    }
+
+    unsafe fn from_abi_in_wasm(abi: i32) -> Self {
+        match abi {
+            -1 => Poll::Pending,
+            _ => Poll::Ready(Result::from_abi_in_wasm(abi)),
+        }
     }
 }

@@ -107,6 +107,7 @@ impl From<InboundChannelState> for super::InboundChannelState {
 #[derive(Debug, Serialize, Deserialize)]
 struct OutboundChannelState {
     is_acquired: bool,
+    is_closed: bool,
     flushed_messages: usize,
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     wakes_on_flush: HashSet<WakerId>,
@@ -117,6 +118,7 @@ impl OutboundChannelState {
         debug_assert!(state.messages.is_empty());
         Self {
             is_acquired: state.is_acquired,
+            is_closed: state.is_closed,
             flushed_messages: state.flushed_messages,
             wakes_on_flush: state.wakes_on_flush.clone(),
         }
@@ -142,6 +144,7 @@ impl From<OutboundChannelState> for super::OutboundChannelState {
     fn from(persisted: OutboundChannelState) -> Self {
         Self {
             is_acquired: persisted.is_acquired,
+            is_closed: persisted.is_closed,
             flushed_messages: persisted.flushed_messages,
             messages: Vec::new(),
             wakes_on_flush: persisted.wakes_on_flush,

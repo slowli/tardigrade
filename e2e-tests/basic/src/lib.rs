@@ -1,7 +1,7 @@
 //! Tardigrade workflow example implementing pizza shop business process
 //! (baking and delivery).
 
-use futures::StreamExt;
+use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use std::time::Duration;
@@ -158,11 +158,14 @@ impl PizzaDeliveryHandle<Wasm> {
 impl SharedHandle<Wasm> {
     async fn bake(&self, index: usize, order: PizzaOrder) -> (usize, PizzaOrder) {
         let mut events = self.events.clone();
-        events.send(DomainEvent::OrderTaken { index, order }).await;
+        events
+            .send(DomainEvent::OrderTaken { index, order })
+            .await
+            .ok();
         sleep(order.kind.baking_time())
             .trace(&self.tracer, "baking_timer")
             .await;
-        events.send(DomainEvent::Baked { index, order }).await;
+        events.send(DomainEvent::Baked { index, order }).await.ok();
         (index, order)
     }
 
@@ -170,9 +173,13 @@ impl SharedHandle<Wasm> {
         let mut events = self.events.clone();
         events
             .send(DomainEvent::StartedDelivering { index, order })
-            .await;
+            .await
+            .ok();
         let delay = Duration::from_millis(order.delivery_distance * 10);
         sleep(delay).trace(&self.tracer, "delivery_timer").await;
-        events.send(DomainEvent::Delivered { index, order }).await;
+        events
+            .send(DomainEvent::Delivered { index, order })
+            .await
+            .ok();
     }
 }

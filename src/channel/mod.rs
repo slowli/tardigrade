@@ -12,11 +12,10 @@
 //!
 //! [future-chan]: https://docs.rs/futures/latest/futures/channel/index.html
 
-use futures::{Sink, SinkExt, Stream};
+use futures::{Sink, Stream};
 use pin_project_lite::pin_project;
 
 use std::{
-    convert::Infallible,
     fmt,
     marker::PhantomData,
     pin::Pin,
@@ -44,6 +43,7 @@ pub use self::{
     broadcast::{BroadcastError, BroadcastPublisher, BroadcastSubscriber},
     requests::{Requests, RequestsBuilder, WithId},
 };
+pub use tardigrade_shared::SendError;
 
 pin_project! {
     /// Receiver for an inbound channel provided to the workflow.
@@ -174,12 +174,6 @@ impl<T, C: Encode<T>> Sender<T, C> {
             _item: PhantomData,
         }
     }
-
-    /// Infallible version of [`SinkExt::send()`] to make common invocation more fluent.
-    #[allow(clippy::missing_panics_doc)] // false positive
-    pub async fn send(&mut self, message: T) {
-        <Self as SinkExt<T>>::send(self, message).await.unwrap();
-    }
 }
 
 impl<T, C> TakeHandle<Wasm> for Sender<T, C>
@@ -195,7 +189,7 @@ where
 }
 
 impl<T, C: Encode<T>> Sink<T> for Sender<T, C> {
-    type Error = Infallible;
+    type Error = SendError;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.project().raw.poll_ready(cx)
