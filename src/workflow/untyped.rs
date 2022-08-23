@@ -19,7 +19,7 @@ where
     pub(crate) outbound_channels: HashMap<String, <RawSender as TakeHandle<Env>>::Handle>,
 }
 
-#[allow(clippy::type_repetition_in_bounds, clippy::trait_duplication_in_bounds)] // false positive
+#[allow(clippy::type_repetition_in_bounds)] // false positive
 impl<Env> fmt::Debug for UntypedHandle<Env>
 where
     RawReceiver: TakeHandle<Env, Id = str>,

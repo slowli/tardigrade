@@ -8,7 +8,7 @@ use tardigrade::{
     channel::{Receiver, Requests, Sender, WithId},
     interface::Interface,
     test::Runtime,
-    workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm, WorkflowDefinition},
+    workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm},
     Json,
 };
 
@@ -114,16 +114,7 @@ fn test_requests(init: TestInit) {
     println!("Testing with {:?}", init.options);
 
     let expected_strings = init.strings.clone();
-    let mut runtime = Runtime::default();
-    runtime
-        .workflow_registry_mut()
-        .insert::<TestedWorkflow>("test");
-    runtime.test(async move {
-        let workflow_def = WorkflowDefinition::new("test")
-            .unwrap()
-            .downcast::<TestedWorkflow>()
-            .unwrap();
-        let api = workflow_def.spawn(init).build().unwrap().api;
+    Runtime::default().test::<TestedWorkflow, _, _>(init, |api| async move {
         let mut requests = api.requests.unwrap();
         let mut responses = api.responses.unwrap();
 

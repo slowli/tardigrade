@@ -9,9 +9,7 @@ mod timers;
 use tardigrade::{
     channel::{Receiver, Sender},
     test::Runtime,
-    workflow::{
-        GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm, WorkflowDefinition, WorkflowFn,
-    },
+    workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm, WorkflowFn},
     Json,
 };
 use tardigrade_shared::interface::Interface;
@@ -51,16 +49,7 @@ impl SpawnWorkflow for TestedWorkflow {
 
 #[test]
 fn dropping_inbound_channel_handle_in_test_code() {
-    let mut runtime = Runtime::default();
-    runtime
-        .workflow_registry_mut()
-        .insert::<TestedWorkflow>("test");
-    runtime.test(async move {
-        let workflow_def = WorkflowDefinition::new("test")
-            .unwrap()
-            .downcast::<TestedWorkflow>()
-            .unwrap();
-        let api = workflow_def.spawn(()).build().unwrap().api;
+    Runtime::default().test::<TestedWorkflow, _, _>((), |api| async {
         let mut commands = api.commands.unwrap();
         let events = api.events.unwrap();
 
@@ -74,16 +63,7 @@ fn dropping_inbound_channel_handle_in_test_code() {
 
 #[test]
 fn dropping_outbound_channel_handle_in_test_code() {
-    let mut runtime = Runtime::default();
-    runtime
-        .workflow_registry_mut()
-        .insert::<TestedWorkflow>("test");
-    runtime.test(async move {
-        let workflow_def = WorkflowDefinition::new("test")
-            .unwrap()
-            .downcast::<TestedWorkflow>()
-            .unwrap();
-        let api = workflow_def.spawn(()).build().unwrap().api;
+    Runtime::default().test::<TestedWorkflow, _, _>((), |api| async {
         let mut commands = api.commands.unwrap();
         let mut events = api.events.unwrap();
 

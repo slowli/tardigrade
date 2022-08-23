@@ -100,7 +100,8 @@ use std::{
 use crate::{
     channel::Receiver,
     interface::Interface,
-    workflow::{SpawnWorkflow, TaskHandle, UntypedHandle, Wasm},
+    spawn::{RemoteWorkflow, Spawner, WorkflowDefinition},
+    workflow::{Handle, SpawnWorkflow, TakeHandle, TaskHandle, UntypedHandle, Wasm},
     Decode,
 };
 use tardigrade_shared::trace::{FutureUpdate, TracedFutures};
@@ -354,11 +355,7 @@ impl Runtime {
     }
 
     /// Executes the provided future in the context of this runtime.
-    ///
-    /// # Errors
-    ///
-    /// Proxies an error from the future, if any occurs.
-    pub fn test<Fut>(self, test_future: Fut)
+    pub fn run<Fut>(self, test_future: Fut)
     where
         Fut: Future<Output = ()>,
     {
@@ -366,7 +363,27 @@ impl Runtime {
         local_pool.run_until(test_future);
     }
 
-    // TODO: improve ergonomics for testing
+    /// Executes the provided test code for a specific workflow definition in the context
+    /// of this runtime.
+    #[allow(clippy::missing_panics_doc)] // false positive
+    pub fn test<W, F, Fut>(mut self, args: W::Args, test_fn: F)
+    where
+        W: SpawnWorkflow + TakeHandle<Spawner, Id = ()> + TakeHandle<RemoteWorkflow, Id = ()>,
+        F: FnOnce(Handle<W, RemoteWorkflow>) -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        const WORKFLOW_ID: &str = "__tested_workflow";
+
+        self.workflow_registry.insert::<W>(WORKFLOW_ID);
+        self.run(async {
+            let workflow_def = WorkflowDefinition::new(WORKFLOW_ID)
+                .expect("failed getting workflow definition")
+                .downcast::<W>()
+                .unwrap();
+            let api = workflow_def.spawn(args).build().unwrap().api;
+            test_fn(api).await;
+        });
+    }
 }
 
 /// Guard that frees up runtime TLS on drop.

@@ -98,15 +98,10 @@ use crate::{
 };
 
 mod handle;
-mod spawn;
 mod untyped;
 
 pub use self::{
     handle::{EnvExtensions, ExtendEnv, Handle, TakeHandle},
-    spawn::{
-        ReceiverConfig, RemoteWorkflow, SenderConfig, SpawnBuilder, Spawner, WorkflowDefinition,
-        WorkflowHandle,
-    },
     untyped::{UntypedHandle, UntypedHandleIndex},
 };
 

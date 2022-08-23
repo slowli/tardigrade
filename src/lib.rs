@@ -54,11 +54,16 @@
 // Linter settings.
 #![warn(missing_debug_implementations, missing_docs, bare_trait_objects)]
 #![warn(clippy::all, clippy::pedantic)]
-#![allow(clippy::must_use_candidate, clippy::module_name_repetitions)]
+#![allow(
+    clippy::must_use_candidate,
+    clippy::module_name_repetitions,
+    clippy::trait_duplication_in_bounds
+)]
 
 pub mod channel;
 mod codec;
 mod ext;
+pub mod spawn;
 mod task;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod test;

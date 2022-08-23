@@ -8,7 +8,7 @@ use tardigrade::workflow::WorkflowFn;
 use tardigrade::{
     channel::Sender,
     test::{Runtime, Timers},
-    workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm, WorkflowDefinition},
+    workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm},
     Json, Timer,
 };
 use tardigrade_shared::interface::Interface;
@@ -50,18 +50,8 @@ impl SpawnWorkflow for TimersWorkflow {
 
 #[test]
 fn timers_basics() {
-    let mut runtime = Runtime::default();
-    runtime
-        .workflow_registry_mut()
-        .insert::<TimersWorkflow>("test");
-    runtime.test(async move {
-        let workflow_def = WorkflowDefinition::new("test")
-            .unwrap()
-            .downcast::<TimersWorkflow>()
-            .unwrap();
-        let api = workflow_def.spawn(()).build().unwrap().api;
+    Runtime::default().test::<TimersWorkflow, _, _>((), |api| async {
         let mut timestamps = api.timestamps.unwrap();
-
         let now = Timers::now();
         let ts = timestamps.next().await.unwrap();
         assert_eq!(ts, now);
