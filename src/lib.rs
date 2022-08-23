@@ -155,7 +155,8 @@ macro_rules! workflow_entry {
                 $crate::workflow::Wasm::set_panic_hook();
                 // ^ Needs to be set at the very start of the workflow
                 let data = std::vec::Vec::from_raw_parts(data_ptr, data_len, data_len);
-                $crate::workflow::TaskHandle::from_workflow::<$workflow>(data).unwrap()
+                $crate::workflow::TaskHandle::from_workflow::<$workflow>(data, Wasm::default())
+                    .unwrap()
             }
         };
     };

@@ -196,7 +196,7 @@ pub trait GetInterface: ValidateInterface<Id = ()> {
 /// This type is used as a type param for the [`TakeHandle`] trait. The returned handles
 /// are ones provided via Tardigrade runtime imports for the WASM module, or emulated
 /// in case of [tests](crate::test).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Wasm {
     #[cfg(not(target_arch = "wasm32"))]
     handles: UntypedHandle<Self>,

@@ -19,6 +19,19 @@ where
     pub(crate) outbound_channels: HashMap<String, <RawSender as TakeHandle<Env>>::Handle>,
 }
 
+impl<Env> Default for UntypedHandle<Env>
+where
+    RawReceiver: TakeHandle<Env, Id = str>,
+    RawSender: TakeHandle<Env, Id = str>,
+{
+    fn default() -> Self {
+        Self {
+            inbound_channels: HashMap::new(),
+            outbound_channels: HashMap::new(),
+        }
+    }
+}
+
 #[allow(clippy::type_repetition_in_bounds)] // false positive
 impl<Env> fmt::Debug for UntypedHandle<Env>
 where
