@@ -2,6 +2,10 @@
 
 #![allow(missing_docs, clippy::missing_errors_doc)]
 
+use futures::{
+    stream::{Fuse, FusedStream},
+    FutureExt, StreamExt,
+};
 use pin_project_lite::pin_project;
 
 use std::{
@@ -18,6 +22,7 @@ use crate::{
     interface::{
         AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel, ValidateInterface,
     },
+    trace::{FutureUpdate, TracedFutures, Tracer},
     workflow::{TakeHandle, WorkflowFn},
     Decode, Encode,
 };
@@ -150,6 +155,19 @@ impl<T, C: Encode<T>> TakeHandle<Spawner> for Sender<T, C> {
     }
 }
 
+impl<C: Encode<FutureUpdate>> TakeHandle<Spawner> for Tracer<C> {
+    type Id = str;
+    type Handle = SenderConfig<FutureUpdate, C>;
+
+    fn take_handle(env: &mut Spawner, id: &Self::Id) -> Result<Self::Handle, AccessError> {
+        Ok(SenderConfig {
+            spawner: env.clone(),
+            channel_name: id.to_owned(),
+            _ty: PhantomData,
+        })
+    }
+}
+
 pub struct SpawnBuilder<W: TakeHandle<Spawner>> {
     spawner: Spawner,
     handle: <W as TakeHandle<Spawner>>::Handle,
@@ -251,6 +269,48 @@ impl<T, C: Decode<T> + Default> TakeHandle<RemoteWorkflow> for Sender<T, C> {
             RemoteHandle::None => Err(AccessErrorKind::Unknown.with_location(OutboundChannel(id))),
             RemoteHandle::NotCaptured => Ok(None),
             RemoteHandle::Some(raw) => Ok(Some(raw.with_codec(C::default()))),
+        }
+    }
+}
+
+impl<C: Decode<FutureUpdate> + Default> TakeHandle<RemoteWorkflow> for Tracer<C> {
+    type Id = str;
+    type Handle = Option<TracerHandle<C>>;
+
+    fn take_handle(env: &mut RemoteWorkflow, id: &Self::Id) -> Result<Self::Handle, AccessError> {
+        let receiver = Sender::<FutureUpdate, C>::take_handle(env, id)?;
+        Ok(receiver.map(|receiver| TracerHandle {
+            receiver: receiver.fuse(),
+            futures: TracedFutures::default(),
+        }))
+    }
+}
+
+/// Handle for traced futures in the [test environment](TestHost).
+#[derive(Debug)]
+pub struct TracerHandle<C> {
+    receiver: Fuse<Receiver<FutureUpdate, C>>,
+    futures: TracedFutures,
+}
+
+impl<C> TracerHandle<C>
+where
+    C: Decode<FutureUpdate> + Default,
+{
+    /// Returns a reference to the traced futures.
+    pub fn futures(&self) -> &TracedFutures {
+        &self.futures
+    }
+
+    /// Applies all accumulated updates for the traced futures.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn update(&mut self) {
+        if self.receiver.is_terminated() {
+            return;
+        }
+        while let Some(Some(update)) = self.receiver.next().now_or_never() {
+            self.futures.update(update).unwrap();
+            // `unwrap()` is intentional: it's to catch bugs in library code
         }
     }
 }

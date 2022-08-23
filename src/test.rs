@@ -84,9 +84,7 @@ use futures::{
     channel::oneshot,
     executor::{LocalPool, LocalSpawner},
     future::RemoteHandle,
-    stream::{Fuse, FusedStream},
     task::LocalSpawnExt,
-    FutureExt, StreamExt,
 };
 
 use std::{
@@ -98,13 +96,10 @@ use std::{
 };
 
 use crate::{
-    channel::Receiver,
     interface::Interface,
     spawn::{RemoteWorkflow, Spawner, WorkflowDefinition},
     workflow::{Handle, SpawnWorkflow, TakeHandle, TaskHandle, UntypedHandle, Wasm},
-    Decode,
 };
-use tardigrade_shared::trace::{FutureUpdate, TracedFutures};
 
 #[derive(Debug)]
 struct TimerEntry {
@@ -395,42 +390,5 @@ impl Drop for RuntimeGuard {
         RT.with(|cell| {
             *cell.borrow_mut() = None;
         });
-    }
-}
-
-/// Handle for traced futures in the [test environment](TestHost).
-#[derive(Debug)]
-pub struct TracerHandle<C> {
-    receiver: Fuse<Receiver<FutureUpdate, C>>,
-    futures: TracedFutures,
-}
-
-impl<C> TracerHandle<C>
-where
-    C: Decode<FutureUpdate> + Default,
-{
-    /// Creates a new handle.
-    pub fn new(receiver: Receiver<FutureUpdate, C>) -> Self {
-        Self {
-            receiver: receiver.fuse(),
-            futures: TracedFutures::default(),
-        }
-    }
-
-    /// Returns a reference to the traced futures.
-    pub fn futures(&self) -> &TracedFutures {
-        &self.futures
-    }
-
-    /// Applies all accumulated updates for the traced futures.
-    #[allow(clippy::missing_panics_doc)]
-    pub fn update(&mut self) {
-        if self.receiver.is_terminated() {
-            return;
-        }
-        while let Some(Some(update)) = self.receiver.next().now_or_never() {
-            self.futures.update(update).unwrap();
-            // `unwrap()` is intentional: it's to catch bugs in library code
-        }
     }
 }
