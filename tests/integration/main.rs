@@ -8,8 +8,10 @@ mod timers;
 
 use tardigrade::{
     channel::{Receiver, Sender},
-    test::TestWorkflow,
-    workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm, WorkflowFn},
+    test::Runtime,
+    workflow::{
+        GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm, WorkflowDefinition, WorkflowFn,
+    },
     Json,
 };
 use tardigrade_shared::interface::Interface;
@@ -49,23 +51,47 @@ impl SpawnWorkflow for TestedWorkflow {
 
 #[test]
 fn dropping_inbound_channel_handle_in_test_code() {
-    TestedWorkflow::test((), |mut handle| async move {
+    let mut runtime = Runtime::default();
+    runtime
+        .workflow_registry_mut()
+        .insert::<TestedWorkflow>("test");
+    runtime.test(async move {
+        let workflow_def = WorkflowDefinition::new("test")
+            .unwrap()
+            .downcast::<TestedWorkflow>()
+            .unwrap();
+        let api = workflow_def.spawn(()).build().unwrap().api;
+        let mut commands = api.commands.unwrap();
+        let events = api.events.unwrap();
+
         let mut items = stream::iter([Ok(23), Ok(42)]);
-        handle.api.commands.send_all(&mut items).await.unwrap();
-        drop(handle.api.commands);
-        let echos: Vec<_> = handle.api.events.collect().await;
+        commands.send_all(&mut items).await.unwrap();
+        drop(commands);
+        let echos: Vec<_> = events.collect().await;
         assert_eq!(echos, [23, 42]);
     });
 }
 
 #[test]
 fn dropping_outbound_channel_handle_in_test_code() {
-    TestedWorkflow::test((), |mut handle| async move {
-        handle.api.commands.send(23).await.unwrap();
-        let echo = handle.api.events.next().await.unwrap();
+    let mut runtime = Runtime::default();
+    runtime
+        .workflow_registry_mut()
+        .insert::<TestedWorkflow>("test");
+    runtime.test(async move {
+        let workflow_def = WorkflowDefinition::new("test")
+            .unwrap()
+            .downcast::<TestedWorkflow>()
+            .unwrap();
+        let api = workflow_def.spawn(()).build().unwrap().api;
+        let mut commands = api.commands.unwrap();
+        let mut events = api.events.unwrap();
+
+        commands.send(23).await.unwrap();
+        let echo = events.next().await.unwrap();
         assert_eq!(echo, 23);
 
-        drop(handle.api.events);
-        handle.api.commands.send(42).await.unwrap();
+        drop(events);
+        commands.send(42).await.unwrap();
     });
 }

@@ -15,8 +15,8 @@ where
     RawReceiver: TakeHandle<Env, Id = str>,
     RawSender: TakeHandle<Env, Id = str>,
 {
-    inbound_channels: HashMap<String, <RawReceiver as TakeHandle<Env>>::Handle>,
-    outbound_channels: HashMap<String, <RawSender as TakeHandle<Env>>::Handle>,
+    pub(crate) inbound_channels: HashMap<String, <RawReceiver as TakeHandle<Env>>::Handle>,
+    pub(crate) outbound_channels: HashMap<String, <RawSender as TakeHandle<Env>>::Handle>,
 }
 
 #[allow(clippy::type_repetition_in_bounds, clippy::trait_duplication_in_bounds)] // false positive

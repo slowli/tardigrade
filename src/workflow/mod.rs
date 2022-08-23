@@ -98,10 +98,15 @@ use crate::{
 };
 
 mod handle;
+mod spawn;
 mod untyped;
 
 pub use self::{
     handle::{EnvExtensions, ExtendEnv, Handle, TakeHandle},
+    spawn::{
+        ReceiverConfig, RemoteWorkflow, SenderConfig, SpawnBuilder, Spawner, WorkflowDefinition,
+        WorkflowHandle,
+    },
     untyped::{UntypedHandle, UntypedHandleIndex},
 };
 
@@ -196,8 +201,11 @@ pub trait GetInterface: ValidateInterface<Id = ()> {
 /// This type is used as a type param for the [`TakeHandle`] trait. The returned handles
 /// are ones provided via Tardigrade runtime imports for the WASM module, or emulated
 /// in case of [tests](crate::test).
-#[derive(Debug, Default)]
-pub struct Wasm(());
+#[derive(Debug)]
+pub struct Wasm {
+    #[cfg(not(target_arch = "wasm32"))]
+    handles: UntypedHandle<Self>,
+}
 
 impl Wasm {
     /// Sets the panic hook to pass panic messages to the host.
@@ -271,6 +279,27 @@ impl Wasm {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl Wasm {
+    pub(crate) fn new(handles: UntypedHandle<Self>) -> Self {
+        Self { handles }
+    }
+
+    pub(crate) fn take_inbound_channel(
+        &mut self,
+        channel_name: &str,
+    ) -> Option<crate::channel::RawReceiver> {
+        self.handles.inbound_channels.remove(channel_name)
+    }
+
+    pub(crate) fn take_outbound_channel(
+        &mut self,
+        channel_name: &str,
+    ) -> Option<crate::channel::RawSender> {
+        self.handles.outbound_channels.remove(channel_name)
+    }
+}
+
 /// Functional interface of a workflow.
 pub trait WorkflowFn {
     /// Argument(s) supplied to the workflow on its creation.
@@ -303,13 +332,15 @@ impl TaskHandle {
     }
 
     #[doc(hidden)] // only used in the `workflow_entry` macro
-    pub fn from_workflow<W: SpawnWorkflow>(raw_data: Vec<u8>) -> Result<Self, AccessError> {
+    pub fn from_workflow<W: SpawnWorkflow>(
+        raw_data: Vec<u8>,
+        mut wasm: Wasm,
+    ) -> Result<Self, AccessError> {
         let data = W::Codec::default()
             .try_decode_bytes(raw_data)
             .map_err(|err| {
                 AccessErrorKind::Custom(Box::new(err)).with_location(InterfaceLocation::Args)
             })?;
-        let mut wasm = Wasm::default();
         let handle = <W as TakeHandle<Wasm>>::take_handle(&mut wasm, &())?;
         Ok(W::spawn(data, handle))
     }

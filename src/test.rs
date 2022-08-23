@@ -81,10 +81,7 @@
 
 use chrono::{DateTime, TimeZone, Utc};
 use futures::{
-    channel::{
-        mpsc::{self, UnboundedReceiver, UnboundedSender},
-        oneshot,
-    },
+    channel::oneshot,
     executor::{LocalPool, LocalSpawner},
     future::RemoteHandle,
     stream::{Fuse, FusedStream},
@@ -98,15 +95,13 @@ use std::{
     collections::{BinaryHeap, HashMap},
     fmt,
     future::Future,
-    marker::PhantomData,
 };
 
 use crate::{
-    channel::{imp as channel_imp, Receiver, Sender},
-    interface::{AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel},
-    trace::Tracer,
-    workflow::{SpawnWorkflow, TakeHandle, Wasm},
-    Decode, Encode,
+    channel::Receiver,
+    interface::Interface,
+    workflow::{SpawnWorkflow, TaskHandle, UntypedHandle, Wasm},
+    Decode,
 };
 use tardigrade_shared::trace::{FutureUpdate, TracedFutures};
 
@@ -145,7 +140,7 @@ pub struct MockScheduler {
 
 impl Default for MockScheduler {
     fn default() -> Self {
-        Self::new(Utc::now())
+        Self::new(Utc.timestamp(0, 0))
     }
 }
 
@@ -208,66 +203,97 @@ impl MockScheduler {
 
 /// Handle allowing to manipulate time in the test environment.
 #[derive(Debug)]
-pub struct TimersHandle {
-    // Since the handle accesses TLS, it doesn't make sense to send it across threads.
-    inner: PhantomData<*mut ()>,
-}
+pub struct Timers(());
 
 #[allow(clippy::unused_self)] // `self` included for future compatibility
-impl TimersHandle {
+impl Timers {
     /// Returns current time.
-    pub fn now(&self) -> DateTime<Utc> {
-        Runtime::with_mut(|rt| rt.scheduler.now)
+    pub fn now() -> DateTime<Utc> {
+        Runtime::with(|rt| rt.scheduler.now)
     }
 
     /// Returns the expiration timestamp of the nearest timer.
-    pub fn next_timer_expiration(&self) -> Option<DateTime<Utc>> {
-        Runtime::with_mut(|rt| rt.scheduler.next_timer_expiration())
+    pub fn next_timer_expiration() -> Option<DateTime<Utc>> {
+        Runtime::with(|rt| rt.scheduler.next_timer_expiration())
     }
 
     /// Advances time to the specified point, triggering the expired timers.
-    pub fn set_now(&self, now: DateTime<Utc>) {
+    pub fn set_now(now: DateTime<Utc>) {
         Runtime::with_mut(|rt| rt.scheduler.set_now(now));
     }
 }
 
-#[derive(Debug)]
-struct ChannelPair {
-    sx: Option<UnboundedSender<Vec<u8>>>,
-    rx: Option<UnboundedReceiver<Vec<u8>>>,
+struct ErasedWorkflow {
+    interface: Interface<()>,
+    spawn_fn: Box<dyn Fn(Vec<u8>, Wasm) -> TaskHandle>,
 }
 
-impl Default for ChannelPair {
+impl fmt::Debug for ErasedWorkflow {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ErasedWorkflow")
+            .field("interface", &self.interface)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Mock registry for workflows.
+#[derive(Debug, Default)]
+pub struct WorkflowRegistry {
+    workflows: HashMap<String, ErasedWorkflow>,
+}
+
+impl WorkflowRegistry {
+    pub(crate) fn interface(&self, id: &str) -> Option<&Interface<()>> {
+        self.workflows.get(id).map(|workflow| &workflow.interface)
+    }
+
+    pub(crate) fn spawn(
+        &self,
+        id: &str,
+        args: Vec<u8>,
+        handles: UntypedHandle<Wasm>,
+    ) -> TaskHandle {
+        let workflow = self.workflows.get(id).unwrap_or_else(|| {
+            panic!("workflow `{}` is not defined", id);
+        });
+        (workflow.spawn_fn)(args, Wasm::new(handles))
+    }
+
+    /// Inserts a new workflow into this registry.
+    #[allow(clippy::missing_panics_doc)] // false positive
+    pub fn insert<W: SpawnWorkflow>(&mut self, id: impl Into<String>) {
+        let interface = W::interface().erase();
+        let spawn_fn = |args, wasm| TaskHandle::from_workflow::<W>(args, wasm).unwrap();
+        self.workflows.insert(
+            id.into(),
+            ErasedWorkflow {
+                interface,
+                spawn_fn: Box::new(spawn_fn),
+            },
+        );
+    }
+}
+
+/// Mock runtime allowing to execute workflows.
+#[derive(Debug)]
+pub struct Runtime {
+    local_pool: Option<LocalPool>,
+    spawner: LocalSpawner,
+    scheduler: MockScheduler,
+    workflow_registry: WorkflowRegistry,
+}
+
+impl Default for Runtime {
     fn default() -> Self {
-        let (sx, rx) = mpsc::unbounded();
+        let local_pool = LocalPool::new();
         Self {
-            sx: Some(sx),
-            rx: Some(rx),
+            spawner: local_pool.spawner(),
+            local_pool: Some(local_pool),
+            workflow_registry: WorkflowRegistry::default(),
+            scheduler: MockScheduler::default(),
         }
     }
-}
-
-impl ChannelPair {
-    fn clone_sx(&self) -> UnboundedSender<Vec<u8>> {
-        self.sx.clone().unwrap()
-        // ^ `unwrap()` is safe: `take_sx()` is never called for outbound channels
-    }
-
-    fn take_sx(&mut self) -> Option<UnboundedSender<Vec<u8>>> {
-        self.sx.take()
-    }
-
-    fn take_rx(&mut self) -> Option<UnboundedReceiver<Vec<u8>>> {
-        self.rx.take()
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct Runtime {
-    spawner: LocalSpawner,
-    inbound_channels: HashMap<String, ChannelPair>,
-    outbound_channels: HashMap<String, ChannelPair>,
-    scheduler: MockScheduler,
 }
 
 thread_local! {
@@ -275,35 +301,30 @@ thread_local! {
 }
 
 impl Runtime {
-    fn initialize<W>(interface: &Interface<W>) -> (RuntimeGuard, LocalPool) {
-        let local_pool = LocalPool::new();
-
-        let inbound = interface
-            .inbound_channels()
-            .map(|(name, _)| (name.to_owned(), ChannelPair::default()));
-        let outbound = interface
-            .outbound_channels()
-            .map(|(name, _)| (name.to_owned(), ChannelPair::default()));
-
-        let rt = Self {
-            spawner: local_pool.spawner(),
-            inbound_channels: inbound.collect(),
-            outbound_channels: outbound.collect(),
-            scheduler: MockScheduler::default(),
-        };
-
+    fn setup(mut self) -> (RuntimeGuard, LocalPool) {
+        let local_pool = self.local_pool.take().unwrap();
         RT.with(|cell| {
             let mut borrow = cell.borrow_mut();
             debug_assert!(
                 borrow.is_none(),
                 "reinitializing runtime; this should never happen"
             );
-            *borrow = Some(rt);
+            *borrow = Some(self);
         });
         (RuntimeGuard, local_pool)
     }
 
-    pub fn with_mut<T>(act: impl FnOnce(&mut Self) -> T) -> T {
+    pub(crate) fn with<T>(act: impl FnOnce(&Self) -> T) -> T {
+        RT.with(|cell| {
+            let borrow = cell.borrow();
+            let rt = borrow
+                .as_ref()
+                .expect("runtime accessed outside event loop");
+            act(rt)
+        })
+    }
+
+    pub(crate) fn with_mut<T>(act: impl FnOnce(&mut Self) -> T) -> T {
         RT.with(|cell| {
             let mut borrow = cell.borrow_mut();
             let rt = borrow
@@ -313,79 +334,39 @@ impl Runtime {
         })
     }
 
-    fn with_optional_mut(act: impl FnOnce(&mut Self)) {
-        RT.with(|cell| {
-            let mut borrow = cell.borrow_mut();
-            if let Some(runtime) = borrow.as_mut() {
-                act(runtime);
-            }
-        });
-    }
-
-    pub fn take_inbound_channel(
-        &mut self,
-        name: &str,
-    ) -> Result<UnboundedReceiver<Vec<u8>>, AccessError> {
-        let channel = self
-            .inbound_channels
-            .get_mut(name)
-            .ok_or_else(|| AccessErrorKind::Unknown.with_location(InboundChannel(name)))?;
-        channel
-            .take_rx()
-            .ok_or_else(|| AccessErrorKind::AlreadyAcquired.with_location(InboundChannel(name)))
-    }
-
-    pub fn take_sender_for_inbound_channel(
-        &mut self,
-        name: &str,
-    ) -> Result<UnboundedSender<Vec<u8>>, AccessError> {
-        let channel = self
-            .inbound_channels
-            .get_mut(name)
-            .ok_or_else(|| AccessErrorKind::Unknown.with_location(InboundChannel(name)))?;
-        channel
-            .take_sx()
-            .ok_or_else(|| AccessErrorKind::AlreadyAcquired.with_location(InboundChannel(name)))
-    }
-
-    pub fn outbound_channel(&self, name: &str) -> Result<UnboundedSender<Vec<u8>>, AccessError> {
-        self.outbound_channels
-            .get(name)
-            .map(ChannelPair::clone_sx)
-            .ok_or_else(|| AccessErrorKind::Unknown.with_location(OutboundChannel(name)))
-    }
-
-    pub fn take_receiver_for_outbound_channel(
-        &mut self,
-        name: &str,
-    ) -> Result<UnboundedReceiver<Vec<u8>>, AccessError> {
-        let channel = self
-            .outbound_channels
-            .get_mut(name)
-            .ok_or_else(|| AccessErrorKind::Unknown.with_location(OutboundChannel(name)))?;
-        channel
-            .take_rx()
-            .ok_or_else(|| AccessErrorKind::AlreadyAcquired.with_location(OutboundChannel(name)))
-    }
-
-    pub fn scheduler(&mut self) -> &mut MockScheduler {
+    pub(crate) fn scheduler(&mut self) -> &mut MockScheduler {
         &mut self.scheduler
     }
 
-    pub fn spawn_task<T>(&self, task: impl Future<Output = T> + 'static) -> RemoteHandle<T> {
+    pub(crate) fn workflow_registry(&self) -> &WorkflowRegistry {
+        &self.workflow_registry
+    }
+
+    /// Returns a mutable reference to the workflow registry.
+    pub fn workflow_registry_mut(&mut self) -> &mut WorkflowRegistry {
+        &mut self.workflow_registry
+    }
+
+    pub(crate) fn spawn_task<T>(&self, task: impl Future<Output = T> + 'static) -> RemoteHandle<T> {
         self.spawner
             .spawn_local_with_handle(task)
             .expect("failed spawning task")
     }
 
-    fn drop_workflow_resources(&mut self) {
-        for channel_pair in self.inbound_channels.values_mut() {
-            channel_pair.take_rx();
-        }
-        for channel_pair in self.outbound_channels.values_mut() {
-            channel_pair.take_sx();
-        }
+    /// Executes the provided future in the context of this runtime.
+    ///
+    /// # Errors
+    ///
+    /// Proxies an error from the future, if any occurs.
+    pub fn test<Fut>(self, test_future: Fut)
+    where
+        Fut: Future<Output = ()>,
+    {
+        let (_guard, mut local_pool) = self.setup();
+        local_pool.run_until(test_future);
     }
+
+    // TODO: improve ergonomics for testing
 }
 
 /// Guard that frees up runtime TLS on drop.
@@ -400,111 +381,6 @@ impl Drop for RuntimeGuard {
     }
 }
 
-/// Workflow handle for the [test environment](TestHost). Instance of such a handle is provided
-/// to a closure in [`TestWorkflow::test()`].
-#[non_exhaustive]
-pub struct TestHandle<W: TestWorkflow> {
-    /// Handle to the workflow interface, such as channels.
-    pub api: <W as TakeHandle<TestHost>>::Handle,
-    /// Handle to manipulate time in the test environment.
-    pub timers: TimersHandle,
-}
-
-impl<W: TestWorkflow> fmt::Debug for TestHandle<W>
-where
-    <W as TakeHandle<TestHost>>::Handle: fmt::Debug,
-{
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("TestHandle")
-            .field("api", &self.api)
-            .field("timers", &self.timers)
-            .finish()
-    }
-}
-
-impl<W: TestWorkflow> TestHandle<W> {
-    fn new() -> Self {
-        let mut host = TestHost::new();
-        let api = W::take_handle(&mut host, &()).unwrap();
-        Self {
-            api,
-            timers: TimersHandle { inner: PhantomData },
-        }
-    }
-}
-
-fn test<W, F, Fut, E>(data: W::Args, test_fn: F) -> Result<(), E>
-where
-    W: TestWorkflow,
-    F: FnOnce(TestHandle<W>) -> Fut,
-    Fut: Future<Output = Result<(), E>>,
-{
-    let interface = W::interface();
-    let (_guard, mut local_pool) = Runtime::initialize(&interface);
-    let mut wasm = Wasm::default();
-    let workflow = W::take_handle(&mut wasm, &()).unwrap();
-    let test_handle = TestHandle::new();
-
-    local_pool
-        .spawner()
-        .spawn_local(W::spawn(data, workflow).into_inner().map(|()| {
-            Runtime::with_optional_mut(Runtime::drop_workflow_resources);
-        }))
-        .expect("cannot spawn workflow");
-    local_pool.run_until_stalled();
-    local_pool.run_until(test_fn(test_handle))
-}
-
-/// Extension trait for testing workflows.
-pub trait TestWorkflow: Sized + SpawnWorkflow + TakeHandle<TestHost, Id = ()> {
-    /// Runs the specified test function for a workflow instantiated from the provided `inputs`.
-    fn test<F>(data: Self::Args, test_fn: impl FnOnce(TestHandle<Self>) -> F)
-    where
-        F: Future<Output = ()> + 'static,
-    {
-        test::<Self, _, _, _>(data, |handle| async {
-            test_fn(handle).await;
-            Ok::<_, ()>(())
-        })
-        .unwrap();
-    }
-}
-
-impl<W> TestWorkflow for W where W: SpawnWorkflow + TakeHandle<TestHost, Id = ()> {}
-
-/// Host part of the test environment.
-///
-/// This type is used as a type param for the [`TakeHandle`] trait. The returned handles
-/// allow manipulating the workflow from the (emulated) host; for example, a handle
-/// for a [`Sender`] is a complementary [`Receiver`] (to receive emitted messages), and vice versa.
-#[derive(Debug)]
-pub struct TestHost(());
-
-impl TestHost {
-    fn new() -> Self {
-        Self(())
-    }
-}
-
-impl<T, C: Encode<T> + Default> TakeHandle<TestHost> for Receiver<T, C> {
-    type Id = str;
-    type Handle = Sender<T, C>;
-
-    fn take_handle(env: &mut TestHost, id: &str) -> Result<Self::Handle, AccessError> {
-        channel_imp::MpscReceiver::take_handle(env, id).map(|raw| Sender::new(raw, C::default()))
-    }
-}
-
-impl<T, C: Decode<T> + Default> TakeHandle<TestHost> for Sender<T, C> {
-    type Id = str;
-    type Handle = Receiver<T, C>;
-
-    fn take_handle(env: &mut TestHost, id: &str) -> Result<Self::Handle, AccessError> {
-        channel_imp::MpscSender::take_handle(env, id).map(|raw| Receiver::new(raw, C::default()))
-    }
-}
-
 /// Handle for traced futures in the [test environment](TestHost).
 #[derive(Debug)]
 pub struct TracerHandle<C> {
@@ -516,6 +392,14 @@ impl<C> TracerHandle<C>
 where
     C: Decode<FutureUpdate> + Default,
 {
+    /// Creates a new handle.
+    pub fn new(receiver: Receiver<FutureUpdate, C>) -> Self {
+        Self {
+            receiver: receiver.fuse(),
+            futures: TracedFutures::default(),
+        }
+    }
+
     /// Returns a reference to the traced futures.
     pub fn futures(&self) -> &TracedFutures {
         &self.futures
@@ -531,20 +415,5 @@ where
             self.futures.update(update).unwrap();
             // `unwrap()` is intentional: it's to catch bugs in library code
         }
-    }
-}
-
-impl<C> TakeHandle<TestHost> for Tracer<C>
-where
-    C: Decode<FutureUpdate> + Default,
-{
-    type Id = str;
-    type Handle = TracerHandle<C>;
-
-    fn take_handle(env: &mut TestHost, id: &str) -> Result<Self::Handle, AccessError> {
-        Ok(TracerHandle {
-            receiver: Sender::take_handle(env, id)?.fuse(),
-            futures: TracedFutures::new(id),
-        })
     }
 }

@@ -384,6 +384,11 @@ impl Interface<()> {
         Self::try_from_bytes(bytes).unwrap_or_else(|err| panic!("Cannot deserialize spec: {}", err))
     }
 
+    /// Serializes this interface.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("failed serializing `Interface`")
+    }
+
     /// Tries to downcast this interface to a particular workflow.
     ///
     /// # Errors

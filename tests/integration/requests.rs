@@ -6,11 +6,11 @@ use serde::{Deserialize, Serialize};
 use tardigrade::workflow::WorkflowFn;
 use tardigrade::{
     channel::{Receiver, Requests, Sender, WithId},
-    test::TestWorkflow,
-    workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm},
+    interface::Interface,
+    test::Runtime,
+    workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm, WorkflowDefinition},
     Json,
 };
-use tardigrade_shared::interface::Interface;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 struct Options {
@@ -114,15 +114,27 @@ fn test_requests(init: TestInit) {
     println!("Testing with {:?}", init.options);
 
     let expected_strings = init.strings.clone();
-    TestedWorkflow::test(init, |mut handle| async move {
+    let mut runtime = Runtime::default();
+    runtime
+        .workflow_registry_mut()
+        .insert::<TestedWorkflow>("test");
+    runtime.test(async move {
+        let workflow_def = WorkflowDefinition::new("test")
+            .unwrap()
+            .downcast::<TestedWorkflow>()
+            .unwrap();
+        let api = workflow_def.spawn(init).build().unwrap().api;
+        let mut requests = api.requests.unwrap();
+        let mut responses = api.responses.unwrap();
+
         let mut strings = vec![];
-        while let Some(WithId { id, data }) = handle.api.requests.next().await {
+        while let Some(WithId { id, data }) = requests.next().await {
             let response = WithId {
                 id,
                 data: data.len(),
             };
             strings.push(data);
-            handle.api.responses.send(response).await.ok();
+            responses.send(response).await.ok();
         }
         assert_eq!(strings, expected_strings);
     });

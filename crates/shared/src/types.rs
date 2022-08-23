@@ -67,3 +67,16 @@ impl fmt::Display for SendError {
 }
 
 impl error::Error for SendError {}
+
+/// Errors that can occur when spawning a workflow.
+// TODO: generalize as a trap?
+#[derive(Debug)]
+pub struct SpawnError {}
+
+impl fmt::Display for SpawnError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("trap has occurred during workflow instantiation")
+    }
+}
+
+impl error::Error for SpawnError {}

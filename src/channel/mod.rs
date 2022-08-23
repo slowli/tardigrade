@@ -81,6 +81,15 @@ impl<T, C: Decode<T>> Receiver<T, C> {
     }
 }
 
+impl RawReceiver {
+    pub(crate) fn with_codec<T, C>(self, codec: C) -> Receiver<T, C>
+    where
+        C: Decode<T>,
+    {
+        Receiver::new(self.raw, codec)
+    }
+}
+
 impl<T, C: Decode<T>> Stream for Receiver<T, C> {
     type Item = T;
 
@@ -105,8 +114,17 @@ where
     type Id = str;
     type Handle = Self;
 
+    #[cfg(target_arch = "wasm32")]
     fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, AccessError> {
         imp::MpscReceiver::take_handle(env, id).map(|raw| Self::new(raw, C::default()))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, AccessError> {
+        let raw = env
+            .take_inbound_channel(id)
+            .ok_or_else(|| AccessErrorKind::Unknown.with_location(InboundChannel(id)))?;
+        Ok(raw.with_codec(C::default()))
     }
 }
 
@@ -176,6 +194,15 @@ impl<T, C: Encode<T>> Sender<T, C> {
     }
 }
 
+impl RawSender {
+    pub(crate) fn with_codec<T, C>(self, codec: C) -> Sender<T, C>
+    where
+        C: Encode<T>,
+    {
+        Sender::new(self.raw, codec)
+    }
+}
+
 impl<T, C> TakeHandle<Wasm> for Sender<T, C>
 where
     C: Encode<T> + Default,
@@ -183,8 +210,17 @@ where
     type Id = str;
     type Handle = Self;
 
+    #[cfg(target_arch = "wasm32")]
     fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, AccessError> {
         imp::MpscSender::take_handle(env, id).map(|raw| Self::new(raw, C::default()))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, AccessError> {
+        let raw = env
+            .take_outbound_channel(id)
+            .ok_or_else(|| AccessErrorKind::Unknown.with_location(OutboundChannel(id)))?;
+        Ok(raw.with_codec(C::default()))
     }
 }
 
