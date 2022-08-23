@@ -15,7 +15,6 @@ use std::{
 };
 
 use crate::{
-    handle::EnvExtensions,
     receipt::{ExecutionError, ExecutionResult, Receipt},
     workflow::Workflow,
     FutureId,
@@ -183,7 +182,6 @@ pub struct AsyncEnv<W> {
     outbound_channels: HashMap<String, mpsc::UnboundedSender<Vec<u8>>>,
     results_sx: Option<mpsc::UnboundedSender<ExecutionResult>>,
     rollback_strategy: Option<Box<dyn RollbackStrategy>>,
-    extensions: EnvExtensions,
 }
 
 impl<W> AsyncEnv<W> {
@@ -197,7 +195,6 @@ impl<W> AsyncEnv<W> {
             outbound_channels: HashMap::new(),
             results_sx: None,
             rollback_strategy: None,
-            extensions: EnvExtensions::default(),
         }
     }
 
@@ -217,11 +214,6 @@ impl<W> AsyncEnv<W> {
     /// Retrieves the underlying workflow, consuming the environment.
     pub fn into_inner(self) -> Workflow<W> {
         self.workflow
-    }
-
-    /// Returns a mutable reference to environment extensions.
-    pub fn extensions(&mut self) -> &mut EnvExtensions {
-        &mut self.extensions
     }
 
     /// Executes the enclosed [`Workflow`] until it is terminated or an error occurs.
@@ -526,6 +518,11 @@ impl<C> TracerHandle<C> {
         &self.futures
     }
 
+    /// Sets futures, usually after restoring the handle.
+    pub fn set_futures(&mut self, futures: TracedFutures) {
+        self.futures = futures;
+    }
+
     /// Returns traced futures, consuming this handle.
     pub fn into_futures(self) -> TracedFutures {
         self.futures
@@ -566,7 +563,7 @@ impl<C: Decode<FutureUpdate> + Default, W> TakeHandle<AsyncEnv<W>> for Tracer<C>
         Ok(TracerHandle {
             receiver,
             channel_name: id.to_owned(),
-            futures: Self::take_handle(&mut env.extensions, id)?,
+            futures: TracedFutures::default(),
         })
     }
 }

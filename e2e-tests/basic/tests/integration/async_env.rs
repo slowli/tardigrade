@@ -467,7 +467,6 @@ async fn persisting_workflow() -> TestResult {
     // Restore the persisted workflow and launch it again.
     let workflow = persisted.restore(&spawner)?;
     let mut env = AsyncEnv::new(workflow, scheduler.clone());
-    env.extensions().insert(traced_futures);
     let handle = env.handle();
     let join_handle = task::spawn(async move { env.run().await });
 
@@ -477,6 +476,7 @@ async fn persisting_workflow() -> TestResult {
     assert_matches!(join_handle.await?, Termination::Finished);
 
     let mut tracer = handle.shared.tracer;
+    tracer.set_futures(traced_futures);
     tracer
         .by_ref()
         .try_for_each(|_| future::ready(Ok(())))

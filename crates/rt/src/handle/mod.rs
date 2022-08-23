@@ -25,7 +25,7 @@ use tardigrade::{
     channel::{Receiver, Sender},
     interface::{AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel},
     trace::{FutureUpdate, TracedFutures, Tracer},
-    workflow::{EnvExtensions, TakeHandle, UntypedHandle},
+    workflow::{TakeHandle, UntypedHandle},
     Decode, Encode,
 };
 
@@ -77,7 +77,6 @@ use tardigrade::{
 /// ```
 pub struct WorkflowEnv<'a, W> {
     inner: Rc<RefCell<&'a mut Workflow<W>>>,
-    extensions: EnvExtensions,
 }
 
 impl<W> fmt::Debug for WorkflowEnv<'_, W> {
@@ -85,7 +84,6 @@ impl<W> fmt::Debug for WorkflowEnv<'_, W> {
         formatter
             .debug_struct("WorkflowEnv")
             .field("inner", &self.inner)
-            .field("extensions", &self.extensions)
             .finish()
     }
 }
@@ -95,13 +93,7 @@ impl<'a, W> WorkflowEnv<'a, W> {
     pub fn new(workflow: &'a mut Workflow<W>) -> Self {
         Self {
             inner: Rc::new(RefCell::new(workflow)),
-            extensions: EnvExtensions::default(),
         }
-    }
-
-    /// Returns a mutable reference to environment extensions.
-    pub fn extensions(&mut self) -> &mut EnvExtensions {
-        &mut self.extensions
     }
 
     fn with<T>(&self, action: impl FnOnce(&mut Workflow<W>) -> T) -> T {
@@ -307,6 +299,11 @@ where
         &self.futures
     }
 
+    /// Sets futures, usually after restoring the handle.
+    pub fn set_futures(&mut self, futures: TracedFutures) {
+        self.futures = futures;
+    }
+
     /// Returns traced futures, consuming this handle.
     pub fn into_futures(self) -> TracedFutures {
         self.futures
@@ -350,7 +347,7 @@ where
     fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
         Ok(TracerHandle {
             receiver: Sender::<FutureUpdate, C>::take_handle(env, id)?,
-            futures: Self::take_handle(&mut env.extensions, id)?,
+            futures: TracedFutures::default(),
         })
     }
 }

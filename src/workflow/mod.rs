@@ -101,7 +101,7 @@ mod handle;
 mod untyped;
 
 pub use self::{
-    handle::{EnvExtensions, ExtendEnv, Handle, TakeHandle},
+    handle::{Handle, TakeHandle},
     untyped::{UntypedHandle, UntypedHandleIndex},
 };
 

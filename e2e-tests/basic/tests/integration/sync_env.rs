@@ -189,9 +189,9 @@ fn persisting_workflow() -> TestResult {
     let persisted: PersistedWorkflow = serde_json::from_str(&persisted_json)?;
 
     let mut workflow = persisted.restore(&spawner)?;
-    let mut env = WorkflowEnv::new(&mut workflow);
-    env.extensions().insert(traced_futures);
+    let env = WorkflowEnv::new(&mut workflow);
     let mut handle = env.handle();
+    handle.api.shared.tracer.set_futures(traced_futures);
 
     handle.with(|workflow| {
         let new_time = workflow.current_time() + chrono::Duration::milliseconds(100);
