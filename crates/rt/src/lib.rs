@@ -128,4 +128,4 @@ pub use crate::{
     module::{Clock, ExtendLinker, WorkflowEngine, WorkflowModule, WorkflowSpawner},
     workflow::{InitializingWorkflow, PersistedWorkflow, Workflow},
 };
-pub use tardigrade_shared::{FutureId, TaskId, TimerId, WakerId};
+pub use tardigrade_shared::{ChannelId, FutureId, TaskId, TimerId, WakerId};

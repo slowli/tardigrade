@@ -29,7 +29,7 @@ fn initialize_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()
     // Emulate basic task startup: getting the inbound channel
     let (ptr, len) = WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"orders")?;
     let orders =
-        WorkflowFunctions::get_receiver(ctx.as_context_mut(), ptr, len, ERROR_PTR).unwrap();
+        WorkflowFunctions::get_receiver(ctx.as_context_mut(), None, ptr, len, ERROR_PTR).unwrap();
 
     // ...then polling this channel
     let poll_res =

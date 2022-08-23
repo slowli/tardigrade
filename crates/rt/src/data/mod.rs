@@ -61,11 +61,17 @@ impl WorkflowData {
     pub(crate) fn from_interface(interface: Interface<()>, services: Services) -> Self {
         let inbound_channels = interface
             .inbound_channels()
-            .map(|(name, _)| (name.to_owned(), InboundChannelState::default()))
+            .map(|(name, _)| {
+                let channel_id = services.channels.create_channel();
+                (name.to_owned(), InboundChannelState::new(channel_id))
+            })
             .collect();
         let outbound_channels = interface
             .outbound_channels()
-            .map(|(name, _)| (name.to_owned(), OutboundChannelState::default()))
+            .map(|(name, _)| {
+                let channel_id = services.channels.create_channel();
+                (name.to_owned(), OutboundChannelState::new(channel_id))
+            })
             .collect();
 
         Self {

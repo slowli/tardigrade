@@ -10,12 +10,12 @@ use std::{
 use wasmtime::{Store, Val};
 
 use super::{
+    helpers::HostResource,
     task::{TaskQueue, TaskState},
     time::Timers,
     WorkflowData,
 };
-use crate::data::helpers::HostResource;
-use crate::{module::Services, TaskId, WakerId};
+use crate::{module::Services, ChannelId, TaskId, WakerId};
 use tardigrade::interface::Interface;
 
 /// Error persisting a [`Workflow`](crate::Workflow).
@@ -56,6 +56,7 @@ fn flip_bool(&flag: &bool) -> bool {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct InboundChannelState {
+    channel_id: ChannelId,
     #[serde(default, skip_serializing_if = "flip_bool")]
     is_closed: bool,
     is_acquired: bool,
@@ -68,6 +69,7 @@ impl InboundChannelState {
     fn new(state: &super::InboundChannelState) -> Self {
         debug_assert!(state.pending_message.is_none());
         Self {
+            channel_id: state.channel_id,
             is_closed: state.is_closed,
             is_acquired: state.is_acquired,
             received_messages: state.received_messages,
@@ -95,6 +97,7 @@ impl InboundChannelState {
 impl From<InboundChannelState> for super::InboundChannelState {
     fn from(persisted: InboundChannelState) -> Self {
         Self {
+            channel_id: persisted.channel_id,
             is_closed: persisted.is_closed,
             is_acquired: persisted.is_acquired,
             received_messages: persisted.received_messages,
@@ -106,6 +109,7 @@ impl From<InboundChannelState> for super::InboundChannelState {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct OutboundChannelState {
+    channel_id: ChannelId,
     is_acquired: bool,
     is_closed: bool,
     flushed_messages: usize,
@@ -117,6 +121,7 @@ impl OutboundChannelState {
     fn new(state: &super::OutboundChannelState) -> Self {
         debug_assert!(state.messages.is_empty());
         Self {
+            channel_id: state.channel_id,
             is_acquired: state.is_acquired,
             is_closed: state.is_closed,
             flushed_messages: state.flushed_messages,
@@ -143,6 +148,7 @@ impl OutboundChannelState {
 impl From<OutboundChannelState> for super::OutboundChannelState {
     fn from(persisted: OutboundChannelState) -> Self {
         Self {
+            channel_id: persisted.channel_id,
             is_acquired: persisted.is_acquired,
             is_closed: persisted.is_closed,
             flushed_messages: persisted.flushed_messages,

@@ -42,7 +42,7 @@ impl ModuleImports {
             "task::wake" | "task::abort" => ensure_func_ty::<TaskId, ()>(ty, fn_name),
 
             "mpsc_receiver::get" | "mpsc_sender::get" => {
-                ensure_func_ty::<(u32, u32, u32), Ref>(ty, fn_name)
+                ensure_func_ty::<(Ref, u32, u32, u32), Ref>(ty, fn_name)
             }
 
             "mpsc_receiver::poll_next" => ensure_func_ty::<(Ref, WasmContextPtr), i64>(ty, fn_name),
@@ -88,12 +88,12 @@ impl ExtendLinker for WorkflowFunctions {
                 wrap1(&mut *store, Self::schedule_task_abortion),
             ),
             // Channel functions
-            ("mpsc_receiver::get", wrap3(&mut *store, Self::get_receiver)),
+            ("mpsc_receiver::get", wrap4(&mut *store, Self::get_receiver)),
             (
                 "mpsc_receiver::poll_next",
                 wrap2(&mut *store, Self::poll_next_for_receiver),
             ),
-            ("mpsc_sender::get", wrap3(&mut *store, Self::get_sender)),
+            ("mpsc_sender::get", wrap4(&mut *store, Self::get_sender)),
             (
                 "mpsc_sender::poll_ready",
                 wrap2(&mut *store, Self::poll_ready_for_sender),
@@ -140,6 +140,7 @@ impl_wrapper!(wrap0 =>);
 impl_wrapper!(wrap1 => a: A);
 impl_wrapper!(wrap2 => a: A, b: B);
 impl_wrapper!(wrap3 => a: A, b: B, c: C);
+impl_wrapper!(wrap4 => a: A, b: B, c: C, d: D);
 impl_wrapper!(wrap6 => a: A, b: B, c: C, d: D, e: E, f: F);
 
 #[cfg(test)]

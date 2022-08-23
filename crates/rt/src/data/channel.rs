@@ -11,7 +11,7 @@ use super::{
 use crate::{
     receipt::WakeUpCause,
     utils::{copy_bytes_from_wasm, copy_string_from_wasm, WasmAllocator},
-    WakerId,
+    ChannelId, WakerId,
 };
 use tardigrade::interface::{AccessErrorKind, OutboundChannelSpec};
 use tardigrade_shared::{abi::IntoWasm, PollMessage, SendError};
@@ -103,8 +103,9 @@ impl ConsumeError {
 }
 
 /// State of an inbound workflow channel.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct InboundChannelState {
+    pub(super) channel_id: ChannelId,
     pub(super) is_acquired: bool,
     pub(super) is_closed: bool,
     pub(super) received_messages: usize,
@@ -113,6 +114,17 @@ pub struct InboundChannelState {
 }
 
 impl InboundChannelState {
+    pub(crate) fn new(channel_id: ChannelId) -> Self {
+        Self {
+            channel_id,
+            is_acquired: false,
+            is_closed: false,
+            received_messages: 0,
+            pending_message: None,
+            wakes_on_next_element: HashSet::new(),
+        }
+    }
+
     /// Checks whether this channel is closed.
     pub fn is_closed(&self) -> bool {
         self.is_closed
@@ -144,8 +156,9 @@ impl InboundChannelState {
 }
 
 /// State of an outbound workflow channel.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct OutboundChannelState {
+    pub(super) channel_id: ChannelId,
     pub(super) is_acquired: bool,
     pub(super) is_closed: bool,
     pub(super) flushed_messages: usize,
@@ -154,6 +167,17 @@ pub struct OutboundChannelState {
 }
 
 impl OutboundChannelState {
+    pub(crate) fn new(channel_id: ChannelId) -> Self {
+        Self {
+            channel_id,
+            is_acquired: false,
+            is_closed: false,
+            flushed_messages: 0,
+            messages: Vec::new(),
+            wakes_on_flush: HashSet::new(),
+        }
+    }
+
     /// Returns the number of messages flushed to this channel.
     pub fn flushed_messages(&self) -> usize {
         self.flushed_messages
@@ -364,6 +388,7 @@ impl WorkflowFunctions {
 
     pub fn get_receiver(
         mut ctx: StoreContextMut<'_, WorkflowData>,
+        _workflow: Option<ExternRef>,
         channel_name_ptr: u32,
         channel_name_len: u32,
         error_ptr: u32,
@@ -410,6 +435,7 @@ impl WorkflowFunctions {
 
     pub fn get_sender(
         mut ctx: StoreContextMut<'_, WorkflowData>,
+        _workflow: Option<ExternRef>,
         channel_name_ptr: u32,
         channel_name_len: u32,
         error_ptr: u32,

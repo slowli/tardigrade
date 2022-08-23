@@ -2,7 +2,12 @@
 
 use chrono::{DateTime, Utc};
 
-use std::{fmt, sync::Arc};
+use std::{
+    fmt,
+    sync::{Arc, Mutex},
+};
+
+use crate::ChannelId;
 
 /// Wall clock.
 pub trait Clock: Send + Sync + 'static {
@@ -27,16 +32,52 @@ impl fmt::Debug for dyn Clock {
     }
 }
 
+/// Manager of channels.
+pub trait ManageChannels: Send + Sync + 'static {
+    /// Creates a new channel.
+    fn create_channel(&self) -> ChannelId;
+}
+
+impl fmt::Debug for dyn ManageChannels {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ManageChannels")
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct InMemoryChannelManager {
+    inner: Mutex<InMemoryChannelManagerInner>,
+}
+
+#[derive(Debug, Default)]
+struct InMemoryChannelManagerInner {
+    // FIXME: add channel states
+    next_channel_id: ChannelId,
+}
+
+impl ManageChannels for InMemoryChannelManager {
+    fn create_channel(&self) -> ChannelId {
+        let mut lock = self.inner.lock().unwrap();
+        let channel_id = lock.next_channel_id;
+        lock.next_channel_id += 1;
+        channel_id
+    }
+}
+
 /// Dynamically dispatched services available to workflows.
 #[derive(Debug, Clone)]
 pub(crate) struct Services {
     pub clock: Arc<dyn Clock>,
+    pub channels: Arc<dyn ManageChannels>,
 }
 
 impl Default for Services {
     fn default() -> Self {
         Self {
             clock: Arc::new(Utc::now),
+            channels: Arc::new(InMemoryChannelManager::default()),
         }
     }
 }

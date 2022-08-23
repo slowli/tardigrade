@@ -18,6 +18,8 @@ pub type TaskId = u64;
 pub type TimerId = u64;
 /// ID of a (traced) future defined by a workflow.
 pub type FutureId = u64;
+/// ID of a channel.
+pub type ChannelId = u128;
 
 /// Errors that can occur when joining a task (i.e., waiting for its completion).
 #[derive(Debug, Clone, Serialize, Deserialize)]
