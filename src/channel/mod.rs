@@ -33,7 +33,7 @@ use crate::{
 mod broadcast;
 #[cfg(target_arch = "wasm32")]
 #[path = "imp_wasm32.rs"]
-mod imp;
+pub(crate) mod imp;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "imp_mock.rs"]
 pub(crate) mod imp;
@@ -82,6 +82,11 @@ impl<T, C: Decode<T>> Receiver<T, C> {
 }
 
 impl RawReceiver {
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn from_resource(resource: externref::Resource<imp::MpscReceiver>) -> Self {
+        Self::new(resource.into(), Raw)
+    }
+
     pub(crate) fn with_codec<T, C>(self, codec: C) -> Receiver<T, C>
     where
         C: Decode<T>,
@@ -195,6 +200,11 @@ impl<T, C: Encode<T>> Sender<T, C> {
 }
 
 impl RawSender {
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn from_resource(resource: externref::Resource<imp::MpscSender>) -> Self {
+        Self::new(resource.into(), Raw)
+    }
+
     pub(crate) fn with_codec<T, C>(self, codec: C) -> Sender<T, C>
     where
         C: Encode<T>,

@@ -12,7 +12,7 @@ use std::{error, fmt, task::Poll};
 
 use crate::{
     interface::AccessErrorKind,
-    types::{JoinError, PollMessage, PollTask, SendError},
+    types::{JoinError, PollMessage, PollTask, SendError, SpawnError},
 };
 
 /// Value directly representable in WASM ABI, e.g., `i64`.
@@ -302,6 +302,25 @@ impl IntoWasm for Poll<Result<(), SendError>> {
         match abi {
             -1 => Poll::Pending,
             _ => Poll::Ready(Result::from_abi_in_wasm(abi)),
+        }
+    }
+}
+
+impl IntoWasm for Result<(), SpawnError> {
+    type Abi = i64;
+
+    fn into_wasm<A: AllocateBytes>(self, _: &mut A) -> Result<Self::Abi, A::Error> {
+        Ok(match self {
+            Ok(()) => 0,
+            Err(_) => -1,
+        })
+    }
+
+    unsafe fn from_abi_in_wasm(abi: i64) -> Self {
+        match abi {
+            0 => Ok(()),
+            -1 => Err(SpawnError {}),
+            _ => panic!("unexpected ABI value"),
         }
     }
 }

@@ -23,12 +23,15 @@ use crate::{
 };
 use tardigrade_shared::{JoinError, SpawnError};
 
+#[cfg(target_arch = "wasm32")]
+#[path = "imp_wasm32.rs"]
+pub(crate) mod imp;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "imp_mock.rs"]
 mod imp;
 
 #[derive(Debug)]
-enum RemoteHandle<T> {
+pub(crate) enum RemoteHandle<T> {
     None,
     NotCaptured,
     Some(T),
