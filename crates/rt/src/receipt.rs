@@ -12,7 +12,7 @@ use wasmtime::Trap;
 
 use std::{error, fmt, ops::Range, task::Poll};
 
-use crate::{TaskId, TimerId, WakerId};
+use crate::{TaskId, TimerId, WakerId, WorkflowId};
 use tardigrade_shared::SendError;
 
 /// Cause of waking up a [`Workflow`](crate::Workflow) task.
@@ -176,6 +176,9 @@ pub struct ChannelEvent {
     pub kind: ChannelEventKind,
     /// Name of the channel.
     pub channel_name: String,
+    /// ID of the remote workflow that the channel is attached to, or `None` if the channel
+    /// is local.
+    pub workflow_id: Option<WorkflowId>,
 }
 
 /// Event included into a [`Receipt`].

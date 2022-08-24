@@ -15,7 +15,7 @@ use super::{
     time::Timers,
     WorkflowData,
 };
-use crate::{module::Services, ChannelId, TaskId, WakerId};
+use crate::{services::Services, ChannelId, TaskId, WakerId, WorkflowId};
 use tardigrade::interface::Interface;
 
 /// Error persisting a [`Workflow`](crate::Workflow).
@@ -28,6 +28,9 @@ pub enum PersistError {
     PendingOutboundMessage {
         /// Name of the channel with the message.
         channel_name: String,
+        /// ID of the remote workflow that the channel is attached to, or `None` if the channel
+        /// is local.
+        workflow_id: Option<WorkflowId>,
     },
 }
 
@@ -36,12 +39,19 @@ impl fmt::Display for PersistError {
         formatter.write_str("workflow cannot be persisted at this point: ")?;
         match self {
             Self::PendingTask => formatter.write_str("there is a pending task"),
-            Self::PendingOutboundMessage { channel_name } => {
+            Self::PendingOutboundMessage {
+                channel_name,
+                workflow_id,
+            } => {
                 write!(
                     formatter,
                     "there is an non-flushed outbound message on channel `{}`",
                     channel_name
-                )
+                )?;
+                if let Some(id) = workflow_id {
+                    write!(formatter, " for workflow {}", id)?;
+                }
+                Ok(())
             }
         }
     }
@@ -110,6 +120,7 @@ impl From<InboundChannelState> for super::InboundChannelState {
 #[derive(Debug, Serialize, Deserialize)]
 struct OutboundChannelState {
     channel_id: ChannelId,
+    capacity: Option<usize>,
     is_acquired: bool,
     is_closed: bool,
     flushed_messages: usize,
@@ -122,6 +133,7 @@ impl OutboundChannelState {
         debug_assert!(state.messages.is_empty());
         Self {
             channel_id: state.channel_id,
+            capacity: state.capacity,
             is_acquired: state.is_acquired,
             is_closed: state.is_closed,
             flushed_messages: state.flushed_messages,
@@ -149,6 +161,7 @@ impl From<OutboundChannelState> for super::OutboundChannelState {
     fn from(persisted: OutboundChannelState) -> Self {
         Self {
             channel_id: persisted.channel_id,
+            capacity: persisted.capacity,
             is_acquired: persisted.is_acquired,
             is_closed: persisted.is_closed,
             flushed_messages: persisted.flushed_messages,
@@ -158,11 +171,83 @@ impl From<OutboundChannelState> for super::OutboundChannelState {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct ChannelStates {
+    inbound: HashMap<String, InboundChannelState>,
+    outbound: HashMap<String, OutboundChannelState>,
+}
+
+impl ChannelStates {
+    fn new(channels: &super::ChannelStates) -> Self {
+        let outbound = channels
+            .outbound
+            .iter()
+            .map(|(name, state)| {
+                let persisted_state = OutboundChannelState::new(state);
+                (name.clone(), persisted_state)
+            })
+            .collect();
+        let inbound = channels
+            .inbound
+            .iter()
+            .map(|(name, state)| (name.clone(), InboundChannelState::new(state)))
+            .collect();
+        Self { inbound, outbound }
+    }
+
+    fn restore(self, interface: &Interface<()>) -> anyhow::Result<super::ChannelStates> {
+        let inbound_channels_len = interface.inbound_channels().len();
+        ensure!(
+            inbound_channels_len == self.inbound.len(),
+            "mismatch between number of inbound channels in workflow interface ({}) \
+             and in persisted state ({})",
+            inbound_channels_len,
+            self.inbound.len()
+        );
+        let inbound = self.inbound.into_iter().map(|(name, state)| {
+            let restored = state.restore(interface, &name)?;
+            Ok((name, restored))
+        });
+        let inbound = inbound.collect::<anyhow::Result<_>>()?;
+
+        let outbound_channels_len = interface.outbound_channels().len();
+        ensure!(
+            outbound_channels_len == self.outbound.len(),
+            "mismatch between number of outbound channels in workflow interface ({}) \
+             and in persisted state ({})",
+            outbound_channels_len,
+            self.outbound.len()
+        );
+        let outbound = self.outbound.into_iter().map(|(name, state)| {
+            let restored = state.restore(interface, &name)?;
+            Ok((name, restored))
+        });
+        let outbound = outbound.collect::<anyhow::Result<_>>()?;
+
+        Ok(super::ChannelStates { inbound, outbound })
+    }
+}
+
+impl From<ChannelStates> for super::ChannelStates {
+    fn from(persisted: ChannelStates) -> Self {
+        let inbound = persisted
+            .inbound
+            .into_iter()
+            .map(|(name, state)| (name, state.into()))
+            .collect();
+        let outbound = persisted
+            .outbound
+            .into_iter()
+            .map(|(name, state)| (name, state.into()))
+            .collect();
+        Self { inbound, outbound }
+    }
+}
+
 /// `Workflow` state that can be persisted between workflow invocations.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct WorkflowState {
-    inbound_channels: HashMap<String, InboundChannelState>,
-    outbound_channels: HashMap<String, OutboundChannelState>,
+    channels: ChannelStates,
     timers: Timers,
     tasks: HashMap<TaskId, TaskState>,
 }
@@ -173,42 +258,15 @@ impl WorkflowState {
         interface: Interface<()>,
         services: Services,
     ) -> anyhow::Result<WorkflowData> {
-        let inbound_channels_len = interface.inbound_channels().len();
-        ensure!(
-            inbound_channels_len == self.inbound_channels.len(),
-            "mismatch between number of inbound channels in workflow interface ({}) \
-             and in persisted state ({})",
-            inbound_channels_len,
-            self.inbound_channels.len()
-        );
-        let inbound_channels = self.inbound_channels.into_iter().map(|(name, state)| {
-            let restored = state.restore(&interface, &name)?;
-            Ok((name, restored))
-        });
-        let inbound_channels = inbound_channels.collect::<anyhow::Result<_>>()?;
-
-        let outbound_channels_len = interface.outbound_channels().len();
-        ensure!(
-            outbound_channels_len == self.outbound_channels.len(),
-            "mismatch between number of outbound channels in workflow interface ({}) \
-             and in persisted state ({})",
-            outbound_channels_len,
-            self.outbound_channels.len()
-        );
-        let outbound_channels = self.outbound_channels.into_iter().map(|(name, state)| {
-            let restored = state.restore(&interface, &name)?;
-            Ok((name, restored))
-        });
-        let outbound_channels = outbound_channels.collect::<anyhow::Result<_>>()?;
-
+        let channels = self.channels.restore(&interface)?;
         Ok(WorkflowData {
             exports: None,
             interface,
-            inbound_channels,
-            outbound_channels,
+            channels,
             timers: self.timers,
             services,
             tasks: self.tasks,
+            child_workflows: HashMap::default(), // FIXME
             current_execution: None,
             task_queue: TaskQueue::default(),
             waker_queue: Vec::new(),
@@ -218,17 +276,7 @@ impl WorkflowState {
 
     // NB. Should agree with logic in `Self::restore()`.
     pub fn restore_in_place(self, data: &mut WorkflowData) {
-        data.inbound_channels = self
-            .inbound_channels
-            .into_iter()
-            .map(|(name, state)| (name, state.into()))
-            .collect();
-        data.outbound_channels = self
-            .outbound_channels
-            .into_iter()
-            .map(|(name, state)| (name, state.into()))
-            .collect();
-
+        data.channels = self.channels.into();
         data.timers = self.timers;
         data.tasks = self.tasks;
         data.current_execution = None;
@@ -248,10 +296,11 @@ impl WorkflowData {
             return Err(PersistError::PendingTask);
         }
 
-        for (name, channel) in &self.outbound_channels {
-            if !channel.messages.is_empty() {
+        for (workflow_id, name, state) in self.outbound_channels() {
+            if !state.messages.is_empty() {
                 return Err(PersistError::PendingOutboundMessage {
-                    channel_name: name.clone(),
+                    channel_name: name.to_owned(),
+                    workflow_id,
                 });
             }
         }
@@ -260,23 +309,8 @@ impl WorkflowData {
 
     // Must be preceded with `Self::check_persistence()`.
     pub(crate) fn persist(&self) -> WorkflowState {
-        let outbound_channels = self
-            .outbound_channels
-            .iter()
-            .map(|(name, state)| {
-                let persisted_state = OutboundChannelState::new(state);
-                (name.clone(), persisted_state)
-            })
-            .collect();
-        let inbound_channels = self
-            .inbound_channels
-            .iter()
-            .map(|(name, state)| (name.clone(), InboundChannelState::new(state)))
-            .collect();
-
         WorkflowState {
-            inbound_channels,
-            outbound_channels,
+            channels: ChannelStates::new(&self.channels),
             timers: self.timers.clone(),
             tasks: self.tasks.clone(),
         }

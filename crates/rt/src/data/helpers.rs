@@ -6,13 +6,13 @@ use wasmtime::{AsContextMut, ExternRef, Store, StoreContextMut, Trap};
 use std::{collections::HashSet, fmt, mem, task::Poll};
 
 use crate::{
-    data::WorkflowData,
+    data::{spawn::SpawnConfig, WorkflowData},
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, PanicInfo, ResourceEvent,
         ResourceEventKind, ResourceId, WakeUpCause,
     },
     utils::serde_b64,
-    TaskId, TimerId, WakerId,
+    TaskId, TimerId, WakerId, WorkflowId,
 };
 use tardigrade_shared::{JoinError, PollMessage, SendError};
 
@@ -48,14 +48,31 @@ impl From<Message> for Vec<u8> {
     }
 }
 
+/// Unique reference to a channel within a workflow.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct ChannelRef {
+    pub workflow_id: Option<WorkflowId>,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum HostResource {
-    InboundChannel(String),
-    OutboundChannel(String),
+    InboundChannel(ChannelRef),
+    OutboundChannel(ChannelRef),
+    SpawnConfig(SpawnConfig),
+    Workflow(WorkflowId),
 }
 
 impl HostResource {
+    pub fn inbound_channel(workflow_id: Option<WorkflowId>, name: String) -> Self {
+        Self::InboundChannel(ChannelRef { workflow_id, name })
+    }
+
+    pub fn outbound_channel(workflow_id: Option<WorkflowId>, name: String) -> Self {
+        Self::OutboundChannel(ChannelRef { workflow_id, name })
+    }
+
     pub fn from_ref(reference: Option<&ExternRef>) -> Result<&Self, Trap> {
         let reference = reference.ok_or_else(|| Trap::new("null reference provided to runtime"))?;
         reference
@@ -68,9 +85,9 @@ impl HostResource {
         ExternRef::new(self)
     }
 
-    pub fn as_inbound_channel(&self) -> Result<&str, Trap> {
-        if let Self::InboundChannel(name) = self {
-            Ok(name)
+    pub fn as_inbound_channel(&self) -> Result<&ChannelRef, Trap> {
+        if let Self::InboundChannel(channel_ref) = self {
+            Ok(channel_ref)
         } else {
             let message = format!(
                 "unexpected reference type: expected inbound channel, got {:?}",
@@ -80,9 +97,9 @@ impl HostResource {
         }
     }
 
-    pub fn as_outbound_channel(&self) -> Result<&str, Trap> {
-        if let Self::OutboundChannel(name) = self {
-            Ok(name)
+    pub fn as_outbound_channel(&self) -> Result<&ChannelRef, Trap> {
+        if let Self::OutboundChannel(channel_ref) = self {
+            Ok(channel_ref)
         } else {
             let message = format!(
                 "unexpected reference type: expected outbound channel, got {:?}",
@@ -91,6 +108,36 @@ impl HostResource {
             Err(Trap::new(message))
         }
     }
+
+    pub fn as_spawn_config(&self) -> Result<&SpawnConfig, Trap> {
+        if let Self::SpawnConfig(config) = self {
+            Ok(config)
+        } else {
+            let message = format!(
+                "unexpected reference type: expected workflow spawn config, got {:?}",
+                self
+            );
+            Err(Trap::new(message))
+        }
+    }
+
+    pub fn as_workflow(&self) -> Result<WorkflowId, Trap> {
+        if let Self::Workflow(id) = self {
+            Ok(*id)
+        } else {
+            let message = format!(
+                "unexpected reference type: expected workflow handle, got {:?}",
+                self
+            );
+            Err(Trap::new(message))
+        }
+    }
+}
+
+impl From<SpawnConfig> for HostResource {
+    fn from(config: SpawnConfig) -> Self {
+        Self::SpawnConfig(config)
+    }
 }
 
 /// Pointer to the WASM `Context`, i.e., `*mut Context<'_>`.
@@ -98,8 +145,8 @@ pub(crate) type WasmContextPtr = u32;
 
 #[derive(Debug)]
 pub(super) enum WakerPlacement {
-    InboundChannel(String),
-    OutboundChannel(String),
+    InboundChannel(ChannelRef),
+    OutboundChannel(ChannelRef),
     Timer(TimerId),
     TaskCompletion(TaskId),
 }
@@ -213,7 +260,7 @@ impl CurrentExecution {
         self.tasks_to_be_awoken.insert(task_id);
     }
 
-    pub fn push_inbound_channel_event(&mut self, channel_name: &str, result: &PollMessage) {
+    pub fn push_inbound_channel_event(&mut self, channel_ref: &ChannelRef, result: &PollMessage) {
         self.push_event(ChannelEvent {
             kind: ChannelEventKind::InboundChannelPolled {
                 result: match result {
@@ -221,13 +268,14 @@ impl CurrentExecution {
                     Poll::Ready(maybe_message) => Poll::Ready(maybe_message.as_ref().map(Vec::len)),
                 },
             },
-            channel_name: channel_name.to_owned(),
+            channel_name: channel_ref.name.clone(),
+            workflow_id: channel_ref.workflow_id,
         });
     }
 
     pub fn push_outbound_poll_event(
         &mut self,
-        channel_name: &str,
+        channel_ref: &ChannelRef,
         flush: bool,
         result: Poll<Result<(), SendError>>,
     ) {
@@ -237,14 +285,16 @@ impl CurrentExecution {
             } else {
                 ChannelEventKind::OutboundChannelReady { result }
             },
-            channel_name: channel_name.to_owned(),
+            channel_name: channel_ref.name.clone(),
+            workflow_id: channel_ref.workflow_id,
         });
     }
 
-    pub fn push_outbound_message_event(&mut self, channel_name: &str, message_len: usize) {
+    pub fn push_outbound_message_event(&mut self, channel_ref: &ChannelRef, message_len: usize) {
         self.push_event(ChannelEvent {
             kind: ChannelEventKind::OutboundMessageSent { message_len },
-            channel_name: channel_name.to_owned(),
+            channel_name: channel_ref.name.clone(),
+            workflow_id: channel_ref.workflow_id,
         });
     }
 
@@ -325,8 +375,10 @@ impl CurrentExecution {
         for event in Self::channel_events(&self.events) {
             if matches!(event.kind, ChannelEventKind::OutboundMessageSent { .. }) {
                 let channel = state
-                    .outbound_channels
-                    .get_mut(&event.channel_name)
+                    .outbound_channel_mut(&ChannelRef {
+                        workflow_id: event.workflow_id,
+                        name: event.channel_name.clone(), // TODO: avoid cloning here
+                    })
                     .unwrap();
                 channel.messages.pop();
             }
@@ -346,12 +398,12 @@ impl WorkflowData {
 
         crate::trace!("Placing waker {} in {:?}", waker, placement);
         match placement {
-            WakerPlacement::InboundChannel(name) => {
-                let channel_state = self.inbound_channels.get_mut(name).unwrap();
+            WakerPlacement::InboundChannel(channel_ref) => {
+                let channel_state = self.inbound_channel_mut(channel_ref).unwrap();
                 channel_state.wakes_on_next_element.insert(waker);
             }
-            WakerPlacement::OutboundChannel(name) => {
-                let channel_state = self.outbound_channels.get_mut(name).unwrap();
+            WakerPlacement::OutboundChannel(channel_ref) => {
+                let channel_state = self.outbound_channel_mut(channel_ref).unwrap();
                 channel_state.wakes_on_flush.insert(waker);
             }
             WakerPlacement::Timer(id) => {
@@ -364,12 +416,12 @@ impl WorkflowData {
     }
 
     fn remove_wakers(&mut self, wakers: &HashSet<WakerId>) {
-        for state in self.inbound_channels.values_mut() {
+        for state in self.inbound_channels_mut() {
             state
                 .wakes_on_next_element
                 .retain(|waker_id| !wakers.contains(waker_id));
         }
-        for state in self.outbound_channels.values_mut() {
+        for state in self.outbound_channels_mut() {
             state
                 .wakes_on_flush
                 .retain(|waker_id| !wakers.contains(waker_id));

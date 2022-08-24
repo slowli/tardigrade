@@ -22,6 +22,7 @@ use crate::{
         Event, ExecutedFunction, Execution, ExecutionError, ExtendedTrap, Receipt,
         ResourceEventKind, ResourceId, WakeUpCause,
     },
+    services::ChannelHandles,
     TaskId, TimerId,
 };
 use tardigrade::{interface::Interface, workflow::WorkflowFn, Encode};
@@ -49,13 +50,32 @@ impl<W: WorkflowFn> WorkflowSpawner<W> {
     /// with imports) fails.
     pub fn spawn(&self, data: W::Args) -> anyhow::Result<InitializingWorkflow<W>> {
         let raw_data = W::Codec::default().encode_value(data);
-        let state =
-            WorkflowData::from_interface(self.interface().clone().erase(), self.services.clone());
+        let handles = self.create_channel_handles();
+        let state = WorkflowData::new(
+            self.interface().clone().erase(),
+            &handles,
+            self.services.clone(),
+        );
         let workflow = Workflow::from_state(self, state)?;
         Ok(InitializingWorkflow {
             inner: workflow,
             raw_data,
         })
+    }
+
+    fn create_channel_handles(&self) -> ChannelHandles<'_> {
+        let channel_manager = &self.services.channels;
+        let inbound = self
+            .interface()
+            .inbound_channels()
+            .map(|(name, _)| (name, channel_manager.create_channel()))
+            .collect();
+        let outbound = self
+            .interface()
+            .outbound_channels()
+            .map(|(name, _)| (name, channel_manager.create_channel()))
+            .collect();
+        ChannelHandles { inbound, outbound }
     }
 }
 

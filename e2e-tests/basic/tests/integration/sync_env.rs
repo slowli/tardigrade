@@ -178,7 +178,7 @@ fn persisting_workflow() -> TestResult {
     let err = handle.with(|workflow| workflow.persist().unwrap_err());
     assert_matches!(
         err,
-        PersistError::PendingOutboundMessage { channel_name } if channel_name == "traces"
+        PersistError::PendingOutboundMessage { channel_name, .. } if channel_name == "traces"
     );
 
     handle.api.shared.tracer.take_traces()?;

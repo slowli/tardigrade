@@ -6,20 +6,21 @@ use wasmtime::{Engine, ExternType, Func, Linker, Module, Store, WasmParams, Wasm
 
 use std::{collections::HashMap, fmt, str, sync::Arc};
 
-use crate::data::{WorkflowData, WorkflowFunctions};
+use crate::{
+    data::{WorkflowData, WorkflowFunctions},
+    services::{Clock, Services},
+};
 use tardigrade::{interface::Interface, workflow::GetInterface};
 
 mod exports;
 mod imports;
-mod services;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use self::exports::ModuleExports;
 use self::imports::ModuleImports;
-pub use self::services::Clock;
 #[cfg(test)]
 pub(crate) use self::tests::{ExportsMock, MockPollFn};
-pub(crate) use self::{exports::ModuleExports, services::Services};
 
 fn ensure_func_ty<Args, Out>(ty: &ExternType, fn_name: &str) -> anyhow::Result<()>
 where

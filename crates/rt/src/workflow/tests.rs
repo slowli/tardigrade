@@ -7,8 +7,9 @@ use std::collections::{HashMap, HashSet};
 use super::*;
 use crate::{
     data::{WasmContextPtr, WorkflowFunctions},
-    module::{Clock, ExportsMock, MockPollFn, WorkflowEngine, WorkflowModule},
+    module::{ExportsMock, MockPollFn, WorkflowEngine, WorkflowModule},
     receipt::{ChannelEvent, ChannelEventKind},
+    services::Clock,
     test::MockScheduler,
     utils::{copy_string_from_wasm, WasmAllocator},
 };
@@ -130,6 +131,7 @@ fn starting_workflow() {
         Event::Channel(ChannelEvent {
             kind: ChannelEventKind::InboundChannelPolled { result: Poll::Pending },
             channel_name,
+            workflow_id: None,
         }) if channel_name == "orders"
     );
 
@@ -206,30 +208,36 @@ fn assert_inbound_message_receipt(receipt: &Receipt) {
             ChannelEvent {
                 kind: ChannelEventKind::InboundChannelPolled { result: Poll::Ready(Some(_)) },
                 channel_name: orders,
+                workflow_id: None,
             },
             ChannelEvent {
                 kind: ChannelEventKind::OutboundChannelReady {
                     result: Poll::Ready(Ok(())),
                 },
                 channel_name: traces,
+                workflow_id: None,
             },
             ChannelEvent {
                 kind: ChannelEventKind::OutboundMessageSent { .. },
                 channel_name: traces2,
+                workflow_id: None,
             },
             ChannelEvent {
                 kind: ChannelEventKind::OutboundChannelReady {
                     result: Poll::Ready(Ok(())),
                 },
                 channel_name: events,
+                workflow_id: None,
             },
             ChannelEvent {
                 kind: ChannelEventKind::OutboundMessageSent { .. },
                 channel_name: events2,
+                workflow_id: None,
             },
             ChannelEvent {
                 kind: ChannelEventKind::OutboundChannelFlushed { result: Poll::Pending },
                 channel_name: events3,
+                workflow_id: None,
             },
         ] if orders == "orders" && traces == "traces" && traces2 == "traces"
             && events == "events" && events2 == "events" && events3 == "events"

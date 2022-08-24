@@ -9,7 +9,7 @@ use wasmtime::{
 use std::str;
 
 use crate::{
-    data::{WasmContextPtr, WorkflowData, WorkflowFunctions},
+    data::{SpawnFunctions, WasmContextPtr, WorkflowData, WorkflowFunctions},
     module::{ensure_func_ty, ExtendLinker},
     TaskId, TimerId,
 };
@@ -119,6 +119,17 @@ impl ExtendLinker for WorkflowFunctions {
     }
 }
 
+impl ExtendLinker for SpawnFunctions {
+    const MODULE_NAME: &'static str = "tardigrade_rt";
+
+    fn functions(&self, store: &mut Store<WorkflowData>) -> Vec<(&'static str, Func)> {
+        vec![
+            ("workflow::spawner", wrap4(&mut *store, Self::get_spawner)),
+            ("workflow::spawn", wrap2(&mut *store, Self::spawn)),
+        ]
+    }
+}
+
 macro_rules! impl_wrapper {
     ($fn_name:ident => $($arg:ident : $arg_ty:ident),*) => {
         fn $fn_name<R, $($arg_ty,)*>(
@@ -148,13 +159,16 @@ mod tests {
     use wasmtime::{Engine, Linker};
 
     use super::*;
-    use crate::module::{LowLevelExtendLinker, Services};
+    use crate::{
+        module::LowLevelExtendLinker,
+        services::{ChannelHandles, Services},
+    };
     use tardigrade::interface::Interface;
 
     #[test]
     fn import_checks_are_consistent() {
         let interface = Interface::default();
-        let state = WorkflowData::from_interface(interface, Services::default());
+        let state = WorkflowData::new(interface, &ChannelHandles::default(), Services::default());
         let engine = Engine::default();
         let mut store = Store::new(&engine, state);
         let mut linker = Linker::new(&engine);

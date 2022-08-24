@@ -35,7 +35,7 @@ use std::{
 
 #[cfg(feature = "async")]
 use crate::handle::future::{Schedule, TimerFuture};
-use crate::module::Clock;
+use crate::services::Clock;
 use tardigrade::test::MockScheduler as SchedulerBase;
 
 /// Options for the `wasm-opt` optimizer.

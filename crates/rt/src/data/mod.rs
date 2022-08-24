@@ -2,11 +2,12 @@
 
 use wasmtime::{AsContextMut, ExternRef, StoreContextMut, Trap};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 mod channel;
 mod helpers;
 mod persistence;
+mod spawn;
 mod task;
 mod time;
 
@@ -19,19 +20,23 @@ pub use self::{
 pub(crate) use self::{
     helpers::WasmContextPtr,
     persistence::{Refs, WorkflowState},
+    spawn::SpawnFunctions,
 };
 
 use self::{
+    channel::ChannelStates,
     helpers::{CurrentExecution, Wakers},
+    spawn::ChildWorkflowState,
     task::TaskQueue,
     time::Timers,
 };
 use crate::{
     data::helpers::HostResource,
-    module::{ModuleExports, Services},
+    module::ModuleExports,
     receipt::{PanicInfo, PanicLocation, WakeUpCause},
+    services::{ChannelHandles, Services},
     utils::copy_string_from_wasm,
-    TaskId,
+    TaskId, WorkflowId,
 };
 use tardigrade::interface::Interface;
 
@@ -39,14 +44,15 @@ use tardigrade::interface::Interface;
 pub struct WorkflowData {
     /// Functions exported by the `Instance`. Instantiated immediately after instance.
     exports: Option<ModuleExports>,
-    // Workflow interface, such as channels.
     interface: Interface<()>,
-    inbound_channels: HashMap<String, InboundChannelState>,
-    outbound_channels: HashMap<String, OutboundChannelState>,
+    channels: ChannelStates,
     timers: Timers,
+    /// Services available to the workflow.
     services: Services,
     /// All tasks together with relevant info.
     tasks: HashMap<TaskId, TaskState>,
+    /// Workflows spawned by this workflow.
+    child_workflows: HashMap<WorkflowId, ChildWorkflowState>,
     /// Data related to the currently executing WASM call.
     current_execution: Option<CurrentExecution>,
     /// Tasks that should be polled after `current_task`.
@@ -58,30 +64,36 @@ pub struct WorkflowData {
 }
 
 impl WorkflowData {
-    pub(crate) fn from_interface(interface: Interface<()>, services: Services) -> Self {
-        let inbound_channels = interface
-            .inbound_channels()
-            .map(|(name, _)| {
-                let channel_id = services.channels.create_channel();
-                (name.to_owned(), InboundChannelState::new(channel_id))
-            })
-            .collect();
-        let outbound_channels = interface
-            .outbound_channels()
-            .map(|(name, _)| {
-                let channel_id = services.channels.create_channel();
-                (name.to_owned(), OutboundChannelState::new(channel_id))
-            })
-            .collect();
+    pub(crate) fn new(
+        interface: Interface<()>,
+        handles: &ChannelHandles<'_>,
+        services: Services,
+    ) -> Self {
+        debug_assert_eq!(
+            interface
+                .inbound_channels()
+                .map(|(name, _)| name)
+                .collect::<HashSet<_>>(),
+            handles.inbound.keys().copied().collect::<HashSet<_>>()
+        );
+        debug_assert_eq!(
+            interface
+                .outbound_channels()
+                .map(|(name, _)| name)
+                .collect::<HashSet<_>>(),
+            handles.outbound.keys().copied().collect::<HashSet<_>>()
+        );
 
         Self {
             exports: None,
+            channels: ChannelStates::new(handles, |name| {
+                interface.outbound_channel(name).unwrap().capacity
+            }),
             interface,
-            inbound_channels,
-            outbound_channels,
             timers: Timers::new(services.clock.now()),
             services,
             tasks: HashMap::new(),
+            child_workflows: HashMap::new(),
             current_execution: None,
             task_queue: TaskQueue::default(),
             waker_queue: Vec::new(),
@@ -103,21 +115,13 @@ impl WorkflowData {
     }
 
     #[cfg(test)]
-    pub(crate) fn outbound_channel_wakers(&self) -> impl Iterator<Item = crate::WakerId> + '_ {
-        self.outbound_channels
-            .values()
-            .flat_map(|state| &state.wakes_on_flush)
-            .copied()
-    }
-
-    #[cfg(test)]
     pub(crate) fn inbound_channel_ref(name: impl Into<String>) -> ExternRef {
-        HostResource::InboundChannel(name.into()).into_ref()
+        HostResource::inbound_channel(None, name.into()).into_ref()
     }
 
     #[cfg(test)]
     pub(crate) fn outbound_channel_ref(name: impl Into<String>) -> ExternRef {
-        HostResource::OutboundChannel(name.into()).into_ref()
+        HostResource::outbound_channel(None, name.into()).into_ref()
     }
 }
 
@@ -131,16 +135,16 @@ impl WorkflowFunctions {
         dropped: Option<ExternRef>,
     ) -> Result<(), Trap> {
         let dropped = HostResource::from_ref(dropped.as_ref())?;
-        if let HostResource::InboundChannel(name) = dropped {
-            let wakers = ctx.data_mut().handle_inbound_channel_closure(name);
+        if let HostResource::InboundChannel(channel_ref) = dropped {
+            let wakers = ctx.data_mut().handle_inbound_channel_closure(channel_ref);
             let exports = ctx.data().exports();
             for waker in wakers {
                 let result = exports.drop_waker(ctx.as_context_mut(), waker);
                 let result = crate::log_result!(
                     result,
-                    "Dropped waker {} for inbound channel `{}` closed by the workflow",
+                    "Dropped waker {} for inbound channel {:?} closed by the workflow",
                     waker,
-                    name
+                    channel_ref
                 );
                 result.ok();
             }

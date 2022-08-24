@@ -6,11 +6,12 @@ use std::{collections::HashMap, error, fmt, marker::PhantomData, ops};
 
 /// Kind of a channel in a workflow interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(i32)]
 pub enum ChannelKind {
     /// Inbound channel.
-    Inbound,
+    Inbound = 0,
     /// Outbound channel.
-    Outbound,
+    Outbound = 1,
 }
 
 impl fmt::Display for ChannelKind {
