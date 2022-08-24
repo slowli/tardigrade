@@ -13,7 +13,7 @@ use crate::channel::{
     imp::{mpsc_receiver_get, mpsc_sender_get, ACCESS_ERROR_PAD},
     RawReceiver, RawSender,
 };
-use tardigrade_shared::{abi::IntoWasm, JoinError, SpawnError};
+use tardigrade_shared::{abi::IntoWasm, interface::ChannelKind, JoinError, SpawnError};
 
 static mut SPAWN_ERROR_PAD: i64 = 0;
 
@@ -36,13 +36,6 @@ pub(super) fn workflow_interface(id: &str) -> Option<Vec<u8>> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-#[repr(i32)]
-enum ResourceType {
-    InboundChannel = 0,
-    OutboundChannel = 1,
-}
-
 #[externref]
 #[link(wasm_import_module = "tardigrade_rt")]
 extern "C" {
@@ -50,7 +43,7 @@ extern "C" {
     #[link_name = "workflow::spawner::set_handle"]
     fn set_handle_in_spawner(
         spawner: &Resource<Spawner>,
-        resource_type: ResourceType,
+        channel_kind: ChannelKind,
         name_ptr: *const u8,
         name_len: usize,
     );
@@ -85,7 +78,7 @@ impl Spawner {
         unsafe {
             set_handle_in_spawner(
                 &self.resource,
-                ResourceType::InboundChannel,
+                ChannelKind::Inbound,
                 channel_name.as_ptr(),
                 channel_name.len(),
             );
@@ -96,7 +89,7 @@ impl Spawner {
         unsafe {
             set_handle_in_spawner(
                 &self.resource,
-                ResourceType::OutboundChannel,
+                ChannelKind::Outbound,
                 channel_name.as_ptr(),
                 channel_name.len(),
             );
