@@ -118,6 +118,8 @@ pub enum ResourceId {
     Timer(TimerId),
     /// Task ID.
     Task(TaskId),
+    /// Workflow ID.
+    Workflow(WorkflowId),
 }
 
 /// Kind of a [`ResourceEvent`].

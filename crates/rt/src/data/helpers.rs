@@ -149,6 +149,7 @@ pub(super) enum WakerPlacement {
     OutboundChannel(ChannelRef),
     Timer(TimerId),
     TaskCompletion(TaskId),
+    WorkflowCompletion(WorkflowId),
 }
 
 #[derive(Debug)]
@@ -411,6 +412,12 @@ impl WorkflowData {
             }
             WakerPlacement::TaskCompletion(task) => {
                 self.tasks.get_mut(task).unwrap().insert_waker(waker);
+            }
+            WakerPlacement::WorkflowCompletion(workflow) => {
+                self.child_workflows
+                    .get_mut(workflow)
+                    .unwrap()
+                    .insert_waker(waker);
             }
         }
     }

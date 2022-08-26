@@ -119,13 +119,29 @@ impl ExtendLinker for WorkflowFunctions {
     }
 }
 
+// FIXME: also check types
 impl ExtendLinker for SpawnFunctions {
     const MODULE_NAME: &'static str = "tardigrade_rt";
 
     fn functions(&self, store: &mut Store<WorkflowData>) -> Vec<(&'static str, Func)> {
         vec![
-            ("workflow::spawner", wrap4(&mut *store, Self::get_spawner)),
+            (
+                "workflow::interface",
+                wrap2(&mut *store, Self::workflow_interface),
+            ),
+            (
+                "workflow::spawner",
+                wrap4(&mut *store, Self::create_spawner),
+            ),
+            (
+                "workflow::spawner::set_handle",
+                wrap4(&mut *store, Self::set_spawner_handle),
+            ),
             ("workflow::spawn", wrap2(&mut *store, Self::spawn)),
+            (
+                "workflow::poll_completion",
+                wrap2(&mut *store, Self::poll_workflow_completion),
+            ),
         ]
     }
 }
