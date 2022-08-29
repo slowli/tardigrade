@@ -1,8 +1,12 @@
+//! Mid-level tests for instantiating and managing workflows.
+
 use assert_matches::assert_matches;
 use mimicry::Answers;
 use wasmtime::StoreContextMut;
 
 use std::collections::{HashMap, HashSet};
+
+mod spawn;
 
 use super::*;
 use crate::{
@@ -19,7 +23,7 @@ const POLL_CX: WasmContextPtr = 1_234;
 const ERROR_PTR: u32 = 1_024; // enough to not intersect with "real" memory
 
 #[allow(clippy::cast_sign_loss)]
-fn decode_message_poll(poll_res: i64) -> (u32, u32) {
+fn decode_string(poll_res: i64) -> (u32, u32) {
     let ptr = ((poll_res as u64) >> 32) as u32;
     let len = (poll_res & 0x_ffff_ffff) as u32;
     (ptr, len)
@@ -66,7 +70,7 @@ fn consume_message(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()
     let poll_res =
         WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
 
-    let (msg_ptr, msg_len) = decode_message_poll(poll_res);
+    let (msg_ptr, msg_len) = decode_string(poll_res);
     let memory = ctx.data().exports().memory;
     let message = copy_string_from_wasm(&ctx, &memory, msg_ptr, msg_len)?;
     assert_eq!(message, "order #1");

@@ -309,18 +309,26 @@ impl IntoWasm for Poll<Result<(), SendError>> {
 impl IntoWasm for Result<(), SpawnError> {
     type Abi = i64;
 
-    fn into_wasm<A: AllocateBytes>(self, _: &mut A) -> Result<Self::Abi, A::Error> {
+    fn into_wasm<A: AllocateBytes>(self, alloc: &mut A) -> Result<Self::Abi, A::Error> {
         Ok(match self {
             Ok(()) => 0,
-            Err(_) => -1,
+            Err(err) => {
+                let message = err.to_string();
+                let (ptr, len) = alloc.copy_to_wasm(message.as_bytes())?;
+                (i64::from(ptr) << 32) + i64::from(len)
+            }
         })
     }
 
+    #[allow(clippy::cast_sign_loss)] // safe by design
     unsafe fn from_abi_in_wasm(abi: i64) -> Self {
-        match abi {
-            0 => Ok(()),
-            -1 => Err(SpawnError {}),
-            _ => panic!("unexpected ABI value"),
+        if abi == 0 {
+            Ok(())
+        } else {
+            let ptr = (abi >> 32) as *mut u8;
+            let len = (abi & 0xffff_ffff) as usize;
+            let message = String::from_raw_parts(ptr, len, len);
+            Err(SpawnError::new(message))
         }
     }
 }

@@ -5,10 +5,11 @@ use chrono::{DateTime, Utc};
 use std::{
     collections::HashMap,
     fmt,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 
-use tardigrade::interface::Interface;
+use crate::WorkflowSpawner;
+use tardigrade::{interface::Interface, workflow::WorkflowFn};
 use tardigrade_shared::{ChannelId, SpawnError, WorkflowId};
 
 /// Wall clock.
@@ -86,7 +87,7 @@ pub struct ChannelHandles<'a> {
 /// Manager of workflows.
 pub trait ManageWorkflows: Send + Sync + 'static {
     /// Returns the interface spec of a workflow with the specified ID.
-    fn interface(&self, id: &str) -> Option<Interface<()>>;
+    fn interface(&self, id: &str) -> Option<&Interface<()>>;
 
     /// Creates a new workflow.
     ///
@@ -97,7 +98,7 @@ pub trait ManageWorkflows: Send + Sync + 'static {
     fn create_workflow(
         &self,
         id: &str,
-        args: &[u8],
+        args: Vec<u8>,
         handles: &ChannelHandles<'_>,
     ) -> Result<WorkflowId, SpawnError>;
 }
@@ -112,20 +113,72 @@ impl fmt::Debug for dyn ManageWorkflows {
 
 /// Simple implementation of a workflow manager.
 #[derive(Debug, Default)]
-pub struct SimpleWorkflowManager {}
+pub struct WorkflowManager {
+    arc: Weak<Self>,
+    spawners: HashMap<String, WorkflowSpawner<()>>,
+    // FIXME: connect to supervisor to store the workflow
+}
 
-impl ManageWorkflows for SimpleWorkflowManager {
-    fn interface(&self, _id: &str) -> Option<Interface<()>> {
-        None
+impl WorkflowManager {
+    /// Creates a manager builder.
+    pub fn builder() -> WorkflowManagerBuilder {
+        WorkflowManagerBuilder {
+            manager: Self::default(),
+        }
+    }
+}
+
+impl ManageWorkflows for WorkflowManager {
+    fn interface(&self, id: &str) -> Option<&Interface<()>> {
+        Some(self.spawners.get(id)?.interface())
     }
 
     fn create_workflow(
         &self,
-        _id: &str,
-        _args: &[u8],
-        _handles: &ChannelHandles<'_>,
+        id: &str,
+        args: Vec<u8>,
+        handles: &ChannelHandles<'_>,
     ) -> Result<WorkflowId, SpawnError> {
-        todo!()
+        let spawner = self
+            .spawners
+            .get(id)
+            .unwrap_or_else(|| panic!("workflow with ID `{}` is not defined", id));
+
+        let mut patched_services = spawner.services.clone();
+        patched_services.workflows = self.arc.upgrade().unwrap();
+        let workflow = spawner
+            .do_spawn(args, handles, patched_services)
+            .map_err(|err| SpawnError::new(err.to_string()))?;
+        let _workflow = workflow
+            .init()
+            .map_err(|err| SpawnError::new(err.to_string()))?
+            .into_inner();
+        // FIXME: persist workflow
+        Ok(0)
+    }
+}
+
+/// Builder for a [`WorkflowManager`].
+#[derive(Debug)]
+pub struct WorkflowManagerBuilder {
+    manager: WorkflowManager,
+}
+
+impl WorkflowManagerBuilder {
+    /// Inserts a workflow spawner into the manager.
+    #[must_use]
+    pub fn with_spawner<W: WorkflowFn>(mut self, id: &str, spawner: WorkflowSpawner<W>) -> Self {
+        self.manager.spawners.insert(id.to_owned(), spawner.erase());
+        self
+    }
+
+    /// Finishes building the manager.
+    pub fn build(self) -> Arc<WorkflowManager> {
+        let mut manager = self.manager;
+        Arc::new_cyclic(|arc| {
+            manager.arc = Weak::clone(arc);
+            manager
+        })
     }
 }
 
@@ -142,7 +195,7 @@ impl Default for Services {
         Self {
             clock: Arc::new(Utc::now),
             channels: Arc::new(InMemoryChannelManager::default()),
-            workflows: Arc::new(SimpleWorkflowManager::default()),
+            workflows: Arc::new(WorkflowManager::default()),
         }
     }
 }

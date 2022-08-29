@@ -12,7 +12,7 @@ use std::{
 
 use crate::{
     data::{
-        channel::ChannelStates,
+        channel::{ChannelStates, InboundChannelState, OutboundChannelState},
         helpers::{
             HostResource, Message, WakeIfPending, WakerPlacement, WasmContext, WasmContextPtr,
         },
@@ -102,10 +102,10 @@ impl SpawnConfigInner {
 }
 
 #[derive(Debug)]
-pub(super) struct ChildWorkflowState {
-    pub channels: ChannelStates,
-    pub completion_result: Poll<Result<(), JoinError>>,
-    pub wakes_on_completion: HashSet<WakerId>,
+pub struct ChildWorkflowState {
+    pub(super) channels: ChannelStates,
+    pub(super) completion_result: Poll<Result<(), JoinError>>,
+    pub(super) wakes_on_completion: HashSet<WakerId>,
 }
 
 impl ChildWorkflowState {
@@ -121,13 +121,27 @@ impl ChildWorkflowState {
     pub(super) fn insert_waker(&mut self, waker_id: WakerId) {
         self.wakes_on_completion.insert(waker_id);
     }
+
+    /// Returns the current state of an inbound channel with the specified name.
+    pub fn inbound_channel(&self, channel_name: &str) -> Option<&InboundChannelState> {
+        self.channels.inbound.get(channel_name)
+    }
+
+    /// Returns the current state of an outbound channel with the specified name.
+    pub fn outbound_channel(&self, channel_name: &str) -> Option<&OutboundChannelState> {
+        self.channels.outbound.get(channel_name)
+    }
 }
 
 impl WorkflowData {
+    pub fn child_workflows(&self) -> impl Iterator<Item = (WorkflowId, &ChildWorkflowState)> + '_ {
+        self.child_workflows.iter().map(|(id, state)| (*id, state))
+    }
+
     fn spawn_workflow(&mut self, config: &SpawnConfigInner) -> Result<WorkflowId, SpawnError> {
         let mut handles = config.create_handles(&*self.services.channels);
         let workflows = &self.services.workflows;
-        let result = workflows.create_workflow(&config.id, config.args.as_ref(), &handles);
+        let result = workflows.create_workflow(&config.id, config.args.clone().into(), &handles);
         if let &Ok(workflow_id) = &result {
             mem::swap(&mut handles.inbound, &mut handles.outbound);
             self.child_workflows
@@ -180,9 +194,7 @@ impl SpawnFunctions {
         let id = copy_string_from_wasm(&ctx, &memory, id_ptr, id_len)?;
 
         let workflows = &ctx.data().services.workflows;
-        let interface = workflows
-            .interface(&id)
-            .map(|interface| interface.to_bytes());
+        let interface = workflows.interface(&id).map(Interface::to_bytes);
         interface.into_wasm(&mut WasmAllocator::new(ctx))
     }
 
@@ -205,7 +217,7 @@ impl SpawnFunctions {
             return Err(Trap::new(message));
         };
         let resource = HostResource::from(SpawnConfig {
-            inner: Mutex::new(SpawnConfigInner::new(&interface, id, args)),
+            inner: Mutex::new(SpawnConfigInner::new(interface, id, args)),
         });
         Ok(Some(resource.into_ref()))
     }

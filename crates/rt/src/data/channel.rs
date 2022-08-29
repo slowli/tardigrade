@@ -133,6 +133,11 @@ impl InboundChannelState {
         }
     }
 
+    /// Returns ID of the channel.
+    pub fn id(&self) -> ChannelId {
+        self.channel_id
+    }
+
     /// Checks whether this channel is closed.
     pub fn is_closed(&self) -> bool {
         self.is_closed
@@ -186,6 +191,11 @@ impl OutboundChannelState {
             messages: Vec::new(),
             wakes_on_flush: HashSet::new(),
         }
+    }
+
+    /// Returns ID of the channel.
+    pub fn id(&self) -> ChannelId {
+        self.channel_id
     }
 
     /// Returns the number of messages flushed to this channel.

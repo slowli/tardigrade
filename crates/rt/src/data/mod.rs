@@ -14,6 +14,7 @@ mod time;
 pub use self::{
     channel::{ConsumeError, ConsumeErrorKind, InboundChannelState, OutboundChannelState},
     persistence::PersistError,
+    spawn::ChildWorkflowState,
     task::TaskState,
     time::TimerState,
 };
@@ -26,7 +27,6 @@ pub(crate) use self::{
 use self::{
     channel::ChannelStates,
     helpers::{CurrentExecution, Wakers},
-    spawn::ChildWorkflowState,
     task::TaskQueue,
     time::Timers,
 };

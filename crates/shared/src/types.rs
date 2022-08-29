@@ -75,11 +75,26 @@ impl error::Error for SendError {}
 /// Errors that can occur when spawning a workflow.
 // TODO: generalize as a trap?
 #[derive(Debug)]
-pub struct SpawnError {}
+pub struct SpawnError {
+    message: String,
+}
+
+impl SpawnError {
+    /// Creates an error with the specified `message`.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
 
 impl fmt::Display for SpawnError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("trap has occurred during workflow instantiation")
+        write!(
+            formatter,
+            "error has occurred during workflow instantiation: {}",
+            self.message
+        )
     }
 }
 

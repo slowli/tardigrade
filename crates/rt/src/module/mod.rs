@@ -39,7 +39,7 @@ where
 
 /// WASM linker extension allowing to define additional functions (besides ones provided
 /// by the Tardigrade runtime) to be imported into the workflow WASM module.
-pub trait ExtendLinker: 'static {
+pub trait ExtendLinker: Send + Sync + 'static {
     /// Name of the module imported into WASM.
     const MODULE_NAME: &'static str;
 
@@ -48,7 +48,7 @@ pub trait ExtendLinker: 'static {
 }
 
 /// Object-safe version of `ExtendLinker`.
-trait LowLevelExtendLinker {
+trait LowLevelExtendLinker: Send + Sync + 'static {
     fn extend_linker(
         &self,
         store: &mut Store<WorkflowData>,
@@ -400,5 +400,16 @@ impl<W> WorkflowSpawner<W> {
     pub fn with_clock(mut self, clock: impl Clock) -> Self {
         self.services.clock = Arc::new(clock);
         self
+    }
+
+    pub(crate) fn erase(self) -> WorkflowSpawner<()> {
+        WorkflowSpawner {
+            module: self.module,
+            services: self.services,
+            interface: self.interface.erase(),
+            workflow_name: self.workflow_name,
+            linker_extensions: self.linker_extensions,
+            data_section: self.data_section,
+        }
     }
 }

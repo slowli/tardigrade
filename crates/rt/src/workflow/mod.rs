@@ -14,16 +14,16 @@ pub use self::persistence::PersistedWorkflow;
 
 use crate::{
     data::{
-        ConsumeError, InboundChannelState, OutboundChannelState, PersistError, TaskState,
-        TimerState, WorkflowData,
+        ChildWorkflowState, ConsumeError, InboundChannelState, OutboundChannelState, PersistError,
+        TaskState, TimerState, WorkflowData,
     },
     module::{DataSection, ModuleExports, WorkflowSpawner},
     receipt::{
         Event, ExecutedFunction, Execution, ExecutionError, ExtendedTrap, Receipt,
         ResourceEventKind, ResourceId, WakeUpCause,
     },
-    services::ChannelHandles,
-    TaskId, TimerId,
+    services::{ChannelHandles, Services},
+    TaskId, TimerId, WorkflowId,
 };
 use tardigrade::{interface::Interface, workflow::WorkflowFn, Encode};
 
@@ -48,18 +48,23 @@ impl<W: WorkflowFn> WorkflowSpawner<W> {
     ///
     /// Returns an error in case preparations for instantiation (e.g., extending the WASM linker
     /// with imports) fails.
-    pub fn spawn(&self, data: W::Args) -> anyhow::Result<InitializingWorkflow<W>> {
-        let raw_data = W::Codec::default().encode_value(data);
+    pub fn spawn(&self, args: W::Args) -> anyhow::Result<InitializingWorkflow<W>> {
         let handles = self.create_channel_handles();
-        let state = WorkflowData::new(
-            self.interface().clone().erase(),
-            &handles,
-            self.services.clone(),
-        );
+        self.do_spawn(args, &handles, self.services.clone())
+    }
+
+    pub(crate) fn do_spawn(
+        &self,
+        args: W::Args,
+        handles: &ChannelHandles<'_>,
+        services: Services,
+    ) -> anyhow::Result<InitializingWorkflow<W>> {
+        let raw_args = W::Codec::default().encode_value(args);
+        let state = WorkflowData::new(self.interface().clone().erase(), handles, services);
         let workflow = Workflow::from_state(self, state)?;
         Ok(InitializingWorkflow {
             inner: workflow,
-            raw_data,
+            raw_args,
         })
     }
 
@@ -85,7 +90,7 @@ impl<W: WorkflowFn> WorkflowSpawner<W> {
 #[must_use = "Should be initialized by calling `Self::init()`"]
 pub struct InitializingWorkflow<W> {
     inner: Workflow<W>,
-    raw_data: Vec<u8>,
+    raw_args: Vec<u8>,
 }
 
 impl<W> fmt::Debug for InitializingWorkflow<W> {
@@ -93,7 +98,7 @@ impl<W> fmt::Debug for InitializingWorkflow<W> {
         formatter
             .debug_struct("InitializingWorkflow")
             .field("inner", &self.inner)
-            .field("raw_data_len", &self.raw_data.len())
+            .field("raw_args_len", &self.raw_args.len())
             .finish()
     }
 }
@@ -106,7 +111,7 @@ impl<W> InitializingWorkflow<W> {
     ///
     /// Returns an error if the entry point of the workflow or initially polling it fails.
     pub fn init(mut self) -> Result<Receipt<Workflow<W>>, ExecutionError> {
-        let mut spawn_receipt = self.inner.spawn_main_task(&self.raw_data)?;
+        let mut spawn_receipt = self.inner.spawn_main_task(&self.raw_args)?;
         let tick_receipt = self.inner.tick()?;
         spawn_receipt.extend(tick_receipt);
         Ok(spawn_receipt.map(|()| self.inner))
@@ -324,8 +329,12 @@ impl<W> Workflow<W> {
         Ok(())
     }
 
+    /// Enumerates child workflows.
+    pub fn child_workflows(&self) -> impl Iterator<Item = (WorkflowId, &ChildWorkflowState)> + '_ {
+        self.store.data().child_workflows()
+    }
+
     /// Returns the current state of an inbound channel with the specified name.
-    // TODO: better interface (maybe, via an immutable handle?)
     pub fn inbound_channel(&self, channel_name: &str) -> Option<&InboundChannelState> {
         self.store.data().inbound_channel(channel_name)
     }
