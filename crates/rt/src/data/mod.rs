@@ -115,13 +115,19 @@ impl WorkflowData {
     }
 
     #[cfg(test)]
-    pub(crate) fn inbound_channel_ref(name: impl Into<String>) -> ExternRef {
-        HostResource::inbound_channel(None, name.into()).into_ref()
+    pub(crate) fn inbound_channel_ref(
+        workflow_id: Option<WorkflowId>,
+        name: impl Into<String>,
+    ) -> ExternRef {
+        HostResource::inbound_channel(workflow_id, name.into()).into_ref()
     }
 
     #[cfg(test)]
-    pub(crate) fn outbound_channel_ref(name: impl Into<String>) -> ExternRef {
-        HostResource::outbound_channel(None, name.into()).into_ref()
+    pub(crate) fn outbound_channel_ref(
+        workflow_id: Option<WorkflowId>,
+        name: impl Into<String>,
+    ) -> ExternRef {
+        HostResource::outbound_channel(workflow_id, name.into()).into_ref()
     }
 }
 

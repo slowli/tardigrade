@@ -21,6 +21,9 @@ use tardigrade_shared::SendError;
 pub enum WakeUpCause {
     /// Woken up by an inbound message.
     InboundMessage {
+        /// ID of the remote workflow that the channel is attached to, or `None` if the channel
+        /// is local.
+        workflow_id: Option<WorkflowId>,
         /// Name of the inbound channel that has received a message.
         channel_name: String,
         /// 0-based message index.
@@ -28,11 +31,17 @@ pub enum WakeUpCause {
     },
     /// Woken up by an inbound channel getting closed.
     ChannelClosed {
+        /// ID of the remote workflow that the channel is attached to, or `None` if the channel
+        /// is local.
+        workflow_id: Option<WorkflowId>,
         /// Name of the inbound channel that was closed.
         channel_name: String,
     },
     /// Woken up by flushing an outbound channel.
     Flush {
+        /// ID of the remote workflow that the channel is attached to, or `None` if the channel
+        /// is local.
+        workflow_id: Option<WorkflowId>,
         /// Name of the outbound channel that was flushed.
         channel_name: String,
         /// Indexes of flushed messages.

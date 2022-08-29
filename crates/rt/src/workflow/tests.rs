@@ -45,7 +45,7 @@ fn initialize_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()
 }
 
 fn emit_event_and_flush(ctx: &mut StoreContextMut<'_, WorkflowData>) -> Result<(), Trap> {
-    let events = Some(WorkflowData::outbound_channel_ref("events"));
+    let events = Some(WorkflowData::outbound_channel_ref(None, "events"));
 
     let poll_res =
         WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), events.clone(), POLL_CX)?;
@@ -60,11 +60,10 @@ fn emit_event_and_flush(ctx: &mut StoreContextMut<'_, WorkflowData>) -> Result<(
     Ok(())
 }
 
-#[allow(clippy::unnecessary_wraps)] // more convenient for use with mock `Answers`
 fn consume_message(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
-    let orders = Some(WorkflowData::inbound_channel_ref("orders"));
-    let events = Some(WorkflowData::outbound_channel_ref("events"));
-    let traces = Some(WorkflowData::outbound_channel_ref("traces"));
+    let orders = Some(WorkflowData::inbound_channel_ref(None, "orders"));
+    let events = Some(WorkflowData::outbound_channel_ref(None, "events"));
+    let traces = Some(WorkflowData::outbound_channel_ref(None, "traces"));
 
     // Poll the channel again, since we yielded on this previously
     let poll_res =
@@ -150,7 +149,7 @@ fn receiving_inbound_message() {
     let mut workflow = create_workflow(MockScheduler::default()).into_inner();
 
     workflow
-        .push_inbound_message("orders", b"order #1".to_vec())
+        .push_inbound_message(None, "orders", b"order #1".to_vec())
         .unwrap();
     let receipt = workflow.tick().unwrap();
 
@@ -161,10 +160,10 @@ fn receiving_inbound_message() {
 
     assert_inbound_message_receipt(&receipt);
 
-    let (_, traces) = workflow.take_outbound_messages("traces");
+    let (_, traces) = workflow.take_outbound_messages(None, "traces");
     assert_eq!(traces.len(), 1);
     assert_eq!(&traces[0], b"trace #1");
-    let (_, events) = workflow.take_outbound_messages("events");
+    let (_, events) = workflow.take_outbound_messages(None, "events");
     assert_eq!(events.len(), 1);
     assert_eq!(&events[0], b"event #1");
 
@@ -174,7 +173,7 @@ fn receiving_inbound_message() {
     for cause in &causes {
         assert_matches!(
             cause,
-            WakeUpCause::Flush { channel_name, message_indexes }
+            WakeUpCause::Flush { channel_name, message_indexes, workflow_id: None }
                 if channel_name == "events" && *message_indexes == (0..1)
         );
     }
@@ -188,6 +187,7 @@ fn assert_inbound_message_receipt(receipt: &Receipt) {
             function: ExecutedFunction::Waker {
                 waker_id: 0,
                 wake_up_cause: WakeUpCause::InboundMessage {
+                    workflow_id: None,
                     channel_name,
                     message_index: 0,
                 }
@@ -312,7 +312,7 @@ fn spawning_and_cancelling_task() {
 
     // Push the message in order to tick the main task.
     workflow
-        .push_inbound_message("orders", b"order #1".to_vec())
+        .push_inbound_message(None, "orders", b"order #1".to_vec())
         .unwrap();
     let receipt = workflow.tick().unwrap();
 
@@ -359,7 +359,7 @@ fn rolling_back_task_spawning() {
 
     // Push the message in order to tick the main task.
     workflow
-        .push_inbound_message("orders", b"order #1".to_vec())
+        .push_inbound_message(None, "orders", b"order #1".to_vec())
         .unwrap();
     let err = workflow.tick().unwrap_err();
     assert_matches!(
@@ -393,7 +393,7 @@ fn rolling_back_task_abort() {
 
     // Push the message in order to tick the main task.
     workflow
-        .push_inbound_message("orders", b"order #1".to_vec())
+        .push_inbound_message(None, "orders", b"order #1".to_vec())
         .unwrap();
     let err = workflow.tick().unwrap_err();
     assert_eq!(err.receipt().executions().len(), 2);
@@ -407,7 +407,7 @@ fn rolling_back_task_abort() {
 #[test]
 fn rolling_back_emitting_messages_on_trap() {
     let emit_message_and_trap: MockPollFn = |mut ctx| {
-        let traces = Some(WorkflowData::outbound_channel_ref("traces"));
+        let traces = Some(WorkflowData::outbound_channel_ref(None, "traces"));
         let poll_res = WorkflowFunctions::poll_ready_for_sender(
             ctx.as_context_mut(),
             traces.clone(),
@@ -427,11 +427,11 @@ fn rolling_back_emitting_messages_on_trap() {
 
     // Push the message in order to tick the main task.
     workflow
-        .push_inbound_message("orders", b"order #1".to_vec())
+        .push_inbound_message(None, "orders", b"order #1".to_vec())
         .unwrap();
     workflow.tick().unwrap_err();
 
-    let (_, messages) = workflow.take_outbound_messages("traces");
+    let (_, messages) = workflow.take_outbound_messages(None, "traces");
     assert!(messages.is_empty());
 }
 
@@ -447,7 +447,7 @@ fn rolling_back_placing_waker_on_trap() {
 
     // Push the message in order to tick the main task.
     workflow
-        .push_inbound_message("orders", b"order #1".to_vec())
+        .push_inbound_message(None, "orders", b"order #1".to_vec())
         .unwrap();
     workflow.tick().unwrap_err();
 
@@ -509,7 +509,7 @@ fn timers_basics() {
 fn dropping_inbound_channel_in_workflow() {
     let drop_channel: MockPollFn = |mut ctx| {
         let _ = initialize_task(ctx.as_context_mut())?;
-        let orders = WorkflowData::inbound_channel_ref("orders");
+        let orders = WorkflowData::inbound_channel_ref(None, "orders");
         WorkflowFunctions::drop_ref(ctx, Some(orders))?;
         Ok(Poll::Pending)
     };

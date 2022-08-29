@@ -286,9 +286,9 @@ impl<W> AsyncEnv<W> {
             ListenedEventOutput::Channel { name, message } => {
                 self.tick_workflow(|workflow| {
                     if let Some(message) = message {
-                        workflow.push_inbound_message(&name, message).unwrap();
+                        workflow.push_inbound_message(None, &name, message).unwrap();
                     } else {
-                        workflow.close_inbound_channel(&name).unwrap();
+                        workflow.close_inbound_channel(None, &name).unwrap();
                     }
                     // ^ `unwrap()`s above are safe: we know `workflow` listens to the channel
                     workflow.tick()
@@ -308,7 +308,7 @@ impl<W> AsyncEnv<W> {
         loop {
             let mut messages_sent = false;
             for (name, sx) in &mut self.outbound_channels {
-                let (_, messages) = self.workflow.take_outbound_messages(name);
+                let (_, messages) = self.workflow.take_outbound_messages(None, name);
                 messages_sent = messages_sent || !messages.is_empty();
                 for message in messages {
                     sx.unbounded_send(message).ok();

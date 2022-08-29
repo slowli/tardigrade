@@ -334,6 +334,12 @@ impl<W> Workflow<W> {
         self.store.data().child_workflows()
     }
 
+    /// Returns the local state of the child workflow with the specified ID, or `None`
+    /// if a workflow with such ID was not spawned by this workflow.
+    pub fn child_workflow(&self, id: WorkflowId) -> Option<&ChildWorkflowState> {
+        self.store.data().child_workflow(id)
+    }
+
     /// Returns the current state of an inbound channel with the specified name.
     pub fn inbound_channel(&self, channel_name: &str) -> Option<&InboundChannelState> {
         self.store.data().inbound_channel(channel_name)
@@ -346,6 +352,7 @@ impl<W> Workflow<W> {
 
     pub(crate) fn push_inbound_message(
         &mut self,
+        workflow_id: Option<WorkflowId>,
         channel_name: &str,
         message: Vec<u8>,
     ) -> Result<(), ConsumeError> {
@@ -353,7 +360,7 @@ impl<W> Workflow<W> {
         let result = self
             .store
             .data_mut()
-            .push_inbound_message(channel_name, message);
+            .push_inbound_message(workflow_id, channel_name, message);
         crate::log_result!(
             result,
             "Consumed message ({} bytes) for channel `{}`",
@@ -362,8 +369,15 @@ impl<W> Workflow<W> {
         )
     }
 
-    pub(crate) fn close_inbound_channel(&mut self, channel_name: &str) -> Result<(), ConsumeError> {
-        let result = self.store.data_mut().close_inbound_channel(channel_name);
+    pub(crate) fn close_inbound_channel(
+        &mut self,
+        workflow_id: Option<WorkflowId>,
+        channel_name: &str,
+    ) -> Result<(), ConsumeError> {
+        let result = self
+            .store
+            .data_mut()
+            .close_inbound_channel(workflow_id, channel_name);
         crate::log_result!(result, "Closed inbound channel `{}`", channel_name)
     }
 
@@ -386,8 +400,15 @@ impl<W> Workflow<W> {
         }
     }
 
-    pub(crate) fn take_outbound_messages(&mut self, channel_name: &str) -> (usize, Vec<Vec<u8>>) {
-        let (start_idx, messages) = self.store.data_mut().take_outbound_messages(channel_name);
+    pub(crate) fn take_outbound_messages(
+        &mut self,
+        workflow_id: Option<WorkflowId>,
+        channel_name: &str,
+    ) -> (usize, Vec<Vec<u8>>) {
+        let (start_idx, messages) = self
+            .store
+            .data_mut()
+            .take_outbound_messages(workflow_id, channel_name);
         crate::trace!(
             "Taken messages with lengths {:?} from channel `{}`",
             messages.iter().map(Vec::len).collect::<Vec<_>>(),

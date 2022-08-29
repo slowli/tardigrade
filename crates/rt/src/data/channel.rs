@@ -248,8 +248,8 @@ impl ChannelStates {
 }
 
 impl WorkflowData {
-    fn channels_mut(&mut self, channel_ref: &ChannelRef) -> &mut ChannelStates {
-        if let Some(workflow_id) = channel_ref.workflow_id {
+    fn channels_mut(&mut self, workflow_id: Option<WorkflowId>) -> &mut ChannelStates {
+        if let Some(workflow_id) = workflow_id {
             &mut self.child_workflows.get_mut(&workflow_id).unwrap().channels
         } else {
             &mut self.channels
@@ -258,10 +258,15 @@ impl WorkflowData {
 
     pub(crate) fn push_inbound_message(
         &mut self,
+        workflow_id: Option<WorkflowId>,
         channel_name: &str,
         message: Vec<u8>,
     ) -> Result<(), ConsumeError> {
-        let channel_state = self.channels.inbound.get_mut(channel_name).unwrap();
+        let channel_state = self
+            .channels_mut(workflow_id)
+            .inbound
+            .get_mut(channel_name)
+            .unwrap();
         // ^ `unwrap()` safety is guaranteed by previous checks.
 
         if channel_state.is_closed {
@@ -284,6 +289,7 @@ impl WorkflowData {
         self.schedule_wakers(
             wakers,
             WakeUpCause::InboundMessage {
+                workflow_id,
                 channel_name: channel_name.to_owned(),
                 message_index,
             },
@@ -291,8 +297,16 @@ impl WorkflowData {
         Ok(())
     }
 
-    pub(crate) fn close_inbound_channel(&mut self, channel_name: &str) -> Result<(), ConsumeError> {
-        let channel_state = self.channels.inbound.get_mut(channel_name).unwrap();
+    pub(crate) fn close_inbound_channel(
+        &mut self,
+        workflow_id: Option<WorkflowId>,
+        channel_name: &str,
+    ) -> Result<(), ConsumeError> {
+        let channel_state = self
+            .channels_mut(workflow_id)
+            .inbound
+            .get_mut(channel_name)
+            .unwrap();
         // ^ `unwrap()` safety is guaranteed by previous checks.
         if channel_state.is_closed {
             return Ok(()); // no further actions required
@@ -312,6 +326,7 @@ impl WorkflowData {
         self.schedule_wakers(
             wakers,
             WakeUpCause::ChannelClosed {
+                workflow_id,
                 channel_name: channel_name.to_owned(),
             },
         );
@@ -322,7 +337,7 @@ impl WorkflowData {
         &mut self,
         channel_ref: &ChannelRef,
     ) -> HashSet<WakerId> {
-        let channels = self.channels_mut(channel_ref);
+        let channels = self.channels_mut(channel_ref.workflow_id);
         let channel_state = channels.inbound.get_mut(&channel_ref.name).unwrap();
         mem::take(&mut channel_state.wakes_on_next_element)
     }
@@ -347,7 +362,7 @@ impl WorkflowData {
         &mut self,
         channel_ref: &ChannelRef,
     ) -> Option<&mut InboundChannelState> {
-        self.channels_mut(channel_ref)
+        self.channels_mut(channel_ref.workflow_id)
             .inbound
             .get_mut(&channel_ref.name)
     }
@@ -370,7 +385,7 @@ impl WorkflowData {
         &mut self,
         channel_ref: &ChannelRef,
     ) -> Option<&mut OutboundChannelState> {
-        self.channels_mut(channel_ref)
+        self.channels_mut(channel_ref.workflow_id)
             .outbound
             .get_mut(&channel_ref.name)
     }
@@ -405,7 +420,7 @@ impl WorkflowData {
         channel_ref: &ChannelRef,
         message: Vec<u8>,
     ) -> Result<(), SendError> {
-        let channels = self.channels_mut(channel_ref);
+        let channels = self.channels_mut(channel_ref.workflow_id);
         let channel_state = channels.outbound.get_mut(&channel_ref.name).unwrap();
 
         if channel_state.is_closed {
@@ -426,7 +441,7 @@ impl WorkflowData {
         channel_ref: &ChannelRef,
         cx: &mut WasmContext,
     ) -> PollMessage {
-        let channels = self.channels_mut(channel_ref);
+        let channels = self.channels_mut(channel_ref.workflow_id);
         let channel_state = channels.inbound.get_mut(&channel_ref.name).unwrap();
         // ^ `unwrap()` safety is guaranteed by resource handling
 
@@ -464,8 +479,16 @@ impl WorkflowData {
         poll_result.wake_if_pending(cx, || WakerPlacement::OutboundChannel(channel_ref.clone()))
     }
 
-    pub(crate) fn take_outbound_messages(&mut self, channel_name: &str) -> (usize, Vec<Vec<u8>>) {
-        let channel_state = self.channels.outbound.get_mut(channel_name).unwrap();
+    pub(crate) fn take_outbound_messages(
+        &mut self,
+        workflow_id: Option<WorkflowId>,
+        channel_name: &str,
+    ) -> (usize, Vec<Vec<u8>>) {
+        let channel_state = self
+            .channels_mut(workflow_id)
+            .outbound
+            .get_mut(channel_name)
+            .unwrap();
         let start_message_idx = channel_state.flushed_messages;
         let messages = mem::take(&mut channel_state.messages);
         channel_state.flushed_messages += messages.len();
@@ -475,6 +498,7 @@ impl WorkflowData {
             self.schedule_wakers(
                 wakers,
                 WakeUpCause::Flush {
+                    workflow_id,
                     channel_name: channel_name.to_owned(),
                     message_indexes: start_message_idx..(start_message_idx + messages.len()),
                 },

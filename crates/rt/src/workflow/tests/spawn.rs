@@ -211,7 +211,134 @@ fn spawning_child_workflow_errors() {
     let poll_fns = Answers::from_value(spawn_child_workflow_errors as MockPollFn);
     let _guard = ExportsMock::prepare(poll_fns);
     let manager = Arc::new(MockWorkflowManager::new());
-    let workflow = create_workflow_with_manager(Arc::clone(&manager)).into_inner();
+    let workflow = create_workflow_with_manager(manager).into_inner();
 
     assert!(workflow.child_workflows().next().is_none());
+}
+
+fn consume_message_from_child(
+    mut ctx: StoreContextMut<'_, WorkflowData>,
+) -> Result<Poll<()>, Trap> {
+    let traces = Some(WorkflowData::inbound_channel_ref(Some(1), "traces"));
+    let commands = Some(WorkflowData::outbound_channel_ref(Some(1), "commands"));
+
+    let poll_res =
+        WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), traces, POLL_CX)?;
+
+    let (msg_ptr, msg_len) = decode_string(poll_res);
+    let memory = ctx.data().exports().memory;
+    let message = copy_string_from_wasm(&ctx, &memory, msg_ptr, msg_len)?;
+    assert_eq!(message, "trace #1");
+
+    // Emit a command to the child workflow.
+    let poll_res =
+        WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), commands.clone(), POLL_CX)?;
+    assert_eq!(poll_res, 0); // Poll::Ready
+
+    let (command_ptr, command_len) =
+        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"command #1")?;
+    WorkflowFunctions::start_send(
+        ctx.as_context_mut(),
+        commands.clone(),
+        command_ptr,
+        command_len,
+    )?;
+
+    let poll_res =
+        WorkflowFunctions::poll_flush_for_sender(ctx.as_context_mut(), commands, POLL_CX)?;
+    assert_eq!(poll_res, -1); // Poll::Pending
+
+    Ok(Poll::Pending)
+}
+
+#[test]
+fn consuming_message_from_child_workflow() {
+    let poll_fns = Answers::from_values([spawn_child_workflow, consume_message_from_child]);
+    let exports_guard = ExportsMock::prepare(poll_fns);
+    let manager = Arc::new(MockWorkflowManager::new());
+    let mut workflow = create_workflow_with_manager(manager).into_inner();
+
+    workflow
+        .push_inbound_message(Some(1), "traces", b"trace #1".to_vec())
+        .unwrap();
+    let receipt = workflow.tick().unwrap();
+
+    let exports = exports_guard.into_inner();
+    assert_eq!(exports.consumed_wakers.len(), 1);
+    assert!(exports.consumed_wakers.contains(&0));
+
+    assert_child_inbound_message_receipt(&receipt);
+
+    let (start_idx, commands) = workflow.take_outbound_messages(Some(1), "commands");
+    assert_eq!(start_idx, 0);
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0], b"command #1");
+    let child = workflow.child_workflow(1).unwrap();
+    assert_eq!(
+        child.inbound_channel("traces").unwrap().received_messages(),
+        1
+    );
+    assert_eq!(
+        child
+            .outbound_channel("commands")
+            .unwrap()
+            .flushed_messages(),
+        1
+    );
+}
+
+fn assert_child_inbound_message_receipt(receipt: &Receipt) {
+    assert_matches!(
+        &receipt.executions()[0],
+        Execution {
+            function: ExecutedFunction::Waker {
+                waker_id: 0,
+                wake_up_cause: WakeUpCause::InboundMessage {
+                    workflow_id: Some(1),
+                    channel_name,
+                    message_index: 0,
+                }
+            },
+            events,
+        } if channel_name == "traces" && events.is_empty()
+    );
+    let task_execution = &receipt.executions()[1];
+    assert_matches!(
+        task_execution.function,
+        ExecutedFunction::Task { task_id: 0, .. }
+    );
+
+    let events = task_execution.events.iter().map(|evt| match evt {
+        Event::Channel(evt) => evt,
+        _ => panic!("unexpected event"),
+    });
+    let events: Vec<_> = events.collect();
+    assert_matches!(
+        &events[0..4],
+        [
+            ChannelEvent {
+                kind: ChannelEventKind::InboundChannelPolled { result: Poll::Ready(Some(_)) },
+                channel_name: traces,
+                workflow_id: Some(1),
+            },
+            ChannelEvent {
+                kind: ChannelEventKind::OutboundChannelReady {
+                    result: Poll::Ready(Ok(())),
+                },
+                channel_name: commands,
+                workflow_id: Some(1),
+            },
+            ChannelEvent {
+                kind: ChannelEventKind::OutboundMessageSent { .. },
+                channel_name: commands2,
+                workflow_id: Some(1),
+            },
+            ChannelEvent {
+                kind: ChannelEventKind::OutboundChannelFlushed { result: Poll::Pending },
+                channel_name: commands3,
+                workflow_id: Some(1),
+            },
+        ] if traces == "traces" && commands == "commands" && commands2 == "commands"
+            && commands3 == "commands"
+    );
 }

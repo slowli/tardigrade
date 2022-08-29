@@ -137,7 +137,7 @@ impl<'a, T, C: Encode<T>, W> MessageSender<'a, T, C, W> {
         let raw_message = self.codec.encode_value(message);
         self.workflow
             .borrow_mut()
-            .push_inbound_message(&self.channel_name, raw_message)?;
+            .push_inbound_message(None, &self.channel_name, raw_message)?;
         Ok(SentMessage {
             workflow: Rc::clone(&self.workflow),
         })
@@ -152,7 +152,7 @@ impl<'a, T, C: Encode<T>, W> MessageSender<'a, T, C, W> {
     pub fn close(self) -> Result<SentMessage<'a, W>, ConsumeError> {
         self.workflow
             .borrow_mut()
-            .close_inbound_channel(&self.channel_name)?;
+            .close_inbound_channel(None, &self.channel_name)?;
         Ok(SentMessage {
             workflow: Rc::clone(&self.workflow),
         })
@@ -219,7 +219,7 @@ impl<T, C: Decode<T>, W> MessageReceiver<'_, T, C, W> {
     pub fn take_messages(&mut self) -> Result<Receipt<TakenMessages<T, C>>, ExecutionError> {
         let (start_idx, raw_messages, exec_result) = {
             let mut workflow = self.workflow.borrow_mut();
-            let (start_idx, messages) = workflow.take_outbound_messages(&self.channel_name);
+            let (start_idx, messages) = workflow.take_outbound_messages(None, &self.channel_name);
             (start_idx, messages, workflow.tick())
         };
         let messages = TakenMessages {

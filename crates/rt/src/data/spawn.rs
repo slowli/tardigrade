@@ -138,6 +138,10 @@ impl WorkflowData {
         self.child_workflows.iter().map(|(id, state)| (*id, state))
     }
 
+    pub fn child_workflow(&self, id: WorkflowId) -> Option<&ChildWorkflowState> {
+        self.child_workflows.get(&id)
+    }
+
     fn spawn_workflow(&mut self, config: &SpawnConfigInner) -> Result<WorkflowId, SpawnError> {
         let mut handles = config.create_handles(&*self.services.channels);
         let workflows = &self.services.workflows;
