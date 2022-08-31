@@ -95,10 +95,11 @@ use std::{
     future::Future,
 };
 
+use crate::workflow::UntypedHandle;
 use crate::{
     interface::Interface,
-    spawn::{RemoteWorkflow, Spawner, WorkflowDefinition},
-    workflow::{Handle, SpawnWorkflow, TakeHandle, TaskHandle, UntypedHandle, Wasm},
+    spawn::{ManageWorkflowsExt, RemoteWorkflow, Spawner, Workflows},
+    workflow::{Handle, SpawnWorkflow, TakeHandle, TaskHandle, Wasm},
 };
 
 #[derive(Debug)]
@@ -240,22 +241,6 @@ pub struct WorkflowRegistry {
 }
 
 impl WorkflowRegistry {
-    pub(crate) fn interface(&self, id: &str) -> Option<&Interface<()>> {
-        self.workflows.get(id).map(|workflow| &workflow.interface)
-    }
-
-    pub(crate) fn spawn(
-        &self,
-        id: &str,
-        args: Vec<u8>,
-        handles: UntypedHandle<Wasm>,
-    ) -> TaskHandle {
-        let workflow = self.workflows.get(id).unwrap_or_else(|| {
-            panic!("workflow `{}` is not defined", id);
-        });
-        (workflow.spawn_fn)(args, Wasm::new(handles))
-    }
-
     /// Inserts a new workflow into this registry.
     #[allow(clippy::missing_panics_doc)] // false positive
     pub fn insert<W: SpawnWorkflow>(&mut self, id: impl Into<String>) {
@@ -268,6 +253,24 @@ impl WorkflowRegistry {
                 spawn_fn: Box::new(spawn_fn),
             },
         );
+    }
+
+    pub(crate) fn interface(&self, definition_id: &str) -> Option<&Interface<()>> {
+        self.workflows
+            .get(definition_id)
+            .map(|workflow| &workflow.interface)
+    }
+
+    pub(crate) fn create_workflow(
+        &self,
+        definition_id: &str,
+        args: Vec<u8>,
+        remote_handles: UntypedHandle<Wasm>,
+    ) -> TaskHandle {
+        let workflow = self.workflows.get(definition_id).unwrap_or_else(|| {
+            panic!("workflow `{}` is not defined", definition_id);
+        });
+        (workflow.spawn_fn)(args, Wasm::new(remote_handles))
     }
 }
 
@@ -371,7 +374,8 @@ impl Runtime {
 
         self.workflow_registry.insert::<W>(WORKFLOW_ID);
         self.run(async {
-            let workflow_def = WorkflowDefinition::new(WORKFLOW_ID)
+            let workflow_def = Workflows
+                .definition(WORKFLOW_ID)
                 .expect("failed getting workflow definition")
                 .downcast::<W>()
                 .unwrap();

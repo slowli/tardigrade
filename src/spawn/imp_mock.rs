@@ -3,29 +3,49 @@
 use pin_project_lite::pin_project;
 
 use std::{
-    cell::RefCell,
+    borrow::Cow,
     collections::HashMap,
     future::Future,
     pin::Pin,
     task::{Context, Poll},
 };
+use tardigrade_shared::interface::Interface;
 
-use super::RemoteHandle;
+use super::{ChannelHandles, ChannelSpawnConfig, ManageWorkflows, RemoteHandle, Workflows};
 use crate::{
     channel::{imp::raw_channel, RawReceiver, RawSender},
-    interface::Interface,
+    interface::ChannelKind,
     test::Runtime,
     workflow::{UntypedHandle, Wasm},
     JoinHandle, Raw,
 };
 use tardigrade_shared::{JoinError, SpawnError};
 
-pub(super) fn workflow_interface(id: &str) -> Option<Vec<u8>> {
-    Runtime::with(|rt| {
-        rt.workflow_registry()
-            .interface(id)
-            .map(Interface::to_bytes)
-    })
+impl ManageWorkflows for Workflows {
+    type Handle = super::RemoteWorkflow;
+
+    fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface<()>>> {
+        Runtime::with(|rt| {
+            rt.workflow_registry()
+                .interface(definition_id)
+                .map(|interface| Cow::Owned(interface.clone()))
+        })
+    }
+
+    fn create_workflow(
+        &self,
+        definition_id: &str,
+        args: Vec<u8>,
+        handles: &ChannelHandles,
+    ) -> Result<Self::Handle, SpawnError> {
+        let (local_handles, remote_handles) = handles.create_handles();
+        let main_task = Runtime::with(|rt| {
+            rt.workflow_registry()
+                .create_workflow(definition_id, args, remote_handles)
+        });
+        let main_task = crate::spawn("_workflow", main_task.into_inner());
+        Ok(super::RemoteWorkflow::from_parts(main_task, local_handles))
+    }
 }
 
 #[derive(Debug)]
@@ -44,38 +64,33 @@ impl Default for ChannelPair {
     }
 }
 
-#[derive(Debug)]
-struct SpawnerInner {
-    inbound_channels: HashMap<String, ChannelPair>,
-    outbound_channels: HashMap<String, ChannelPair>,
-}
+impl ChannelHandles {
+    fn create_handles(&self) -> (UntypedHandle<super::RemoteWorkflow>, UntypedHandle<Wasm>) {
+        let mut inbound_channel_pairs: HashMap<_, _> =
+            Self::map_config(&self.inbound, ChannelKind::Inbound);
+        let mut outbound_channel_pairs: HashMap<_, _> =
+            Self::map_config(&self.outbound, ChannelKind::Outbound);
 
-impl SpawnerInner {
-    fn split(mut self) -> (UntypedHandle<super::RemoteWorkflow>, UntypedHandle<Wasm>) {
-        let inbound_channels = self
-            .inbound_channels
+        let inbound_channels = inbound_channel_pairs
             .iter_mut()
-            .map(|(name, channel)| (name.clone(), channel.rx.take().unwrap()))
+            .map(|(&name, channel)| (name.to_owned(), channel.rx.take().unwrap()))
             .collect();
-        let outbound_channels = self
-            .outbound_channels
+        let outbound_channels = outbound_channel_pairs
             .iter_mut()
-            .map(|(name, channel)| (name.clone(), channel.sx.take().unwrap()))
+            .map(|(&name, channel)| (name.to_owned(), channel.sx.take().unwrap()))
             .collect();
         let remote = UntypedHandle {
             inbound_channels,
             outbound_channels,
         };
 
-        let inbound_channels = self
-            .inbound_channels
+        let inbound_channels = inbound_channel_pairs
             .into_iter()
-            .map(|(name, channel)| (name, channel.sx))
+            .map(|(name, channel)| (name.to_owned(), channel.sx))
             .collect();
-        let outbound_channels = self
-            .outbound_channels
+        let outbound_channels = outbound_channel_pairs
             .into_iter()
-            .map(|(name, channel)| (name, channel.rx))
+            .map(|(name, channel)| (name.to_owned(), channel.rx))
             .collect();
         let local = UntypedHandle {
             inbound_channels,
@@ -83,87 +98,33 @@ impl SpawnerInner {
         };
         (local, remote)
     }
-}
 
-#[derive(Debug)]
-pub(super) struct Spawner {
-    inner: RefCell<SpawnerInner>,
-    id: String,
-    args: Vec<u8>,
-}
-
-impl Spawner {
-    pub fn new(id: &str, args: Vec<u8>) -> Self {
-        let interface = workflow_interface(id).unwrap_or_else(|| {
-            panic!("workflow `{}` is not registered", id);
-        });
-        let interface = Interface::from_bytes(&interface);
-
-        let inbound_channels = interface
-            .inbound_channels()
-            .map(|(name, _)| (name.to_owned(), ChannelPair::default()))
-            .collect();
-        let outbound_channels = interface
-            .outbound_channels()
-            .map(|(name, _)| (name.to_owned(), ChannelPair::default()))
-            .collect();
-        Self {
-            inner: RefCell::new(SpawnerInner {
-                inbound_channels,
-                outbound_channels,
-            }),
-            id: id.to_owned(),
-            args,
-        }
-    }
-
-    pub fn close_inbound_channel(&self, channel_name: &str) {
-        let mut borrow = self.inner.borrow_mut();
-        let channel = borrow
-            .inbound_channels
-            .get_mut(channel_name)
-            .unwrap_or_else(|| {
-                panic!(
-                    "attempted closing non-existing inbound channel `{}`",
-                    channel_name
-                );
-            });
-        channel.sx = None;
-    }
-
-    pub fn close_outbound_channel(&self, channel_name: &str) {
-        let mut borrow = self.inner.borrow_mut();
-        let channel = borrow
-            .outbound_channels
-            .get_mut(channel_name)
-            .unwrap_or_else(|| {
-                panic!(
-                    "attempted closing non-existing outbound channel `{}`",
-                    channel_name
-                );
-            });
-        channel.rx = None;
-    }
-
-    #[allow(clippy::unnecessary_wraps)] // for uniformity with WASM bindings
-    pub fn spawn(self) -> Result<RemoteWorkflow, SpawnError> {
-        let (local, remote) = self.inner.into_inner().split();
-        let main_task =
-            Runtime::with(|rt| rt.workflow_registry().spawn(&self.id, self.args, remote));
-
-        Ok(RemoteWorkflow {
-            handle: local,
-            main_task: crate::spawn("_workflow", main_task.into_inner()),
-        })
+    fn map_config(
+        config: &HashMap<String, ChannelSpawnConfig>,
+        local_channel_kind: ChannelKind,
+    ) -> HashMap<&str, ChannelPair> {
+        config
+            .iter()
+            .map(|(name, config)| {
+                let mut pair = ChannelPair::default();
+                if matches!(config, ChannelSpawnConfig::Closed) {
+                    match local_channel_kind {
+                        ChannelKind::Inbound => pair.sx = None,
+                        ChannelKind::Outbound => pair.rx = None,
+                    }
+                }
+                (name.as_str(), pair)
+            })
+            .collect()
     }
 }
 
 pin_project! {
     #[derive(Debug)]
     pub(super) struct RemoteWorkflow {
-        handle: UntypedHandle<super::RemoteWorkflow>,
         #[pin]
         main_task: JoinHandle<()>,
+        handle: UntypedHandle<super::RemoteWorkflow>,
     }
 }
 
@@ -185,6 +146,14 @@ impl RemoteWorkflow {
                 None => RemoteHandle::NotCaptured,
             },
             None => RemoteHandle::None,
+        }
+    }
+}
+
+impl super::RemoteWorkflow {
+    fn from_parts(main_task: JoinHandle<()>, handle: UntypedHandle<super::RemoteWorkflow>) -> Self {
+        Self {
+            inner: RemoteWorkflow { main_task, handle },
         }
     }
 }

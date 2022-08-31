@@ -5,6 +5,7 @@ use futures::{stream, SinkExt, StreamExt};
 mod channel;
 mod requests;
 mod timers;
+// TODO: test child workflows
 
 use tardigrade::{
     channel::{Receiver, Sender},

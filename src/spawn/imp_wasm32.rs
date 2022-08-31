@@ -3,117 +3,123 @@
 use externref::{externref, Resource};
 
 use std::{
+    borrow::Cow,
     future::Future,
     pin::Pin,
     task::{Context, Poll},
 };
 
-use super::RemoteHandle;
+use super::{ChannelHandles, ManageWorkflows, RemoteHandle, Workflows};
 use crate::channel::{
     imp::{mpsc_receiver_get, mpsc_sender_get, ACCESS_ERROR_PAD},
     RawReceiver, RawSender,
 };
-use tardigrade_shared::{abi::IntoWasm, interface::ChannelKind, JoinError, SpawnError};
+use tardigrade_shared::{
+    abi::{IntoWasm, TryFromWasm},
+    interface::{ChannelKind, Interface},
+    JoinError, SpawnError,
+};
 
 static mut SPAWN_ERROR_PAD: i64 = 0;
 
-pub(super) fn workflow_interface(id: &str) -> Option<Vec<u8>> {
-    #[link(wasm_import_module = "tardigrade_rt")]
-    extern "C" {
-        #[link_name = "workflow::interface"]
-        fn get_workflow_interface(id_ptr: *const u8, id_len: usize) -> u64;
-    }
+impl ManageWorkflows for Workflows {
+    type Handle = super::RemoteWorkflow;
 
-    unsafe {
-        let raw = get_workflow_interface(id.as_ptr(), id.len());
-        if raw == 0 {
-            None
-        } else {
-            let ptr = (raw >> 32) as *mut u8;
-            let len = (raw & 0xffff_ffff) as usize;
-            Some(Vec::from_raw_parts(ptr, len, len))
-        }
-    }
-}
-
-#[externref]
-#[link(wasm_import_module = "tardigrade_rt")]
-extern "C" {
-    // FIXME: also support forwarding
-    #[link_name = "workflow::spawner::set_handle"]
-    fn set_handle_in_spawner(
-        spawner: &Resource<Spawner>,
-        channel_kind: ChannelKind,
-        name_ptr: *const u8,
-        name_len: usize,
-    );
-}
-
-#[derive(Debug)]
-pub(super) struct Spawner {
-    resource: Resource<Self>,
-}
-
-impl Spawner {
-    #[allow(clippy::needless_pass_by_value)] // for uniformity with the mock impl
-    pub fn new(id: &str, args: Vec<u8>) -> Self {
-        #[externref]
+    fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface<()>>> {
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
-            #[link_name = "workflow::spawner"]
-            fn get_workflow_spawner(
-                id_ptr: *const u8,
-                id_len: usize,
-                args_ptr: *const u8,
-                args_len: usize,
-            ) -> Resource<Spawner>;
+            #[link_name = "workflow::interface"]
+            fn get_workflow_interface(id_ptr: *const u8, id_len: usize) -> u64;
         }
 
-        let resource =
-            unsafe { get_workflow_spawner(id.as_ptr(), id.len(), args.as_ptr(), args.len()) };
-        Self { resource }
+        let raw_interface = unsafe {
+            let raw = get_workflow_interface(definition_id.as_ptr(), definition_id.len());
+            if raw == 0 {
+                None
+            } else {
+                let ptr = (raw >> 32) as *mut u8;
+                let len = (raw & 0xffff_ffff) as usize;
+                Some(Vec::from_raw_parts(ptr, len, len))
+            }
+        };
+        raw_interface.map(|bytes| Cow::Owned(Interface::from_bytes(&bytes)))
     }
 
-    pub fn close_inbound_channel(&self, channel_name: &str) {
-        unsafe {
-            set_handle_in_spawner(
-                &self.resource,
-                ChannelKind::Inbound,
-                channel_name.as_ptr(),
-                channel_name.len(),
-            );
-        }
-    }
-
-    pub fn close_outbound_channel(&self, channel_name: &str) {
-        unsafe {
-            set_handle_in_spawner(
-                &self.resource,
-                ChannelKind::Outbound,
-                channel_name.as_ptr(),
-                channel_name.len(),
-            );
-        }
-    }
-
-    pub fn spawn(self) -> Result<RemoteWorkflow, SpawnError> {
+    fn create_workflow(
+        &self,
+        definition_id: &str,
+        args: Vec<u8>,
+        handles: &ChannelHandles,
+    ) -> Result<Self::Handle, SpawnError> {
         #[externref]
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
             #[link_name = "workflow::spawn"]
             fn spawn(
-                spawner: Resource<Spawner>,
+                id_ptr: *const u8,
+                id_len: usize,
+                args_ptr: *const u8,
+                args_len: usize,
+                handles: Resource<ChannelHandles>,
                 error_ptr: *mut i64,
             ) -> Option<Resource<RemoteWorkflow>>;
         }
 
-        unsafe {
-            let workflow = spawn(self.resource, &mut SPAWN_ERROR_PAD);
+        let result = unsafe {
+            let workflow = spawn(
+                definition_id.as_ptr(),
+                definition_id.len(),
+                args.as_ptr(),
+                args.len(),
+                transform_handles(handles),
+                &mut SPAWN_ERROR_PAD,
+            );
             Result::<(), SpawnError>::from_abi_in_wasm(SPAWN_ERROR_PAD).map(|()| RemoteWorkflow {
                 resource: workflow.unwrap(),
             })
-        }
+        };
+        result.map(|inner| super::RemoteWorkflow { inner })
     }
+}
+
+unsafe fn transform_handles(handles: &ChannelHandles) -> Resource<ChannelHandles> {
+    #[externref]
+    #[link(wasm_import_module = "tardigrade_rt")]
+    extern "C" {
+        #[link_name = "workflow::create_handles"]
+        fn create_handles() -> Resource<ChannelHandles>;
+
+        // FIXME: also support forwarding
+        #[link_name = "workflow::set_handle"]
+        fn set_handle(
+            spawner: &Resource<ChannelHandles>,
+            channel_kind: ChannelKind,
+            name_ptr: *const u8,
+            name_len: usize,
+            config: i32,
+        );
+    }
+
+    let resource = create_handles();
+    for (name, config) in &handles.inbound {
+        set_handle(
+            &resource,
+            ChannelKind::Inbound,
+            name.as_ptr(),
+            name.len(),
+            config.into_abi_in_wasm(),
+        );
+    }
+    for (name, config) in &handles.outbound {
+        set_handle(
+            &resource,
+            ChannelKind::Outbound,
+            name.as_ptr(),
+            name.len(),
+            config.into_abi_in_wasm(),
+        );
+    }
+    resource
 }
 
 #[derive(Debug)]
