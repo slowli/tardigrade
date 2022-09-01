@@ -171,23 +171,20 @@ impl<T> WakeIfPending for Poll<T> {
 }
 
 #[must_use = "Wakers need to be actually woken up"]
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct Wakers {
-    inner: HashSet<WakerId>,
+    ids: HashSet<WakerId>,
     cause: WakeUpCause,
 }
 
 impl Wakers {
-    pub fn new(wakers: HashSet<WakerId>, cause: WakeUpCause) -> Self {
-        Self {
-            inner: wakers,
-            cause,
-        }
+    pub fn new(ids: HashSet<WakerId>, cause: WakeUpCause) -> Self {
+        Self { ids, cause }
     }
 
     pub fn into_iter(self) -> impl Iterator<Item = (WakerId, WakeUpCause)> {
         let cause = self.cause;
-        self.inner
+        self.ids
             .into_iter()
             .map(move |waker_id| (waker_id, cause.clone()))
     }
@@ -300,7 +297,9 @@ impl CurrentExecution {
         for event in Self::resource_events(&self.events) {
             match (event.kind, event.resource_id) {
                 (Created, ResourceId::Task(task_id)) => {
-                    let cause = WakeUpCause::Function(Box::new(self.function.clone()));
+                    let cause = WakeUpCause::Function {
+                        task_id: self.function.task_id(),
+                    };
                     state.task_queue.insert_task(task_id, &cause);
                 }
                 (Dropped, ResourceId::Timer(timer_id)) => {
@@ -313,7 +312,9 @@ impl CurrentExecution {
             }
         }
 
-        let cause = WakeUpCause::Function(Box::new(self.function));
+        let cause = WakeUpCause::Function {
+            task_id: self.function.task_id(),
+        };
         for task_id in self.tasks_to_be_awoken {
             state.task_queue.insert_task(task_id, &cause);
         }

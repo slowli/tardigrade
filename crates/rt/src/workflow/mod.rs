@@ -186,7 +186,7 @@ impl<W> Workflow<W> {
         }
 
         let task_id = match &receipt.executions[0].function {
-            ExecutedFunction::Entry { task_id, .. } => *task_id,
+            ExecutedFunction::Entry { task_id } => *task_id,
             _ => unreachable!(),
         };
         self.store.data_mut().spawn_main_task(task_id);

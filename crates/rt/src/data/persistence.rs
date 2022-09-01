@@ -10,7 +10,7 @@ use std::{
 use wasmtime::{Store, Val};
 
 use super::{
-    helpers::HostResource,
+    helpers::{HostResource, Wakers},
     task::{TaskQueue, TaskState},
     time::Timers,
     WorkflowData,
@@ -250,6 +250,7 @@ pub(crate) struct WorkflowState {
     channels: ChannelStates,
     timers: Timers,
     tasks: HashMap<TaskId, TaskState>,
+    waker_queue: Vec<Wakers>,
 }
 
 impl WorkflowState {
@@ -269,7 +270,7 @@ impl WorkflowState {
             child_workflows: HashMap::default(), // FIXME
             current_execution: None,
             task_queue: TaskQueue::default(),
-            waker_queue: Vec::new(),
+            waker_queue: self.waker_queue,
             current_wakeup_cause: None,
         })
     }
@@ -281,7 +282,7 @@ impl WorkflowState {
         data.tasks = self.tasks;
         data.current_execution = None;
         data.task_queue = TaskQueue::default();
-        data.waker_queue = Vec::new();
+        data.waker_queue = self.waker_queue;
         data.current_wakeup_cause = None;
     }
 }
@@ -289,10 +290,7 @@ impl WorkflowState {
 impl WorkflowData {
     pub(crate) fn check_persistence(&self) -> Result<(), PersistError> {
         // Check that we're not losing info.
-        if self.current_execution.is_some()
-            || !self.task_queue.is_empty()
-            || !self.waker_queue.is_empty()
-        {
+        if self.current_execution.is_some() || !self.task_queue.is_empty() {
             return Err(PersistError::PendingTask);
         }
 
@@ -313,6 +311,7 @@ impl WorkflowData {
             channels: ChannelStates::new(&self.channels),
             timers: self.timers.clone(),
             tasks: self.tasks.clone(),
+            waker_queue: self.waker_queue.clone(),
         }
     }
 }

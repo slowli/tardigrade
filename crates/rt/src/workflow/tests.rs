@@ -142,9 +142,9 @@ fn starting_workflow() {
         &execution.function,
         ExecutedFunction::Task {
             task_id: 0,
-            wake_up_cause: WakeUpCause::Spawned(spawn_fn),
+            wake_up_cause: WakeUpCause::Spawned,
             poll_result: Poll::Pending,
-        } if matches!(spawn_fn.as_ref(), ExecutedFunction::Entry { .. })
+        }
     );
     assert_eq!(execution.events.len(), 1);
     assert_matches!(
@@ -320,7 +320,7 @@ fn spawning_and_cancelling_task() {
         receipt.executions()[2].function,
         ExecutedFunction::Task {
             task_id: 1,
-            wake_up_cause: WakeUpCause::Function(_),
+            wake_up_cause: WakeUpCause::Function { task_id: Some(0) },
             ..
         }
     );

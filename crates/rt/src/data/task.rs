@@ -146,8 +146,7 @@ impl WorkflowData {
         let spawned_by = ExecutedFunction::Entry { task_id };
         let task_state = TaskState::new("_main".to_owned(), &spawned_by);
         self.tasks.insert(task_id, task_state);
-        self.task_queue
-            .insert_task(task_id, &WakeUpCause::Spawned(Box::new(spawned_by)));
+        self.task_queue.insert_task(task_id, &WakeUpCause::Spawned);
     }
 
     fn poll_task_completion(

@@ -8,6 +8,7 @@
 //!
 //! [`WorkflowModule`]: crate::WorkflowModule
 
+use serde::{Deserialize, Serialize};
 use wasmtime::Trap;
 
 use std::{error, fmt, ops::Range, task::Poll};
@@ -16,7 +17,8 @@ use crate::{TaskId, TimerId, WakerId, WorkflowId};
 use tardigrade_shared::SendError;
 
 /// Cause of waking up a [`Workflow`](crate::Workflow) task.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum WakeUpCause {
     /// Woken up by an inbound message.
@@ -49,10 +51,13 @@ pub enum WakeUpCause {
     },
 
     /// Initial task enqueuing after it was spawned.
-    Spawned(Box<ExecutedFunction>),
+    Spawned,
     /// Woken up by an executed function, such as another task (e.g., due to internal channels
     /// or other sync primitives).
-    Function(Box<ExecutedFunction>),
+    Function {
+        /// ID of the task if executed function is a task; `None` otherwise.
+        task_id: Option<TaskId>,
+    },
     /// Woken up by task completion.
     CompletedTask(TaskId),
     /// Woken up by a timer.
@@ -73,7 +78,7 @@ pub enum ExecutedFunction {
     /// Entry point of the workflow.
     #[non_exhaustive]
     Entry {
-        /// ID of the created task.
+        /// ID of the created main task.
         task_id: TaskId,
     },
     /// Polling a task.
@@ -103,6 +108,13 @@ pub enum ExecutedFunction {
 }
 
 impl ExecutedFunction {
+    pub(crate) fn task_id(&self) -> Option<TaskId> {
+        match self {
+            Self::Entry { task_id } | Self::Task { task_id, .. } => Some(*task_id),
+            _ => None,
+        }
+    }
+
     fn write_summary(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Entry { .. } => formatter.write_str("spawning workflow"),
