@@ -379,7 +379,7 @@ impl Runtime {
                 .expect("failed getting workflow definition")
                 .downcast::<W>()
                 .unwrap();
-            let api = workflow_def.spawn(args).build().unwrap().api;
+            let api = workflow_def.new_workflow(args).build().unwrap().api;
             test_fn(api).await;
         });
     }

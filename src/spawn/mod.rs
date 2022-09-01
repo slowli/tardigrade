@@ -27,7 +27,7 @@ use crate::{
         AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel, ValidateInterface,
     },
     trace::{FutureUpdate, TracedFutures, Tracer},
-    workflow::{TakeHandle, WorkflowFn},
+    workflow::{TakeHandle, UntypedHandle, WorkflowFn},
     Decode, Encode,
 };
 pub use tardigrade_shared::SpawnError;
@@ -166,7 +166,7 @@ where
     W: TakeHandle<Spawner, Id = ()> + WorkflowFn,
 {
     #[allow(clippy::missing_panics_doc)] // false positive
-    pub fn spawn(&self, args: W::Args) -> SpawnBuilder<'a, M, W> {
+    pub fn new_workflow(&self, args: W::Args) -> WorkflowBuilder<'a, M, W> {
         let raw_args = W::Codec::default().encode_value(args);
         let mut spawner = Spawner {
             inner: Rc::new(SpawnerInner::new(
@@ -176,7 +176,7 @@ where
             )),
         };
         let handle = W::take_handle(&mut spawner, &()).unwrap();
-        SpawnBuilder {
+        WorkflowBuilder {
             spawner,
             handle,
             manager: self.manager,
@@ -187,6 +187,7 @@ where
 #[derive(Debug)]
 struct SpawnerInner {
     definition_id: String,
+    interface: Interface<()>,
     args: Vec<u8>,
     channels: RefCell<ChannelHandles>,
 }
@@ -203,6 +204,7 @@ impl SpawnerInner {
             .collect();
         Self {
             definition_id: definition_id.to_owned(),
+            interface: interface.clone().erase(),
             args,
             channels: RefCell::new(ChannelHandles { inbound, outbound }),
         }
@@ -235,6 +237,24 @@ impl SpawnerInner {
 #[derive(Debug, Clone)]
 pub struct Spawner {
     inner: Rc<SpawnerInner>,
+}
+
+impl TakeHandle<Spawner> for Interface<()> {
+    type Id = ();
+    type Handle = Self;
+
+    fn take_handle(env: &mut Spawner, _id: &Self::Id) -> Result<Self::Handle, AccessError> {
+        Ok(env.inner.interface.clone())
+    }
+}
+
+impl TakeHandle<Spawner> for () {
+    type Id = ();
+    type Handle = UntypedHandle<Spawner>;
+
+    fn take_handle(env: &mut Spawner, _id: &Self::Id) -> Result<Self::Handle, AccessError> {
+        UntypedHandle::take_handle(env, &())
+    }
 }
 
 #[derive(Debug)]
@@ -304,13 +324,13 @@ impl<C: Encode<FutureUpdate>> TakeHandle<Spawner> for Tracer<C> {
     }
 }
 
-pub struct SpawnBuilder<'a, M: ?Sized, W: TakeHandle<Spawner>> {
+pub struct WorkflowBuilder<'a, M: ?Sized, W: TakeHandle<Spawner>> {
     spawner: Spawner,
     handle: <W as TakeHandle<Spawner>>::Handle,
     manager: &'a M,
 }
 
-impl<M: ?Sized, W> fmt::Debug for SpawnBuilder<'_, M, W>
+impl<M: ?Sized, W> fmt::Debug for WorkflowBuilder<'_, M, W>
 where
     W: TakeHandle<Spawner>,
     <W as TakeHandle<Spawner>>::Handle: fmt::Debug,
@@ -324,7 +344,7 @@ where
     }
 }
 
-impl<M, W> SpawnBuilder<'_, M, W>
+impl<M, W> WorkflowBuilder<'_, M, W>
 where
     M: ManageWorkflows + ?Sized,
     W: TakeHandle<Spawner>,
@@ -345,7 +365,7 @@ where
     }
 }
 
-impl<M, W> SpawnBuilder<'_, M, W>
+impl<M, W> WorkflowBuilder<'_, M, W>
 where
     M: ManageWorkflows<Handle = RemoteWorkflow> + ?Sized,
     W: TakeHandle<Spawner> + TakeHandle<RemoteWorkflow, Id = ()>,
