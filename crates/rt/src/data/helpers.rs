@@ -3,50 +3,17 @@
 use serde::{Deserialize, Serialize};
 use wasmtime::{AsContextMut, ExternRef, Store, StoreContextMut, Trap};
 
-use std::{collections::HashSet, fmt, mem, task::Poll};
+use std::{collections::HashSet, mem, task::Poll};
 
 use crate::{
-    data::{spawn::SpawnConfig, WorkflowData},
+    data::{spawn::SharedChannelHandles, WorkflowData},
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, PanicInfo, ResourceEvent,
         ResourceEventKind, ResourceId, WakeUpCause,
     },
-    utils::serde_b64,
     TaskId, TimerId, WakerId, WorkflowId,
 };
 use tardigrade_shared::{JoinError, PollMessage, SendError};
-
-/// Thin wrapper around `Vec<u8>`.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub(super) struct Message(#[serde(with = "serde_b64")] Vec<u8>);
-
-impl fmt::Debug for Message {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("Message")
-            .field("len", &self.0.len())
-            .finish()
-    }
-}
-
-impl AsRef<[u8]> for Message {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl From<Vec<u8>> for Message {
-    fn from(bytes: Vec<u8>) -> Self {
-        Self(bytes)
-    }
-}
-
-impl From<Message> for Vec<u8> {
-    fn from(message: Message) -> Self {
-        message.0
-    }
-}
 
 /// Unique reference to a channel within a workflow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,7 +27,8 @@ pub(super) struct ChannelRef {
 pub(super) enum HostResource {
     InboundChannel(ChannelRef),
     OutboundChannel(ChannelRef),
-    SpawnConfig(SpawnConfig),
+    #[serde(skip)]
+    ChannelHandles(SharedChannelHandles),
     Workflow(WorkflowId),
 }
 
@@ -109,9 +77,9 @@ impl HostResource {
         }
     }
 
-    pub fn as_spawn_config(&self) -> Result<&SpawnConfig, Trap> {
-        if let Self::SpawnConfig(config) = self {
-            Ok(config)
+    pub fn as_channel_handles(&self) -> Result<&SharedChannelHandles, Trap> {
+        if let Self::ChannelHandles(handles) = self {
+            Ok(handles)
         } else {
             let message = format!(
                 "unexpected reference type: expected workflow spawn config, got {:?}",
@@ -134,9 +102,9 @@ impl HostResource {
     }
 }
 
-impl From<SpawnConfig> for HostResource {
-    fn from(config: SpawnConfig) -> Self {
-        Self::SpawnConfig(config)
+impl From<SharedChannelHandles> for HostResource {
+    fn from(handles: SharedChannelHandles) -> Self {
+        Self::ChannelHandles(handles)
     }
 }
 

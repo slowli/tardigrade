@@ -130,14 +130,14 @@ impl ExtendLinker for SpawnFunctions {
                 wrap2(&mut *store, Self::workflow_interface),
             ),
             (
-                "workflow::spawner",
-                wrap4(&mut *store, Self::create_spawner),
+                "workflow::create_handles",
+                Func::wrap(&mut *store, Self::create_channel_handles),
             ),
             (
-                "workflow::spawner::set_handle",
-                wrap4(&mut *store, Self::set_spawner_handle),
+                "workflow::set_handle",
+                wrap5(&mut *store, Self::set_channel_handle),
             ),
-            ("workflow::spawn", wrap2(&mut *store, Self::spawn)),
+            ("workflow::spawn", wrap6(&mut *store, Self::spawn)),
             (
                 "workflow::poll_completion",
                 wrap2(&mut *store, Self::poll_workflow_completion),
@@ -168,6 +168,7 @@ impl_wrapper!(wrap1 => a: A);
 impl_wrapper!(wrap2 => a: A, b: B);
 impl_wrapper!(wrap3 => a: A, b: B, c: C);
 impl_wrapper!(wrap4 => a: A, b: B, c: C, d: D);
+impl_wrapper!(wrap5 => a: A, b: B, c: C, d: D, e: E);
 impl_wrapper!(wrap6 => a: A, b: B, c: C, d: D, e: E, f: F);
 
 #[cfg(test)]
@@ -175,16 +176,13 @@ mod tests {
     use wasmtime::{Engine, Linker};
 
     use super::*;
-    use crate::{
-        module::LowLevelExtendLinker,
-        services::{ChannelHandles, Services},
-    };
+    use crate::{module::LowLevelExtendLinker, services::Services, workflow::ChannelIds};
     use tardigrade::interface::Interface;
 
     #[test]
     fn import_checks_are_consistent() {
         let interface = Interface::default();
-        let state = WorkflowData::new(interface, &ChannelHandles::default(), Services::default());
+        let state = WorkflowData::new(interface, &ChannelIds::default(), Services::default());
         let engine = Engine::default();
         let mut store = Store::new(&engine, state);
         let mut linker = Linker::new(&engine);

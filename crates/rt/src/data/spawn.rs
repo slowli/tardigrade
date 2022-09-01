@@ -1,104 +1,34 @@
 //! Spawning workflows.
 
-use serde::{Deserialize, Serialize};
 use wasmtime::{AsContextMut, ExternRef, StoreContextMut, Trap};
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     mem,
-    sync::Mutex,
+    sync::{Arc, Mutex},
     task::Poll,
 };
 
 use crate::{
     data::{
         channel::{ChannelStates, InboundChannelState, OutboundChannelState},
-        helpers::{
-            HostResource, Message, WakeIfPending, WakerPlacement, WasmContext, WasmContextPtr,
-        },
+        helpers::{HostResource, WakeIfPending, WakerPlacement, WasmContext, WasmContextPtr},
         WorkflowData,
     },
     receipt::{ResourceEventKind, ResourceId},
-    services::{ChannelHandles, ManageChannels},
     utils::{copy_bytes_from_wasm, copy_string_from_wasm, drop_value, WasmAllocator},
+    workflow::ChannelIds,
 };
+use tardigrade::spawn::{ChannelHandles, ChannelSpawnConfig};
 use tardigrade_shared::{
     abi::{IntoWasm, TryFromWasm},
     interface::{ChannelKind, Interface},
     ChannelId, JoinError, SpawnError, WakerId, WorkflowId,
 };
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum ChannelSpawnConfig {
-    New,
-    Closed,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(transparent)]
-pub(super) struct SpawnConfig {
-    inner: Mutex<SpawnConfigInner>,
-}
-
-impl Clone for SpawnConfig {
-    fn clone(&self) -> Self {
-        Self {
-            inner: Mutex::new(self.inner.lock().unwrap().clone()),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SpawnConfigInner {
-    id: String,
-    args: Message,
-    inbound_channels: HashMap<String, ChannelSpawnConfig>,
-    outbound_channels: HashMap<String, ChannelSpawnConfig>,
-}
-
-impl SpawnConfigInner {
-    fn new(interface: &Interface<()>, id: String, args: Vec<u8>) -> Self {
-        let inbound_channels = interface
-            .inbound_channels()
-            .map(|(name, _)| (name.to_owned(), ChannelSpawnConfig::New))
-            .collect();
-        let outbound_channels = interface
-            .outbound_channels()
-            .map(|(name, _)| (name.to_owned(), ChannelSpawnConfig::New))
-            .collect();
-        Self {
-            id,
-            args: args.into(),
-            inbound_channels,
-            outbound_channels,
-        }
-    }
-
-    fn create_handles(&self, manager: &dyn ManageChannels) -> ChannelHandles<'_> {
-        let inbound_channels = Self::map_channels(&self.inbound_channels, manager);
-        let outbound_channels = Self::map_channels(&self.outbound_channels, manager);
-        ChannelHandles {
-            inbound: inbound_channels,
-            outbound: outbound_channels,
-        }
-    }
-
-    fn map_channels<'a>(
-        channels: &'a HashMap<String, ChannelSpawnConfig>,
-        manager: &dyn ManageChannels,
-    ) -> HashMap<&'a str, ChannelId> {
-        channels
-            .iter()
-            .map(|(name, config)| {
-                let channel_id = match config {
-                    ChannelSpawnConfig::Closed => <dyn ManageChannels>::CLOSED_CHANNEL,
-                    ChannelSpawnConfig::New => manager.create_channel(),
-                };
-                (name.as_str(), channel_id)
-            })
-            .collect()
-    }
+#[derive(Debug, Clone)]
+pub(super) struct SharedChannelHandles {
+    inner: Arc<Mutex<ChannelHandles>>,
 }
 
 #[derive(Debug)]
@@ -109,10 +39,10 @@ pub struct ChildWorkflowState {
 }
 
 impl ChildWorkflowState {
-    fn new(handles: &ChannelHandles<'_>) -> Self {
+    fn new(channel_ids: &ChannelIds) -> Self {
         Self {
             // FIXME: what is the appropriate capacity?
-            channels: ChannelStates::new(handles, |_| Some(1)),
+            channels: ChannelStates::new(channel_ids, |_| Some(1)),
             completion_result: Poll::Pending,
             wakes_on_completion: HashSet::new(),
         }
@@ -127,9 +57,20 @@ impl ChildWorkflowState {
         self.channels.inbound.get(channel_name)
     }
 
+    pub(crate) fn inbound_channel_ids(&self) -> impl Iterator<Item = ChannelId> + '_ {
+        self.channels.inbound.values().map(InboundChannelState::id)
+    }
+
     /// Returns the current state of an outbound channel with the specified name.
     pub fn outbound_channel(&self, channel_name: &str) -> Option<&OutboundChannelState> {
         self.channels.outbound.get(channel_name)
+    }
+
+    pub(crate) fn outbound_channel_ids(&self) -> impl Iterator<Item = ChannelId> + '_ {
+        self.channels
+            .outbound
+            .values()
+            .map(OutboundChannelState::id)
     }
 }
 
@@ -142,20 +83,89 @@ impl WorkflowData {
         self.child_workflows.get(&id)
     }
 
-    fn spawn_workflow(&mut self, config: &SpawnConfigInner) -> Result<WorkflowId, SpawnError> {
-        let mut handles = config.create_handles(&*self.services.channels);
-        let workflows = &self.services.workflows;
-        let result = workflows.create_workflow(&config.id, config.args.clone().into(), &handles);
-        if let &Ok(workflow_id) = &result {
-            mem::swap(&mut handles.inbound, &mut handles.outbound);
+    fn validate_handles(&self, definition_id: &str, handles: &ChannelHandles) -> Result<(), Trap> {
+        if let Some(interface) = self.services.workflows.interface(definition_id) {
+            for (name, _) in interface.inbound_channels() {
+                if !handles.inbound.contains_key(name) {
+                    let message = format!("missing handle for inbound channel `{}`", name);
+                    return Err(Trap::new(message));
+                }
+            }
+            for (name, _) in interface.outbound_channels() {
+                if !handles.outbound.contains_key(name) {
+                    let message = format!("missing handle for outbound channel `{}`", name);
+                    return Err(Trap::new(message));
+                }
+            }
+
+            if handles.inbound.len() != interface.inbound_channels().len() {
+                let err = Self::extra_handles_error(&interface, handles, ChannelKind::Inbound);
+                return Err(err);
+            }
+            if handles.outbound.len() != interface.outbound_channels().len() {
+                let err = Self::extra_handles_error(&interface, handles, ChannelKind::Outbound);
+                return Err(err);
+            }
+            Ok(())
+        } else {
+            Err(Trap::new(format!(
+                "workflow with ID `{}` is not defined",
+                definition_id
+            )))
+        }
+    }
+
+    fn extra_handles_error(
+        interface: &Interface<()>,
+        handles: &ChannelHandles,
+        channel_kind: ChannelKind,
+    ) -> Trap {
+        use std::fmt::Write as _;
+
+        let (closure_in, closure_out);
+        let (handle_keys, channel_filter) = match channel_kind {
+            ChannelKind::Inbound => {
+                closure_in = |name| interface.inbound_channel(name).is_none();
+                (handles.inbound.keys(), &closure_in as &dyn Fn(_) -> _)
+            }
+            ChannelKind::Outbound => {
+                closure_out = |name| interface.outbound_channel(name).is_none();
+                (handles.outbound.keys(), &closure_out as &dyn Fn(_) -> _)
+            }
+        };
+
+        let mut extra_handles = handle_keys
+            .filter(|name| channel_filter(name.as_str()))
+            .fold(String::new(), |mut acc, name| {
+                write!(acc, "`{}`, ", name).unwrap();
+                acc
+            });
+        debug_assert!(!extra_handles.is_empty());
+        extra_handles.truncate(extra_handles.len() - 2);
+        Trap::new(format!("extra {} handles: {}", channel_kind, extra_handles))
+    }
+
+    fn spawn_workflow(
+        &mut self,
+        definition_id: &str,
+        args: Vec<u8>,
+        handles: &ChannelHandles,
+    ) -> Result<WorkflowId, SpawnError> {
+        let result = self
+            .services
+            .workflows
+            .create_workflow(definition_id, args, handles);
+        let result = result.map(|mut ids| {
+            mem::swap(&mut ids.channel_ids.inbound, &mut ids.channel_ids.outbound);
             self.child_workflows
-                .insert(workflow_id, ChildWorkflowState::new(&handles));
+                .insert(ids.workflow_id, ChildWorkflowState::new(&ids.channel_ids));
             self.current_execution().push_resource_event(
-                ResourceId::Workflow(workflow_id),
+                ResourceId::Workflow(ids.workflow_id),
                 ResourceEventKind::Created,
             );
-        }
-        crate::log_result!(result, "Spawned workflow using {:?}", config)
+            ids.workflow_id
+        });
+        crate::log_result!(result, "Spawned workflow using `{}`", definition_id)
     }
 
     fn poll_workflow_completion(
@@ -198,70 +208,69 @@ impl SpawnFunctions {
         let id = copy_string_from_wasm(&ctx, &memory, id_ptr, id_len)?;
 
         let workflows = &ctx.data().services.workflows;
-        let interface = workflows.interface(&id).map(Interface::to_bytes);
+        let interface = workflows
+            .interface(&id)
+            .map(|interface| interface.to_bytes());
         interface.into_wasm(&mut WasmAllocator::new(ctx))
     }
 
-    pub fn create_spawner(
-        ctx: StoreContextMut<'_, WorkflowData>,
-        id_ptr: u32,
-        id_len: u32,
-        args_ptr: u32,
-        args_len: u32,
-    ) -> Result<Option<ExternRef>, Trap> {
-        let memory = ctx.data().exports().memory;
-        let id = copy_string_from_wasm(&ctx, &memory, id_ptr, id_len)?;
-        let args = copy_bytes_from_wasm(&ctx, &memory, args_ptr, args_len)?;
-
-        let workflows = &ctx.data().services.workflows;
-        let interface = if let Some(interface) = workflows.interface(&id) {
-            interface
-        } else {
-            let message = format!("workflow with ID `{}` is not found", id);
-            return Err(Trap::new(message));
-        };
-        let resource = HostResource::from(SpawnConfig {
-            inner: Mutex::new(SpawnConfigInner::new(interface, id, args)),
+    #[allow(clippy::unnecessary_wraps)] // required by wasmtime
+    pub fn create_channel_handles() -> Option<ExternRef> {
+        let resource = HostResource::from(SharedChannelHandles {
+            inner: Arc::new(Mutex::new(ChannelHandles::default())),
         });
-        Ok(Some(resource.into_ref()))
+        Some(resource.into_ref())
     }
 
-    pub fn set_spawner_handle(
+    pub fn set_channel_handle(
         ctx: StoreContextMut<'_, WorkflowData>,
-        spawner: Option<ExternRef>,
+        handles: Option<ExternRef>,
         channel_kind: i32,
         name_ptr: u32,
         name_len: u32,
+        spawn_config: i32,
     ) -> Result<(), Trap> {
         let channel_kind = ChannelKind::try_from_wasm(channel_kind).map_err(Trap::new)?;
+        let channel_config = ChannelSpawnConfig::try_from_wasm(spawn_config).map_err(Trap::new)?;
         let memory = ctx.data().exports().memory;
         let name = copy_string_from_wasm(&ctx, &memory, name_ptr, name_len)?;
-        let config = HostResource::from_ref(spawner.as_ref())?.as_spawn_config()?;
-        let mut config = config.inner.lock().unwrap();
 
-        let channels = match channel_kind {
-            ChannelKind::Inbound => &mut config.inbound_channels,
-            ChannelKind::Outbound => &mut config.outbound_channels,
-        };
-        let channel = channels
-            .get_mut(&name)
-            .ok_or_else(|| Trap::new(format!("{} channel `{}` not found", channel_kind, name)))?;
-        *channel = ChannelSpawnConfig::Closed;
-
+        let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
+        let mut handles = handles.inner.lock().unwrap();
+        match channel_kind {
+            ChannelKind::Inbound => {
+                handles.inbound.insert(name, channel_config);
+            }
+            ChannelKind::Outbound => {
+                handles.outbound.insert(name, channel_config);
+            }
+        }
         Ok(())
     }
 
     pub fn spawn(
         mut ctx: StoreContextMut<'_, WorkflowData>,
-        spawner: Option<ExternRef>,
+        id_ptr: u32,
+        id_len: u32,
+        args_ptr: u32,
+        args_len: u32,
+        handles: Option<ExternRef>,
         error_ptr: u32,
     ) -> Result<Option<ExternRef>, Trap> {
-        let config = HostResource::from_ref(spawner.as_ref())?.as_spawn_config()?;
-        let config = config.inner.lock().unwrap();
+        let memory = ctx.data().exports().memory;
+        let id = copy_string_from_wasm(&ctx, &memory, id_ptr, id_len)?;
+        let args = copy_bytes_from_wasm(&ctx, &memory, args_ptr, args_len)?;
+        let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
+        let handles = handles.inner.lock().unwrap();
+        ctx.data().validate_handles(&id, &handles)?;
+
         let mut workflow_id = None;
-        let result = ctx.data_mut().spawn_workflow(&config).map(|id| {
-            workflow_id = Some(id);
-        });
+        let result = ctx
+            .data_mut()
+            .spawn_workflow(&id, args, &handles)
+            .map(|id| {
+                workflow_id = Some(id);
+            });
         Self::write_spawn_result(&mut ctx, result, error_ptr)?;
         Ok(workflow_id.map(|id| HostResource::Workflow(id).into_ref()))
     }

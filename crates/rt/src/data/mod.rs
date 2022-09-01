@@ -34,8 +34,9 @@ use crate::{
     data::helpers::HostResource,
     module::ModuleExports,
     receipt::{PanicInfo, PanicLocation, WakeUpCause},
-    services::{ChannelHandles, Services},
+    services::Services,
     utils::copy_string_from_wasm,
+    workflow::ChannelIds,
     TaskId, WorkflowId,
 };
 use tardigrade::interface::Interface;
@@ -66,7 +67,7 @@ pub struct WorkflowData {
 impl WorkflowData {
     pub(crate) fn new(
         interface: Interface<()>,
-        handles: &ChannelHandles<'_>,
+        channel_ids: &ChannelIds,
         services: Services,
     ) -> Self {
         debug_assert_eq!(
@@ -74,19 +75,27 @@ impl WorkflowData {
                 .inbound_channels()
                 .map(|(name, _)| name)
                 .collect::<HashSet<_>>(),
-            handles.inbound.keys().copied().collect::<HashSet<_>>()
+            channel_ids
+                .inbound
+                .keys()
+                .map(String::as_str)
+                .collect::<HashSet<_>>()
         );
         debug_assert_eq!(
             interface
                 .outbound_channels()
                 .map(|(name, _)| name)
                 .collect::<HashSet<_>>(),
-            handles.outbound.keys().copied().collect::<HashSet<_>>()
+            channel_ids
+                .outbound
+                .keys()
+                .map(String::as_str)
+                .collect::<HashSet<_>>()
         );
 
         Self {
             exports: None,
-            channels: ChannelStates::new(handles, |name| {
+            channels: ChannelStates::new(channel_ids, |name| {
                 interface.outbound_channel(name).unwrap().capacity
             }),
             interface,

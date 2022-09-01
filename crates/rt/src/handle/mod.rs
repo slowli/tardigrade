@@ -19,6 +19,7 @@ pub mod future;
 
 use crate::{
     receipt::{ExecutionError, Receipt},
+    utils::Message,
     ConsumeError, Workflow,
 };
 use tardigrade::{
@@ -236,7 +237,7 @@ impl<T, C: Decode<T>, W> MessageReceiver<'_, T, C, W> {
 #[derive(Debug)]
 pub struct TakenMessages<'a, T, C> {
     start_idx: usize,
-    raw_messages: Vec<Vec<u8>>,
+    raw_messages: Vec<Message>,
     codec: &'a mut C,
     _item: PhantomData<fn() -> T>,
 }
@@ -255,7 +256,7 @@ impl<T, C: Decode<T>> TakenMessages<'_, T, C> {
     pub fn decode(self) -> Result<Vec<T>, C::Error> {
         self.raw_messages
             .into_iter()
-            .map(|bytes| self.codec.try_decode_bytes(bytes))
+            .map(|bytes| self.codec.try_decode_bytes(bytes.into()))
             .collect()
     }
 }

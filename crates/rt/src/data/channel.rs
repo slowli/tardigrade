@@ -10,15 +10,14 @@ use std::{
 
 use super::{
     helpers::{
-        ChannelRef, HostResource, Message, WakeIfPending, WakerPlacement, WasmContext,
-        WasmContextPtr,
+        ChannelRef, HostResource, WakeIfPending, WakerPlacement, WasmContext, WasmContextPtr,
     },
     WorkflowData, WorkflowFunctions,
 };
 use crate::{
     receipt::WakeUpCause,
-    services::ChannelHandles,
-    utils::{copy_bytes_from_wasm, copy_string_from_wasm, WasmAllocator},
+    utils::{copy_bytes_from_wasm, copy_string_from_wasm, Message, WasmAllocator},
+    workflow::ChannelIds,
     ChannelId, WakerId, WorkflowId,
 };
 use tardigrade::interface::AccessErrorKind;
@@ -224,21 +223,21 @@ pub(super) struct ChannelStates {
 }
 
 impl ChannelStates {
-    pub fn new<F>(handles: &ChannelHandles<'_>, outbound_cap_fn: F) -> Self
+    pub fn new<F>(channel_ids: &ChannelIds, outbound_cap_fn: F) -> Self
     where
         F: Fn(&str) -> Option<usize>,
     {
-        let inbound = handles
+        let inbound = channel_ids
             .inbound
             .iter()
-            .map(|(&name, channel_id)| (name.to_owned(), InboundChannelState::new(*channel_id)))
+            .map(|(name, channel_id)| (name.clone(), InboundChannelState::new(*channel_id)))
             .collect();
-        let outbound = handles
+        let outbound = channel_ids
             .outbound
             .iter()
-            .map(|(&name, channel_id)| {
+            .map(|(name, channel_id)| {
                 (
-                    name.to_owned(),
+                    name.clone(),
                     OutboundChannelState::new(*channel_id, outbound_cap_fn(name)),
                 )
             })
@@ -367,6 +366,21 @@ impl WorkflowData {
             .get_mut(&channel_ref.name)
     }
 
+    pub(crate) fn inbound_channels(
+        &self,
+    ) -> impl Iterator<Item = (Option<WorkflowId>, &str, &InboundChannelState)> + '_ {
+        let local_channels = self.channels.inbound.iter();
+        let local_channels = local_channels.map(|(name, state)| (None, name.as_str(), state));
+        let workflow_channels = self
+            .child_workflows
+            .iter()
+            .flat_map(|(&workflow_id, workflow)| {
+                let channels = workflow.channels.inbound.iter();
+                channels.map(move |(name, state)| (Some(workflow_id), name.as_str(), state))
+            });
+        local_channels.chain(workflow_channels)
+    }
+
     pub(super) fn inbound_channels_mut(
         &mut self,
     ) -> impl Iterator<Item = &mut InboundChannelState> + '_ {
@@ -483,7 +497,7 @@ impl WorkflowData {
         &mut self,
         workflow_id: Option<WorkflowId>,
         channel_name: &str,
-    ) -> (usize, Vec<Vec<u8>>) {
+    ) -> (usize, Vec<Message>) {
         let channel_state = self
             .channels_mut(workflow_id)
             .outbound
@@ -504,8 +518,26 @@ impl WorkflowData {
                 },
             );
         }
-        let messages = messages.into_iter().map(Into::into).collect();
+        let messages = messages.into_iter().collect();
         (start_message_idx, messages)
+    }
+
+    #[allow(clippy::needless_collect)] // false positive
+    pub(crate) fn drain_messages(&mut self) -> Vec<(ChannelId, Vec<Message>)> {
+        let channels = self.channels.outbound.iter();
+        let channel_ids: Vec<_> = channels
+            .map(|(name, state)| (name.clone(), state.id()))
+            .collect();
+
+        let messages = channel_ids.into_iter().filter_map(|(name, channel_id)| {
+            let (_, messages) = self.take_outbound_messages(None, &name);
+            if messages.is_empty() {
+                None
+            } else {
+                Some((channel_id, messages))
+            }
+        });
+        messages.collect()
     }
 
     #[cfg(test)]

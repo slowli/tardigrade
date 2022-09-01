@@ -258,7 +258,7 @@ impl<W> AsyncEnv<W> {
         }
 
         let channel_futures = self.inbound_channels.iter_mut().filter_map(|(name, rx)| {
-            if events.inbound_channels.contains(name) {
+            if events.contains_inbound_channel(name) {
                 let fut = rx
                     .next()
                     .map(|message| ListenedEventOutput::Channel {
@@ -273,7 +273,7 @@ impl<W> AsyncEnv<W> {
         });
 
         // TODO: cache `timer_event`?
-        let timer_event = events.nearest_timer.map(|timestamp| {
+        let timer_event = events.nearest_timer().map(|timestamp| {
             let timer = self.scheduler.create_timer(timestamp);
             timer.map(ListenedEventOutput::Timer).right_future()
         });
@@ -311,7 +311,7 @@ impl<W> AsyncEnv<W> {
                 let (_, messages) = self.workflow.take_outbound_messages(None, name);
                 messages_sent = messages_sent || !messages.is_empty();
                 for message in messages {
-                    sx.unbounded_send(message).ok();
+                    sx.unbounded_send(message.into()).ok();
                     // ^ We don't care if outbound messages are no longer listened to.
                 }
             }

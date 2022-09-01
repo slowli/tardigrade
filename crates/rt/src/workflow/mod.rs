@@ -4,7 +4,13 @@ use anyhow::Context;
 use chrono::{DateTime, Utc};
 use wasmtime::{AsContextMut, Linker, Store, Trap};
 
-use std::{fmt, marker::PhantomData, sync::Arc, task::Poll};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+    marker::PhantomData,
+    sync::Arc,
+    task::Poll,
+};
 
 mod persistence;
 #[cfg(test)]
@@ -22,65 +28,76 @@ use crate::{
         Event, ExecutedFunction, Execution, ExecutionError, ExtendedTrap, Receipt,
         ResourceEventKind, ResourceId, WakeUpCause,
     },
-    services::{ChannelHandles, Services},
-    TaskId, TimerId, WorkflowId,
+    services::Services,
+    utils::Message,
+    ChannelId, TaskId, TimerId, WorkflowId,
 };
-use tardigrade::{interface::Interface, workflow::WorkflowFn, Encode};
+use tardigrade::spawn::ChannelSpawnConfig;
+use tardigrade::{interface::Interface, spawn::ChannelHandles};
 
-#[cfg(feature = "async")]
 #[derive(Debug)]
 pub(crate) struct ListenedEvents {
-    pub inbound_channels: Vec<String>,
-    pub nearest_timer: Option<DateTime<Utc>>,
+    inbound_channels: HashSet<String>,
+    nearest_timer: Option<DateTime<Utc>>,
 }
 
-#[cfg(feature = "async")]
 impl ListenedEvents {
     pub fn is_empty(&self) -> bool {
         self.inbound_channels.is_empty() && self.nearest_timer.is_none()
     }
-}
 
-impl<W: WorkflowFn> WorkflowSpawner<W> {
-    /// Instantiates a new workflow from the `module` and the provided `inputs`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error in case preparations for instantiation (e.g., extending the WASM linker
-    /// with imports) fails.
-    pub fn spawn(&self, args: W::Args) -> anyhow::Result<InitializingWorkflow<W>> {
-        let handles = self.create_channel_handles();
-        self.do_spawn(args, &handles, self.services.clone())
+    pub fn nearest_timer(&self) -> Option<DateTime<Utc>> {
+        self.nearest_timer
     }
 
-    pub(crate) fn do_spawn(
+    pub fn contains_inbound_channel(&self, name: &str) -> bool {
+        self.inbound_channels.contains(name)
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ChannelIds {
+    pub inbound: HashMap<String, ChannelId>,
+    pub outbound: HashMap<String, ChannelId>,
+}
+
+impl ChannelIds {
+    pub fn new(handles: &ChannelHandles, mut new_channel: impl FnMut() -> ChannelId) -> Self {
+        Self {
+            inbound: Self::map_channels(&handles.inbound, &mut new_channel),
+            outbound: Self::map_channels(&handles.outbound, new_channel),
+        }
+    }
+
+    fn map_channels(
+        config: &HashMap<String, ChannelSpawnConfig>,
+        mut new_channel: impl FnMut() -> ChannelId,
+    ) -> HashMap<String, ChannelId> {
+        let channel_ids = config.iter().map(|(name, config)| {
+            let channel_id = match config {
+                ChannelSpawnConfig::New => new_channel(),
+                ChannelSpawnConfig::Closed => 0,
+                _ => unreachable!(),
+            };
+            (name.clone(), channel_id)
+        });
+        channel_ids.collect()
+    }
+}
+
+impl WorkflowSpawner<()> {
+    pub(crate) fn spawn(
         &self,
-        args: W::Args,
-        handles: &ChannelHandles<'_>,
+        raw_args: Vec<u8>,
+        channel_ids: &ChannelIds,
         services: Services,
-    ) -> anyhow::Result<InitializingWorkflow<W>> {
-        let raw_args = W::Codec::default().encode_value(args);
-        let state = WorkflowData::new(self.interface().clone().erase(), handles, services);
+    ) -> anyhow::Result<InitializingWorkflow<()>> {
+        let state = WorkflowData::new(self.interface().clone().erase(), channel_ids, services);
         let workflow = Workflow::from_state(self, state)?;
         Ok(InitializingWorkflow {
             inner: workflow,
             raw_args,
         })
-    }
-
-    fn create_channel_handles(&self) -> ChannelHandles<'_> {
-        let channel_manager = &self.services.channels;
-        let inbound = self
-            .interface()
-            .inbound_channels()
-            .map(|(name, _)| (name, channel_manager.create_channel()))
-            .collect();
-        let outbound = self
-            .interface()
-            .outbound_channels()
-            .map(|(name, _)| (name, channel_manager.create_channel()))
-            .collect();
-        ChannelHandles { inbound, outbound }
     }
 }
 
@@ -89,6 +106,7 @@ impl<W: WorkflowFn> WorkflowSpawner<W> {
 /// The encapsulated workflow should be initialized by calling [`Self::init()`].
 #[must_use = "Should be initialized by calling `Self::init()`"]
 pub struct InitializingWorkflow<W> {
+    // FIXME: no longer public?
     inner: Workflow<W>,
     raw_args: Vec<u8>,
 }
@@ -350,6 +368,20 @@ impl<W> Workflow<W> {
         self.store.data().outbound_channel(channel_name)
     }
 
+    pub(crate) fn inbound_channel_by_id(
+        &self,
+        channel_id: ChannelId,
+    ) -> Option<(Option<WorkflowId>, &str)> {
+        let mut channels = self.store.data().inbound_channels();
+        channels.find_map(|(workflow_id, name, state)| {
+            if state.id() == channel_id {
+                Some((workflow_id, name))
+            } else {
+                None
+            }
+        })
+    }
+
     pub(crate) fn push_inbound_message(
         &mut self,
         workflow_id: Option<WorkflowId>,
@@ -404,17 +436,24 @@ impl<W> Workflow<W> {
         &mut self,
         workflow_id: Option<WorkflowId>,
         channel_name: &str,
-    ) -> (usize, Vec<Vec<u8>>) {
+    ) -> (usize, Vec<Message>) {
         let (start_idx, messages) = self
             .store
             .data_mut()
             .take_outbound_messages(workflow_id, channel_name);
         crate::trace!(
             "Taken messages with lengths {:?} from channel `{}`",
-            messages.iter().map(Vec::len).collect::<Vec<_>>(),
+            messages
+                .iter()
+                .map(|message| message.as_ref().len())
+                .collect::<Vec<_>>(),
             channel_name
         );
         (start_idx, messages)
+    }
+
+    pub(crate) fn drain_messages(&mut self) -> Vec<(ChannelId, Vec<Message>)> {
+        self.store.data_mut().drain_messages()
     }
 
     /// Returns the current time for the workflow.

@@ -96,15 +96,33 @@ fn consume_message(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()
     Ok(Poll::Pending)
 }
 
+fn mock_channel_ids(interface: &Interface<()>) -> ChannelIds {
+    let inbound = interface
+        .inbound_channels()
+        .map(|(name, _)| (name.to_owned(), 0));
+    let outbound = interface
+        .outbound_channels()
+        .map(|(name, _)| (name.to_owned(), 0));
+    ChannelIds {
+        inbound: inbound.collect(),
+        outbound: outbound.collect(),
+    }
+}
+
 fn create_workflow(clock: impl Clock) -> Receipt<Workflow<()>> {
     let engine = WorkflowEngine::default();
     let spawner = WorkflowModule::new(&engine, ExportsMock::MOCK_MODULE_BYTES)
         .unwrap()
         .for_untyped_workflow("TestWorkflow")
-        .unwrap()
-        .with_clock(clock);
+        .unwrap();
+
+    let channel_ids = mock_channel_ids(spawner.interface());
+    let services = Services {
+        clock: Arc::new(clock),
+        ..Services::default()
+    };
     spawner
-        .spawn(b"test_input".to_vec())
+        .spawn(b"test_input".to_vec(), &channel_ids, services)
         .unwrap()
         .init()
         .unwrap()
@@ -162,10 +180,10 @@ fn receiving_inbound_message() {
 
     let (_, traces) = workflow.take_outbound_messages(None, "traces");
     assert_eq!(traces.len(), 1);
-    assert_eq!(&traces[0], b"trace #1");
+    assert_eq!(traces[0].as_ref(), b"trace #1");
     let (_, events) = workflow.take_outbound_messages(None, "events");
     assert_eq!(events.len(), 1);
-    assert_eq!(&events[0], b"event #1");
+    assert_eq!(events[0].as_ref(), b"event #1");
 
     let (waker_ids, causes): (HashSet<_>, Vec<_>) = workflow.store.data_mut().take_wakers().unzip();
     assert_eq!(waker_ids.len(), 2);
@@ -257,7 +275,10 @@ fn trap_when_starting_workflow() {
     let engine = WorkflowEngine::default();
     let module = WorkflowModule::new(&engine, ExportsMock::MOCK_MODULE_BYTES).unwrap();
     let spawner = module.for_untyped_workflow("TestWorkflow").unwrap();
-    let workflow = spawner.spawn(b"test_input".to_vec()).unwrap();
+    let channel_ids = mock_channel_ids(spawner.interface());
+    let workflow = spawner
+        .spawn(b"test_input".to_vec(), &channel_ids, Services::default())
+        .unwrap();
     let err = workflow.init().unwrap_err().to_string();
 
     assert!(err.contains("failed while polling task 0"), "{}", err);

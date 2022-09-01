@@ -6,10 +6,7 @@ use wasmtime::{Engine, ExternType, Func, Linker, Module, Store, WasmParams, Wasm
 
 use std::{collections::HashMap, fmt, str, sync::Arc};
 
-use crate::{
-    data::{WorkflowData, WorkflowFunctions},
-    services::{Clock, Services},
-};
+use crate::data::{WorkflowData, WorkflowFunctions};
 use tardigrade::{interface::Interface, workflow::GetInterface};
 
 mod exports;
@@ -320,7 +317,6 @@ impl WorkflowModule {
 /// [`WorkflowModule::for_untyped_workflow`].
 pub struct WorkflowSpawner<W> {
     pub(crate) module: Module,
-    pub(crate) services: Services,
     interface: Interface<W>,
     workflow_name: String,
     linker_extensions: Vec<Box<dyn LowLevelExtendLinker>>,
@@ -344,7 +340,6 @@ impl<W> WorkflowSpawner<W> {
             module,
             interface,
             workflow_name: workflow_name.to_owned(),
-            services: Services::default(),
             linker_extensions: vec![Box::new(WorkflowFunctions)],
             data_section: OnceCell::new(),
         }
@@ -392,20 +387,9 @@ impl<W> WorkflowSpawner<W> {
         &self.workflow_name
     }
 
-    /// Specifies a [`Clock`] implementation to be used with [`Workflow`]s instantiated
-    /// from this module.
-    ///
-    /// [`Workflow`]: crate::Workflow
-    #[must_use]
-    pub fn with_clock(mut self, clock: impl Clock) -> Self {
-        self.services.clock = Arc::new(clock);
-        self
-    }
-
     pub(crate) fn erase(self) -> WorkflowSpawner<()> {
         WorkflowSpawner {
             module: self.module,
-            services: self.services,
             interface: self.interface.erase(),
             workflow_name: self.workflow_name,
             linker_extensions: self.linker_extensions,

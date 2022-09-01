@@ -7,10 +7,11 @@ use wasmtime::Store;
 use crate::{
     data::{PersistError, Refs, WorkflowData, WorkflowState},
     module::{DataSection, WorkflowSpawner},
+    services::Services,
     workflow::Workflow,
 };
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Memory {
     Unstructured(#[serde(with = "serde_compress")] Vec<u8>),
@@ -113,7 +114,7 @@ impl Memory {
 
 /// Persisted version of a [`Workflow`] containing the state of its external dependencies
 /// (channels and timers), and its linear WASM memory.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedWorkflow {
     state: WorkflowState,
     refs: Refs,
@@ -139,11 +140,15 @@ impl PersistedWorkflow {
     ///
     /// Returns an error if the workflow definition from `module` and the `persisted` state
     /// do not match (e.g., differ in defined channels).
-    pub fn restore<W>(self, spawner: &WorkflowSpawner<W>) -> anyhow::Result<Workflow<W>> {
+    pub(crate) fn restore<W>(
+        self,
+        spawner: &WorkflowSpawner<W>,
+        services: Services,
+    ) -> anyhow::Result<Workflow<W>> {
         let interface = spawner.interface().clone().erase();
         let data = self
             .state
-            .restore(interface, spawner.services.clone())
+            .restore(interface, services)
             .context("failed restoring workflow state")?;
         let mut workflow = Workflow::from_state(spawner, data)?;
         self.memory.restore(&mut workflow)?;

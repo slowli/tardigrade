@@ -1,5 +1,6 @@
 //! Misc utils.
 
+use serde::{Deserialize, Serialize};
 use wasmtime::{AsContext, AsContextMut, Memory, StoreContextMut, Trap};
 
 use std::{fmt, task::Poll};
@@ -67,6 +68,38 @@ macro_rules! log_result {
     ($result:tt, $($arg:tt)*) => {
         ($result, format_args!($($arg)*)).0
     };
+}
+
+/// Thin wrapper around `Vec<u8>`.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct Message(#[serde(with = "serde_b64")] Vec<u8>);
+
+impl fmt::Debug for Message {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Message")
+            .field("len", &self.0.len())
+            .finish()
+    }
+}
+
+impl AsRef<[u8]> for Message {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl From<Vec<u8>> for Message {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+}
+
+impl From<Message> for Vec<u8> {
+    fn from(message: Message) -> Self {
+        message.0
+    }
 }
 
 pub(crate) struct WasmAllocator<'a>(StoreContextMut<'a, WorkflowData>);

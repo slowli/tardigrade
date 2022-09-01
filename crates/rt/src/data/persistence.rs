@@ -64,7 +64,7 @@ fn flip_bool(&flag: &bool) -> bool {
     !flag
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct InboundChannelState {
     channel_id: ChannelId,
     #[serde(default, skip_serializing_if = "flip_bool")]
@@ -117,7 +117,7 @@ impl From<InboundChannelState> for super::InboundChannelState {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct OutboundChannelState {
     channel_id: ChannelId,
     capacity: Option<usize>,
@@ -171,7 +171,7 @@ impl From<OutboundChannelState> for super::OutboundChannelState {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ChannelStates {
     inbound: HashMap<String, InboundChannelState>,
     outbound: HashMap<String, OutboundChannelState>,
@@ -245,7 +245,7 @@ impl From<ChannelStates> for super::ChannelStates {
 }
 
 /// `Workflow` state that can be persisted between workflow invocations.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct WorkflowState {
     channels: ChannelStates,
     timers: Timers,
@@ -317,7 +317,7 @@ impl WorkflowData {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
 pub(crate) struct Refs {
     inner: HashMap<u32, HostResource>,
