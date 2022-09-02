@@ -9,7 +9,7 @@ use crate::{
     module::{DataSection, WorkflowSpawner},
     services::Services,
     utils::Message,
-    workflow::Workflow,
+    workflow::{ChannelIds, Workflow},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +136,10 @@ impl PersistedWorkflow {
             memory,
             args: workflow.raw_args.clone(),
         })
+    }
+
+    pub(crate) fn channel_ids(&self) -> ChannelIds {
+        self.state.channel_ids()
     }
 
     /// Restores a workflow from the persisted state and the `spawner` defining the workflow.

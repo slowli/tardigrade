@@ -53,7 +53,7 @@ fn instantiating_workflow() {
     let stashed = &state.new_workflows[&handle.workflow_id];
     assert_eq!(stashed.definition_id, "test:latest");
 
-    state.commit();
+    state.commit(&Receipt::new());
     assert!(state.new_workflows.is_empty());
     let persisted = &state.workflows[&handle.workflow_id];
     assert_eq!(persisted.definition_id, "test:latest");
@@ -70,7 +70,10 @@ fn instantiating_workflow() {
 }
 
 fn test_initializing_workflow(manager: &WorkflowManager, handle: &WorkflowAndChannelIds) {
-    let receipt = manager.initialize_workflow(handle.workflow_id).unwrap();
+    let receipt = manager
+        .initialize_workflow(handle.workflow_id)
+        .unwrap()
+        .unwrap();
     assert_eq!(receipt.executions().len(), 2);
     let main_execution = &receipt.executions()[0];
     assert_matches!(main_execution.function, ExecutedFunction::Entry { .. });
@@ -113,10 +116,12 @@ fn sending_message_to_workflow() {
         .build_into_handle()
         .unwrap();
 
-    manager.state.lock().unwrap().commit();
+    manager.state.lock().unwrap().commit(&Receipt::new());
     manager.initialize_workflow(handle.workflow_id).unwrap();
     let orders_id = handle.channel_ids.inbound["orders"];
-    manager.send_message(orders_id, b"order #1".to_vec());
+    manager
+        .send_message(orders_id, b"order #1".to_vec())
+        .unwrap();
 
     {
         let state = manager.state.lock().unwrap();
@@ -125,7 +130,10 @@ fn sending_message_to_workflow() {
         assert_eq!(orders[0].as_ref(), b"order #1");
     }
 
-    let receipt = manager.feed_message_to_workflow(orders_id).unwrap();
+    let receipt = manager
+        .feed_message_to_workflow(orders_id)
+        .unwrap()
+        .unwrap();
     assert_eq!(receipt.executions().len(), 2); // waker + task
     let waker_execution = &receipt.executions()[1];
     assert_matches!(

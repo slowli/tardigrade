@@ -11,7 +11,7 @@ use crate::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, PanicInfo, ResourceEvent,
         ResourceEventKind, ResourceId, WakeUpCause,
     },
-    TaskId, TimerId, WakerId, WorkflowId,
+    ChannelId, TaskId, TimerId, WakerId, WorkflowId,
 };
 use tardigrade_shared::{JoinError, PollMessage, SendError};
 
@@ -234,6 +234,18 @@ impl CurrentExecution {
                     Poll::Ready(maybe_message) => Poll::Ready(maybe_message.as_ref().map(Vec::len)),
                 },
             },
+            channel_name: channel_ref.name.clone(),
+            workflow_id: channel_ref.workflow_id,
+        });
+    }
+
+    pub fn push_inbound_channel_closure(
+        &mut self,
+        channel_ref: &ChannelRef,
+        channel_id: ChannelId,
+    ) {
+        self.push_event(ChannelEvent {
+            kind: ChannelEventKind::InboundChannelClosed(channel_id),
             channel_name: channel_ref.name.clone(),
             workflow_id: channel_ref.workflow_id,
         });

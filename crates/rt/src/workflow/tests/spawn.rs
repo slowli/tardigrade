@@ -84,7 +84,7 @@ impl ManageWorkflows for MockWorkflowManager {
     }
 }
 
-fn create_workflow_with_manager(manager: Arc<MockWorkflowManager>) -> Receipt<Workflow<()>> {
+fn create_workflow_with_manager(manager: Arc<MockWorkflowManager>) -> Workflow<()> {
     let engine = WorkflowEngine::default();
     let spawner = WorkflowModule::new(&engine, ExportsMock::MOCK_MODULE_BYTES)
         .unwrap()
@@ -99,7 +99,8 @@ fn create_workflow_with_manager(manager: Arc<MockWorkflowManager>) -> Receipt<Wo
     let mut workflow = spawner
         .spawn(b"test_input".to_vec(), &channel_ids, services)
         .unwrap();
-    workflow.initialize().unwrap().map(|()| workflow)
+    workflow.initialize().unwrap();
+    workflow
 }
 
 fn spawn_child_workflow(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
@@ -184,7 +185,7 @@ fn spawning_child_workflow() {
     let poll_fns = Answers::from_value(spawn_child_workflow as MockPollFn);
     let _guard = ExportsMock::prepare(poll_fns);
     let manager = Arc::new(MockWorkflowManager::new());
-    let workflow = create_workflow_with_manager(Arc::clone(&manager)).into_inner();
+    let workflow = create_workflow_with_manager(Arc::clone(&manager));
 
     let mut children: Vec<_> = workflow.child_workflows().collect();
     assert_eq!(children.len(), 1);
@@ -280,7 +281,7 @@ fn spawning_child_workflow_errors() {
     let poll_fns = Answers::from_value(spawn_child_workflow_errors as MockPollFn);
     let _guard = ExportsMock::prepare(poll_fns);
     let manager = Arc::new(MockWorkflowManager::new());
-    let workflow = create_workflow_with_manager(manager).into_inner();
+    let workflow = create_workflow_with_manager(manager);
 
     assert!(workflow.child_workflows().next().is_none());
 }
@@ -325,7 +326,7 @@ fn consuming_message_from_child_workflow() {
     let poll_fns = Answers::from_values([spawn_child_workflow, consume_message_from_child]);
     let exports_guard = ExportsMock::prepare(poll_fns);
     let manager = Arc::new(MockWorkflowManager::new());
-    let mut workflow = create_workflow_with_manager(manager).into_inner();
+    let mut workflow = create_workflow_with_manager(manager);
 
     workflow
         .push_inbound_message(Some(1), "traces", b"trace #1".to_vec())

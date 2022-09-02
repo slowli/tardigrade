@@ -344,13 +344,18 @@ where
     }
 }
 
-impl<M, W> WorkflowBuilder<'_, M, W>
+impl<'a, M, W> WorkflowBuilder<'a, M, W>
 where
     M: ManageWorkflows + ?Sized,
     W: TakeHandle<Spawner>,
 {
     pub fn handle(&self) -> &<W as TakeHandle<Spawner>>::Handle {
         &self.handle
+    }
+
+    #[doc(hidden)]
+    pub fn manager(&self) -> &'a M {
+        self.manager
     }
 
     #[doc(hidden)] // used by the runtime crate

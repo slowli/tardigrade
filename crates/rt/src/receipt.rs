@@ -13,7 +13,7 @@ use wasmtime::Trap;
 
 use std::{error, fmt, ops::Range, task::Poll};
 
-use crate::{TaskId, TimerId, WakerId, WorkflowId};
+use crate::{ChannelId, TaskId, TimerId, WakerId, WorkflowId};
 use tardigrade_shared::SendError;
 
 /// Cause of waking up a [`Workflow`](crate::Workflow) task.
@@ -174,6 +174,8 @@ pub enum ChannelEventKind {
         /// Result of a poll, with the message replaced with its byte length.
         result: Poll<Option<usize>>,
     },
+    /// Inbound channel closed by the workflow logic.
+    InboundChannelClosed(ChannelId),
     /// Outbound channel was polled for readiness.
     OutboundChannelReady {
         /// Result of a poll.
@@ -261,6 +263,7 @@ pub struct Execution {
 /// in which a workflow is getting executed. See [`WorkflowSpawner::spawn()`] for an example.
 ///
 /// [`WorkflowSpawner::spawn()`]: crate::WorkflowSpawner::spawn()
+// FIXME: remove type param (?)
 #[derive(Debug)]
 pub struct Receipt<T = ()> {
     pub(crate) executions: Vec<Execution>,
@@ -281,13 +284,6 @@ impl Receipt<()> {
 }
 
 impl<T> Receipt<T> {
-    pub(crate) fn map<U>(self, map_fn: impl FnOnce(T) -> U) -> Receipt<U> {
-        Receipt {
-            executions: self.executions,
-            output: map_fn(self.output),
-        }
-    }
-
     /// Returns the list of executed top-level WASM functions together with [`Event`]s that
     /// have occurred during their execution.
     pub fn executions(&self) -> &[Execution] {
@@ -303,18 +299,6 @@ impl<T> Receipt<T> {
 impl<T> AsRef<T> for Receipt<T> {
     fn as_ref(&self) -> &T {
         &self.output
-    }
-}
-
-impl<T, E> Receipt<Result<T, E>> {
-    pub(crate) fn transpose(self) -> Result<Receipt<T>, E> {
-        match self.output {
-            Ok(output) => Ok(Receipt {
-                executions: self.executions,
-                output,
-            }),
-            Err(err) => Err(err),
-        }
     }
 }
 

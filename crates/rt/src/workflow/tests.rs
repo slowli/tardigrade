@@ -107,7 +107,7 @@ fn mock_channel_ids(interface: &Interface<()>) -> ChannelIds {
     }
 }
 
-fn create_workflow(clock: impl Clock) -> Receipt<Workflow<()>> {
+fn create_workflow(clock: impl Clock) -> (Receipt, Workflow<()>) {
     let engine = WorkflowEngine::default();
     let spawner = WorkflowModule::new(&engine, ExportsMock::MOCK_MODULE_BYTES)
         .unwrap()
@@ -122,14 +122,14 @@ fn create_workflow(clock: impl Clock) -> Receipt<Workflow<()>> {
     let mut workflow = spawner
         .spawn(b"test_input".to_vec(), &channel_ids, services)
         .unwrap();
-    workflow.initialize().unwrap().map(|()| workflow)
+    (workflow.initialize().unwrap(), workflow)
 }
 
 #[test]
 fn starting_workflow() {
     let poll_fns = Answers::from_value(initialize_task as MockPollFn);
     let exports_guard = ExportsMock::prepare(poll_fns);
-    let receipt = create_workflow(MockScheduler::default());
+    let (receipt, mut workflow) = create_workflow(MockScheduler::default());
     let exports_mock = exports_guard.into_inner();
     assert!(exports_mock.exports_created);
 
@@ -153,7 +153,6 @@ fn starting_workflow() {
         }) if channel_name == "orders"
     );
 
-    let mut workflow = receipt.into_inner();
     workflow.persist().unwrap();
 }
 
@@ -161,7 +160,7 @@ fn starting_workflow() {
 fn receiving_inbound_message() {
     let poll_fns = Answers::from_values([initialize_task, consume_message]);
     let exports_guard = ExportsMock::prepare(poll_fns);
-    let mut workflow = create_workflow(MockScheduler::default()).into_inner();
+    let (_, mut workflow) = create_workflow(MockScheduler::default());
 
     workflow
         .push_inbound_message(None, "orders", b"order #1".to_vec())
@@ -302,7 +301,7 @@ fn spawning_and_cancelling_task() {
     };
     let poll_fns = Answers::from_values([initialize_and_spawn_task, abort_task_and_complete]);
     let mock_guard = ExportsMock::prepare(poll_fns);
-    let receipt = create_workflow(MockScheduler::default());
+    let (receipt, mut workflow) = create_workflow(MockScheduler::default());
 
     assert_eq!(receipt.executions().len(), 3);
     let task_spawned = receipt.executions()[1].events.iter().any(|event| {
@@ -322,7 +321,6 @@ fn spawning_and_cancelling_task() {
         }
     );
 
-    let mut workflow = receipt.into_inner();
     let new_task = workflow.task(1).unwrap();
     assert_eq!(new_task.name(), "new task");
     assert_eq!(new_task.spawned_by(), Some(0));
@@ -373,7 +371,7 @@ fn rolling_back_task_spawning() {
     };
     let poll_fns = Answers::from_values([initialize_task, spawn_task_and_trap]);
     let _guard = ExportsMock::prepare(poll_fns);
-    let mut workflow = create_workflow(MockScheduler::default()).into_inner();
+    let (_, mut workflow) = create_workflow(MockScheduler::default());
 
     // Push the message in order to tick the main task.
     workflow
@@ -407,7 +405,7 @@ fn rolling_back_task_abort() {
     };
     let poll_fns = Answers::from_values([initialize_and_spawn_task, abort_task_and_trap]);
     let mock_guard = ExportsMock::prepare(poll_fns);
-    let mut workflow = create_workflow(MockScheduler::default()).into_inner();
+    let (_, mut workflow) = create_workflow(MockScheduler::default());
 
     // Push the message in order to tick the main task.
     workflow
@@ -441,7 +439,7 @@ fn rolling_back_emitting_messages_on_trap() {
     };
     let poll_fns = Answers::from_values([initialize_task, emit_message_and_trap]);
     let _guard = ExportsMock::prepare(poll_fns);
-    let mut workflow = create_workflow(MockScheduler::default()).into_inner();
+    let (_, mut workflow) = create_workflow(MockScheduler::default());
 
     // Push the message in order to tick the main task.
     workflow
@@ -461,7 +459,7 @@ fn rolling_back_placing_waker_on_trap() {
     };
     let poll_fns = Answers::from_values([initialize_task, flush_event_and_trap]);
     let _guard = ExportsMock::prepare(poll_fns);
-    let mut workflow = create_workflow(MockScheduler::default()).into_inner();
+    let (_, mut workflow) = create_workflow(MockScheduler::default());
 
     // Push the message in order to tick the main task.
     workflow
@@ -508,7 +506,7 @@ fn timers_basics() {
     let poll_fns = Answers::from_values([create_timers, poll_timers_and_drop]);
     let _guard = ExportsMock::prepare(poll_fns);
     let scheduler = MockScheduler::default();
-    let mut workflow = create_workflow(scheduler.clone()).into_inner();
+    let (_, mut workflow) = create_workflow(scheduler.clone());
 
     workflow.tick().unwrap();
     let timers: HashMap<_, _> = workflow.timers().collect();
@@ -533,7 +531,7 @@ fn dropping_inbound_channel_in_workflow() {
     };
     let poll_fns = Answers::from_value(drop_channel);
     let guard = ExportsMock::prepare(poll_fns);
-    let mut workflow = create_workflow(MockScheduler::default()).into_inner();
+    let (_, mut workflow) = create_workflow(MockScheduler::default());
 
     workflow.tick().unwrap();
     let mock = guard.into_inner();

@@ -15,7 +15,7 @@ use super::{
     time::Timers,
     WorkflowData,
 };
-use crate::{services::Services, ChannelId, TaskId, WakerId, WorkflowId};
+use crate::{services::Services, workflow::ChannelIds, ChannelId, TaskId, WakerId, WorkflowId};
 use tardigrade::interface::Interface;
 
 /// Error persisting a [`Workflow`](crate::Workflow).
@@ -254,6 +254,18 @@ pub(crate) struct WorkflowState {
 }
 
 impl WorkflowState {
+    pub fn channel_ids(&self) -> ChannelIds {
+        let inbound = self.channels.inbound.iter();
+        let inbound = inbound.map(|(name, state)| (name.clone(), state.channel_id));
+        let outbound = self.channels.outbound.iter();
+        let outbound = outbound.map(|(name, state)| (name.clone(), state.channel_id));
+
+        ChannelIds {
+            inbound: inbound.collect(),
+            outbound: outbound.collect(),
+        }
+    }
+
     pub fn restore(
         self,
         interface: Interface<()>,

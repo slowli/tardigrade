@@ -338,7 +338,14 @@ impl WorkflowData {
     ) -> HashSet<WakerId> {
         let channels = self.channels_mut(channel_ref.workflow_id);
         let channel_state = channels.inbound.get_mut(&channel_ref.name).unwrap();
-        mem::take(&mut channel_state.wakes_on_next_element)
+        let wakers = mem::take(&mut channel_state.wakes_on_next_element);
+        if !channel_state.is_closed {
+            channel_state.is_closed = true;
+            let channel_id = channel_state.channel_id;
+            self.current_execution()
+                .push_inbound_channel_closure(channel_ref, channel_id);
+        }
+        wakers
     }
 
     #[cfg(feature = "async")]

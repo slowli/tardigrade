@@ -1,17 +1,8 @@
-//! Handles for [`Workflow`], allowing to interact with it (e.g., send and receive messages).
-//!
-//! There are 2 types of handles provided:
-//!
-//! - [`WorkflowEnv`] / [`WorkflowHandle`] provides low-level synchronous API.
-//! - [`AsyncEnv`] provides more high-level, future-based API.
-//!
-//! See [`WorkflowEnv`] and [`AsyncEnv`] docs for examples of usage.
-//!
-//! [`AsyncEnv`]: crate::handle::future::AsyncEnv
+//! Handles for `WorkflowManager`.
 
 use anyhow::Context;
 
-use std::{cell::RefCell, fmt, marker::PhantomData, ops::Range, rc::Rc};
+use std::{fmt, marker::PhantomData, ops::Range};
 
 #[cfg(feature = "async")]
 #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
@@ -19,16 +10,20 @@ pub mod future;
 
 use crate::{
     receipt::{ExecutionError, Receipt},
+    services::{WorkflowAndChannelIds, WorkflowManager},
     utils::Message,
-    ConsumeError, Workflow,
+    ChannelId,
 };
 use tardigrade::{
     channel::{Receiver, Sender},
-    interface::{AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel},
+    interface::{
+        AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel, ValidateInterface,
+    },
     trace::{FutureUpdate, TracedFutures, Tracer},
     workflow::{TakeHandle, UntypedHandle},
     Decode, Encode,
 };
+use tardigrade_shared::SendError;
 
 /// Environment for executing [`Workflow`]s.
 ///
@@ -77,70 +72,84 @@ use tardigrade::{
 /// # }
 /// ```
 pub struct WorkflowEnv<'a, W> {
-    inner: Rc<RefCell<&'a mut Workflow<W>>>,
+    manager: &'a WorkflowManager,
+    ids: WorkflowAndChannelIds,
+    _ty: PhantomData<fn(W)>,
 }
 
 impl<W> fmt::Debug for WorkflowEnv<'_, W> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("WorkflowEnv")
-            .field("inner", &self.inner)
+            .field("manager", &self.manager)
+            .field("ids", &self.ids)
             .finish()
     }
 }
 
-impl<'a, W> WorkflowEnv<'a, W> {
-    /// Creates a new environment for the provided [`Workflow`].
-    pub fn new(workflow: &'a mut Workflow<W>) -> Self {
+impl<'a> WorkflowEnv<'a, ()> {
+    pub(crate) fn new(manager: &'a WorkflowManager, ids: WorkflowAndChannelIds) -> Self {
         Self {
-            inner: Rc::new(RefCell::new(workflow)),
+            manager,
+            ids,
+            _ty: PhantomData,
         }
     }
 
-    fn with<T>(&self, action: impl FnOnce(&mut Workflow<W>) -> T) -> T {
-        let mut borrow = self.inner.borrow_mut();
-        action(*borrow)
+    /// # Errors
+    ///
+    /// Returns an error on workflow interface mismatch.
+    #[allow(clippy::missing_panics_doc)] // false positive
+    pub fn downcast<W: ValidateInterface<Id = ()>>(
+        self,
+    ) -> Result<WorkflowEnv<'a, W>, AccessError> {
+        let interface = self
+            .manager
+            .interface_for_workflow(self.ids.workflow_id)
+            .unwrap();
+        W::validate_interface(interface, &())?;
+        Ok(self.downcast_unchecked())
     }
-}
 
-impl<'a, W> WorkflowEnv<'a, W>
-where
-    W: TakeHandle<WorkflowEnv<'a, W>, Id = ()> + 'a,
-{
-    /// Creates a workflow handle from this environment.
-    #[allow(clippy::missing_panics_doc)] // TODO: is `unwrap()` really safe here?
-    pub fn handle(mut self) -> WorkflowHandle<'a, W> {
-        WorkflowHandle {
-            api: W::take_handle(&mut self, &()).unwrap(),
-            env: self,
+    pub(crate) fn downcast_unchecked<W>(self) -> WorkflowEnv<'a, W> {
+        WorkflowEnv {
+            manager: self.manager,
+            ids: self.ids,
+            _ty: PhantomData,
         }
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if an error occurs during initialization.
+    pub fn initialize(&self) -> Result<Option<Receipt>, ExecutionError> {
+        self.manager.initialize_workflow(self.ids.workflow_id)
     }
 }
 
 /// Handle for an [inbound workflow channel](Receiver) that allows sending messages
 /// via the channel.
 #[derive(Debug)]
-pub struct MessageSender<'a, T, C, W> {
-    workflow: Rc<RefCell<&'a mut Workflow<W>>>,
-    channel_name: String,
+pub struct MessageSender<'a, T, C> {
+    manager: &'a WorkflowManager,
+    channel_id: ChannelId,
     codec: C,
     _item: PhantomData<fn(T)>,
 }
 
-impl<'a, T, C: Encode<T>, W> MessageSender<'a, T, C, W> {
+impl<'a, T, C: Encode<T>> MessageSender<'a, T, C> {
     /// Sends a message over the channel.
     ///
     /// # Errors
     ///
     /// Returns an error if the workflow is currently not waiting for messages
     /// on the associated channel, or if the channel is closed.
-    pub fn send(&mut self, message: T) -> Result<SentMessage<'a, W>, ConsumeError> {
+    pub fn send(&mut self, message: T) -> Result<SentMessage<'a>, SendError> {
         let raw_message = self.codec.encode_value(message);
-        self.workflow
-            .borrow_mut()
-            .push_inbound_message(None, &self.channel_name, raw_message)?;
+        self.manager.send_message(self.channel_id, raw_message)?;
         Ok(SentMessage {
-            workflow: Rc::clone(&self.workflow),
+            manager: self.manager,
+            channel_id: self.channel_id,
         })
     }
 
@@ -150,31 +159,28 @@ impl<'a, T, C: Encode<T>, W> MessageSender<'a, T, C, W> {
     ///
     /// Returns an error if the channel is already closed, or the workflow
     /// is currently not waiting for messages on the associated inbound channel.
-    pub fn close(self) -> Result<SentMessage<'a, W>, ConsumeError> {
-        self.workflow
-            .borrow_mut()
-            .close_inbound_channel(None, &self.channel_name)?;
-        Ok(SentMessage {
-            workflow: Rc::clone(&self.workflow),
-        })
+    pub fn close(self) {
+        self.manager.close_channel_sender(self.channel_id);
     }
 }
 
 /// Result of sending a message over an inbound channel.
 #[derive(Debug)]
 #[must_use = "must be `flush`ed to progress the workflow"]
-pub struct SentMessage<'a, W> {
-    workflow: Rc<RefCell<&'a mut Workflow<W>>>,
+// TODO: deal with potential TOCTOU issues
+pub struct SentMessage<'a> {
+    manager: &'a WorkflowManager,
+    channel_id: ChannelId,
 }
 
-impl<W> SentMessage<'_, W> {
+impl SentMessage<'_> {
     /// Progresses the workflow after an inbound message is consumed.
     ///
     /// # Errors
     ///
     /// Returns an error if workflow execution traps.
-    pub fn flush(self) -> Result<Receipt, ExecutionError> {
-        self.workflow.borrow_mut().tick()
+    pub fn flush(self) -> Result<Option<Receipt>, ExecutionError> {
+        self.manager.feed_message_to_workflow(self.channel_id)
     }
 }
 
@@ -183,15 +189,13 @@ where
     C: Encode<T> + Default,
 {
     type Id = str;
-    type Handle = MessageSender<'a, T, C, W>;
+    type Handle = MessageSender<'a, T, C>;
 
     fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
-        let channel_exists =
-            env.with(|workflow| workflow.interface().inbound_channel(id).is_some());
-        if channel_exists {
+        if let Some(channel_id) = env.ids.channel_ids.inbound.get(id).copied() {
             Ok(MessageSender {
-                workflow: Rc::clone(&env.inner),
-                channel_name: id.to_owned(),
+                manager: env.manager,
+                channel_id,
                 codec: C::default(),
                 _item: PhantomData,
             })
@@ -204,32 +208,27 @@ where
 /// Handle for an [outbound workflow channel](Sender) that allows taking messages
 /// from the channel.
 #[derive(Debug)]
-pub struct MessageReceiver<'a, T, C, W> {
-    workflow: Rc<RefCell<&'a mut Workflow<W>>>,
-    channel_name: String,
+pub struct MessageReceiver<'a, T, C> {
+    manager: &'a WorkflowManager,
+    channel_id: ChannelId,
     codec: C,
     _item: PhantomData<fn() -> T>,
 }
 
-impl<T, C: Decode<T>, W> MessageReceiver<'_, T, C, W> {
+impl<T, C: Decode<T>> MessageReceiver<'_, T, C> {
     /// Takes messages from the channel and progresses the flow marking the channel as flushed.
     ///
     /// # Errors
     ///
     /// Returns an error if workflow execution traps.
-    pub fn take_messages(&mut self) -> Result<Receipt<TakenMessages<T, C>>, ExecutionError> {
-        let (start_idx, raw_messages, exec_result) = {
-            let mut workflow = self.workflow.borrow_mut();
-            let (start_idx, messages) = workflow.take_outbound_messages(None, &self.channel_name);
-            (start_idx, messages, workflow.tick())
-        };
-        let messages = TakenMessages {
+    pub fn take_messages(&mut self) -> TakenMessages<'_, T, C> {
+        let (start_idx, raw_messages) = self.manager.take_outbound_messages(self.channel_id);
+        TakenMessages {
             start_idx,
             raw_messages,
             codec: &mut self.codec,
             _item: PhantomData,
-        };
-        exec_result.map(|receipt| receipt.map(|()| messages))
+        }
     }
 }
 
@@ -266,15 +265,13 @@ where
     C: Decode<T> + Default,
 {
     type Id = str;
-    type Handle = MessageReceiver<'a, T, C, W>;
+    type Handle = MessageReceiver<'a, T, C>;
 
     fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
-        let channel_exists =
-            env.with(|workflow| workflow.interface().outbound_channel(id).is_some());
-        if channel_exists {
+        if let Some(channel_id) = env.ids.channel_ids.outbound.get(id).copied() {
             Ok(MessageReceiver {
-                workflow: Rc::clone(&env.inner),
-                channel_name: id.to_owned(),
+                manager: env.manager,
+                channel_id,
                 codec: C::default(),
                 _item: PhantomData,
             })
@@ -286,12 +283,12 @@ where
 
 /// Handle allowing to trace futures.
 #[derive(Debug)]
-pub struct TracerHandle<'a, C, W> {
-    receiver: MessageReceiver<'a, FutureUpdate, C, W>,
+pub struct TracerHandle<'a, C> {
+    receiver: MessageReceiver<'a, FutureUpdate, C>,
     futures: TracedFutures,
 }
 
-impl<'a, C, W> TracerHandle<'a, C, W>
+impl<'a, C> TracerHandle<'a, C>
 where
     C: Decode<FutureUpdate>,
 {
@@ -316,25 +313,15 @@ where
     ///
     /// Returns an error if an [`ExecutionError`] occurs when flushing tracing messages, or
     /// if decoding messages fails.
-    pub fn take_traces(&mut self) -> anyhow::Result<Receipt> {
-        let receipt = self
-            .receiver
-            .take_messages()
-            .context("cannot flush tracing messages")?;
-        let receipt = receipt
-            .map(TakenMessages::decode)
-            .transpose()
-            .context("cannot decode `FutureUpdate`")?;
-
-        receipt
-            .map(|updates| {
-                updates.into_iter().try_fold((), |_, update| {
-                    self.futures
-                        .update(update)
-                        .context("incorrect `FutureUpdate` (was the tracing state persisted?)")
-                })
-            })
-            .transpose()
+    pub fn take_traces(&mut self) -> anyhow::Result<()> {
+        let messages = self.receiver.take_messages();
+        let updates = messages.decode().context("cannot decode `FutureUpdate`")?;
+        for update in updates {
+            self.futures
+                .update(update)
+                .context("incorrect `FutureUpdate` (was the tracing state persisted?)")?;
+        }
+        Ok(())
     }
 }
 
@@ -343,47 +330,13 @@ where
     C: Decode<FutureUpdate> + Default,
 {
     type Id = str;
-    type Handle = TracerHandle<'a, C, W>;
+    type Handle = TracerHandle<'a, C>;
 
     fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
         Ok(TracerHandle {
             receiver: Sender::<FutureUpdate, C>::take_handle(env, id)?,
             futures: TracedFutures::default(),
         })
-    }
-}
-
-/// Handle for a [`Workflow`] allowing to access inbound / outbound channels.
-pub struct WorkflowHandle<'a, W>
-where
-    W: TakeHandle<WorkflowEnv<'a, W>, Id = ()> + 'a,
-{
-    /// API interface of the workflow, e.g. its inbound and outbound channels.
-    pub api: <W as TakeHandle<WorkflowEnv<'a, W>>>::Handle,
-    env: WorkflowEnv<'a, W>,
-}
-
-impl<'a, W> fmt::Debug for WorkflowHandle<'a, W>
-where
-    W: TakeHandle<WorkflowEnv<'a, W>, Id = ()> + 'a,
-    <W as TakeHandle<WorkflowEnv<'a, W>>>::Handle: fmt::Debug,
-{
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("WorkflowHandle")
-            .field("api", &self.api)
-            .field("env", &self.env)
-            .finish()
-    }
-}
-
-impl<'a, W> WorkflowHandle<'a, W>
-where
-    W: TakeHandle<WorkflowEnv<'a, W>, Id = ()> + 'a,
-{
-    /// Performs an action on the workflow without dropping the handle.
-    pub fn with<T>(&mut self, action: impl FnOnce(&mut Workflow<W>) -> T) -> T {
-        self.env.with(action)
     }
 }
 
@@ -395,7 +348,13 @@ impl<'a> TakeHandle<WorkflowEnv<'a, ()>> for Interface<()> {
         env: &mut WorkflowEnv<'a, ()>,
         _id: &Self::Id,
     ) -> Result<Self::Handle, AccessError> {
-        Ok(env.with(|workflow| workflow.interface().clone()))
+        Ok(env
+            .manager
+            .interface_for_workflow(env.ids.workflow_id)
+            .cloned()
+            .unwrap())
+        // ^ `unwrap()` is safe by construction: we only hand over `WorkflowEnv` for
+        // existing workflows.
     }
 }
 

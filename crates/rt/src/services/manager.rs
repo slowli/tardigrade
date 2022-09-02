@@ -1,6 +1,7 @@
 //! `WorkflowManager` and tightly related types.
 
-#![allow(missing_docs)]
+#![allow(missing_docs)] // FIXME
+#![allow(clippy::missing_panics_doc)] // lots of `unwrap()`s on mutex locks
 
 use chrono::Utc;
 
@@ -15,7 +16,8 @@ use std::{
 mod tests;
 
 use crate::{
-    receipt::{ExecutionError, Receipt},
+    handle::WorkflowEnv,
+    receipt::{ChannelEvent, ChannelEventKind, ExecutionError, Receipt},
     services::{Clock, Services, WorkflowAndChannelIds},
     utils::Message,
     workflow::ChannelIds,
@@ -23,10 +25,10 @@ use crate::{
 };
 use tardigrade::{
     interface::Interface,
-    spawn::{ChannelHandles, ChannelSpawnConfig, ManageWorkflows},
-    workflow::WorkflowFn,
+    spawn::{ChannelHandles, ManageWorkflows, Spawner, WorkflowBuilder},
+    workflow::{TakeHandle, WorkflowFn},
 };
-use tardigrade_shared::{ChannelId, SpawnError, WorkflowId};
+use tardigrade_shared::{ChannelId, SendError, SpawnError, WorkflowId};
 
 /// Simple implementation of a workflow manager.
 #[derive(Debug)]
@@ -48,14 +50,7 @@ impl Default for WorkflowManager {
     }
 }
 
-// FIXME: add public API
-//   - creating workflow
-//   - initializing workflow
-//   - sending message
-//   - feeding message to a workflow (via queue?)
 impl WorkflowManager {
-    const CLOSED_CHANNEL: ChannelId = 0;
-
     /// Creates a manager builder.
     pub fn builder() -> WorkflowManagerBuilder {
         WorkflowManagerBuilder {
@@ -71,38 +66,112 @@ impl WorkflowManager {
         }
     }
 
-    fn send_message(&self, channel_id: ChannelId, message: Vec<u8>) {
+    /// Returns a handle to a workflow with the specified ID.
+    pub fn workflow(&self, workflow_id: WorkflowId) -> Option<WorkflowEnv<'_, ()>> {
+        let state = self.state.lock().unwrap();
+        state.channel_ids(workflow_id).map(|channel_ids| {
+            WorkflowEnv::new(
+                self,
+                WorkflowAndChannelIds {
+                    workflow_id,
+                    channel_ids,
+                },
+            )
+        })
+    }
+
+    pub(crate) fn interface_for_workflow(&self, workflow_id: WorkflowId) -> Option<&Interface<()>> {
+        let state = self.state.lock().unwrap();
+        let persisted = state.workflows.get(&workflow_id)?;
+        Some(self.spawners[&persisted.definition_id].interface())
+    }
+
+    pub(crate) fn send_message(
+        &self,
+        channel_id: ChannelId,
+        message: Vec<u8>,
+    ) -> Result<(), SendError> {
         self.state
             .lock()
             .unwrap()
-            .send_message(channel_id, message.into());
+            .send_message(channel_id, message.into())
+    }
+
+    pub(crate) fn close_channel_sender(&self, channel_id: ChannelId) {
+        self.state.lock().unwrap().close_channel_sender(channel_id);
+    }
+
+    pub(crate) fn take_outbound_messages(&self, channel_id: ChannelId) -> (usize, Vec<Message>) {
+        let mut state = self.state.lock().unwrap();
+        let channel_state = state.channels.get_mut(&channel_id).unwrap();
+        assert!(
+            channel_state.receiver_workflow_id.is_none(),
+            "cannot receive a message for a channel with the receiver connected to a workflow"
+        );
+        let (start_idx, messages) = channel_state.drain_messages();
+        (start_idx, messages.into())
     }
 
     /// Atomically pops a message from a channel and feeds it to a listening workflow.
     /// If the workflow execution is successful, its results are committed to the manager state;
     /// otherwise, the results are reverted.
-    ///
-    /// # Preconditions
-    ///
-    /// - The channel must contain a message
-    /// - The channel must be listened to by a workflow
-    fn feed_message_to_workflow(&self, channel_id: ChannelId) -> Result<Receipt, ExecutionError> {
+    pub(crate) fn feed_message_to_workflow(
+        &self,
+        channel_id: ChannelId,
+    ) -> Result<Option<Receipt>, ExecutionError> {
         let mut state = self.state.lock().unwrap();
         let (workflow_id, message) = state.take_message(channel_id);
-        let workflow_id = workflow_id.unwrap();
+        let workflow_id = workflow_id.expect("channel receiver not connected to workflow");
+        let message = if let Some(message) = message {
+            message
+        } else {
+            return Ok(None);
+        };
         let mut workflow = self.restore_workflow(&state, workflow_id);
 
         state.executing_workflow_id = Some(workflow_id);
-        let result = state.push_message(&mut workflow, message.clone(), channel_id);
-        if result.is_ok() {
-            state.commit();
+        let result = Self::push_message(&mut workflow, message.clone(), channel_id);
+        if let Ok(Some(receipt)) = &result {
+            state.commit(receipt);
             state.drain_and_persist_workflow(workflow_id, None, &mut workflow);
         } else {
             // Do not commit the execution result. Instead, put the message back to the channel.
+            // Note that this happens both in the case of `ExecutionError`, and if the message
+            // was not consumed by the workflow.
+            if result.is_ok() {
+                crate::warn!(
+                    "Message {:?} over channel {} was not consumed by workflow with ID {}; \
+                     reverting workflow execution",
+                    message,
+                    channel_id,
+                    workflow_id
+                );
+            }
             state.revert_taking_message(channel_id, message);
         }
         state.executing_workflow_id = None;
         result
+    }
+
+    /// Returns `Ok(None)` if the message cannot be consumed right now (the workflow channel
+    /// does not listen to it).
+    fn push_message(
+        workflow: &mut Workflow<()>,
+        message: Message,
+        channel_id: ChannelId,
+    ) -> Result<Option<Receipt>, ExecutionError> {
+        let (child_id, channel_name) = workflow.inbound_channel_by_id(channel_id).unwrap();
+        let channel_name = channel_name.to_owned();
+
+        workflow.rollback_on_error(|workflow| {
+            let push_result =
+                workflow.push_inbound_message(child_id, &channel_name, message.into());
+            if push_result.is_err() {
+                Ok(None)
+            } else {
+                workflow.tick().map(Some)
+            }
+        })
     }
 
     // FIXME: sane error handling
@@ -119,23 +188,24 @@ impl WorkflowManager {
             .unwrap()
     }
 
-    fn initialize_workflow(&self, workflow_id: WorkflowId) -> Result<Receipt, ExecutionError> {
+    pub(crate) fn initialize_workflow(
+        &self,
+        workflow_id: WorkflowId,
+    ) -> Result<Option<Receipt>, ExecutionError> {
         let mut state = self.state.lock().unwrap();
         let mut workflow = self.restore_workflow(&state, workflow_id);
-        assert!(
-            !workflow.is_initialized(),
-            "workflow with ID `{}` is already initialized",
-            workflow_id
-        );
+        if workflow.is_initialized() {
+            return Ok(None);
+        }
 
         state.executing_workflow_id = Some(workflow_id);
         let result = workflow.initialize();
-        if result.is_ok() {
-            state.commit();
+        if let Ok(receipt) = &result {
+            state.commit(receipt);
             state.drain_and_persist_workflow(workflow_id, None, &mut workflow);
         }
         state.executing_workflow_id = None;
-        result
+        result.map(Some)
     }
 }
 
@@ -157,7 +227,10 @@ impl ManageWorkflows for WorkflowManager {
             .get(id)
             .unwrap_or_else(|| panic!("workflow with ID `{}` is not defined", id));
 
-        let channel_ids = self.state.lock().unwrap().allocate_channels(handles);
+        let channel_ids = {
+            let mut state = self.state.lock().unwrap();
+            ChannelIds::new(handles, || state.allocate_channel_id())
+        };
         let workflow = spawner
             .spawn(args, &channel_ids, self.services())
             .map_err(|err| SpawnError::new(err.to_string()))?;
@@ -200,23 +273,45 @@ impl WorkflowManagerBuilder {
 #[derive(Debug)]
 struct ChannelState {
     receiver_workflow_id: Option<WorkflowId>, // `None` means external receiver
+    is_closed: bool,
     messages: VecDeque<Message>,
+    next_message_idx: usize,
 }
 
 impl ChannelState {
     fn new(receiver_workflow_id: Option<WorkflowId>) -> Self {
         Self {
             receiver_workflow_id,
+            is_closed: false,
             messages: VecDeque::new(),
+            next_message_idx: 0,
         }
     }
 
-    fn push_messages(&mut self, messages: impl IntoIterator<Item = Message>) {
+    fn push_messages(
+        &mut self,
+        messages: impl IntoIterator<Item = Message>,
+    ) -> Result<(), SendError> {
+        if self.is_closed {
+            return Err(SendError::Closed);
+        }
+        let old_len = self.messages.len();
         self.messages.extend(messages);
+        self.next_message_idx += self.messages.len() - old_len;
+        Ok(())
     }
 
     fn pop_message(&mut self) -> Option<Message> {
         self.messages.pop_front()
+    }
+
+    fn drain_messages(&mut self) -> (usize, VecDeque<Message>) {
+        let start_idx = self.next_message_idx - self.messages.len();
+        (start_idx, mem::take(&mut self.messages))
+    }
+
+    fn close(&mut self) {
+        self.is_closed = true;
     }
 }
 
@@ -255,41 +350,17 @@ impl Default for WorkflowManagerState {
 }
 
 impl WorkflowManagerState {
-    fn allocate_channels(&mut self, handles: &ChannelHandles) -> ChannelIds {
-        ChannelIds {
-            inbound: self.map_channel_configs(&handles.inbound),
-            outbound: self.map_channel_configs(&handles.outbound),
-        }
-    }
-
-    fn map_channel_configs(
-        &mut self,
-        configs: &HashMap<String, ChannelSpawnConfig>,
-    ) -> HashMap<String, ChannelId> {
-        configs
-            .iter()
-            .map(|(name, config)| {
-                let channel_id = match config {
-                    ChannelSpawnConfig::New => self.allocate_channel_id(),
-                    ChannelSpawnConfig::Closed => WorkflowManager::CLOSED_CHANNEL,
-                    _ => panic!("Channel spawn config {:?} is not supported", config),
-                };
-                (name.clone(), channel_id)
-            })
-            .collect()
-    }
-
     fn allocate_channel_id(&mut self) -> ChannelId {
         let channel_id = self.next_channel_id;
         self.next_channel_id += 1;
         channel_id
     }
 
-    fn take_message(&mut self, channel_id: ChannelId) -> (Option<WorkflowId>, Message) {
+    fn take_message(&mut self, channel_id: ChannelId) -> (Option<WorkflowId>, Option<Message>) {
         let channel_state = self.channels.get_mut(&channel_id).unwrap();
         (
             channel_state.receiver_workflow_id,
-            channel_state.pop_message().unwrap(),
+            channel_state.pop_message(),
         )
     }
 
@@ -298,29 +369,19 @@ impl WorkflowManagerState {
         channel_state.messages.push_front(message);
     }
 
-    fn send_message(&mut self, channel_id: ChannelId, message: Message) {
+    fn send_message(&mut self, channel_id: ChannelId, message: Message) -> Result<(), SendError> {
         let channel_state = self.channels.get_mut(&channel_id).unwrap();
-        channel_state.push_messages([message]);
+        channel_state.push_messages([message])
     }
 
-    /// # Preconditions
-    ///
-    /// - The workflow is ready to receive a message over `channel_id`
-    fn push_message(
-        &mut self,
-        workflow: &mut Workflow<()>,
-        message: Message,
-        channel_id: ChannelId,
-    ) -> Result<Receipt, ExecutionError> {
-        let (child_id, channel_name) = workflow.inbound_channel_by_id(channel_id).unwrap();
-        let channel_name = channel_name.to_owned();
+    fn close_channel_sender(&mut self, channel_id: ChannelId) {
+        let channel_state = self.channels.get_mut(&channel_id).unwrap();
+        channel_state.close();
+    }
 
-        workflow.rollback_on_error(|workflow| {
-            workflow
-                .push_inbound_message(child_id, &channel_name, message.into())
-                .unwrap();
-            workflow.tick()
-        })
+    fn channel_ids(&self, workflow_id: WorkflowId) -> Option<ChannelIds> {
+        let persisted = &self.workflows.get(&workflow_id)?.workflow;
+        Some(persisted.channel_ids())
     }
 
     fn stash_workflow(&mut self, definition_id: String, workflow: Workflow<()>) -> WorkflowId {
@@ -338,7 +399,7 @@ impl WorkflowManagerState {
         id
     }
 
-    fn commit(&mut self) {
+    fn commit(&mut self, receipt: &Receipt) {
         let executed_workflow_id = self.executing_workflow_id.take();
 
         // Create new channels and write outbound messages for them when appropriate.
@@ -360,6 +421,10 @@ impl WorkflowManagerState {
                 &mut child_workflow.workflow,
             );
         }
+
+        for channel_id in receipt.closed_channel_ids() {
+            self.channels.get_mut(&channel_id).unwrap().close();
+        }
     }
 
     fn drain_and_persist_workflow(
@@ -372,7 +437,7 @@ impl WorkflowManagerState {
         // new channels are already created.
         for (channel_id, messages) in workflow.drain_messages() {
             let channel = self.channels.get_mut(&channel_id).unwrap();
-            channel.push_messages(messages);
+            channel.push_messages(messages).ok(); // we're ok with messages getting dropped
         }
 
         // Since all outbound messages are drained, persisting the workflow is safe.
@@ -388,5 +453,48 @@ impl WorkflowManagerState {
                 },
             );
         }
+    }
+}
+
+impl Receipt {
+    fn closed_channel_ids(&self) -> impl Iterator<Item = ChannelId> + '_ {
+        self.executions().iter().flat_map(|execution| {
+            execution.events.iter().filter_map(|event| {
+                if let Some(ChannelEvent {
+                    kind: ChannelEventKind::InboundChannelClosed(channel_id),
+                    ..
+                }) = event.as_channel_event()
+                {
+                    Some(*channel_id)
+                } else {
+                    None
+                }
+            })
+        })
+    }
+}
+
+pub trait WorkflowBuilderExt {
+    type Output;
+
+    /// # Errors
+    ///
+    /// Returns an error if the workflow cannot be spawned.
+    fn build_and_commit(self) -> Result<Self::Output, SpawnError>;
+}
+
+impl<'a, W> WorkflowBuilderExt for WorkflowBuilder<'a, WorkflowManager, W>
+where
+    W: TakeHandle<Spawner>,
+{
+    type Output = WorkflowEnv<'a, W>;
+
+    fn build_and_commit(self) -> Result<Self::Output, SpawnError> {
+        let manager = self.manager();
+        self.build_into_handle().map(|ids| {
+            manager.state.lock().unwrap().commit(&Receipt::new());
+            let workflow = manager.workflow(ids.workflow_id).unwrap();
+            workflow.downcast_unchecked()
+        })
     }
 }
