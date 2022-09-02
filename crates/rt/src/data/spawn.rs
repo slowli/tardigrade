@@ -23,7 +23,7 @@ use tardigrade::spawn::{ChannelHandles, ChannelSpawnConfig};
 use tardigrade_shared::{
     abi::{IntoWasm, TryFromWasm},
     interface::{ChannelKind, Interface},
-    ChannelId, JoinError, SpawnError, WakerId, WorkflowId,
+    JoinError, SpawnError, WakerId, WorkflowId,
 };
 
 #[derive(Debug, Clone)]
@@ -57,20 +57,9 @@ impl ChildWorkflowState {
         self.channels.inbound.get(channel_name)
     }
 
-    pub(crate) fn inbound_channel_ids(&self) -> impl Iterator<Item = ChannelId> + '_ {
-        self.channels.inbound.values().map(InboundChannelState::id)
-    }
-
     /// Returns the current state of an outbound channel with the specified name.
     pub fn outbound_channel(&self, channel_name: &str) -> Option<&OutboundChannelState> {
         self.channels.outbound.get(channel_name)
-    }
-
-    pub(crate) fn outbound_channel_ids(&self) -> impl Iterator<Item = ChannelId> + '_ {
-        self.channels
-            .outbound
-            .values()
-            .map(OutboundChannelState::id)
     }
 }
 

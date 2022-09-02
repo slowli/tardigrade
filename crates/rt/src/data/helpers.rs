@@ -294,12 +294,20 @@ impl CurrentExecution {
         use self::ResourceEventKind::{Created, Dropped};
 
         crate::trace!("Committing {:?} onto {:?}", self, state);
+
+        let cause = if let ExecutedFunction::Waker { wake_up_cause, .. } = self.function {
+            // Copy the cause; we're not really interested in
+            // `WakeUpCause::Function { task_id: None }` that would result otherwise.
+            wake_up_cause
+        } else {
+            WakeUpCause::Function {
+                task_id: self.function.task_id(),
+            }
+        };
+
         for event in Self::resource_events(&self.events) {
             match (event.kind, event.resource_id) {
                 (Created, ResourceId::Task(task_id)) => {
-                    let cause = WakeUpCause::Function {
-                        task_id: self.function.task_id(),
-                    };
                     state.task_queue.insert_task(task_id, &cause);
                 }
                 (Dropped, ResourceId::Timer(timer_id)) => {
@@ -312,9 +320,6 @@ impl CurrentExecution {
             }
         }
 
-        let cause = WakeUpCause::Function {
-            task_id: self.function.task_id(),
-        };
         for task_id in self.tasks_to_be_awoken {
             state.task_queue.insert_task(task_id, &cause);
         }
@@ -406,6 +411,9 @@ impl WorkflowData {
     }
 
     pub(super) fn schedule_wakers(&mut self, wakers: HashSet<WakerId>, cause: WakeUpCause) {
+        if wakers.is_empty() {
+            return; // no need to schedule anything
+        }
         crate::trace!("Scheduled wakers {:?} with cause {:?}", wakers, cause);
         self.waker_queue.push(Wakers::new(wakers, cause));
     }

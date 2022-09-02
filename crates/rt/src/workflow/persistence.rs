@@ -8,6 +8,7 @@ use crate::{
     data::{PersistError, Refs, WorkflowData, WorkflowState},
     module::{DataSection, WorkflowSpawner},
     services::Services,
+    utils::Message,
     workflow::Workflow,
 };
 
@@ -119,6 +120,8 @@ pub struct PersistedWorkflow {
     state: WorkflowState,
     refs: Refs,
     memory: Memory,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    args: Option<Message>,
 }
 
 impl PersistedWorkflow {
@@ -131,6 +134,7 @@ impl PersistedWorkflow {
             state,
             refs,
             memory,
+            args: workflow.raw_args.clone(),
         })
     }
 
@@ -150,7 +154,7 @@ impl PersistedWorkflow {
             .state
             .restore(interface, services)
             .context("failed restoring workflow state")?;
-        let mut workflow = Workflow::from_state(spawner, data)?;
+        let mut workflow = Workflow::from_state(spawner, data, self.args)?;
         self.memory.restore(&mut workflow)?;
         self.refs.restore(&mut workflow.store)?;
         Ok(workflow)

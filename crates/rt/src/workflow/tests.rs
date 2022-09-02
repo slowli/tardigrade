@@ -29,12 +29,10 @@ fn decode_string(poll_res: i64) -> (u32, u32) {
     (ptr, len)
 }
 
-#[allow(clippy::unnecessary_wraps)] // more convenient for use with mock `Answers`
 fn initialize_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
     // Emulate basic task startup: getting the inbound channel
     let (ptr, len) = WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"orders")?;
-    let orders =
-        WorkflowFunctions::get_receiver(ctx.as_context_mut(), None, ptr, len, ERROR_PTR).unwrap();
+    let orders = WorkflowFunctions::get_receiver(ctx.as_context_mut(), None, ptr, len, ERROR_PTR)?;
 
     // ...then polling this channel
     let poll_res =
@@ -121,11 +119,10 @@ fn create_workflow(clock: impl Clock) -> Receipt<Workflow<()>> {
         clock: Arc::new(clock),
         ..Services::default()
     };
-    spawner
+    let mut workflow = spawner
         .spawn(b"test_input".to_vec(), &channel_ids, services)
-        .unwrap()
-        .init()
-        .unwrap()
+        .unwrap();
+    workflow.initialize().unwrap().map(|()| workflow)
 }
 
 #[test]
@@ -276,10 +273,10 @@ fn trap_when_starting_workflow() {
     let module = WorkflowModule::new(&engine, ExportsMock::MOCK_MODULE_BYTES).unwrap();
     let spawner = module.for_untyped_workflow("TestWorkflow").unwrap();
     let channel_ids = mock_channel_ids(spawner.interface());
-    let workflow = spawner
+    let mut workflow = spawner
         .spawn(b"test_input".to_vec(), &channel_ids, Services::default())
         .unwrap();
-    let err = workflow.init().unwrap_err().to_string();
+    let err = workflow.initialize().unwrap_err().to_string();
 
     assert!(err.contains("failed while polling task 0"), "{}", err);
 }

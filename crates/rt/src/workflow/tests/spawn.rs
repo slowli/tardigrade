@@ -96,11 +96,10 @@ fn create_workflow_with_manager(manager: Arc<MockWorkflowManager>) -> Receipt<Wo
         clock: Arc::new(MockScheduler::default()),
         workflows: manager,
     };
-    spawner
+    let mut workflow = spawner
         .spawn(b"test_input".to_vec(), &channel_ids, services)
-        .unwrap()
-        .init()
-        .unwrap()
+        .unwrap();
+    workflow.initialize().unwrap().map(|()| workflow)
 }
 
 fn spawn_child_workflow(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {

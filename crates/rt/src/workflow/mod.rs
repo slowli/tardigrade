@@ -91,48 +91,9 @@ impl WorkflowSpawner<()> {
         raw_args: Vec<u8>,
         channel_ids: &ChannelIds,
         services: Services,
-    ) -> anyhow::Result<InitializingWorkflow<()>> {
+    ) -> anyhow::Result<Workflow<()>> {
         let state = WorkflowData::new(self.interface().clone().erase(), channel_ids, services);
-        let workflow = Workflow::from_state(self, state)?;
-        Ok(InitializingWorkflow {
-            inner: workflow,
-            raw_args,
-        })
-    }
-}
-
-/// [`Workflow`] that has not been initialized yet.
-///
-/// The encapsulated workflow should be initialized by calling [`Self::init()`].
-#[must_use = "Should be initialized by calling `Self::init()`"]
-pub struct InitializingWorkflow<W> {
-    // FIXME: no longer public?
-    inner: Workflow<W>,
-    raw_args: Vec<u8>,
-}
-
-impl<W> fmt::Debug for InitializingWorkflow<W> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("InitializingWorkflow")
-            .field("inner", &self.inner)
-            .field("raw_args_len", &self.raw_args.len())
-            .finish()
-    }
-}
-
-impl<W> InitializingWorkflow<W> {
-    /// Initializes the workflow by spawning the main task and polling it. Note that depending
-    /// on the workflow config, other tasks may be immediately spawned as well.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the entry point of the workflow or initially polling it fails.
-    pub fn init(mut self) -> Result<Receipt<Workflow<W>>, ExecutionError> {
-        let mut spawn_receipt = self.inner.spawn_main_task(&self.raw_args)?;
-        let tick_receipt = self.inner.tick()?;
-        spawn_receipt.extend(tick_receipt);
-        Ok(spawn_receipt.map(|()| self.inner))
+        Workflow::from_state(self, state, Some(raw_args.into()))
     }
 }
 
@@ -140,6 +101,7 @@ impl<W> InitializingWorkflow<W> {
 pub struct Workflow<W> {
     store: Store<WorkflowData>,
     data_section: Option<Arc<DataSection>>,
+    raw_args: Option<Message>,
     _ty: PhantomData<W>,
 }
 
@@ -149,12 +111,17 @@ impl<W> fmt::Debug for Workflow<W> {
             .debug_struct("Workflow")
             .field("store", &self.store)
             .field("data_section", &self.data_section)
+            .field("raw_args", &self.raw_args)
             .finish()
     }
 }
 
 impl<W> Workflow<W> {
-    fn from_state(spawner: &WorkflowSpawner<W>, state: WorkflowData) -> anyhow::Result<Self> {
+    fn from_state(
+        spawner: &WorkflowSpawner<W>,
+        state: WorkflowData,
+        raw_args: Option<Message>,
+    ) -> anyhow::Result<Self> {
         let mut linker = Linker::new(spawner.module.engine());
         let mut store = Store::new(spawner.module.engine(), state);
         spawner
@@ -170,12 +137,28 @@ impl<W> Workflow<W> {
         Ok(Self {
             store,
             data_section,
+            raw_args,
             _ty: PhantomData,
         })
     }
 
     pub(crate) fn interface(&self) -> &Interface<()> {
         self.store.data().interface()
+    }
+
+    pub(crate) fn is_initialized(&self) -> bool {
+        self.raw_args.is_none()
+    }
+
+    pub(crate) fn initialize(&mut self) -> Result<Receipt, ExecutionError> {
+        let raw_args = self
+            .raw_args
+            .take()
+            .expect("workflow is already initialized");
+        let mut spawn_receipt = self.spawn_main_task(raw_args.as_ref())?;
+        let tick_receipt = self.tick()?;
+        spawn_receipt.extend(tick_receipt);
+        Ok(spawn_receipt)
     }
 
     fn spawn_main_task(&mut self, raw_data: &[u8]) -> Result<Receipt, ExecutionError> {
@@ -363,11 +346,6 @@ impl<W> Workflow<W> {
         self.store.data().inbound_channel(channel_name)
     }
 
-    /// Returns the current state of an outbound channel with the specified name.
-    pub fn outbound_channel(&self, channel_name: &str) -> Option<&OutboundChannelState> {
-        self.store.data().outbound_channel(channel_name)
-    }
-
     pub(crate) fn inbound_channel_by_id(
         &self,
         channel_id: ChannelId,
@@ -380,6 +358,36 @@ impl<W> Workflow<W> {
                 None
             }
         })
+    }
+
+    /// Returns IDs of the local inbound channels of this workflow.
+    pub(crate) fn inbound_channel_ids(&self) -> impl Iterator<Item = ChannelId> + '_ {
+        let channels = self.store.data().inbound_channels();
+        channels.filter_map(|(workflow_id, _, state)| {
+            if workflow_id.is_none() {
+                Some(state.id())
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Returns IDs of the local outbound channels of this workflow. A single ID may be mentioned
+    /// several times.
+    pub(crate) fn outbound_channel_ids(&self) -> impl Iterator<Item = ChannelId> + '_ {
+        let channels = self.store.data().outbound_channels();
+        channels.filter_map(|(workflow_id, _, state)| {
+            if workflow_id.is_none() {
+                Some(state.id())
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Returns the current state of an outbound channel with the specified name.
+    pub fn outbound_channel(&self, channel_name: &str) -> Option<&OutboundChannelState> {
+        self.store.data().outbound_channel(channel_name)
     }
 
     pub(crate) fn push_inbound_message(

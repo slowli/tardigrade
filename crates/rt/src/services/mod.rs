@@ -4,6 +4,10 @@ use chrono::{DateTime, Utc};
 
 use std::{borrow::Cow, fmt, sync::Arc};
 
+mod manager;
+
+pub use self::manager::{WorkflowManager, WorkflowManagerBuilder};
+
 use crate::{workflow::ChannelIds, WorkflowId};
 use tardigrade::{
     interface::Interface,

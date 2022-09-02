@@ -238,7 +238,6 @@ mod tests {
             _: &Instance,
             _: &str,
         ) -> ModuleExports {
-            assert!(!this.borrow().exports_created);
             this.borrow().exports_created = true;
 
             let memory = Memory::new(&mut *store, MemoryType::new(1, None)).unwrap();
