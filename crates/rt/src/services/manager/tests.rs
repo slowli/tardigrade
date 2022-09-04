@@ -55,32 +55,32 @@ fn instantiating_workflow() {
 
     state.commit(&Receipt::new());
     assert!(state.new_workflows.is_empty());
-    let persisted = &state.workflows[&handle.workflow_id];
+    let persisted = &state.committed.workflows[&handle.workflow_id];
     assert_eq!(persisted.definition_id, "test:latest");
     let orders_id = handle.channel_ids.inbound["orders"];
     assert_eq!(
-        state.channels[&orders_id].receiver_workflow_id,
+        state.committed.channels[&orders_id].receiver_workflow_id,
         Some(handle.workflow_id)
     );
     let traces_id = handle.channel_ids.outbound["traces"];
-    assert_eq!(state.channels[&traces_id].receiver_workflow_id, None);
+    assert_eq!(
+        state.committed.channels[&traces_id].receiver_workflow_id,
+        None
+    );
     drop(state); // in order for `test_initializing_workflow()` not to dead-lock
 
     test_initializing_workflow(&manager, &handle);
 }
 
 fn test_initializing_workflow(manager: &WorkflowManager, handle: &WorkflowAndChannelIds) {
-    let receipt = manager
-        .initialize_workflow(handle.workflow_id)
-        .unwrap()
-        .unwrap();
+    let receipt = manager.tick_workflow(handle.workflow_id).unwrap();
     assert_eq!(receipt.executions().len(), 2);
     let main_execution = &receipt.executions()[0];
     assert_matches!(main_execution.function, ExecutedFunction::Entry { .. });
 
     let traces_id = handle.channel_ids.outbound["traces"];
     let state = manager.state.lock().unwrap();
-    let traces = &state.channels[&traces_id].messages;
+    let traces = &state.committed.channels[&traces_id].messages;
     assert_eq!(traces.len(), 1);
     assert_eq!(traces[0].as_ref(), b"trace #1");
 }
@@ -117,7 +117,7 @@ fn sending_message_to_workflow() {
         .unwrap();
 
     manager.state.lock().unwrap().commit(&Receipt::new());
-    manager.initialize_workflow(handle.workflow_id).unwrap();
+    manager.tick_workflow(handle.workflow_id).unwrap();
     let orders_id = handle.channel_ids.inbound["orders"];
     manager
         .send_message(orders_id, b"order #1".to_vec())
@@ -125,7 +125,7 @@ fn sending_message_to_workflow() {
 
     {
         let state = manager.state.lock().unwrap();
-        let orders = &state.channels[&orders_id].messages;
+        let orders = &state.committed.channels[&orders_id].messages;
         assert_eq!(orders.len(), 1);
         assert_eq!(orders[0].as_ref(), b"order #1");
     }
@@ -145,7 +145,7 @@ fn sending_message_to_workflow() {
     );
 
     let state = manager.state.lock().unwrap();
-    let orders = &state.channels[&orders_id].messages;
+    let orders = &state.committed.channels[&orders_id].messages;
     assert!(orders.is_empty());
 }
 

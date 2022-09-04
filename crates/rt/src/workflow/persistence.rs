@@ -1,15 +1,18 @@
 //! Workflow persistence.
 
 use anyhow::{ensure, Context};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use wasmtime::Store;
 
 use crate::{
-    data::{PersistError, Refs, WorkflowData, WorkflowState},
+    data::{PersistError, Refs, TaskState, TimerState, Wakers, WorkflowData, WorkflowState},
     module::{DataSection, WorkflowSpawner},
+    receipt::WakeUpCause,
     services::Services,
     utils::Message,
     workflow::{ChannelIds, Workflow},
+    TaskId, TimerId,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +139,40 @@ impl PersistedWorkflow {
             memory,
             args: workflow.raw_args.clone(),
         })
+    }
+
+    /// Returns the current state of a task with the specified ID.
+    pub fn task(&self, task_id: TaskId) -> Option<&TaskState> {
+        self.state.tasks.get(&task_id)
+    }
+
+    /// Lists all tasks in this workflow.
+    pub fn tasks(&self) -> impl Iterator<Item = (TaskId, &TaskState)> + '_ {
+        self.state.tasks.iter().map(|(id, state)| (*id, state))
+    }
+
+    /// Returns the current time for the workflow.
+    pub fn current_time(&self) -> DateTime<Utc> {
+        self.state.timers.last_known_time()
+    }
+
+    pub(crate) fn set_current_time(&mut self, time: DateTime<Utc>) {
+        self.state.set_current_time(time);
+    }
+
+    /// Returns a timer with the specified `id`.
+    pub fn timer(&self, id: TimerId) -> Option<&TimerState> {
+        self.state.timers.get(id)
+    }
+
+    /// Enumerates all timers together with their states.
+    pub fn timers(&self) -> impl Iterator<Item = (TimerId, &TimerState)> + '_ {
+        self.state.timers.iter()
+    }
+
+    /// Iterates over pending [`WakeUpCause`]s.
+    pub fn pending_events(&self) -> impl Iterator<Item = &WakeUpCause> + '_ {
+        self.state.waker_queue.iter().map(Wakers::cause)
     }
 
     pub(crate) fn channel_ids(&self) -> ChannelIds {

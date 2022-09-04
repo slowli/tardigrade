@@ -10,9 +10,9 @@ pub mod future;
 
 use crate::{
     receipt::{ExecutionError, Receipt},
-    services::{WorkflowAndChannelIds, WorkflowManager},
+    services::{ChannelInfo, WorkflowAndChannelIds, WorkflowManager},
     utils::Message,
-    ChannelId,
+    ChannelId, PersistedWorkflow, WorkflowId,
 };
 use tardigrade::{
     channel::{Receiver, Sender},
@@ -118,12 +118,32 @@ impl<'a> WorkflowEnv<'a, ()> {
             _ty: PhantomData,
         }
     }
+}
 
+impl<W: TakeHandle<Self, Id = ()>> WorkflowEnv<'_, W> {
+    /// Returns the ID of this workflow.
+    pub fn id(&self) -> WorkflowId {
+        self.ids.workflow_id
+    }
+
+    /// Executes this workflow.
+    ///
     /// # Errors
     ///
-    /// Returns an error if an error occurs during initialization.
-    pub fn initialize(&self) -> Result<Option<Receipt>, ExecutionError> {
-        self.manager.initialize_workflow(self.ids.workflow_id)
+    /// Returns an error if an error occurs during execution.
+    pub fn tick(&self) -> Result<Receipt, ExecutionError> {
+        self.manager.tick_workflow(self.ids.workflow_id)
+    }
+
+    /// Returns the current persisted state of the workflow.
+    pub fn persisted(&self) -> PersistedWorkflow {
+        self.manager.persisted_workflow(self.ids.workflow_id)
+    }
+
+    /// Returns a handle for the workflow.
+    #[allow(clippy::missing_panics_doc)] // false positive
+    pub fn handle(&mut self) -> <W as TakeHandle<Self>>::Handle {
+        W::take_handle(self, &()).unwrap()
     }
 }
 
@@ -138,6 +158,11 @@ pub struct MessageSender<'a, T, C> {
 }
 
 impl<'a, T, C: Encode<T>> MessageSender<'a, T, C> {
+    /// Returns the current state of the channel.
+    pub fn channel_info(&self) -> ChannelInfo {
+        self.manager.channel_info(self.channel_id)
+    }
+
     /// Sends a message over the channel.
     ///
     /// # Errors
@@ -216,6 +241,11 @@ pub struct MessageReceiver<'a, T, C> {
 }
 
 impl<T, C: Decode<T>> MessageReceiver<'_, T, C> {
+    /// Returns the current state of the channel.
+    pub fn channel_info(&self) -> ChannelInfo {
+        self.manager.channel_info(self.channel_id)
+    }
+
     /// Takes messages from the channel and progresses the flow marking the channel as flushed.
     ///
     /// # Errors

@@ -1,6 +1,7 @@
 //! Persistence for `State`.
 
 use anyhow::{anyhow, ensure};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use std::{
@@ -15,7 +16,10 @@ use super::{
     time::Timers,
     WorkflowData,
 };
-use crate::{services::Services, workflow::ChannelIds, ChannelId, TaskId, WakerId, WorkflowId};
+use crate::{
+    receipt::WakeUpCause, services::Services, workflow::ChannelIds, ChannelId, TaskId, WakerId,
+    WorkflowId,
+};
 use tardigrade::interface::Interface;
 
 /// Error persisting a [`Workflow`](crate::Workflow).
@@ -247,10 +251,10 @@ impl From<ChannelStates> for super::ChannelStates {
 /// `Workflow` state that can be persisted between workflow invocations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct WorkflowState {
+    pub timers: Timers,
+    pub tasks: HashMap<TaskId, TaskState>,
     channels: ChannelStates,
-    timers: Timers,
-    tasks: HashMap<TaskId, TaskState>,
-    waker_queue: Vec<Wakers>,
+    pub waker_queue: Vec<Wakers>,
 }
 
 impl WorkflowState {
@@ -263,6 +267,15 @@ impl WorkflowState {
         ChannelIds {
             inbound: inbound.collect(),
             outbound: outbound.collect(),
+        }
+    }
+
+    pub(crate) fn set_current_time(&mut self, time: DateTime<Utc>) {
+        let wakers_by_timer = self.timers.set_current_time(time);
+        for (id, wakers) in wakers_by_timer {
+            let cause = WakeUpCause::Timer { id };
+            crate::trace!("Scheduled wakers {:?} with cause {:?}", wakers, cause);
+            self.waker_queue.push(Wakers::new(wakers, cause));
         }
     }
 

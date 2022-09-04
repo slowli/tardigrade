@@ -360,10 +360,6 @@ impl WorkflowData {
         })
     }
 
-    pub(crate) fn inbound_channel(&self, channel_name: &str) -> Option<&InboundChannelState> {
-        self.channels.inbound.get(channel_name)
-    }
-
     pub(super) fn inbound_channel_mut(
         &mut self,
         channel_ref: &ChannelRef,
@@ -396,10 +392,6 @@ impl WorkflowData {
             .values_mut()
             .flat_map(|workflow| workflow.channels.inbound.values_mut());
         self.channels.inbound.values_mut().chain(workflow_channels)
-    }
-
-    pub(crate) fn outbound_channel(&self, channel_name: &str) -> Option<&OutboundChannelState> {
-        self.channels.outbound.get(channel_name)
     }
 
     pub(super) fn outbound_channel_mut(

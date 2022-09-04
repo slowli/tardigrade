@@ -19,17 +19,12 @@ pub use self::{
     time::TimerState,
 };
 pub(crate) use self::{
-    helpers::WasmContextPtr,
+    helpers::{Wakers, WasmContextPtr},
     persistence::{Refs, WorkflowState},
     spawn::SpawnFunctions,
 };
 
-use self::{
-    channel::ChannelStates,
-    helpers::{CurrentExecution, Wakers},
-    task::TaskQueue,
-    time::Timers,
-};
+use self::{channel::ChannelStates, helpers::CurrentExecution, task::TaskQueue, time::Timers};
 use crate::{
     data::helpers::HostResource,
     module::ModuleExports,

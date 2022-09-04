@@ -125,6 +125,19 @@ fn create_workflow(clock: impl Clock) -> (Receipt, Workflow<()>) {
     (workflow.initialize().unwrap(), workflow)
 }
 
+fn restore_workflow(persisted: PersistedWorkflow, clock: impl Clock) -> Workflow<()> {
+    let engine = WorkflowEngine::default();
+    let spawner = WorkflowModule::new(&engine, ExportsMock::MOCK_MODULE_BYTES)
+        .unwrap()
+        .for_untyped_workflow("TestWorkflow")
+        .unwrap();
+    let services = Services {
+        clock: Arc::new(clock),
+        ..Services::default()
+    };
+    persisted.restore(&spawner, services).unwrap()
+}
+
 #[test]
 fn starting_workflow() {
     let poll_fns = Answers::from_value(initialize_task as MockPollFn);
@@ -321,7 +334,7 @@ fn spawning_and_cancelling_task() {
         }
     );
 
-    let new_task = workflow.task(1).unwrap();
+    let new_task = workflow.store.data().task(1).unwrap();
     assert_eq!(new_task.name(), "new task");
     assert_eq!(new_task.spawned_by(), Some(0));
     assert_matches!(new_task.result(), Poll::Pending);
@@ -354,7 +367,7 @@ fn spawning_and_cancelling_task() {
     assert!(task_aborted, "{:?}", receipt.executions());
 
     assert_matches!(
-        workflow.task(1).unwrap().result(),
+        workflow.store.data().task(1).unwrap().result(),
         Poll::Ready(Err(JoinError::Aborted))
     );
     assert!(workflow.is_finished());
@@ -394,7 +407,7 @@ fn rolling_back_task_spawning() {
     let err_message = err.trap().to_string();
     assert!(err_message.contains("boom"), "{}", err_message);
 
-    assert!(workflow.task(1).is_none());
+    assert!(workflow.store.data().task(1).is_none());
 }
 
 #[test]
@@ -416,7 +429,10 @@ fn rolling_back_task_abort() {
     let err_message = err.trap().to_string();
     assert!(err_message.contains("boom"), "{}", err_message);
 
-    assert_matches!(workflow.task(1).unwrap().result(), Poll::Pending);
+    assert_matches!(
+        workflow.store.data().task(1).unwrap().result(),
+        Poll::Pending
+    );
     assert!(mock_guard.into_inner().dropped_tasks.is_empty());
 }
 
@@ -509,15 +525,18 @@ fn timers_basics() {
     let (_, mut workflow) = create_workflow(scheduler.clone());
 
     workflow.tick().unwrap();
-    let timers: HashMap<_, _> = workflow.timers().collect();
+    let timers: HashMap<_, _> = workflow.store.data().timers().iter().collect();
     assert_eq!(timers.len(), 2, "{:?}", timers);
     assert!(timers[&0].completed_at().is_some());
     assert!(timers[&1].completed_at().is_none());
 
     scheduler.set_now(scheduler.now() + chrono::Duration::seconds(1));
-    workflow.set_current_time(scheduler.now()).unwrap();
+    let mut persisted = workflow.persist().unwrap();
+    persisted.set_current_time(scheduler.now());
+    let mut workflow = restore_workflow(persisted, scheduler);
+    workflow.tick().unwrap();
 
-    let timers: HashMap<_, _> = workflow.timers().collect();
+    let timers: HashMap<_, _> = workflow.store.data().timers().iter().collect();
     assert!(timers.is_empty(), "{:?}", timers); // timers are cleared on drop
 }
 

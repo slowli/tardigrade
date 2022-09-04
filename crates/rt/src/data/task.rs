@@ -191,6 +191,7 @@ impl WorkflowData {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn task(&self, task_id: TaskId) -> Option<&TaskState> {
         self.tasks.get(&task_id)
     }

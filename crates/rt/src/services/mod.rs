@@ -6,7 +6,9 @@ use std::{borrow::Cow, fmt, sync::Arc};
 
 mod manager;
 
-pub use self::manager::{WorkflowBuilderExt, WorkflowManager, WorkflowManagerBuilder};
+pub use self::manager::{
+    ChannelInfo, PersistedWorkflows, WorkflowBuilderExt, WorkflowManager, WorkflowManagerBuilder,
+};
 
 use crate::{workflow::ChannelIds, WorkflowId};
 use tardigrade::{

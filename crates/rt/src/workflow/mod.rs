@@ -19,10 +19,7 @@ mod tests;
 pub use self::persistence::PersistedWorkflow;
 
 use crate::{
-    data::{
-        ChildWorkflowState, ConsumeError, InboundChannelState, OutboundChannelState, PersistError,
-        TaskState, TimerState, WorkflowData,
-    },
+    data::{ChildWorkflowState, ConsumeError, PersistError, WorkflowData},
     module::{DataSection, ModuleExports, WorkflowSpawner},
     receipt::{
         Event, ExecutedFunction, Execution, ExecutionError, ExtendedTrap, Receipt,
@@ -30,7 +27,7 @@ use crate::{
     },
     services::Services,
     utils::Message,
-    ChannelId, TaskId, TimerId, WorkflowId,
+    ChannelId, TaskId, WorkflowId,
 };
 use tardigrade::spawn::ChannelSpawnConfig;
 use tardigrade::{interface::Interface, spawn::ChannelHandles};
@@ -176,16 +173,6 @@ impl<W> Workflow<W> {
         Ok(receipt)
     }
 
-    /// Returns the current state of a task with the specified ID.
-    pub fn task(&self, task_id: TaskId) -> Option<&TaskState> {
-        self.store.data().task(task_id)
-    }
-
-    /// Lists all tasks in this workflow.
-    pub fn tasks(&self) -> impl Iterator<Item = (TaskId, &TaskState)> + '_ {
-        self.store.data().tasks()
-    }
-
     /// Checks whether the workflow is finished, i.e., all tasks in it have completed.
     pub fn is_finished(&self) -> bool {
         self.store
@@ -313,6 +300,10 @@ impl<W> Workflow<W> {
     }
 
     pub(crate) fn tick(&mut self) -> Result<Receipt, ExecutionError> {
+        if !self.is_initialized() {
+            return self.initialize();
+        }
+
         let mut receipt = Receipt::new();
         match self.do_tick(&mut receipt) {
             Ok(()) => Ok(receipt),
@@ -339,11 +330,6 @@ impl<W> Workflow<W> {
     /// if a workflow with such ID was not spawned by this workflow.
     pub fn child_workflow(&self, id: WorkflowId) -> Option<&ChildWorkflowState> {
         self.store.data().child_workflow(id)
-    }
-
-    /// Returns the current state of an inbound channel with the specified name.
-    pub fn inbound_channel(&self, channel_name: &str) -> Option<&InboundChannelState> {
-        self.store.data().inbound_channel(channel_name)
     }
 
     pub(crate) fn inbound_channel_by_id(
@@ -383,11 +369,6 @@ impl<W> Workflow<W> {
                 None
             }
         })
-    }
-
-    /// Returns the current state of an outbound channel with the specified name.
-    pub fn outbound_channel(&self, channel_name: &str) -> Option<&OutboundChannelState> {
-        self.store.data().outbound_channel(channel_name)
     }
 
     pub(crate) fn push_inbound_message(
@@ -464,49 +445,13 @@ impl<W> Workflow<W> {
         self.store.data_mut().drain_messages()
     }
 
-    /// Returns the current time for the workflow.
-    pub fn current_time(&self) -> DateTime<Utc> {
-        self.store.data().timers().last_known_time()
-    }
-
-    /// Sets the current time for the workflow and completes the relevant timers.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if workflow execution traps.
-    pub fn set_current_time(&mut self, time: DateTime<Utc>) -> Result<Receipt, ExecutionError> {
-        self.store.data_mut().set_current_time(time);
-        crate::trace!("Set current time to {}", time);
-        self.tick()
-    }
-
-    /// Returns a timer with the specified `id`.
-    pub fn timer(&self, id: TimerId) -> Option<&TimerState> {
-        self.store.data().timers().get(id)
-    }
-
-    /// Enumerates all timers together with their states.
-    pub fn timers(&self) -> impl Iterator<Item = (TimerId, &TimerState)> + '_ {
-        self.store.data().timers().iter()
-    }
-
-    /// Checks whether this workflow can be persisted right now.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the workflow cannot be persisted. The error points out
-    /// a reason (potentially, one of the reasons if there are multiple).
-    pub fn check_persistence(&self) -> Result<(), PersistError> {
-        self.store.data().check_persistence()
-    }
-
     /// Persists this workflow.
     ///
     /// # Errors
     ///
     /// Returns an error if the workflow is in such a state that it cannot be persisted
     /// right now.
-    pub fn persist(&mut self) -> Result<PersistedWorkflow, PersistError> {
+    pub(crate) fn persist(&mut self) -> Result<PersistedWorkflow, PersistError> {
         PersistedWorkflow::new(self)
     }
 
@@ -520,7 +465,7 @@ impl<W> Workflow<W> {
     /// # Errors
     ///
     /// Passes through errors returned by the closure.
-    pub fn rollback_on_error<T, E>(
+    pub(crate) fn rollback_on_error<T, E>(
         &mut self,
         action: impl FnOnce(&mut Self) -> Result<T, E>,
     ) -> Result<T, E> {

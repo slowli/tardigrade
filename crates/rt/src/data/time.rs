@@ -11,11 +11,11 @@ use std::{
 };
 
 use super::{
-    helpers::{WakeIfPending, WakerPlacement, Wakers, WasmContext, WasmContextPtr},
+    helpers::{WakeIfPending, WakerPlacement, WasmContext, WasmContextPtr},
     WorkflowData, WorkflowFunctions,
 };
 use crate::{
-    receipt::{ResourceEventKind, ResourceId, WakeUpCause},
+    receipt::{ResourceEventKind, ResourceId},
     utils::WasmAllocator,
     TimerId, WakerId,
 };
@@ -131,7 +131,7 @@ impl Timers {
     }
 
     /// **NB.** The returned iterator must be completely consumed!
-    fn set_current_time(
+    pub(super) fn set_current_time(
         &mut self,
         time: DateTime<Utc>,
     ) -> impl Iterator<Item = (TimerId, HashSet<WakerId>)> + '_ {
@@ -171,15 +171,6 @@ impl WorkflowData {
         self.current_execution()
             .push_resource_event(ResourceId::Timer(timer_id), ResourceEventKind::Dropped);
         Ok(())
-    }
-
-    pub(crate) fn set_current_time(&mut self, time: DateTime<Utc>) {
-        let wakers_by_timer = self.timers.set_current_time(time);
-        for (id, wakers) in wakers_by_timer {
-            let cause = WakeUpCause::Timer { id };
-            crate::trace!("Scheduled wakers {:?} with cause {:?}", wakers, cause);
-            self.waker_queue.push(Wakers::new(wakers, cause));
-        }
     }
 
     fn poll_timer(

@@ -172,7 +172,7 @@ impl<T> WakeIfPending for Poll<T> {
 
 #[must_use = "Wakers need to be actually woken up"]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct Wakers {
+pub(crate) struct Wakers {
     ids: HashSet<WakerId>,
     cause: WakeUpCause,
 }
@@ -180,6 +180,10 @@ pub(super) struct Wakers {
 impl Wakers {
     pub fn new(ids: HashSet<WakerId>, cause: WakeUpCause) -> Self {
         Self { ids, cause }
+    }
+
+    pub fn cause(&self) -> &WakeUpCause {
+        &self.cause
     }
 
     pub fn into_iter(self) -> impl Iterator<Item = (WakerId, WakeUpCause)> {
