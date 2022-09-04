@@ -10,7 +10,7 @@ pub mod future;
 
 use crate::{
     receipt::{ExecutionError, Receipt},
-    services::{ChannelInfo, WorkflowAndChannelIds, WorkflowManager},
+    services::{ChannelInfo, WorkflowAndChannelIds, WorkflowManager, MessageFeedOptions},
     utils::Message,
     ChannelId, PersistedWorkflow, WorkflowId,
 };
@@ -169,43 +169,36 @@ impl<'a, T, C: Encode<T>> MessageSender<'a, T, C> {
     ///
     /// Returns an error if the workflow is currently not waiting for messages
     /// on the associated channel, or if the channel is closed.
-    pub fn send(&mut self, message: T) -> Result<SentMessage<'a>, SendError> {
+    pub fn send(&mut self, message: T) -> Result<(), SendError> {
         let raw_message = self.codec.encode_value(message);
-        self.manager.send_message(self.channel_id, raw_message)?;
-        Ok(SentMessage {
-            manager: self.manager,
-            channel_id: self.channel_id,
-        })
+        self.manager.send_message(self.channel_id, raw_message)
     }
 
-    /// Closes this channel from the host side.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the channel is already closed, or the workflow
-    /// is currently not waiting for messages on the associated inbound channel.
-    pub fn close(self) {
-        self.manager.close_channel_sender(self.channel_id);
-    }
-}
-
-/// Result of sending a message over an inbound channel.
-#[derive(Debug)]
-#[must_use = "must be `flush`ed to progress the workflow"]
-// TODO: deal with potential TOCTOU issues
-pub struct SentMessage<'a> {
-    manager: &'a WorkflowManager,
-    channel_id: ChannelId,
-}
-
-impl SentMessage<'_> {
     /// Progresses the workflow after an inbound message is consumed.
     ///
     /// # Errors
     ///
-    /// Returns an error if workflow execution traps.
-    pub fn flush(self) -> Result<Option<Receipt>, ExecutionError> {
-        self.manager.feed_message_to_workflow(self.channel_id)
+    /// Returns an error if workflow execution traps. In this case, the message is returned
+    /// to the channel.
+    pub fn flush(&self) -> Result<Option<Receipt>, ExecutionError> {
+        self.manager.feed_message_to_workflow(self.channel_id, MessageFeedOptions::default())
+    }
+
+    /// Progresses the workflow after an inbound message is consumed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if workflow execution traps. In this case, the message is dropped
+    /// from the channel.
+    pub fn flush_and_drop_on_error(&self) -> Result<Option<Receipt>, ExecutionError> {
+        self.manager.feed_message_to_workflow(self.channel_id, MessageFeedOptions {
+            drop_on_error: true,
+        })
+    }
+
+    /// Closes this channel from the host side.
+    pub fn close(self) {
+        self.manager.close_channel_sender(self.channel_id);
     }
 }
 

@@ -52,6 +52,11 @@ impl ChannelInfo {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct MessageFeedOptions {
+    pub drop_on_error: bool,
+}
+
 /// Simple implementation of a workflow manager.
 #[derive(Debug)]
 pub struct WorkflowManager {
@@ -152,6 +157,7 @@ impl WorkflowManager {
     pub(crate) fn feed_message_to_workflow(
         &self,
         channel_id: ChannelId,
+        options: MessageFeedOptions,
     ) -> Result<Option<Receipt>, ExecutionError> {
         let mut state = self.state.lock().unwrap();
         let (workflow_id, message) = state.committed.take_message(channel_id);
@@ -183,7 +189,9 @@ impl WorkflowManager {
                     workflow_id
                 );
             }
-            state.committed.revert_taking_message(channel_id, message);
+            if !options.drop_on_error {
+                state.committed.revert_taking_message(channel_id, message);
+            }
         }
         state.executing_workflow_id = None;
         result

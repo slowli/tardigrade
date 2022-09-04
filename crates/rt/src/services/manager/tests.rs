@@ -131,7 +131,7 @@ fn sending_message_to_workflow() {
     }
 
     let receipt = manager
-        .feed_message_to_workflow(orders_id)
+        .feed_message_to_workflow(orders_id, MessageFeedOptions::default())
         .unwrap()
         .unwrap();
     assert_eq!(receipt.executions().len(), 2); // waker + task
