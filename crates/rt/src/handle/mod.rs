@@ -10,7 +10,7 @@ pub mod future;
 
 use crate::{
     receipt::{ExecutionError, Receipt},
-    services::{ChannelInfo, WorkflowAndChannelIds, WorkflowManager, MessageFeedOptions},
+    services::{ChannelInfo, MessageFeedOptions, WorkflowAndChannelIds, WorkflowManager},
     utils::Message,
     ChannelId, PersistedWorkflow, WorkflowId,
 };
@@ -181,7 +181,8 @@ impl<'a, T, C: Encode<T>> MessageSender<'a, T, C> {
     /// Returns an error if workflow execution traps. In this case, the message is returned
     /// to the channel.
     pub fn flush(&self) -> Result<Option<Receipt>, ExecutionError> {
-        self.manager.feed_message_to_workflow(self.channel_id, MessageFeedOptions::default())
+        self.manager
+            .feed_message_to_workflow(self.channel_id, MessageFeedOptions::default())
     }
 
     /// Progresses the workflow after an inbound message is consumed.
@@ -191,9 +192,12 @@ impl<'a, T, C: Encode<T>> MessageSender<'a, T, C> {
     /// Returns an error if workflow execution traps. In this case, the message is dropped
     /// from the channel.
     pub fn flush_and_drop_on_error(&self) -> Result<Option<Receipt>, ExecutionError> {
-        self.manager.feed_message_to_workflow(self.channel_id, MessageFeedOptions {
-            drop_on_error: true,
-        })
+        self.manager.feed_message_to_workflow(
+            self.channel_id,
+            MessageFeedOptions {
+                drop_on_error: true,
+            },
+        )
     }
 
     /// Closes this channel from the host side.

@@ -314,8 +314,8 @@ impl WorkflowManagerBuilder {
 
     /// Sets the clock to be used in the manager.
     #[must_use]
-    pub fn with_clock(mut self, clock: impl Clock) -> Self {
-        self.manager.clock = Arc::new(clock);
+    pub fn with_clock(mut self, clock: Arc<impl Clock>) -> Self {
+        self.manager.clock = clock;
         self
     }
 

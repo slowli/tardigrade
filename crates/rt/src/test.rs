@@ -30,7 +30,7 @@ use std::{
     env, fs, ops,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::Mutex,
 };
 
 #[cfg(feature = "async")]
@@ -246,9 +246,9 @@ impl ModuleCompiler {
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct MockScheduler {
-    inner: Arc<Mutex<SchedulerBase>>,
+    inner: Mutex<SchedulerBase>,
 }
 
 impl MockScheduler {

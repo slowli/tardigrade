@@ -6,10 +6,10 @@ use std::{borrow::Cow, fmt, sync::Arc};
 
 mod manager;
 
+pub(crate) use self::manager::MessageFeedOptions;
 pub use self::manager::{
     ChannelInfo, PersistedWorkflows, WorkflowBuilderExt, WorkflowManager, WorkflowManagerBuilder,
 };
-pub(crate) use self::manager::MessageFeedOptions;
 
 use crate::{workflow::ChannelIds, WorkflowId};
 use tardigrade::{
