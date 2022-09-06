@@ -23,35 +23,17 @@ use crate::{
 use tardigrade::interface::AccessErrorKind;
 use tardigrade_shared::{abi::IntoWasm, PollMessage, SendError};
 
-/// Kind of a [`ConsumeError`].
-#[derive(Debug, Clone)]
+/// Errors that can occur when consuming messages in a workflow.
+#[derive(Debug)]
 #[non_exhaustive]
-pub enum ConsumeErrorKind {
+pub(crate) enum ConsumeError {
     /// No tasks listen to the channel.
     NotListened,
     /// The channel is closed.
     Closed,
 }
 
-impl ConsumeErrorKind {
-    pub(crate) fn for_message(self, channel_name: &str, message: Vec<u8>) -> ConsumeError {
-        ConsumeError {
-            kind: self,
-            channel_name: channel_name.to_owned(),
-            message: Some(message),
-        }
-    }
-
-    pub(crate) fn for_closure(self, channel_name: &str) -> ConsumeError {
-        ConsumeError {
-            kind: self,
-            channel_name: channel_name.to_owned(),
-            message: None,
-        }
-    }
-}
-
-impl fmt::Display for ConsumeErrorKind {
+impl fmt::Display for ConsumeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::NotListened => "channel is not currently listened to",
@@ -60,55 +42,7 @@ impl fmt::Display for ConsumeErrorKind {
     }
 }
 
-/// Errors that can occur when feeding a message to an inbound
-/// [`Workflow`](crate::Workflow) channel.
-// FIXME: no longer public
-#[derive(Debug)]
-pub struct ConsumeError {
-    channel_name: String,
-    message: Option<Vec<u8>>,
-    kind: ConsumeErrorKind,
-}
-
-impl fmt::Display for ConsumeError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(message) = &self.message {
-            write!(
-                formatter,
-                "cannot push message ({} bytes) into inbound channel `{}`: {}",
-                message.len(),
-                self.channel_name,
-                self.kind
-            )
-        } else {
-            write!(
-                formatter,
-                "cannot close inbound channel `{}`: {}",
-                self.channel_name, self.kind
-            )
-        }
-    }
-}
-
 impl error::Error for ConsumeError {}
-
-impl ConsumeError {
-    /// Returns the kind of this error.
-    pub fn kind(&self) -> &ConsumeErrorKind {
-        &self.kind
-    }
-
-    /// Returns the channel name.
-    pub fn channel_name(&self) -> &str {
-        &self.channel_name
-    }
-
-    /// Retrieves message bytes from this error, if the error was caused by sending a message.
-    /// Otherwise, returns `None`.
-    pub fn into_message(self) -> Option<Vec<u8>> {
-        self.message
-    }
-}
 
 /// State of an inbound workflow channel.
 #[derive(Debug, Clone)]
@@ -244,10 +178,10 @@ impl WorkflowData {
         // ^ `unwrap()` safety is guaranteed by previous checks.
 
         if channel_state.is_closed {
-            return Err(ConsumeErrorKind::Closed.for_message(channel_name, message));
+            return Err(ConsumeError::Closed);
         }
         if channel_state.wakes_on_next_element.is_empty() {
-            return Err(ConsumeErrorKind::NotListened.for_message(channel_name, message));
+            return Err(ConsumeError::NotListened);
         }
 
         debug_assert!(
@@ -286,7 +220,7 @@ impl WorkflowData {
             return Ok(()); // no further actions required
         }
         if channel_state.wakes_on_next_element.is_empty() {
-            return Err(ConsumeErrorKind::NotListened.for_closure(channel_name));
+            return Err(ConsumeError::NotListened);
         }
 
         debug_assert!(

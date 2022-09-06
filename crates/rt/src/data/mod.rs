@@ -11,17 +11,17 @@ mod spawn;
 mod task;
 mod time;
 
+pub(crate) use self::{
+    channel::ConsumeError,
+    helpers::{Wakers, WasmContextPtr},
+    persistence::{Refs, WorkflowState},
+    spawn::SpawnFunctions,
+};
 pub use self::{
-    channel::{ConsumeError, ConsumeErrorKind},
     persistence::{InboundChannelState, OutboundChannelState, PersistError},
     spawn::ChildWorkflowState,
     task::TaskState,
     time::TimerState,
-};
-pub(crate) use self::{
-    helpers::{Wakers, WasmContextPtr},
-    persistence::{Refs, WorkflowState},
-    spawn::SpawnFunctions,
 };
 
 use self::{channel::ChannelStates, helpers::CurrentExecution, task::TaskQueue, time::Timers};

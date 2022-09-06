@@ -342,6 +342,7 @@ impl TickResult<'_> {
         self.workflow_id
     }
 
+    #[allow(clippy::missing_errors_doc)] // doesn't make sense semantically
     pub fn as_ref(&self) -> Result<&Receipt, &ExecutionError> {
         self.result.as_ref()
     }
