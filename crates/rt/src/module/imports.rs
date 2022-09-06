@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn import_checks_are_consistent() {
         let interface = Interface::default();
-        let state = WorkflowData::new(interface, &ChannelIds::default(), Services::default());
+        let state = WorkflowData::new(&interface, &ChannelIds::default(), Services::default());
         let engine = Engine::default();
         let mut store = Store::new(&engine, state);
         let mut linker = Linker::new(&engine);

@@ -11,19 +11,17 @@ use std::{
     future::Future,
     marker::PhantomData,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
 };
 
 use crate::{
-    receipt::{ExecutionError, ExecutionResult, Receipt},
-    workflow::Workflow,
-    FutureId,
+    receipt::{ExecutionError, ExecutionResult},
+    services::WorkflowManager,
+    ChannelId, FutureId,
 };
 use tardigrade::{
-    channel::{Receiver, Sender},
-    interface::{AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel},
-    trace::{FutureUpdate, TracedFuture, TracedFutures, Tracer},
-    workflow::{TakeHandle, UntypedHandle},
+    trace::{FutureUpdate, TracedFuture, TracedFutures},
     Decode, Encode,
 };
 
@@ -31,14 +29,20 @@ use tardigrade::{
 pub type TimerFuture = Pin<Box<dyn Future<Output = DateTime<Utc>> + Send>>;
 
 /// Scheduler that allows creating futures completing at the specified timestamp.
-pub trait Schedule: Send + 'static {
+pub trait Schedule: Send + Sync + 'static {
     /// Creates a timer with the specified expiration timestamp.
-    fn create_timer(&mut self, expires_at: DateTime<Utc>) -> TimerFuture;
+    fn create_timer(&self, expires_at: DateTime<Utc>) -> TimerFuture;
 }
 
 impl fmt::Debug for dyn Schedule {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.debug_struct("Schedule").finish_non_exhaustive()
+    }
+}
+
+impl<T: Schedule + ?Sized> Schedule for Arc<T> {
+    fn create_timer(&self, expires_at: DateTime<Utc>) -> TimerFuture {
+        (&**self).create_timer(expires_at)
     }
 }
 
@@ -53,7 +57,7 @@ pub struct AsyncIoScheduler;
 
 #[cfg(feature = "async-io")]
 impl Schedule for AsyncIoScheduler {
-    fn create_timer(&mut self, timestamp: DateTime<Utc>) -> TimerFuture {
+    fn create_timer(&self, timestamp: DateTime<Utc>) -> TimerFuture {
         use async_io::Timer;
         use std::time::{Instant, SystemTime};
 
@@ -76,7 +80,7 @@ impl Schedule for AsyncIoScheduler {
 #[derive(Debug)]
 enum ListenedEventOutput {
     Channel {
-        name: String,
+        id: ChannelId,
         message: Option<Vec<u8>>,
     },
     Timer(DateTime<Utc>),
@@ -91,40 +95,6 @@ pub enum Termination {
     /// The workflow has stalled: its progress does not depend on any external futures
     /// (inbound messages or timers).
     Stalled,
-}
-
-/// Strategy to rollback a [`Workflow`] if it traps during execution.
-pub trait RollbackStrategy: Send + Sync + 'static {
-    /// Determines whether the specified `error` should lead to a rollback, or to workflow
-    /// termination.
-    fn can_be_rolled_back(&mut self, err: &ExecutionError) -> bool;
-}
-
-/// Reasonable implementation of [`RollbackStrategy`].
-#[derive(Debug)]
-pub struct Rollback {
-    _placeholder: (),
-}
-
-impl Rollback {
-    /// Roll back any trap occurring in the workflow.
-    pub fn any_trap() -> Self {
-        Self { _placeholder: () }
-    }
-}
-
-impl RollbackStrategy for Rollback {
-    fn can_be_rolled_back(&mut self, _: &ExecutionError) -> bool {
-        true
-    }
-}
-
-impl fmt::Debug for dyn RollbackStrategy {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("RollbackStrategy")
-            .finish_non_exhaustive()
-    }
 }
 
 /// Asynchronous environment for executing [`Workflow`]s.
@@ -175,26 +145,24 @@ impl fmt::Debug for dyn RollbackStrategy {
 /// # }
 /// ```
 #[derive(Debug)]
-pub struct AsyncEnv<W> {
-    workflow: Workflow<W>,
+pub struct AsyncEnv {
     scheduler: Box<dyn Schedule>,
-    inbound_channels: HashMap<String, mpsc::Receiver<Vec<u8>>>,
-    outbound_channels: HashMap<String, mpsc::UnboundedSender<Vec<u8>>>,
+    inbound_channels: HashMap<ChannelId, mpsc::Receiver<Vec<u8>>>,
+    outbound_channels: HashMap<ChannelId, mpsc::UnboundedSender<Vec<u8>>>,
     results_sx: Option<mpsc::UnboundedSender<ExecutionResult>>,
-    rollback_strategy: Option<Box<dyn RollbackStrategy>>,
+    drop_erroneous_messages: bool,
 }
 
-impl<W> AsyncEnv<W> {
+impl AsyncEnv {
     /// Creates an async environment for a `workflow` that uses the specified `scheduler`
     /// for timers.
-    pub fn new(workflow: Workflow<W>, scheduler: impl Schedule) -> Self {
+    pub fn new(scheduler: impl Schedule) -> Self {
         Self {
-            workflow,
             scheduler: Box::new(scheduler),
             inbound_channels: HashMap::new(),
             outbound_channels: HashMap::new(),
             results_sx: None,
-            rollback_strategy: None,
+            drop_erroneous_messages: false,
         }
     }
 
@@ -205,15 +173,10 @@ impl<W> AsyncEnv<W> {
         rx
     }
 
-    /// Sets a strategy allowing to roll back workflow progress if the workflow traps
-    /// instead of terminating workflow execution.
-    pub fn set_rollback_strategy(&mut self, strategy: impl RollbackStrategy) {
-        self.rollback_strategy = Some(Box::new(strategy));
-    }
-
-    /// Retrieves the underlying workflow, consuming the environment.
-    pub fn into_inner(self) -> Workflow<W> {
-        self.workflow
+    /// Indicates that the environment should drop any inbound messages that lead
+    /// to execution errors.
+    pub fn drop_erroneous_messages(&mut self) {
+        self.drop_erroneous_messages = true;
     }
 
     /// Executes the enclosed [`Workflow`] until it is terminated or an error occurs.
@@ -229,150 +192,113 @@ impl<W> AsyncEnv<W> {
     /// determines that the workflow cannot be rolled back.
     ///
     /// [`select`]: futures::select
-    pub async fn run(&mut self) -> Result<Termination, ExecutionError> {
+    // FIXME: require `&mut WorkflowManager` for correctness (no concurrent edits)
+    pub async fn run(&mut self, manager: &WorkflowManager) -> Result<Termination, ExecutionError> {
         loop {
-            if let Some(termination) = self.tick().await? {
+            if let Some(termination) = self.tick(manager).await? {
                 return Ok(termination);
             }
         }
     }
 
-    async fn tick(&mut self) -> Result<Option<Termination>, ExecutionError> {
-        if self.workflow.is_finished() {
+    async fn tick(
+        &mut self,
+        manager: &WorkflowManager,
+    ) -> Result<Option<Termination>, ExecutionError> {
+        if manager.is_finished() {
             return Ok(Some(Termination::Finished));
         }
 
-        // First, flush all outbound messages (synchronous and cheap).
-        self.flush_outbound_messages()?;
-        if self.workflow.is_finished() {
+        let nearest_timer_expiration = self.tick_manager(manager)?;
+        self.gc(manager);
+        if manager.is_finished() {
             return Ok(Some(Termination::Finished));
-        }
-
-        // Garbage-collect closed inbound channels.
-        self.gc();
-
-        // Determine external events listened by the workflow.
-        let events = self.workflow.listened_events();
-        if events.is_empty() {
+        } else if nearest_timer_expiration.is_none() && self.inbound_channels.is_empty() {
             return Ok(Some(Termination::Stalled));
         }
 
-        let channel_futures = self.inbound_channels.iter_mut().filter_map(|(name, rx)| {
-            if events.contains_inbound_channel(name) {
-                let fut = rx
-                    .next()
-                    .map(|message| ListenedEventOutput::Channel {
-                        name: name.clone(),
-                        message,
-                    })
-                    .left_future();
-                Some(fut)
-            } else {
-                None
-            }
+        // Determine external events listened by the workflow.
+        let channel_futures = self.inbound_channels.iter_mut().map(|(&id, rx)| {
+            rx.next()
+                .map(move |message| ListenedEventOutput::Channel { id, message })
+                .left_future()
         });
 
         // TODO: cache `timer_event`?
-        let timer_event = events.nearest_timer().map(|timestamp| {
+        let timer_event = nearest_timer_expiration.map(|timestamp| {
             let timer = self.scheduler.create_timer(timestamp);
             timer.map(ListenedEventOutput::Timer).right_future()
         });
         let all_futures = channel_futures.chain(timer_event);
 
-        // This is the only `await` placement in the future, and it happens when the workflow
-        // is safe to save: it has no outbound messages.
         let (output, ..) = future::select_all(all_futures).await;
         match output {
-            ListenedEventOutput::Channel { name, message } => {
-                self.tick_workflow(|workflow| {
-                    if let Some(message) = message {
-                        workflow.push_inbound_message(None, &name, message).unwrap();
-                    } else {
-                        workflow.close_inbound_channel(None, &name).unwrap();
-                    }
-                    // ^ `unwrap()`s above are safe: we know `workflow` listens to the channel
-                    workflow.tick()
-                })?;
+            ListenedEventOutput::Channel { id, message } => {
+                if let Some(message) = message {
+                    manager.send_message(id, message).unwrap();
+                } else {
+                    manager.close_channel_sender(id);
+                }
             }
 
             ListenedEventOutput::Timer(timestamp) => {
-                self.tick_workflow(|workflow| workflow.set_current_time(timestamp))?;
+                manager.set_current_time(timestamp);
             }
         };
 
         Ok(None)
     }
 
-    /// Repeatedly flushes messages to the outbound channels until no messages are left.
-    fn flush_outbound_messages(&mut self) -> Result<(), ExecutionError> {
-        loop {
-            let mut messages_sent = false;
-            for (name, sx) in &mut self.outbound_channels {
-                let (_, messages) = self.workflow.take_outbound_messages(None, name);
-                messages_sent = messages_sent || !messages.is_empty();
-                for message in messages {
-                    sx.unbounded_send(message.into()).ok();
-                    // ^ We don't care if outbound messages are no longer listened to.
-                }
-            }
-
-            if messages_sent {
-                // Sending messages cannot be rolled back (they may already be consumed),
-                // so we don't roll back the fact of message flushing in the workflow.
-                // TODO: think about this again
-                self.tick_workflow(Workflow::tick)?;
-            } else {
-                break Ok(());
-            }
-        }
-    }
-
-    /// Executes `action` in a transaction, rolling the workflow back as per the configured
-    /// rollback strategy.
-    fn tick_workflow(
+    fn tick_manager(
         &mut self,
-        action: impl FnOnce(&mut Workflow<W>) -> Result<Receipt, ExecutionError>,
-    ) -> Result<(), ExecutionError> {
-        let result = if let Some(strategy) = &mut self.rollback_strategy {
-            let backup = self.workflow.persist().unwrap();
-            match action(&mut self.workflow) {
+        manager: &WorkflowManager,
+    ) -> Result<Option<DateTime<Utc>>, ExecutionError> {
+        loop {
+            let mut tick_result = match manager.tick() {
+                Ok(result) => result,
+                Err(blocked) => break Ok(blocked.nearest_timer_expiration()),
+            };
+            self.flush_outbound_messages(manager);
+
+            let recovered_from_error =
+                if self.drop_erroneous_messages && tick_result.can_drop_erroneous_message() {
+                    tick_result.drop_erroneous_message();
+                    true
+                } else {
+                    false
+                };
+            let event = match tick_result.into_inner() {
                 Ok(receipt) => ExecutionResult::Ok(receipt),
                 Err(err) => {
-                    if strategy.can_be_rolled_back(&err) {
-                        backup.restore_to_workflow(&mut self.workflow);
+                    if recovered_from_error {
                         ExecutionResult::RolledBack(err)
                     } else {
                         return Err(err);
                     }
                 }
+            };
+            if let Some(sx) = &self.results_sx {
+                sx.unbounded_send(event).ok();
             }
-        } else {
-            action(&mut self.workflow).map(ExecutionResult::Ok)?
-        };
-
-        if let Some(receipts) = &mut self.results_sx {
-            receipts.unbounded_send(result).ok();
-            // ^ We don't care if nobody listens to results.
         }
-        Ok(())
+    }
+
+    /// Flushes messages to the outbound channels until no messages are left.
+    fn flush_outbound_messages(&self, manager: &WorkflowManager) {
+        for (&id, sx) in &self.outbound_channels {
+            let (_, messages) = manager.take_outbound_messages(id);
+            for message in messages {
+                sx.unbounded_send(message.into()).ok();
+                // ^ We don't care if outbound messages are no longer listened to.
+            }
+        }
     }
 
     /// Garbage-collect receivers for closed inbound channels. This will signal
     /// to the consumers that the channel cannot be written to.
-    fn gc(&mut self) {
+    fn gc(&mut self, manager: &WorkflowManager) {
         self.inbound_channels
-            .retain(|name, _| !self.workflow.inbound_channel(name).unwrap().is_closed());
-    }
-}
-
-impl<W> AsyncEnv<W>
-where
-    W: TakeHandle<AsyncEnv<W>, Id = ()>,
-{
-    /// Creates a workflow handle from this environment.
-    #[allow(clippy::missing_panics_doc)] // TODO: is `unwrap()` really safe here?
-    pub fn handle(&mut self) -> W::Handle {
-        W::take_handle(self, &()).unwrap()
+            .retain(|&id, _| !manager.channel_info(id).is_closed());
     }
 }
 
@@ -401,6 +327,19 @@ impl<T, C: Clone> Clone for MessageSender<T, C> {
     }
 }
 
+impl<T, C: Encode<T>> super::MessageSender<'_, T, C> {
+    /// Registers this sender in `env`, allowing to later asynchronously send messages.
+    pub fn into_async(self, env: &mut AsyncEnv) -> MessageSender<T, C> {
+        let (sx, rx) = mpsc::channel(1);
+        env.inbound_channels.insert(self.channel_id, rx);
+        MessageSender {
+            raw_sender: sx,
+            codec: self.codec,
+            _item: PhantomData,
+        }
+    }
+}
+
 impl<T, C: Encode<T>> Sink<T> for MessageSender<T, C> {
     type Error = mpsc::SendError;
 
@@ -423,29 +362,6 @@ impl<T, C: Encode<T>> Sink<T> for MessageSender<T, C> {
     }
 }
 
-impl<T, C, W> TakeHandle<AsyncEnv<W>> for Receiver<T, C>
-where
-    C: Encode<T> + Default,
-{
-    type Id = str;
-    type Handle = MessageSender<T, C>;
-
-    fn take_handle(env: &mut AsyncEnv<W>, id: &str) -> Result<Self::Handle, AccessError> {
-        let channel_exists = env.workflow.interface().inbound_channel(id).is_some();
-        if channel_exists {
-            let (sx, rx) = mpsc::channel(1);
-            env.inbound_channels.insert(id.to_owned(), rx);
-            Ok(MessageSender {
-                raw_sender: sx,
-                codec: C::default(),
-                _item: PhantomData,
-            })
-        } else {
-            Err(AccessErrorKind::Unknown.with_location(InboundChannel(id)))
-        }
-    }
-}
-
 pin_project! {
     /// Async handle for an [outbound workflow channel](Sender) that allows taking messages
     /// from the channel.
@@ -462,6 +378,19 @@ pin_project! {
     }
 }
 
+impl<T, C: Decode<T>> super::MessageReceiver<'_, T, C> {
+    /// Registers this receiver in `env`, allowing to later asynchronously receive messages.
+    pub fn into_async(self, env: &mut AsyncEnv) -> MessageReceiver<T, C> {
+        let (sx, rx) = mpsc::unbounded();
+        env.outbound_channels.insert(self.channel_id, sx);
+        MessageReceiver {
+            raw_receiver: rx,
+            codec: self.codec,
+            _item: PhantomData,
+        }
+    }
+}
+
 impl<T, C: Decode<T>> Stream for MessageReceiver<T, C> {
     type Item = Result<T, C::Error>;
 
@@ -475,29 +404,6 @@ impl<T, C: Decode<T>> Stream for MessageReceiver<T, C> {
     }
 }
 
-impl<T, C, W> TakeHandle<AsyncEnv<W>> for Sender<T, C>
-where
-    C: Decode<T> + Default,
-{
-    type Id = str;
-    type Handle = MessageReceiver<T, C>;
-
-    fn take_handle(env: &mut AsyncEnv<W>, id: &str) -> Result<Self::Handle, AccessError> {
-        let channel_exists = env.workflow.interface().outbound_channel(id).is_some();
-        if channel_exists {
-            let (sx, rx) = mpsc::unbounded();
-            env.outbound_channels.insert(id.to_owned(), sx);
-            Ok(MessageReceiver {
-                raw_receiver: rx,
-                codec: C::default(),
-                _item: PhantomData,
-            })
-        } else {
-            Err(AccessErrorKind::Unknown.with_location(OutboundChannel(id)))
-        }
-    }
-}
-
 pin_project! {
     /// Async handle allowing to trace futures.
     ///
@@ -507,7 +413,6 @@ pin_project! {
     pub struct TracerHandle<C> {
         #[pin]
         receiver: MessageReceiver<FutureUpdate, C>,
-        channel_name: String,
         futures: TracedFutures,
     }
 }
@@ -526,6 +431,16 @@ impl<C> TracerHandle<C> {
     /// Returns traced futures, consuming this handle.
     pub fn into_futures(self) -> TracedFutures {
         self.futures
+    }
+}
+
+impl<C: Decode<FutureUpdate>> super::TracerHandle<'_, C> {
+    /// Registers this tracer in `env`, allowing to later asynchronously receive traces.
+    pub fn into_async(self, env: &mut AsyncEnv) -> TracerHandle<C> {
+        TracerHandle {
+            receiver: self.receiver.into_async(env),
+            futures: self.futures,
+        }
     }
 }
 
@@ -551,37 +466,5 @@ impl<C: Decode<FutureUpdate>> Stream for TracerHandle<C> {
             .map(|()| (future_id, projection.futures[future_id].clone()))
             .context("invalid update");
         Poll::Ready(Some(update_result))
-    }
-}
-
-impl<C: Decode<FutureUpdate> + Default, W> TakeHandle<AsyncEnv<W>> for Tracer<C> {
-    type Id = str;
-    type Handle = TracerHandle<C>;
-
-    fn take_handle(env: &mut AsyncEnv<W>, id: &str) -> Result<Self::Handle, AccessError> {
-        let receiver = Sender::<FutureUpdate, C>::take_handle(env, id)?;
-        Ok(TracerHandle {
-            receiver,
-            channel_name: id.to_owned(),
-            futures: TracedFutures::default(),
-        })
-    }
-}
-
-impl TakeHandle<AsyncEnv<()>> for Interface<()> {
-    type Id = ();
-    type Handle = Self;
-
-    fn take_handle(env: &mut AsyncEnv<()>, _id: &Self::Id) -> Result<Self::Handle, AccessError> {
-        Ok(env.workflow.interface().clone())
-    }
-}
-
-impl TakeHandle<AsyncEnv<()>> for () {
-    type Id = ();
-    type Handle = UntypedHandle<AsyncEnv<()>>;
-
-    fn take_handle(env: &mut AsyncEnv<()>, _id: &Self::Id) -> Result<Self::Handle, AccessError> {
-        UntypedHandle::take_handle(env, &())
     }
 }

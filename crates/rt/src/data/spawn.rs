@@ -11,7 +11,7 @@ use std::{
 
 use crate::{
     data::{
-        channel::{ChannelStates, InboundChannelState, OutboundChannelState},
+        channel::ChannelStates,
         helpers::{HostResource, WakeIfPending, WakerPlacement, WasmContext, WasmContextPtr},
         WorkflowData,
     },
@@ -50,16 +50,6 @@ impl ChildWorkflowState {
 
     pub(super) fn insert_waker(&mut self, waker_id: WakerId) {
         self.wakes_on_completion.insert(waker_id);
-    }
-
-    /// Returns the current state of an inbound channel with the specified name.
-    pub fn inbound_channel(&self, channel_name: &str) -> Option<&InboundChannelState> {
-        self.channels.inbound.get(channel_name)
-    }
-
-    /// Returns the current state of an outbound channel with the specified name.
-    pub fn outbound_channel(&self, channel_name: &str) -> Option<&OutboundChannelState> {
-        self.channels.outbound.get(channel_name)
     }
 }
 

@@ -6,13 +6,16 @@ use serde::{Deserialize, Serialize};
 use wasmtime::Store;
 
 use crate::{
-    data::{PersistError, Refs, TaskState, TimerState, Wakers, WorkflowData, WorkflowState},
+    data::{
+        InboundChannelState, PersistError, Refs, TaskState, TimerState, Wakers, WorkflowData,
+        WorkflowState,
+    },
     module::{DataSection, WorkflowSpawner},
     receipt::WakeUpCause,
     services::Services,
     utils::Message,
     workflow::{ChannelIds, Workflow},
-    TaskId, TimerId,
+    TaskId, TimerId, WorkflowId,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,6 +144,12 @@ impl PersistedWorkflow {
         })
     }
 
+    pub(crate) fn inbound_channels(
+        &self,
+    ) -> impl Iterator<Item = (Option<WorkflowId>, &str, &InboundChannelState)> + '_ {
+        self.state.inbound_channels()
+    }
+
     /// Returns the current state of a task with the specified ID.
     pub fn task(&self, task_id: TaskId) -> Option<&TaskState> {
         self.state.tasks.get(&task_id)
@@ -149,6 +158,16 @@ impl PersistedWorkflow {
     /// Lists all tasks in this workflow.
     pub fn tasks(&self) -> impl Iterator<Item = (TaskId, &TaskState)> + '_ {
         self.state.tasks.iter().map(|(id, state)| (*id, state))
+    }
+
+    /// Checks whether the workflow is initialized.
+    pub fn is_initialized(&self) -> bool {
+        self.args.is_none()
+    }
+
+    /// Checks whether the workflow is finished, i.e., all tasks in it have completed.
+    pub fn is_finished(&self) -> bool {
+        self.is_initialized() && self.tasks().all(|(_, state)| state.result().is_ready())
     }
 
     /// Returns the current time for the workflow.
@@ -185,12 +204,12 @@ impl PersistedWorkflow {
     ///
     /// Returns an error if the workflow definition from `module` and the `persisted` state
     /// do not match (e.g., differ in defined channels).
-    pub(crate) fn restore<W>(
+    pub(crate) fn restore(
         self,
-        spawner: &WorkflowSpawner<W>,
+        spawner: &WorkflowSpawner<()>,
         services: Services,
-    ) -> anyhow::Result<Workflow<W>> {
-        let interface = spawner.interface().clone().erase();
+    ) -> anyhow::Result<Workflow<()>> {
+        let interface = spawner.interface();
         let data = self
             .state
             .restore(interface, services)
@@ -199,11 +218,5 @@ impl PersistedWorkflow {
         self.memory.restore(&mut workflow)?;
         self.refs.restore(&mut workflow.store)?;
         Ok(workflow)
-    }
-
-    /// Must be called with the same `workflow` that was used when creating this struct.
-    pub(crate) fn restore_to_workflow<W>(self, workflow: &mut Workflow<W>) {
-        self.state.restore_in_place(workflow.store.data_mut());
-        self.memory.restore(workflow).unwrap();
     }
 }

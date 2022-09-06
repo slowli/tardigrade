@@ -62,6 +62,7 @@ impl fmt::Display for ConsumeErrorKind {
 
 /// Errors that can occur when feeding a message to an inbound
 /// [`Workflow`](crate::Workflow) channel.
+// FIXME: no longer public
 #[derive(Debug)]
 pub struct ConsumeError {
     channel_name: String,
@@ -111,13 +112,13 @@ impl ConsumeError {
 
 /// State of an inbound workflow channel.
 #[derive(Debug, Clone)]
-pub struct InboundChannelState {
-    pub(super) channel_id: ChannelId,
-    pub(super) is_acquired: bool,
-    pub(super) is_closed: bool,
-    pub(super) received_messages: usize,
-    pub(super) pending_message: Option<Message>,
-    pub(super) wakes_on_next_element: HashSet<WakerId>,
+pub(super) struct InboundChannelState {
+    pub channel_id: ChannelId,
+    pub is_acquired: bool,
+    pub is_closed: bool,
+    pub received_messages: usize,
+    pub pending_message: Option<Message>,
+    pub wakes_on_next_element: HashSet<WakerId>,
 }
 
 impl InboundChannelState {
@@ -130,22 +131,6 @@ impl InboundChannelState {
             pending_message: None,
             wakes_on_next_element: HashSet::new(),
         }
-    }
-
-    /// Returns ID of the channel.
-    pub fn id(&self) -> ChannelId {
-        self.channel_id
-    }
-
-    /// Checks whether this channel is closed.
-    pub fn is_closed(&self) -> bool {
-        self.is_closed
-    }
-
-    /// Returns the total number of messages received by this channel. Only processed messages
-    /// are counted, the pending message (if any) is not.
-    pub fn received_messages(&self) -> usize {
-        self.received_messages
     }
 
     fn acquire(&mut self) -> Result<(), AccessErrorKind> {
@@ -169,14 +154,14 @@ impl InboundChannelState {
 
 /// State of an outbound workflow channel.
 #[derive(Debug, Clone)]
-pub struct OutboundChannelState {
-    pub(super) channel_id: ChannelId,
-    pub(super) capacity: Option<usize>,
-    pub(super) is_acquired: bool,
-    pub(super) is_closed: bool,
-    pub(super) flushed_messages: usize,
-    pub(super) messages: Vec<Message>,
-    pub(super) wakes_on_flush: HashSet<WakerId>,
+pub(super) struct OutboundChannelState {
+    pub channel_id: ChannelId,
+    pub capacity: Option<usize>,
+    pub is_acquired: bool,
+    pub is_closed: bool,
+    pub flushed_messages: usize,
+    pub messages: Vec<Message>,
+    pub wakes_on_flush: HashSet<WakerId>,
 }
 
 impl OutboundChannelState {
@@ -190,16 +175,6 @@ impl OutboundChannelState {
             messages: Vec::new(),
             wakes_on_flush: HashSet::new(),
         }
-    }
-
-    /// Returns ID of the channel.
-    pub fn id(&self) -> ChannelId {
-        self.channel_id
-    }
-
-    /// Returns the number of messages flushed to this channel.
-    pub fn flushed_messages(&self) -> usize {
-        self.flushed_messages
     }
 
     fn acquire(&mut self) -> Result<(), AccessErrorKind> {
@@ -348,18 +323,6 @@ impl WorkflowData {
         wakers
     }
 
-    #[cfg(feature = "async")]
-    pub(crate) fn listened_inbound_channels(&self) -> impl Iterator<Item = &str> + '_ {
-        // FIXME: include workflow channels as well
-        self.channels.inbound.iter().filter_map(|(name, state)| {
-            if state.wakes_on_next_element.is_empty() {
-                None
-            } else {
-                Some(name.as_str())
-            }
-        })
-    }
-
     pub(super) fn inbound_channel_mut(
         &mut self,
         channel_ref: &ChannelRef,
@@ -367,21 +330,6 @@ impl WorkflowData {
         self.channels_mut(channel_ref.workflow_id)
             .inbound
             .get_mut(&channel_ref.name)
-    }
-
-    pub(crate) fn inbound_channels(
-        &self,
-    ) -> impl Iterator<Item = (Option<WorkflowId>, &str, &InboundChannelState)> + '_ {
-        let local_channels = self.channels.inbound.iter();
-        let local_channels = local_channels.map(|(name, state)| (None, name.as_str(), state));
-        let workflow_channels = self
-            .child_workflows
-            .iter()
-            .flat_map(|(&workflow_id, workflow)| {
-                let channels = workflow.channels.inbound.iter();
-                channels.map(move |(name, state)| (Some(workflow_id), name.as_str(), state))
-            });
-        local_channels.chain(workflow_channels)
     }
 
     pub(super) fn inbound_channels_mut(
@@ -403,7 +351,7 @@ impl WorkflowData {
             .get_mut(&channel_ref.name)
     }
 
-    pub(crate) fn outbound_channels(
+    pub(super) fn outbound_channels(
         &self,
     ) -> impl Iterator<Item = (Option<WorkflowId>, &str, &OutboundChannelState)> + '_ {
         let local_channels = self.channels.outbound.iter();
@@ -525,7 +473,7 @@ impl WorkflowData {
     pub(crate) fn drain_messages(&mut self) -> Vec<(ChannelId, Vec<Message>)> {
         let channels = self.channels.outbound.iter();
         let channel_ids: Vec<_> = channels
-            .map(|(name, state)| (name.clone(), state.id()))
+            .map(|(name, state)| (name.clone(), state.channel_id))
             .collect();
 
         let messages = channel_ids.into_iter().filter_map(|(name, channel_id)| {

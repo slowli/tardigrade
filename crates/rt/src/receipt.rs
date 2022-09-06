@@ -115,6 +115,15 @@ impl ExecutedFunction {
         }
     }
 
+    fn wake_up_cause(&self) -> Option<&WakeUpCause> {
+        match self {
+            Self::Task { wake_up_cause, .. } | Self::Waker { wake_up_cause, .. } => {
+                Some(wake_up_cause)
+            }
+            _ => None,
+        }
+    }
+
     fn write_summary(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Entry { .. } => formatter.write_str("spawning workflow"),
@@ -288,6 +297,11 @@ impl<T> Receipt<T> {
     /// have occurred during their execution.
     pub fn executions(&self) -> &[Execution] {
         &self.executions
+    }
+
+    /// Returns the root cause of the workflow execution that corresponds to this receipt, if any.
+    pub fn root_cause(&self) -> Option<&WakeUpCause> {
+        self.executions.first()?.function.wake_up_cause()
     }
 
     /// Consumes this receipt and returns the enclosed output.

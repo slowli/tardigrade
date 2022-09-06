@@ -191,11 +191,12 @@ impl WorkflowData {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(test)] // FIXME: remove
     pub(crate) fn task(&self, task_id: TaskId) -> Option<&TaskState> {
         self.tasks.get(&task_id)
     }
 
+    #[cfg(test)]
     pub(crate) fn tasks(&self) -> impl Iterator<Item = (TaskId, &TaskState)> + '_ {
         self.tasks.iter().map(|(id, state)| (*id, state))
     }

@@ -12,8 +12,8 @@ mod task;
 mod time;
 
 pub use self::{
-    channel::{ConsumeError, ConsumeErrorKind, InboundChannelState, OutboundChannelState},
-    persistence::PersistError,
+    channel::{ConsumeError, ConsumeErrorKind},
+    persistence::{InboundChannelState, OutboundChannelState, PersistError},
     spawn::ChildWorkflowState,
     task::TaskState,
     time::TimerState,
@@ -40,7 +40,6 @@ use tardigrade::interface::Interface;
 pub struct WorkflowData {
     /// Functions exported by the `Instance`. Instantiated immediately after instance.
     exports: Option<ModuleExports>,
-    interface: Interface<()>,
     channels: ChannelStates,
     timers: Timers,
     /// Services available to the workflow.
@@ -61,7 +60,7 @@ pub struct WorkflowData {
 
 impl WorkflowData {
     pub(crate) fn new(
-        interface: Interface<()>,
+        interface: &Interface<()>,
         channel_ids: &ChannelIds,
         services: Services,
     ) -> Self {
@@ -93,7 +92,6 @@ impl WorkflowData {
             channels: ChannelStates::new(channel_ids, |name| {
                 interface.outbound_channel(name).unwrap().capacity
             }),
-            interface,
             timers: Timers::new(services.clock.now()),
             services,
             tasks: HashMap::new(),
@@ -112,10 +110,6 @@ impl WorkflowData {
 
     pub(crate) fn set_exports(&mut self, exports: ModuleExports) {
         self.exports = Some(exports);
-    }
-
-    pub(crate) fn interface(&self) -> &Interface<()> {
-        &self.interface
     }
 
     #[cfg(test)]

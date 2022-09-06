@@ -1,16 +1,9 @@
 //! `Workflow` and tightly related types.
 
 use anyhow::Context;
-use chrono::{DateTime, Utc};
 use wasmtime::{AsContextMut, Linker, Store, Trap};
 
-use std::{
-    collections::{HashMap, HashSet},
-    fmt,
-    marker::PhantomData,
-    sync::Arc,
-    task::Poll,
-};
+use std::{collections::HashMap, fmt, marker::PhantomData, sync::Arc, task::Poll};
 
 mod persistence;
 #[cfg(test)]
@@ -29,28 +22,7 @@ use crate::{
     utils::Message,
     ChannelId, TaskId, WorkflowId,
 };
-use tardigrade::spawn::ChannelSpawnConfig;
-use tardigrade::{interface::Interface, spawn::ChannelHandles};
-
-#[derive(Debug)]
-pub(crate) struct ListenedEvents {
-    inbound_channels: HashSet<String>,
-    nearest_timer: Option<DateTime<Utc>>,
-}
-
-impl ListenedEvents {
-    pub fn is_empty(&self) -> bool {
-        self.inbound_channels.is_empty() && self.nearest_timer.is_none()
-    }
-
-    pub fn nearest_timer(&self) -> Option<DateTime<Utc>> {
-        self.nearest_timer
-    }
-
-    pub fn contains_inbound_channel(&self, name: &str) -> bool {
-        self.inbound_channels.contains(name)
-    }
-}
+use tardigrade::spawn::{ChannelHandles, ChannelSpawnConfig};
 
 #[derive(Debug, Default)]
 pub(crate) struct ChannelIds {
@@ -89,7 +61,7 @@ impl WorkflowSpawner<()> {
         channel_ids: &ChannelIds,
         services: Services,
     ) -> anyhow::Result<Workflow<()>> {
-        let state = WorkflowData::new(self.interface().clone().erase(), channel_ids, services);
+        let state = WorkflowData::new(self.interface(), channel_ids, services);
         Workflow::from_state(self, state, Some(raw_args.into()))
     }
 }
@@ -139,10 +111,6 @@ impl<W> Workflow<W> {
         })
     }
 
-    pub(crate) fn interface(&self) -> &Interface<()> {
-        self.store.data().interface()
-    }
-
     pub(crate) fn is_initialized(&self) -> bool {
         self.raw_args.is_none()
     }
@@ -171,14 +139,6 @@ impl<W> Workflow<W> {
         };
         self.store.data_mut().spawn_main_task(task_id);
         Ok(receipt)
-    }
-
-    /// Checks whether the workflow is finished, i.e., all tasks in it have completed.
-    pub fn is_finished(&self) -> bool {
-        self.store
-            .data()
-            .tasks()
-            .all(|(_, state)| state.result().is_ready())
     }
 
     fn do_execute(
@@ -321,6 +281,7 @@ impl<W> Workflow<W> {
         Ok(())
     }
 
+    // FIXME: move to `PersistedWorkflow`
     /// Enumerates child workflows.
     pub fn child_workflows(&self) -> impl Iterator<Item = (WorkflowId, &ChildWorkflowState)> + '_ {
         self.store.data().child_workflows()
@@ -330,45 +291,6 @@ impl<W> Workflow<W> {
     /// if a workflow with such ID was not spawned by this workflow.
     pub fn child_workflow(&self, id: WorkflowId) -> Option<&ChildWorkflowState> {
         self.store.data().child_workflow(id)
-    }
-
-    pub(crate) fn inbound_channel_by_id(
-        &self,
-        channel_id: ChannelId,
-    ) -> Option<(Option<WorkflowId>, &str)> {
-        let mut channels = self.store.data().inbound_channels();
-        channels.find_map(|(workflow_id, name, state)| {
-            if state.id() == channel_id {
-                Some((workflow_id, name))
-            } else {
-                None
-            }
-        })
-    }
-
-    /// Returns IDs of the local inbound channels of this workflow.
-    pub(crate) fn inbound_channel_ids(&self) -> impl Iterator<Item = ChannelId> + '_ {
-        let channels = self.store.data().inbound_channels();
-        channels.filter_map(|(workflow_id, _, state)| {
-            if workflow_id.is_none() {
-                Some(state.id())
-            } else {
-                None
-            }
-        })
-    }
-
-    /// Returns IDs of the local outbound channels of this workflow. A single ID may be mentioned
-    /// several times.
-    pub(crate) fn outbound_channel_ids(&self) -> impl Iterator<Item = ChannelId> + '_ {
-        let channels = self.store.data().outbound_channels();
-        channels.filter_map(|(workflow_id, _, state)| {
-            if workflow_id.is_none() {
-                Some(state.id())
-            } else {
-                None
-            }
-        })
     }
 
     pub(crate) fn push_inbound_message(
@@ -402,25 +324,7 @@ impl<W> Workflow<W> {
         crate::log_result!(result, "Closed inbound channel `{}`", channel_name)
     }
 
-    #[cfg(feature = "async")]
-    pub(crate) fn listened_events(&self) -> ListenedEvents {
-        let data = self.store.data();
-        let expirations = data.timers().iter().filter_map(|(_, state)| {
-            if state.completed_at().is_none() {
-                Some(state.definition().expires_at)
-            } else {
-                None
-            }
-        });
-        ListenedEvents {
-            inbound_channels: data
-                .listened_inbound_channels()
-                .map(str::to_owned)
-                .collect(),
-            nearest_timer: expirations.min(),
-        }
-    }
-
+    #[cfg(test)] // FIXME: remove
     pub(crate) fn take_outbound_messages(
         &mut self,
         workflow_id: Option<WorkflowId>,
@@ -453,27 +357,6 @@ impl<W> Workflow<W> {
     /// right now.
     pub(crate) fn persist(&mut self) -> Result<PersistedWorkflow, PersistError> {
         PersistedWorkflow::new(self)
-    }
-
-    /// Executes the provided closure, reverting any workflow progress if an error occurs.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the workflow cannot be persisted (e.g., due to non-flushed messages).
-    /// Call [`Self::check_persistence()`] beforehand to determine whether this is the case.
-    ///
-    /// # Errors
-    ///
-    /// Passes through errors returned by the closure.
-    pub(crate) fn rollback_on_error<T, E>(
-        &mut self,
-        action: impl FnOnce(&mut Self) -> Result<T, E>,
-    ) -> Result<T, E> {
-        let backup = self.persist().unwrap();
-        action(self).map_err(|err| {
-            backup.restore_to_workflow(self); // `unwrap()` should be safe by design
-            err
-        })
     }
 
     fn copy_memory(&mut self, offset: usize, memory_contents: &[u8]) -> anyhow::Result<()> {

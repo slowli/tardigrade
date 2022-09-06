@@ -280,7 +280,7 @@ impl Clock for MockScheduler {
 
 #[cfg(feature = "async")]
 impl Schedule for MockScheduler {
-    fn create_timer(&mut self, expires_at: DateTime<Utc>) -> TimerFuture {
+    fn create_timer(&self, expires_at: DateTime<Utc>) -> TimerFuture {
         use futures::{future, FutureExt};
 
         let mut guard = self.inner();

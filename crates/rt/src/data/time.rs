@@ -152,6 +152,7 @@ impl WorkflowData {
         TimerDefinition { expires_at }
     }
 
+    #[cfg(test)]
     pub(crate) fn timers(&self) -> &Timers {
         &self.timers
     }

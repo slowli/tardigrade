@@ -11,6 +11,7 @@ use std::{
 use wasmtime::{Store, Val};
 
 use super::{
+    channel,
     helpers::{HostResource, Wakers},
     task::{TaskQueue, TaskState},
     time::Timers,
@@ -68,8 +69,9 @@ fn flip_bool(&flag: &bool) -> bool {
     !flag
 }
 
+/// State of an inbound workflow channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct InboundChannelState {
+pub struct InboundChannelState {
     channel_id: ChannelId,
     #[serde(default, skip_serializing_if = "flip_bool")]
     is_closed: bool,
@@ -80,7 +82,7 @@ struct InboundChannelState {
 }
 
 impl InboundChannelState {
-    fn new(state: &super::InboundChannelState) -> Self {
+    fn new(state: &channel::InboundChannelState) -> Self {
         debug_assert!(state.pending_message.is_none());
         Self {
             channel_id: state.channel_id,
@@ -95,7 +97,7 @@ impl InboundChannelState {
         self,
         interface: &Interface<()>,
         channel_name: &str,
-    ) -> anyhow::Result<super::InboundChannelState> {
+    ) -> anyhow::Result<channel::InboundChannelState> {
         interface.inbound_channel(channel_name).ok_or_else(|| {
             anyhow!(
                 "inbound channel `{}` is present in persisted state, but not \
@@ -106,9 +108,18 @@ impl InboundChannelState {
 
         Ok(self.into())
     }
+
+    /// Returns ID of the channel.
+    pub fn id(&self) -> ChannelId {
+        self.channel_id
+    }
+
+    pub(crate) fn waits_for_message(&self) -> bool {
+        !self.is_closed && !self.wakes_on_next_element.is_empty()
+    }
 }
 
-impl From<InboundChannelState> for super::InboundChannelState {
+impl From<InboundChannelState> for channel::InboundChannelState {
     fn from(persisted: InboundChannelState) -> Self {
         Self {
             channel_id: persisted.channel_id,
@@ -121,8 +132,9 @@ impl From<InboundChannelState> for super::InboundChannelState {
     }
 }
 
+/// State of an outbound workflow channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct OutboundChannelState {
+pub struct OutboundChannelState {
     channel_id: ChannelId,
     capacity: Option<usize>,
     is_acquired: bool,
@@ -133,7 +145,7 @@ struct OutboundChannelState {
 }
 
 impl OutboundChannelState {
-    fn new(state: &super::OutboundChannelState) -> Self {
+    fn new(state: &channel::OutboundChannelState) -> Self {
         debug_assert!(state.messages.is_empty());
         Self {
             channel_id: state.channel_id,
@@ -149,7 +161,7 @@ impl OutboundChannelState {
         self,
         interface: &Interface<()>,
         channel_name: &str,
-    ) -> anyhow::Result<super::OutboundChannelState> {
+    ) -> anyhow::Result<channel::OutboundChannelState> {
         interface.outbound_channel(channel_name).ok_or_else(|| {
             anyhow!(
                 "outbound channel `{}` is present in persisted state, but not \
@@ -159,9 +171,14 @@ impl OutboundChannelState {
         })?;
         Ok(self.into())
     }
+
+    /// Returns ID of the channel.
+    pub fn id(&self) -> ChannelId {
+        self.channel_id
+    }
 }
 
-impl From<OutboundChannelState> for super::OutboundChannelState {
+impl From<OutboundChannelState> for channel::OutboundChannelState {
     fn from(persisted: OutboundChannelState) -> Self {
         Self {
             channel_id: persisted.channel_id,
@@ -270,6 +287,14 @@ impl WorkflowState {
         }
     }
 
+    pub fn inbound_channels(
+        &self,
+    ) -> impl Iterator<Item = (Option<WorkflowId>, &str, &InboundChannelState)> + '_ {
+        let local_channels = self.channels.inbound.iter();
+        // FIXME: add channels to child workflows
+        local_channels.map(|(name, state)| (None, name.as_str(), state))
+    }
+
     pub(crate) fn set_current_time(&mut self, time: DateTime<Utc>) {
         let wakers_by_timer = self.timers.set_current_time(time);
         for (id, wakers) in wakers_by_timer {
@@ -281,13 +306,12 @@ impl WorkflowState {
 
     pub fn restore(
         self,
-        interface: Interface<()>,
+        interface: &Interface<()>,
         services: Services,
     ) -> anyhow::Result<WorkflowData> {
-        let channels = self.channels.restore(&interface)?;
+        let channels = self.channels.restore(interface)?;
         Ok(WorkflowData {
             exports: None,
-            interface,
             channels,
             timers: self.timers,
             services,
@@ -298,17 +322,6 @@ impl WorkflowState {
             waker_queue: self.waker_queue,
             current_wakeup_cause: None,
         })
-    }
-
-    // NB. Should agree with logic in `Self::restore()`.
-    pub fn restore_in_place(self, data: &mut WorkflowData) {
-        data.channels = self.channels.into();
-        data.timers = self.timers;
-        data.tasks = self.tasks;
-        data.current_execution = None;
-        data.task_queue = TaskQueue::default();
-        data.waker_queue = self.waker_queue;
-        data.current_wakeup_cause = None;
     }
 }
 
