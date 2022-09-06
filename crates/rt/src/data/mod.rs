@@ -1,5 +1,6 @@
 //! Workflow state.
 
+use serde::{Deserialize, Serialize};
 use wasmtime::{AsContextMut, ExternRef, StoreContextMut, Trap};
 
 use std::collections::{HashMap, HashSet};
@@ -14,11 +15,12 @@ mod time;
 pub(crate) use self::{
     channel::ConsumeError,
     helpers::{Wakers, WasmContextPtr},
-    persistence::{Refs, WorkflowState},
+    persistence::Refs,
     spawn::SpawnFunctions,
 };
 pub use self::{
-    persistence::{InboundChannelState, OutboundChannelState, PersistError},
+    channel::{InboundChannelState, OutboundChannelState},
+    persistence::PersistError,
     spawn::ChildWorkflowState,
     task::TaskState,
     time::TimerState,
@@ -36,24 +38,27 @@ use crate::{
 };
 use tardigrade::interface::Interface;
 
+/// `Workflow` state that can be persisted between workflow invocations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct PersistedWorkflowData {
+    pub timers: Timers,
+    pub tasks: HashMap<TaskId, TaskState>,
+    child_workflows: HashMap<WorkflowId, ChildWorkflowState>,
+    channels: ChannelStates,
+    pub waker_queue: Vec<Wakers>,
+}
+
 #[derive(Debug)]
 pub struct WorkflowData {
     /// Functions exported by the `Instance`. Instantiated immediately after instance.
     exports: Option<ModuleExports>,
-    channels: ChannelStates,
-    timers: Timers,
     /// Services available to the workflow.
     services: Services,
-    /// All tasks together with relevant info.
-    tasks: HashMap<TaskId, TaskState>,
-    /// Workflows spawned by this workflow.
-    child_workflows: HashMap<WorkflowId, ChildWorkflowState>,
+    persisted: PersistedWorkflowData,
     /// Data related to the currently executing WASM call.
     current_execution: Option<CurrentExecution>,
     /// Tasks that should be polled after `current_task`.
     task_queue: TaskQueue,
-    /// Wakers that need to be woken up.
-    waker_queue: Vec<Wakers>,
     /// Wakeup cause set when waking up tasks.
     current_wakeup_cause: Option<WakeUpCause>,
 }
@@ -88,17 +93,11 @@ impl WorkflowData {
         );
 
         Self {
+            persisted: PersistedWorkflowData::new(interface, channel_ids, services.clock.now()),
             exports: None,
-            channels: ChannelStates::new(channel_ids, |name| {
-                interface.outbound_channel(name).unwrap().capacity
-            }),
-            timers: Timers::new(services.clock.now()),
             services,
-            tasks: HashMap::new(),
-            child_workflows: HashMap::new(),
             current_execution: None,
             task_queue: TaskQueue::default(),
-            waker_queue: Vec::new(),
             current_wakeup_cause: None,
         }
     }

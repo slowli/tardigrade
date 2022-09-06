@@ -7,8 +7,8 @@ use wasmtime::Store;
 
 use crate::{
     data::{
-        InboundChannelState, PersistError, Refs, TaskState, TimerState, Wakers, WorkflowData,
-        WorkflowState,
+        ChildWorkflowState, InboundChannelState, PersistError, PersistedWorkflowData, Refs,
+        TaskState, TimerState, Wakers, WorkflowData,
     },
     module::{DataSection, WorkflowSpawner},
     receipt::WakeUpCause,
@@ -123,7 +123,7 @@ impl Memory {
 /// (channels and timers), and its linear WASM memory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedWorkflow {
-    state: WorkflowState,
+    state: PersistedWorkflowData,
     refs: Refs,
     memory: Memory,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -152,12 +152,23 @@ impl PersistedWorkflow {
 
     /// Returns the current state of a task with the specified ID.
     pub fn task(&self, task_id: TaskId) -> Option<&TaskState> {
-        self.state.tasks.get(&task_id)
+        self.state.task(task_id)
     }
 
     /// Lists all tasks in this workflow.
     pub fn tasks(&self) -> impl Iterator<Item = (TaskId, &TaskState)> + '_ {
-        self.state.tasks.iter().map(|(id, state)| (*id, state))
+        self.state.tasks()
+    }
+
+    /// Enumerates child workflows.
+    pub fn child_workflows(&self) -> impl Iterator<Item = (WorkflowId, &ChildWorkflowState)> + '_ {
+        self.state.child_workflows()
+    }
+
+    /// Returns the local state of the child workflow with the specified ID, or `None`
+    /// if a workflow with such ID was not spawned by this workflow.
+    pub fn child_workflow(&self, id: WorkflowId) -> Option<&ChildWorkflowState> {
+        self.state.child_workflow(id)
     }
 
     /// Checks whether the workflow is initialized.

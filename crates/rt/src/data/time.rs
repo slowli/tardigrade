@@ -11,11 +11,11 @@ use std::{
 };
 
 use super::{
-    helpers::{WakeIfPending, WakerPlacement, WasmContext, WasmContextPtr},
-    WorkflowData, WorkflowFunctions,
+    helpers::{WakeIfPending, WakerPlacement, Wakers, WasmContext, WasmContextPtr},
+    PersistedWorkflowData, WorkflowData, WorkflowFunctions,
 };
 use crate::{
-    receipt::{ResourceEventKind, ResourceId},
+    receipt::{ResourceEventKind, ResourceId, WakeUpCause},
     utils::WasmAllocator,
     TimerId, WakerId,
 };
@@ -146,26 +146,32 @@ impl Timers {
     }
 }
 
+impl PersistedWorkflowData {
+    pub(crate) fn set_current_time(&mut self, time: DateTime<Utc>) {
+        let wakers_by_timer = self.timers.set_current_time(time);
+        for (id, wakers) in wakers_by_timer {
+            let cause = WakeUpCause::Timer { id };
+            crate::trace!("Scheduled wakers {:?} with cause {:?}", wakers, cause);
+            self.waker_queue.push(Wakers::new(wakers, cause));
+        }
+    }
+}
+
 impl WorkflowData {
     fn timer_definition(timestamp_millis: i64) -> TimerDefinition {
         let expires_at = Utc.timestamp_millis(timestamp_millis);
         TimerDefinition { expires_at }
     }
 
-    #[cfg(test)]
-    pub(crate) fn timers(&self) -> &Timers {
-        &self.timers
-    }
-
     fn create_timer(&mut self, definition: TimerDefinition) -> TimerId {
-        let timer_id = self.timers.insert(definition);
+        let timer_id = self.persisted.timers.insert(definition);
         self.current_execution()
             .push_resource_event(ResourceId::Timer(timer_id), ResourceEventKind::Created);
         timer_id
     }
 
     fn drop_timer(&mut self, timer_id: TimerId) -> Result<(), Trap> {
-        if self.timers.get(timer_id).is_none() {
+        if self.persisted.timers.get(timer_id).is_none() {
             let message = format!("Timer ID {} is not defined", timer_id);
             return Err(Trap::new(message));
         }
@@ -179,7 +185,7 @@ impl WorkflowData {
         timer_id: TimerId,
         cx: &mut WasmContext,
     ) -> Result<Poll<DateTime<Utc>>, Trap> {
-        let poll_result = self.timers.poll(timer_id)?;
+        let poll_result = self.persisted.timers.poll(timer_id)?;
         self.current_execution().push_resource_event(
             ResourceId::Timer(timer_id),
             ResourceEventKind::Polled(poll_result.map(drop)),

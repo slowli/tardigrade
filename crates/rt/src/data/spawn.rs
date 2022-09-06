@@ -1,5 +1,6 @@
 //! Spawning workflows.
 
+use serde::{Deserialize, Serialize};
 use wasmtime::{AsContextMut, ExternRef, StoreContextMut, Trap};
 
 use std::{
@@ -13,10 +14,10 @@ use crate::{
     data::{
         channel::ChannelStates,
         helpers::{HostResource, WakeIfPending, WakerPlacement, WasmContext, WasmContextPtr},
-        WorkflowData,
+        PersistedWorkflowData, WorkflowData,
     },
     receipt::{ResourceEventKind, ResourceId},
-    utils::{copy_bytes_from_wasm, copy_string_from_wasm, drop_value, WasmAllocator},
+    utils::{copy_bytes_from_wasm, copy_string_from_wasm, drop_value, serde_poll, WasmAllocator},
     workflow::ChannelIds,
 };
 use tardigrade::spawn::{ChannelHandles, ChannelSpawnConfig};
@@ -31,11 +32,13 @@ pub(super) struct SharedChannelHandles {
     inner: Arc<Mutex<ChannelHandles>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChildWorkflowState {
     pub(super) channels: ChannelStates,
-    pub(super) completion_result: Poll<Result<(), JoinError>>,
-    pub(super) wakes_on_completion: HashSet<WakerId>,
+    #[serde(with = "serde_poll")]
+    completion_result: Poll<Result<(), JoinError>>,
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    wakes_on_completion: HashSet<WakerId>,
 }
 
 impl ChildWorkflowState {
@@ -53,7 +56,7 @@ impl ChildWorkflowState {
     }
 }
 
-impl WorkflowData {
+impl PersistedWorkflowData {
     pub fn child_workflows(&self) -> impl Iterator<Item = (WorkflowId, &ChildWorkflowState)> + '_ {
         self.child_workflows.iter().map(|(id, state)| (*id, state))
     }
@@ -61,7 +64,9 @@ impl WorkflowData {
     pub fn child_workflow(&self, id: WorkflowId) -> Option<&ChildWorkflowState> {
         self.child_workflows.get(&id)
     }
+}
 
+impl WorkflowData {
     fn validate_handles(&self, definition_id: &str, handles: &ChannelHandles) -> Result<(), Trap> {
         if let Some(interface) = self.services.workflows.interface(definition_id) {
             for (name, _) in interface.inbound_channels() {
@@ -136,7 +141,8 @@ impl WorkflowData {
             .create_workflow(definition_id, args, handles);
         let result = result.map(|mut ids| {
             mem::swap(&mut ids.channel_ids.inbound, &mut ids.channel_ids.outbound);
-            self.child_workflows
+            self.persisted
+                .child_workflows
                 .insert(ids.workflow_id, ChildWorkflowState::new(&ids.channel_ids));
             self.current_execution().push_resource_event(
                 ResourceId::Workflow(ids.workflow_id),
@@ -152,7 +158,9 @@ impl WorkflowData {
         workflow_id: WorkflowId,
         cx: &mut WasmContext,
     ) -> Poll<Result<(), JoinError>> {
-        let poll_result = self.child_workflows[&workflow_id].completion_result.clone();
+        let poll_result = self.persisted.child_workflows[&workflow_id]
+            .completion_result
+            .clone();
         self.current_execution().push_resource_event(
             ResourceId::Workflow(workflow_id),
             ResourceEventKind::Polled(drop_value(&poll_result)),

@@ -4,23 +4,17 @@ use anyhow::{anyhow, ensure};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use std::{
-    collections::{HashMap, HashSet},
-    error, fmt,
-};
+use std::{collections::HashMap, error, fmt};
 use wasmtime::{Store, Val};
 
 use super::{
-    channel,
-    helpers::{HostResource, Wakers},
-    task::{TaskQueue, TaskState},
+    channel::{ChannelStates, InboundChannelState, OutboundChannelState},
+    helpers::HostResource,
+    task::TaskQueue,
     time::Timers,
-    WorkflowData,
+    PersistedWorkflowData, WorkflowData,
 };
-use crate::{
-    receipt::WakeUpCause, services::Services, workflow::ChannelIds, ChannelId, TaskId, WakerId,
-    WorkflowId,
-};
+use crate::{services::Services, workflow::ChannelIds, WorkflowId};
 use tardigrade::interface::Interface;
 
 /// Error persisting a [`Workflow`](crate::Workflow).
@@ -64,40 +58,8 @@ impl fmt::Display for PersistError {
 
 impl error::Error for PersistError {}
 
-#[allow(clippy::trivially_copy_pass_by_ref)] // required by serde
-fn flip_bool(&flag: &bool) -> bool {
-    !flag
-}
-
-/// State of an inbound workflow channel.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InboundChannelState {
-    channel_id: ChannelId,
-    #[serde(default, skip_serializing_if = "flip_bool")]
-    is_closed: bool,
-    is_acquired: bool,
-    received_messages: usize,
-    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
-    wakes_on_next_element: HashSet<WakerId>,
-}
-
 impl InboundChannelState {
-    fn new(state: &channel::InboundChannelState) -> Self {
-        debug_assert!(state.pending_message.is_none());
-        Self {
-            channel_id: state.channel_id,
-            is_closed: state.is_closed,
-            is_acquired: state.is_acquired,
-            received_messages: state.received_messages,
-            wakes_on_next_element: state.wakes_on_next_element.clone(),
-        }
-    }
-
-    fn restore(
-        self,
-        interface: &Interface<()>,
-        channel_name: &str,
-    ) -> anyhow::Result<channel::InboundChannelState> {
+    fn check_on_restore(interface: &Interface<()>, channel_name: &str) -> anyhow::Result<()> {
         interface.inbound_channel(channel_name).ok_or_else(|| {
             anyhow!(
                 "inbound channel `{}` is present in persisted state, but not \
@@ -105,63 +67,12 @@ impl InboundChannelState {
                 channel_name
             )
         })?;
-
-        Ok(self.into())
+        Ok(())
     }
-
-    /// Returns ID of the channel.
-    pub fn id(&self) -> ChannelId {
-        self.channel_id
-    }
-
-    pub(crate) fn waits_for_message(&self) -> bool {
-        !self.is_closed && !self.wakes_on_next_element.is_empty()
-    }
-}
-
-impl From<InboundChannelState> for channel::InboundChannelState {
-    fn from(persisted: InboundChannelState) -> Self {
-        Self {
-            channel_id: persisted.channel_id,
-            is_closed: persisted.is_closed,
-            is_acquired: persisted.is_acquired,
-            received_messages: persisted.received_messages,
-            pending_message: None,
-            wakes_on_next_element: persisted.wakes_on_next_element,
-        }
-    }
-}
-
-/// State of an outbound workflow channel.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OutboundChannelState {
-    channel_id: ChannelId,
-    capacity: Option<usize>,
-    is_acquired: bool,
-    is_closed: bool,
-    flushed_messages: usize,
-    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
-    wakes_on_flush: HashSet<WakerId>,
 }
 
 impl OutboundChannelState {
-    fn new(state: &channel::OutboundChannelState) -> Self {
-        debug_assert!(state.messages.is_empty());
-        Self {
-            channel_id: state.channel_id,
-            capacity: state.capacity,
-            is_acquired: state.is_acquired,
-            is_closed: state.is_closed,
-            flushed_messages: state.flushed_messages,
-            wakes_on_flush: state.wakes_on_flush.clone(),
-        }
-    }
-
-    fn restore(
-        self,
-        interface: &Interface<()>,
-        channel_name: &str,
-    ) -> anyhow::Result<channel::OutboundChannelState> {
+    fn check_on_restore(interface: &Interface<()>, channel_name: &str) -> anyhow::Result<()> {
         interface.outbound_channel(channel_name).ok_or_else(|| {
             anyhow!(
                 "outbound channel `{}` is present in persisted state, but not \
@@ -169,54 +80,12 @@ impl OutboundChannelState {
                 channel_name
             )
         })?;
-        Ok(self.into())
+        Ok(())
     }
-
-    /// Returns ID of the channel.
-    pub fn id(&self) -> ChannelId {
-        self.channel_id
-    }
-}
-
-impl From<OutboundChannelState> for channel::OutboundChannelState {
-    fn from(persisted: OutboundChannelState) -> Self {
-        Self {
-            channel_id: persisted.channel_id,
-            capacity: persisted.capacity,
-            is_acquired: persisted.is_acquired,
-            is_closed: persisted.is_closed,
-            flushed_messages: persisted.flushed_messages,
-            messages: Vec::new(),
-            wakes_on_flush: persisted.wakes_on_flush,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ChannelStates {
-    inbound: HashMap<String, InboundChannelState>,
-    outbound: HashMap<String, OutboundChannelState>,
 }
 
 impl ChannelStates {
-    fn new(channels: &super::ChannelStates) -> Self {
-        let outbound = channels
-            .outbound
-            .iter()
-            .map(|(name, state)| {
-                let persisted_state = OutboundChannelState::new(state);
-                (name.clone(), persisted_state)
-            })
-            .collect();
-        let inbound = channels
-            .inbound
-            .iter()
-            .map(|(name, state)| (name.clone(), InboundChannelState::new(state)))
-            .collect();
-        Self { inbound, outbound }
-    }
-
-    fn restore(self, interface: &Interface<()>) -> anyhow::Result<super::ChannelStates> {
+    fn check_on_restore(&self, interface: &Interface<()>) -> anyhow::Result<()> {
         let inbound_channels_len = interface.inbound_channels().len();
         ensure!(
             inbound_channels_len == self.inbound.len(),
@@ -225,11 +94,9 @@ impl ChannelStates {
             inbound_channels_len,
             self.inbound.len()
         );
-        let inbound = self.inbound.into_iter().map(|(name, state)| {
-            let restored = state.restore(interface, &name)?;
-            Ok((name, restored))
-        });
-        let inbound = inbound.collect::<anyhow::Result<_>>()?;
+        for name in self.inbound.keys() {
+            InboundChannelState::check_on_restore(interface, name)?;
+        }
 
         let outbound_channels_len = interface.outbound_channels().len();
         ensure!(
@@ -239,68 +106,28 @@ impl ChannelStates {
             outbound_channels_len,
             self.outbound.len()
         );
-        let outbound = self.outbound.into_iter().map(|(name, state)| {
-            let restored = state.restore(interface, &name)?;
-            Ok((name, restored))
-        });
-        let outbound = outbound.collect::<anyhow::Result<_>>()?;
-
-        Ok(super::ChannelStates { inbound, outbound })
-    }
-}
-
-impl From<ChannelStates> for super::ChannelStates {
-    fn from(persisted: ChannelStates) -> Self {
-        let inbound = persisted
-            .inbound
-            .into_iter()
-            .map(|(name, state)| (name, state.into()))
-            .collect();
-        let outbound = persisted
-            .outbound
-            .into_iter()
-            .map(|(name, state)| (name, state.into()))
-            .collect();
-        Self { inbound, outbound }
-    }
-}
-
-/// `Workflow` state that can be persisted between workflow invocations.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct WorkflowState {
-    pub timers: Timers,
-    pub tasks: HashMap<TaskId, TaskState>,
-    channels: ChannelStates,
-    pub waker_queue: Vec<Wakers>,
-}
-
-impl WorkflowState {
-    pub fn channel_ids(&self) -> ChannelIds {
-        let inbound = self.channels.inbound.iter();
-        let inbound = inbound.map(|(name, state)| (name.clone(), state.channel_id));
-        let outbound = self.channels.outbound.iter();
-        let outbound = outbound.map(|(name, state)| (name.clone(), state.channel_id));
-
-        ChannelIds {
-            inbound: inbound.collect(),
-            outbound: outbound.collect(),
+        for name in self.outbound.keys() {
+            OutboundChannelState::check_on_restore(interface, name)?;
         }
-    }
 
-    pub fn inbound_channels(
-        &self,
-    ) -> impl Iterator<Item = (Option<WorkflowId>, &str, &InboundChannelState)> + '_ {
-        let local_channels = self.channels.inbound.iter();
-        // FIXME: add channels to child workflows
-        local_channels.map(|(name, state)| (None, name.as_str(), state))
+        Ok(())
     }
+}
 
-    pub(crate) fn set_current_time(&mut self, time: DateTime<Utc>) {
-        let wakers_by_timer = self.timers.set_current_time(time);
-        for (id, wakers) in wakers_by_timer {
-            let cause = WakeUpCause::Timer { id };
-            crate::trace!("Scheduled wakers {:?} with cause {:?}", wakers, cause);
-            self.waker_queue.push(Wakers::new(wakers, cause));
+impl PersistedWorkflowData {
+    pub(super) fn new(
+        interface: &Interface<()>,
+        channel_ids: &ChannelIds,
+        now: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            channels: ChannelStates::new(channel_ids, |name| {
+                interface.outbound_channel(name).unwrap().capacity
+            }),
+            timers: Timers::new(now),
+            tasks: HashMap::new(),
+            child_workflows: HashMap::new(),
+            waker_queue: Vec::new(),
         }
     }
 
@@ -309,17 +136,13 @@ impl WorkflowState {
         interface: &Interface<()>,
         services: Services,
     ) -> anyhow::Result<WorkflowData> {
-        let channels = self.channels.restore(interface)?;
+        self.channels.check_on_restore(interface)?;
         Ok(WorkflowData {
             exports: None,
-            channels,
-            timers: self.timers,
+            persisted: self,
             services,
-            tasks: self.tasks,
-            child_workflows: HashMap::default(), // FIXME
             current_execution: None,
             task_queue: TaskQueue::default(),
-            waker_queue: self.waker_queue,
             current_wakeup_cause: None,
         })
     }
@@ -332,7 +155,7 @@ impl WorkflowData {
             return Err(PersistError::PendingTask);
         }
 
-        for (workflow_id, name, state) in self.outbound_channels() {
+        for (workflow_id, name, state) in self.persisted.outbound_channels() {
             if !state.messages.is_empty() {
                 return Err(PersistError::PendingOutboundMessage {
                     channel_name: name.to_owned(),
@@ -344,13 +167,8 @@ impl WorkflowData {
     }
 
     // Must be preceded with `Self::check_persistence()`.
-    pub(crate) fn persist(&self) -> WorkflowState {
-        WorkflowState {
-            channels: ChannelStates::new(&self.channels),
-            timers: self.timers.clone(),
-            tasks: self.tasks.clone(),
-            waker_queue: self.waker_queue.clone(),
-        }
+    pub(crate) fn persist(&self) -> PersistedWorkflowData {
+        self.persisted.clone()
     }
 }
 

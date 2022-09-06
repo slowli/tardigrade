@@ -6,13 +6,11 @@ use wasmtime::{AsContextMut, Linker, Store, Trap};
 use std::{collections::HashMap, fmt, marker::PhantomData, sync::Arc, task::Poll};
 
 mod persistence;
-#[cfg(test)]
-mod tests;
 
 pub use self::persistence::PersistedWorkflow;
 
 use crate::{
-    data::{ChildWorkflowState, ConsumeError, PersistError, WorkflowData},
+    data::{ConsumeError, PersistError, WorkflowData},
     module::{DataSection, ModuleExports, WorkflowSpawner},
     receipt::{
         Event, ExecutedFunction, Execution, ExecutionError, ExtendedTrap, Receipt,
@@ -281,18 +279,6 @@ impl<W> Workflow<W> {
         Ok(())
     }
 
-    // FIXME: move to `PersistedWorkflow`
-    /// Enumerates child workflows.
-    pub fn child_workflows(&self) -> impl Iterator<Item = (WorkflowId, &ChildWorkflowState)> + '_ {
-        self.store.data().child_workflows()
-    }
-
-    /// Returns the local state of the child workflow with the specified ID, or `None`
-    /// if a workflow with such ID was not spawned by this workflow.
-    pub fn child_workflow(&self, id: WorkflowId) -> Option<&ChildWorkflowState> {
-        self.store.data().child_workflow(id)
-    }
-
     pub(crate) fn push_inbound_message(
         &mut self,
         workflow_id: Option<WorkflowId>,
@@ -322,27 +308,6 @@ impl<W> Workflow<W> {
             .data_mut()
             .close_inbound_channel(workflow_id, channel_name);
         crate::log_result!(result, "Closed inbound channel `{}`", channel_name)
-    }
-
-    #[cfg(test)] // FIXME: remove
-    pub(crate) fn take_outbound_messages(
-        &mut self,
-        workflow_id: Option<WorkflowId>,
-        channel_name: &str,
-    ) -> (usize, Vec<Message>) {
-        let (start_idx, messages) = self
-            .store
-            .data_mut()
-            .take_outbound_messages(workflow_id, channel_name);
-        crate::trace!(
-            "Taken messages with lengths {:?} from channel `{}`",
-            messages
-                .iter()
-                .map(|message| message.as_ref().len())
-                .collect::<Vec<_>>(),
-            channel_name
-        );
-        (start_idx, messages)
     }
 
     pub(crate) fn drain_messages(&mut self) -> Vec<(ChannelId, Vec<Message>)> {

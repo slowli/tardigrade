@@ -11,7 +11,7 @@ use std::{
 
 use super::{
     helpers::{CurrentExecution, WakeIfPending, WakerPlacement, WasmContext, WasmContextPtr},
-    WorkflowData, WorkflowFunctions,
+    PersistedWorkflowData, WorkflowData, WorkflowFunctions,
 };
 use crate::{
     receipt::{Event, ExecutedFunction, PanicInfo, ResourceEventKind, ResourceId, WakeUpCause},
@@ -53,6 +53,7 @@ pub struct TaskState {
     #[serde(with = "serde_poll")]
     completion_result: Poll<Result<(), JoinError>>,
     spawned_by: Option<TaskId>,
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     wakes_on_completion: HashSet<WakerId>,
 }
 
@@ -93,6 +94,28 @@ impl TaskState {
     }
 }
 
+impl PersistedWorkflowData {
+    pub(crate) fn task(&self, task_id: TaskId) -> Option<&TaskState> {
+        self.tasks.get(&task_id)
+    }
+
+    pub(crate) fn tasks(&self) -> impl Iterator<Item = (TaskId, &TaskState)> + '_ {
+        self.tasks.iter().map(|(id, state)| (*id, state))
+    }
+
+    pub(crate) fn complete_task(&mut self, task_id: TaskId, result: Result<(), JoinError>) {
+        let task_state = self.tasks.get_mut(&task_id).unwrap();
+        if task_state.completion_result.is_ready() {
+            // Task is already completed.
+            return;
+        }
+        let result = crate::log_result!(result, "Completed task {}", task_id);
+        task_state.completion_result = Poll::Ready(result);
+        let wakers = mem::take(&mut task_state.wakes_on_completion);
+        self.schedule_wakers(wakers, WakeUpCause::CompletedTask(task_id));
+    }
+}
+
 impl WorkflowData {
     pub(super) fn current_execution(&mut self) -> &mut CurrentExecution {
         self.current_execution
@@ -124,13 +147,13 @@ impl WorkflowData {
         } else {
             unreachable!("`complete_current_task` called when task isn't executing")
         };
-        self.complete_task(task_id, Ok(()));
+        self.persisted.complete_task(task_id, Ok(()));
         self.current_execution()
             .push_resource_event(ResourceId::Task(task_id), ResourceEventKind::Dropped);
     }
 
     fn spawn_task(&mut self, task_id: TaskId, task_name: String) -> Result<(), Trap> {
-        if self.tasks.contains_key(&task_id) {
+        if self.persisted.tasks.contains_key(&task_id) {
             let message = format!("ABI misuse: task ID {} is reused", task_id);
             return Err(Trap::new(message));
         }
@@ -138,14 +161,14 @@ impl WorkflowData {
         let execution = self.current_execution();
         execution.push_resource_event(ResourceId::Task(task_id), ResourceEventKind::Created);
         let task_state = TaskState::new(task_name, &execution.function);
-        self.tasks.insert(task_id, task_state);
+        self.persisted.tasks.insert(task_id, task_state);
         Ok(())
     }
 
     pub(crate) fn spawn_main_task(&mut self, task_id: TaskId) {
         let spawned_by = ExecutedFunction::Entry { task_id };
         let task_state = TaskState::new("_main".to_owned(), &spawned_by);
-        self.tasks.insert(task_id, task_state);
+        self.persisted.tasks.insert(task_id, task_state);
         self.task_queue.insert_task(task_id, &WakeUpCause::Spawned);
     }
 
@@ -154,7 +177,9 @@ impl WorkflowData {
         task_id: TaskId,
         cx: &mut WasmContext,
     ) -> Poll<Result<(), JoinError>> {
-        let poll_result = self.tasks[&task_id].result().map_err(JoinError::clone);
+        let poll_result = self.persisted.tasks[&task_id]
+            .result()
+            .map_err(JoinError::clone);
         let empty_result = drop_value(&poll_result);
         self.current_execution().push_resource_event(
             ResourceId::Task(task_id),
@@ -164,7 +189,7 @@ impl WorkflowData {
     }
 
     fn schedule_task_wakeup(&mut self, task_id: TaskId) -> Result<(), Trap> {
-        if !self.tasks.contains_key(&task_id) {
+        if !self.persisted.tasks.contains_key(&task_id) {
             let message = format!("unknown task ID {} scheduled for wakeup", task_id);
             return Err(Trap::new(message));
         }
@@ -182,7 +207,7 @@ impl WorkflowData {
     }
 
     fn schedule_task_abortion(&mut self, task_id: TaskId) -> Result<(), Trap> {
-        if !self.tasks.contains_key(&task_id) {
+        if !self.persisted.tasks.contains_key(&task_id) {
             let message = format!("unknown task {} scheduled for abortion", task_id);
             return Err(Trap::new(message));
         }
@@ -191,35 +216,13 @@ impl WorkflowData {
         Ok(())
     }
 
-    #[cfg(test)] // FIXME: remove
-    pub(crate) fn task(&self, task_id: TaskId) -> Option<&TaskState> {
-        self.tasks.get(&task_id)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn tasks(&self) -> impl Iterator<Item = (TaskId, &TaskState)> + '_ {
-        self.tasks.iter().map(|(id, state)| (*id, state))
-    }
-
     pub(crate) fn take_next_task(&mut self) -> Option<(TaskId, WakeUpCause)> {
         loop {
             let (task, wake_up_cause) = self.task_queue.take_task()?;
-            if self.tasks[&task].completion_result.is_pending() {
+            if self.persisted.tasks[&task].completion_result.is_pending() {
                 return Some((task, wake_up_cause));
             }
         }
-    }
-
-    pub(crate) fn complete_task(&mut self, task_id: TaskId, result: Result<(), JoinError>) {
-        let task_state = self.tasks.get_mut(&task_id).unwrap();
-        if task_state.completion_result.is_ready() {
-            // Task is already completed.
-            return;
-        }
-        let result = crate::log_result!(result, "Completed task {}", task_id);
-        task_state.completion_result = Poll::Ready(result);
-        let wakers = mem::take(&mut task_state.wakes_on_completion);
-        self.schedule_wakers(wakers, WakeUpCause::CompletedTask(task_id));
     }
 }
 

@@ -6,7 +6,7 @@ use wasmtime::{AsContextMut, ExternRef, Store, StoreContextMut, Trap};
 use std::{collections::HashSet, mem, task::Poll};
 
 use crate::{
-    data::{spawn::SharedChannelHandles, WorkflowData},
+    data::{spawn::SharedChannelHandles, PersistedWorkflowData, WorkflowData},
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, PanicInfo, ResourceEvent,
         ResourceEventKind, ResourceId, WakeUpCause,
@@ -327,10 +327,12 @@ impl CurrentExecution {
                     state.task_queue.insert_task(task_id, &cause);
                 }
                 (Dropped, ResourceId::Timer(timer_id)) => {
-                    state.timers.remove(timer_id);
+                    state.persisted.timers.remove(timer_id);
                 }
                 (Dropped, ResourceId::Task(task_id)) => {
-                    state.complete_task(task_id, Err(JoinError::Aborted));
+                    state
+                        .persisted
+                        .complete_task(task_id, Err(JoinError::Aborted));
                 }
                 _ => { /* Do nothing */ }
             }
@@ -350,12 +352,12 @@ impl CurrentExecution {
         for event in Self::resource_events(&self.events) {
             match (event.kind, event.resource_id) {
                 (Created, ResourceId::Task(task_id)) => {
-                    state.tasks.remove(&task_id);
+                    state.persisted.tasks.remove(&task_id);
                     // Since new tasks can only be mentioned in `self.tasks_to_be_awoken`, not in
                     // `state.task_queue`, cleaning up the queue is not needed.
                 }
                 (Created, ResourceId::Timer(timer_id)) => {
-                    state.timers.remove(timer_id);
+                    state.persisted.timers.remove(timer_id);
                 }
                 _ => { /* Do nothing */ }
             }
@@ -366,6 +368,7 @@ impl CurrentExecution {
         for event in Self::channel_events(&self.events) {
             if matches!(event.kind, ChannelEventKind::OutboundMessageSent { .. }) {
                 let channel = state
+                    .persisted
                     .outbound_channel_mut(&ChannelRef {
                         workflow_id: event.workflow_id,
                         name: event.channel_name.clone(), // TODO: avoid cloning here
@@ -388,23 +391,25 @@ impl WorkflowData {
         }
 
         crate::trace!("Placing waker {} in {:?}", waker, placement);
+        let persisted = &mut self.persisted;
         match placement {
             WakerPlacement::InboundChannel(channel_ref) => {
-                let channel_state = self.inbound_channel_mut(channel_ref).unwrap();
+                let channel_state = persisted.inbound_channel_mut(channel_ref).unwrap();
                 channel_state.wakes_on_next_element.insert(waker);
             }
             WakerPlacement::OutboundChannel(channel_ref) => {
-                let channel_state = self.outbound_channel_mut(channel_ref).unwrap();
+                let channel_state = persisted.outbound_channel_mut(channel_ref).unwrap();
                 channel_state.wakes_on_flush.insert(waker);
             }
             WakerPlacement::Timer(id) => {
-                self.timers.place_waker(*id, waker);
+                persisted.timers.place_waker(*id, waker);
             }
             WakerPlacement::TaskCompletion(task) => {
-                self.tasks.get_mut(task).unwrap().insert_waker(waker);
+                persisted.tasks.get_mut(task).unwrap().insert_waker(waker);
             }
             WakerPlacement::WorkflowCompletion(workflow) => {
-                self.child_workflows
+                persisted
+                    .child_workflows
                     .get_mut(workflow)
                     .unwrap()
                     .insert_waker(waker);
@@ -413,29 +418,21 @@ impl WorkflowData {
     }
 
     fn remove_wakers(&mut self, wakers: &HashSet<WakerId>) {
-        for state in self.inbound_channels_mut() {
+        for state in self.persisted.inbound_channels_mut() {
             state
                 .wakes_on_next_element
                 .retain(|waker_id| !wakers.contains(waker_id));
         }
-        for state in self.outbound_channels_mut() {
+        for state in self.persisted.outbound_channels_mut() {
             state
                 .wakes_on_flush
                 .retain(|waker_id| !wakers.contains(waker_id));
         }
-        self.timers.remove_wakers(wakers);
-    }
-
-    pub(super) fn schedule_wakers(&mut self, wakers: HashSet<WakerId>, cause: WakeUpCause) {
-        if wakers.is_empty() {
-            return; // no need to schedule anything
-        }
-        crate::trace!("Scheduled wakers {:?} with cause {:?}", wakers, cause);
-        self.waker_queue.push(Wakers::new(wakers, cause));
+        self.persisted.timers.remove_wakers(wakers);
     }
 
     pub(crate) fn take_wakers(&mut self) -> impl Iterator<Item = (WakerId, WakeUpCause)> {
-        let wakers = mem::take(&mut self.waker_queue);
+        let wakers = mem::take(&mut self.persisted.waker_queue);
         wakers.into_iter().flat_map(Wakers::into_iter)
     }
 
@@ -451,5 +448,15 @@ impl WorkflowData {
             .wake_waker(store.as_context_mut(), waker_id);
         store.data_mut().current_wakeup_cause = None;
         result
+    }
+}
+
+impl PersistedWorkflowData {
+    pub(super) fn schedule_wakers(&mut self, wakers: HashSet<WakerId>, cause: WakeUpCause) {
+        if wakers.is_empty() {
+            return; // no need to schedule anything
+        }
+        crate::trace!("Scheduled wakers {:?} with cause {:?}", wakers, cause);
+        self.waker_queue.push(Wakers::new(wakers, cause));
     }
 }
