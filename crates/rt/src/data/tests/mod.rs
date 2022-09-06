@@ -4,19 +4,26 @@ use assert_matches::assert_matches;
 use mimicry::Answers;
 use wasmtime::StoreContextMut;
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    task::Poll,
+};
 
 mod spawn;
 
 use super::*;
 use crate::{
-    data::{WasmContextPtr, WorkflowFunctions},
     module::{ExportsMock, MockPollFn, WorkflowEngine, WorkflowModule},
-    receipt::{ChannelEvent, ChannelEventKind},
+    receipt::{
+        ChannelEvent, ChannelEventKind, Event, ExecutedFunction, Execution, Receipt,
+        ResourceEventKind, ResourceId,
+    },
     test::MockScheduler,
     utils::{copy_string_from_wasm, WasmAllocator},
+    PersistedWorkflow, Workflow,
 };
-use tardigrade_shared::{abi::AllocateBytes, JoinError};
+use tardigrade_shared::{abi::AllocateBytes, interface::Interface, JoinError};
 
 const POLL_CX: WasmContextPtr = 1_234;
 const ERROR_PTR: u32 = 1_024; // enough to not intersect with "real" memory
@@ -186,14 +193,20 @@ fn receiving_inbound_message() {
 
     assert_inbound_message_receipt(&receipt);
 
-    let (_, traces) = workflow.take_outbound_messages(None, "traces");
+    let (_, traces) = workflow
+        .data_mut()
+        .persisted
+        .take_outbound_messages(None, "traces");
     assert_eq!(traces.len(), 1);
     assert_eq!(traces[0].as_ref(), b"trace #1");
-    let (_, events) = workflow.take_outbound_messages(None, "events");
+    let (_, events) = workflow
+        .data_mut()
+        .persisted
+        .take_outbound_messages(None, "events");
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].as_ref(), b"event #1");
 
-    let (waker_ids, causes): (HashSet<_>, Vec<_>) = workflow.store.data_mut().take_wakers().unzip();
+    let (waker_ids, causes): (HashSet<_>, Vec<_>) = workflow.data_mut().take_wakers().unzip();
     assert_eq!(waker_ids.len(), 2);
     assert_eq!(causes.len(), 2);
     for cause in &causes {
@@ -333,7 +346,7 @@ fn spawning_and_cancelling_task() {
         }
     );
 
-    let new_task = workflow.store.data().task(1).unwrap();
+    let new_task = workflow.data().persisted.task(1).unwrap();
     assert_eq!(new_task.name(), "new task");
     assert_eq!(new_task.spawned_by(), Some(0));
     assert_matches!(new_task.result(), Poll::Pending);
@@ -366,10 +379,14 @@ fn spawning_and_cancelling_task() {
     assert!(task_aborted, "{:?}", receipt.executions());
 
     assert_matches!(
-        workflow.store.data().task(1).unwrap().result(),
+        workflow.data().persisted.task(1).unwrap().result(),
         Poll::Ready(Err(JoinError::Aborted))
     );
-    assert!(workflow.is_finished());
+    assert!(workflow
+        .data()
+        .persisted
+        .tasks()
+        .all(|(_, state)| state.result().is_ready()));
     assert!(mock_guard.into_inner().dropped_tasks.contains(&1));
 }
 
@@ -406,7 +423,7 @@ fn rolling_back_task_spawning() {
     let err_message = err.trap().to_string();
     assert!(err_message.contains("boom"), "{}", err_message);
 
-    assert!(workflow.store.data().task(1).is_none());
+    assert!(workflow.data().persisted.task(1).is_none());
 }
 
 #[test]
@@ -429,7 +446,7 @@ fn rolling_back_task_abort() {
     assert!(err_message.contains("boom"), "{}", err_message);
 
     assert_matches!(
-        workflow.store.data().task(1).unwrap().result(),
+        workflow.data().persisted.task(1).unwrap().result(),
         Poll::Pending
     );
     assert!(mock_guard.into_inner().dropped_tasks.is_empty());
@@ -462,7 +479,10 @@ fn rolling_back_emitting_messages_on_trap() {
         .unwrap();
     workflow.tick().unwrap_err();
 
-    let (_, messages) = workflow.take_outbound_messages(None, "traces");
+    let (_, messages) = workflow
+        .data_mut()
+        .persisted
+        .take_outbound_messages(None, "traces");
     assert!(messages.is_empty());
 }
 
@@ -482,7 +502,10 @@ fn rolling_back_placing_waker_on_trap() {
         .unwrap();
     workflow.tick().unwrap_err();
 
-    let wakers: Vec<_> = workflow.store.data().outbound_channel_wakers().collect();
+    let outbound_channels = workflow.data().persisted.channels.outbound.values();
+    let wakers: Vec<_> = outbound_channels
+        .flat_map(|state| state.wakes_on_flush.iter().copied())
+        .collect();
     assert!(wakers.is_empty(), "{:?}", wakers);
 }
 
@@ -524,7 +547,7 @@ fn timers_basics() {
     let (_, mut workflow) = create_workflow(Arc::clone(&scheduler));
 
     workflow.tick().unwrap();
-    let timers: HashMap<_, _> = workflow.store.data().timers().iter().collect();
+    let timers: HashMap<_, _> = workflow.data().persisted.timers.iter().collect();
     assert_eq!(timers.len(), 2, "{:?}", timers);
     assert!(timers[&0].completed_at().is_some());
     assert!(timers[&1].completed_at().is_none());
@@ -535,7 +558,7 @@ fn timers_basics() {
     let mut workflow = restore_workflow(persisted, scheduler);
     workflow.tick().unwrap();
 
-    let timers: HashMap<_, _> = workflow.store.data().timers().iter().collect();
+    let timers: HashMap<_, _> = workflow.data().persisted.timers.iter().collect();
     assert!(timers.is_empty(), "{:?}", timers); // timers are cleared on drop
 }
 

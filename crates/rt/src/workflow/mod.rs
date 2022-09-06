@@ -109,6 +109,16 @@ impl<W> Workflow<W> {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn data(&self) -> &WorkflowData {
+        self.store.data()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn data_mut(&mut self) -> &mut WorkflowData {
+        self.store.data_mut()
+    }
+
     pub(crate) fn is_initialized(&self) -> bool {
         self.raw_args.is_none()
     }

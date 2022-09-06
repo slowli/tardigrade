@@ -11,9 +11,14 @@ use std::{
 };
 
 use super::*;
-use crate::{data::SpawnFunctions, services::WorkflowAndChannelIds, utils::copy_bytes_from_wasm};
-use tardigrade::spawn::{ChannelHandles, ChannelSpawnConfig, ManageWorkflows, SpawnError};
-use tardigrade_shared::{abi::TryFromWasm, interface::ChannelKind};
+use crate::{
+    data::SpawnFunctions, services::WorkflowAndChannelIds, utils::copy_bytes_from_wasm, ChannelId,
+};
+use tardigrade::{
+    interface::{ChannelKind, Interface},
+    spawn::{ChannelHandles, ChannelSpawnConfig, ManageWorkflows, SpawnError},
+};
+use tardigrade_shared::abi::TryFromWasm;
 
 #[derive(Debug)]
 struct NewWorkflowCall {
@@ -187,7 +192,7 @@ fn spawning_child_workflow() {
     let manager = Arc::new(MockWorkflowManager::new());
     let workflow = create_workflow_with_manager(Arc::clone(&manager));
 
-    let mut children: Vec<_> = workflow.child_workflows().collect();
+    let mut children: Vec<_> = workflow.data().persisted.child_workflows().collect();
     assert_eq!(children.len(), 1);
     let (_, child) = children.pop().unwrap();
     let commands = child.outbound_channel("commands").unwrap();
@@ -283,7 +288,7 @@ fn spawning_child_workflow_errors() {
     let manager = Arc::new(MockWorkflowManager::new());
     let workflow = create_workflow_with_manager(manager);
 
-    assert!(workflow.child_workflows().next().is_none());
+    assert!(workflow.data().persisted.child_workflows().next().is_none());
 }
 
 fn consume_message_from_child(
@@ -339,20 +344,20 @@ fn consuming_message_from_child_workflow() {
 
     assert_child_inbound_message_receipt(&receipt);
 
-    let (start_idx, commands) = workflow.take_outbound_messages(Some(1), "commands");
+    let (start_idx, commands) = workflow
+        .data_mut()
+        .persisted
+        .take_outbound_messages(Some(1), "commands");
     assert_eq!(start_idx, 0);
     assert_eq!(commands.len(), 1);
     assert_eq!(commands[0].as_ref(), b"command #1");
-    let child = workflow.child_workflow(1).unwrap();
+    let child = workflow.data().persisted.child_workflow(1).unwrap();
     assert_eq!(
-        child.inbound_channel("traces").unwrap().received_messages(),
+        child.inbound_channel("traces").unwrap().received_messages,
         1
     );
     assert_eq!(
-        child
-            .outbound_channel("commands")
-            .unwrap()
-            .flushed_messages(),
+        child.outbound_channel("commands").unwrap().flushed_messages,
         1
     );
 }

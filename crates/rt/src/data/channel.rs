@@ -53,13 +53,13 @@ fn flip_bool(&flag: &bool) -> bool {
 /// State of an inbound workflow channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InboundChannelState {
-    channel_id: ChannelId,
-    is_acquired: bool,
+    pub(super) channel_id: ChannelId,
+    pub(super) is_acquired: bool,
     #[serde(default, skip_serializing_if = "flip_bool")]
-    is_closed: bool,
-    received_messages: usize,
+    pub(super) is_closed: bool,
+    pub(super) received_messages: usize,
     #[serde(default, skip)]
-    pending_message: Option<Message>,
+    pub(super) pending_message: Option<Message>,
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     pub(super) wakes_on_next_element: HashSet<WakerId>,
 }
@@ -107,11 +107,11 @@ impl InboundChannelState {
 /// State of an outbound workflow channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutboundChannelState {
-    channel_id: ChannelId,
-    capacity: Option<usize>,
-    is_acquired: bool,
-    is_closed: bool,
-    flushed_messages: usize,
+    pub(super) channel_id: ChannelId,
+    pub(super) capacity: Option<usize>,
+    pub(super) is_acquired: bool,
+    pub(super) is_closed: bool,
+    pub(super) flushed_messages: usize,
     #[serde(default, skip)]
     pub(super) messages: Vec<Message>,
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]
@@ -339,7 +339,8 @@ impl PersistedWorkflowData {
         self.channels.outbound.values_mut().chain(workflow_channels)
     }
 
-    fn take_outbound_messages(
+    // Increased visibility for tests
+    pub(super) fn take_outbound_messages(
         &mut self,
         workflow_id: Option<WorkflowId>,
         channel_name: &str,
