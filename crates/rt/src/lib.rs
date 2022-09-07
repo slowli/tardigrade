@@ -124,6 +124,6 @@ mod workflow;
 pub use crate::{
     data::{InboundChannelState, OutboundChannelState, PersistError, TaskState, TimerState},
     module::{ExtendLinker, WorkflowEngine, WorkflowModule, WorkflowSpawner},
-    workflow::{PersistedWorkflow, Workflow},
+    workflow::PersistedWorkflow,
 };
 pub use tardigrade_shared::{ChannelId, FutureId, TaskId, TimerId, WakerId, WorkflowId};

@@ -21,7 +21,7 @@ use crate::{
     },
     test::MockScheduler,
     utils::{copy_string_from_wasm, WasmAllocator},
-    PersistedWorkflow, Workflow,
+    workflow::{PersistedWorkflow, Workflow},
 };
 use tardigrade_shared::{abi::AllocateBytes, interface::Interface, JoinError};
 
@@ -113,7 +113,7 @@ fn mock_channel_ids(interface: &Interface<()>) -> ChannelIds {
     }
 }
 
-fn create_workflow(clock: Arc<MockScheduler>) -> (Receipt, Workflow<()>) {
+fn create_workflow(clock: Arc<MockScheduler>) -> (Receipt, Workflow) {
     let engine = WorkflowEngine::default();
     let spawner = WorkflowModule::new(&engine, ExportsMock::MOCK_MODULE_BYTES)
         .unwrap()
@@ -131,7 +131,7 @@ fn create_workflow(clock: Arc<MockScheduler>) -> (Receipt, Workflow<()>) {
     (workflow.initialize().unwrap(), workflow)
 }
 
-fn restore_workflow(persisted: PersistedWorkflow, clock: Arc<MockScheduler>) -> Workflow<()> {
+fn restore_workflow(persisted: PersistedWorkflow, clock: Arc<MockScheduler>) -> Workflow {
     let engine = WorkflowEngine::default();
     let spawner = WorkflowModule::new(&engine, ExportsMock::MOCK_MODULE_BYTES)
         .unwrap()

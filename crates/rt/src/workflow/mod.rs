@@ -3,7 +3,7 @@
 use anyhow::Context;
 use wasmtime::{AsContextMut, Linker, Store, Trap};
 
-use std::{collections::HashMap, fmt, marker::PhantomData, sync::Arc, task::Poll};
+use std::{collections::HashMap, sync::Arc, task::Poll};
 
 mod persistence;
 
@@ -58,34 +58,23 @@ impl WorkflowSpawner<()> {
         raw_args: Vec<u8>,
         channel_ids: &ChannelIds,
         services: Services,
-    ) -> anyhow::Result<Workflow<()>> {
+    ) -> anyhow::Result<Workflow> {
         let state = WorkflowData::new(self.interface(), channel_ids, services);
         Workflow::from_state(self, state, Some(raw_args.into()))
     }
 }
 
 /// Workflow instance.
-pub struct Workflow<W> {
+#[derive(Debug)]
+pub(crate) struct Workflow {
     store: Store<WorkflowData>,
     data_section: Option<Arc<DataSection>>,
     raw_args: Option<Message>,
-    _ty: PhantomData<W>,
 }
 
-impl<W> fmt::Debug for Workflow<W> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("Workflow")
-            .field("store", &self.store)
-            .field("data_section", &self.data_section)
-            .field("raw_args", &self.raw_args)
-            .finish()
-    }
-}
-
-impl<W> Workflow<W> {
+impl Workflow {
     fn from_state(
-        spawner: &WorkflowSpawner<W>,
+        spawner: &WorkflowSpawner<()>,
         state: WorkflowData,
         raw_args: Option<Message>,
     ) -> anyhow::Result<Self> {
@@ -105,7 +94,6 @@ impl<W> Workflow<W> {
             store,
             data_section,
             raw_args,
-            _ty: PhantomData,
         })
     }
 

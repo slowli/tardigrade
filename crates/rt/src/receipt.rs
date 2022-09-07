@@ -272,27 +272,22 @@ pub struct Execution {
 /// in which a workflow is getting executed. See [`WorkflowSpawner::spawn()`] for an example.
 ///
 /// [`WorkflowSpawner::spawn()`]: crate::WorkflowSpawner::spawn()
-// FIXME: remove type param (?)
 #[derive(Debug)]
-pub struct Receipt<T = ()> {
+pub struct Receipt {
     pub(crate) executions: Vec<Execution>,
-    output: T,
 }
 
-impl Receipt<()> {
+impl Receipt {
     pub(crate) fn new() -> Self {
         Self {
             executions: Vec::new(),
-            output: (),
         }
     }
 
     pub(crate) fn extend(&mut self, other: Self) {
         self.executions.extend(other.executions);
     }
-}
 
-impl<T> Receipt<T> {
     /// Returns the list of executed top-level WASM functions together with [`Event`]s that
     /// have occurred during their execution.
     pub fn executions(&self) -> &[Execution] {
@@ -302,17 +297,6 @@ impl<T> Receipt<T> {
     /// Returns the root cause of the workflow execution that corresponds to this receipt, if any.
     pub fn root_cause(&self) -> Option<&WakeUpCause> {
         self.executions.first()?.function.wake_up_cause()
-    }
-
-    /// Consumes this receipt and returns the enclosed output.
-    pub fn into_inner(self) -> T {
-        self.output
-    }
-}
-
-impl<T> AsRef<T> for Receipt<T> {
-    fn as_ref(&self) -> &T {
-        &self.output
     }
 }
 

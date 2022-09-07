@@ -84,7 +84,7 @@ impl Memory {
         }
     }
 
-    fn restore<W>(self, workflow: &mut Workflow<W>) -> anyhow::Result<()> {
+    fn restore(self, workflow: &mut Workflow) -> anyhow::Result<()> {
         match self {
             Self::Unstructured(bytes) => {
                 workflow
@@ -131,7 +131,7 @@ pub struct PersistedWorkflow {
 }
 
 impl PersistedWorkflow {
-    pub(super) fn new<W>(workflow: &mut Workflow<W>) -> Result<Self, PersistError> {
+    pub(super) fn new(workflow: &mut Workflow) -> Result<Self, PersistError> {
         workflow.store.data().check_persistence()?;
         let state = workflow.store.data().persist();
         let refs = Refs::new(&mut workflow.store);
@@ -219,7 +219,7 @@ impl PersistedWorkflow {
         self,
         spawner: &WorkflowSpawner<()>,
         services: Services,
-    ) -> anyhow::Result<Workflow<()>> {
+    ) -> anyhow::Result<Workflow> {
         let interface = spawner.interface();
         let data = self
             .state

@@ -91,7 +91,7 @@ impl ManageWorkflows<'_, ()> for MockWorkflowManager {
     }
 }
 
-fn create_workflow_with_manager(manager: Arc<MockWorkflowManager>) -> Workflow<()> {
+fn create_workflow_with_manager(manager: Arc<MockWorkflowManager>) -> Workflow {
     let engine = WorkflowEngine::default();
     let spawner = WorkflowModule::new(&engine, ExportsMock::MOCK_MODULE_BYTES)
         .unwrap()
