@@ -11,13 +11,19 @@ use tardigrade::{interface::Interface, workflow::GetInterface};
 
 mod exports;
 mod imports;
+mod services;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use self::exports::ModuleExports;
-use self::imports::ModuleImports;
+pub use self::services::Clock;
 #[cfg(test)]
 pub(crate) use self::tests::{ExportsMock, MockPollFn};
+pub(crate) use self::{
+    exports::ModuleExports,
+    services::{NoOpWorkflowManager, Services, WorkflowAndChannelIds},
+};
+
+use self::imports::ModuleImports;
 
 fn ensure_func_ty<Args, Out>(ty: &ExternType, fn_name: &str) -> anyhow::Result<()>
 where

@@ -11,12 +11,11 @@ pub use self::persistence::PersistedWorkflow;
 
 use crate::{
     data::{ConsumeError, PersistError, WorkflowData},
-    module::{DataSection, ModuleExports, WorkflowSpawner},
+    module::{DataSection, ModuleExports, Services, WorkflowSpawner},
     receipt::{
         Event, ExecutedFunction, Execution, ExecutionError, ExtendedTrap, Receipt,
         ResourceEventKind, ResourceId, WakeUpCause,
     },
-    services::Services,
     utils::Message,
     ChannelId, TaskId, WorkflowId,
 };

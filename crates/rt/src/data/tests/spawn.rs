@@ -12,7 +12,7 @@ use std::{
 
 use super::*;
 use crate::{
-    data::SpawnFunctions, services::WorkflowAndChannelIds, utils::copy_bytes_from_wasm, ChannelId,
+    data::SpawnFunctions, module::WorkflowAndChannelIds, utils::copy_bytes_from_wasm, ChannelId,
 };
 use tardigrade::{
     interface::{ChannelKind, Interface},

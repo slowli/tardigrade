@@ -177,8 +177,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        module::LowLevelExtendLinker,
-        services::{NoOpWorkflowManager, Services},
+        module::{LowLevelExtendLinker, NoOpWorkflowManager, Services},
         test::MockScheduler,
         workflow::ChannelIds,
     };

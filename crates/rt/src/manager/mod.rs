@@ -17,9 +17,9 @@ use std::{
 mod tests;
 
 use crate::{
-    handle::WorkflowEnv,
+    handle::WorkflowHandle,
+    module::{Clock, NoOpWorkflowManager, Services, WorkflowAndChannelIds},
     receipt::{ChannelEvent, ChannelEventKind, ExecutionError, Receipt},
-    services::{Clock, NoOpWorkflowManager, Services, WorkflowAndChannelIds},
     utils::Message,
     workflow::{ChannelIds, Workflow},
     PersistedWorkflow, WorkflowSpawner,
@@ -52,7 +52,7 @@ impl ChannelInfo {
     }
 }
 
-/// Simple implementation of a workflow manager.
+/// Simple in-memory implementation of a workflow manager.
 #[derive(Debug, Default)]
 pub struct WorkflowManager {
     shared: Shared,
@@ -83,12 +83,12 @@ impl WorkflowManager {
     }
 
     /// Returns a handle to a workflow with the specified ID.
-    pub fn workflow(&self, workflow_id: WorkflowId) -> Option<WorkflowEnv<'_, ()>> {
+    pub fn workflow(&self, workflow_id: WorkflowId) -> Option<WorkflowHandle<'_, ()>> {
         self.lock()
             .committed
             .channel_ids(workflow_id)
             .map(|channel_ids| {
-                WorkflowEnv::new(
+                WorkflowHandle::new(
                     self,
                     WorkflowAndChannelIds {
                         workflow_id,
@@ -417,7 +417,7 @@ impl TransactionInner {
 }
 
 #[derive(Debug)]
-pub struct Transaction {
+struct Transaction {
     shared: Shared,
     inner: Mutex<TransactionInner>,
 }
@@ -774,7 +774,7 @@ impl ManageInterfaces for WorkflowManager {
 }
 
 impl<'a, W: WorkflowFn> ManageWorkflows<'a, W> for WorkflowManager {
-    type Handle = WorkflowEnv<'a, W>;
+    type Handle = WorkflowHandle<'a, W>;
 
     fn create_workflow(
         &'a self,

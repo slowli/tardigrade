@@ -16,8 +16,8 @@ use std::{
 };
 
 use crate::{
+    manager::WorkflowManager,
     receipt::{ExecutionError, ExecutionResult},
-    services::WorkflowManager,
     ChannelId, FutureId,
 };
 use tardigrade::{

@@ -13,12 +13,11 @@ mod spawn;
 
 use super::*;
 use crate::{
-    module::{ExportsMock, MockPollFn, WorkflowEngine, WorkflowModule},
+    module::{ExportsMock, MockPollFn, NoOpWorkflowManager, WorkflowEngine, WorkflowModule},
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, Execution, Receipt,
         ResourceEventKind, ResourceId,
     },
-    services::NoOpWorkflowManager,
     test::MockScheduler,
     utils::{copy_string_from_wasm, WasmAllocator},
     workflow::{PersistedWorkflow, Workflow},

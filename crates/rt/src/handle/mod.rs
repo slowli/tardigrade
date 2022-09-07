@@ -9,8 +9,9 @@ use std::{fmt, marker::PhantomData, ops::Range};
 pub mod future;
 
 use crate::{
+    manager::{ChannelInfo, WorkflowManager},
+    module::WorkflowAndChannelIds,
     receipt::{ExecutionError, Receipt},
-    services::{ChannelInfo, WorkflowAndChannelIds, WorkflowManager},
     utils::Message,
     ChannelId, PersistedWorkflow, WorkflowId,
 };
@@ -37,14 +38,14 @@ use tardigrade_shared::SendError;
 ///
 /// ```
 /// use tardigrade::interface::{InboundChannel, OutboundChannel};
-/// use tardigrade_rt::{handle::WorkflowEnv, Workflow};
+/// use tardigrade_rt::{handle::WorkflowHandle, Workflow};
 ///
 /// # fn test_wrapper(workflow: Workflow<()>) -> anyhow::Result<()> {
 /// // Assume we have a dynamically typed workflow:
 /// let mut workflow: Workflow<()> = // ...
 /// #   workflow;
 /// // We can create a handle to manipulate the workflow.
-/// let mut handle = WorkflowEnv::new(&mut workflow).handle();
+/// let mut handle = WorkflowHandle::new(&mut workflow).handle();
 ///
 /// // Let's send a message via an inbound channel.
 /// let message = b"hello".to_vec();
@@ -71,13 +72,13 @@ use tardigrade_shared::SendError;
 /// # Ok(())
 /// # }
 /// ```
-pub struct WorkflowEnv<'a, W> {
+pub struct WorkflowHandle<'a, W> {
     manager: &'a WorkflowManager,
     ids: WorkflowAndChannelIds,
     _ty: PhantomData<fn(W)>,
 }
 
-impl<W> fmt::Debug for WorkflowEnv<'_, W> {
+impl<W> fmt::Debug for WorkflowHandle<'_, W> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("WorkflowEnv")
@@ -87,7 +88,7 @@ impl<W> fmt::Debug for WorkflowEnv<'_, W> {
     }
 }
 
-impl<'a> WorkflowEnv<'a, ()> {
+impl<'a> WorkflowHandle<'a, ()> {
     pub(crate) fn new(manager: &'a WorkflowManager, ids: WorkflowAndChannelIds) -> Self {
         Self {
             manager,
@@ -107,7 +108,7 @@ impl<'a> WorkflowEnv<'a, ()> {
     #[allow(clippy::missing_panics_doc)] // false positive
     pub fn downcast<W: ValidateInterface<Id = ()>>(
         self,
-    ) -> Result<WorkflowEnv<'a, W>, AccessError> {
+    ) -> Result<WorkflowHandle<'a, W>, AccessError> {
         let interface = self
             .manager
             .interface_for_workflow(self.ids.workflow_id)
@@ -116,8 +117,8 @@ impl<'a> WorkflowEnv<'a, ()> {
         Ok(self.downcast_unchecked())
     }
 
-    pub(crate) fn downcast_unchecked<W>(self) -> WorkflowEnv<'a, W> {
-        WorkflowEnv {
+    pub(crate) fn downcast_unchecked<W>(self) -> WorkflowHandle<'a, W> {
+        WorkflowHandle {
             manager: self.manager,
             ids: self.ids,
             _ty: PhantomData,
@@ -125,7 +126,7 @@ impl<'a> WorkflowEnv<'a, ()> {
     }
 }
 
-impl<W: TakeHandle<Self, Id = ()>> WorkflowEnv<'_, W> {
+impl<W: TakeHandle<Self, Id = ()>> WorkflowHandle<'_, W> {
     /// Returns the ID of this workflow.
     pub fn id(&self) -> WorkflowId {
         self.ids.workflow_id
@@ -185,14 +186,14 @@ impl<'a, T, C: Encode<T>> MessageSender<'a, T, C> {
     }
 }
 
-impl<'a, T, C, W> TakeHandle<WorkflowEnv<'a, W>> for Receiver<T, C>
+impl<'a, T, C, W> TakeHandle<WorkflowHandle<'a, W>> for Receiver<T, C>
 where
     C: Encode<T> + Default,
 {
     type Id = str;
     type Handle = MessageSender<'a, T, C>;
 
-    fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
+    fn take_handle(env: &mut WorkflowHandle<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
         if let Some(channel_id) = env.ids.channel_ids.inbound.get(id).copied() {
             Ok(MessageSender {
                 manager: env.manager,
@@ -266,14 +267,14 @@ impl<T, C: Decode<T>> TakenMessages<'_, T, C> {
     }
 }
 
-impl<'a, T, C, W> TakeHandle<WorkflowEnv<'a, W>> for Sender<T, C>
+impl<'a, T, C, W> TakeHandle<WorkflowHandle<'a, W>> for Sender<T, C>
 where
     C: Decode<T> + Default,
 {
     type Id = str;
     type Handle = MessageReceiver<'a, T, C>;
 
-    fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
+    fn take_handle(env: &mut WorkflowHandle<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
         if let Some(channel_id) = env.ids.channel_ids.outbound.get(id).copied() {
             Ok(MessageReceiver {
                 manager: env.manager,
@@ -331,14 +332,14 @@ where
     }
 }
 
-impl<'a, C, W> TakeHandle<WorkflowEnv<'a, W>> for Tracer<C>
+impl<'a, C, W> TakeHandle<WorkflowHandle<'a, W>> for Tracer<C>
 where
     C: Decode<FutureUpdate> + Default,
 {
     type Id = str;
     type Handle = TracerHandle<'a, C>;
 
-    fn take_handle(env: &mut WorkflowEnv<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
+    fn take_handle(env: &mut WorkflowHandle<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
         Ok(TracerHandle {
             receiver: Sender::<FutureUpdate, C>::take_handle(env, id)?,
             futures: TracedFutures::default(),
@@ -346,12 +347,12 @@ where
     }
 }
 
-impl<'a> TakeHandle<WorkflowEnv<'a, ()>> for Interface<()> {
+impl<'a> TakeHandle<WorkflowHandle<'a, ()>> for Interface<()> {
     type Id = ();
     type Handle = Self;
 
     fn take_handle(
-        env: &mut WorkflowEnv<'a, ()>,
+        env: &mut WorkflowHandle<'a, ()>,
         _id: &Self::Id,
     ) -> Result<Self::Handle, AccessError> {
         Ok(env
@@ -364,12 +365,12 @@ impl<'a> TakeHandle<WorkflowEnv<'a, ()>> for Interface<()> {
     }
 }
 
-impl<'a> TakeHandle<WorkflowEnv<'a, ()>> for () {
+impl<'a> TakeHandle<WorkflowHandle<'a, ()>> for () {
     type Id = ();
-    type Handle = UntypedHandle<WorkflowEnv<'a, ()>>;
+    type Handle = UntypedHandle<WorkflowHandle<'a, ()>>;
 
     fn take_handle(
-        env: &mut WorkflowEnv<'a, ()>,
+        env: &mut WorkflowHandle<'a, ()>,
         _id: &Self::Id,
     ) -> Result<Self::Handle, AccessError> {
         UntypedHandle::take_handle(env, &())

@@ -31,9 +31,8 @@ pub use self::{
 use self::{channel::ChannelStates, helpers::CurrentExecution, task::TaskQueue, time::Timers};
 use crate::{
     data::helpers::HostResource,
-    module::ModuleExports,
+    module::{ModuleExports, Services},
     receipt::{PanicInfo, PanicLocation, WakeUpCause},
-    services::Services,
     utils::copy_string_from_wasm,
     workflow::ChannelIds,
     TaskId, WorkflowId,

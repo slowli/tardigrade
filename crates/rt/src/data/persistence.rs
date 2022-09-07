@@ -14,7 +14,7 @@ use super::{
     time::Timers,
     PersistedWorkflowData, WorkflowData,
 };
-use crate::{services::Services, workflow::ChannelIds, WorkflowId};
+use crate::{module::Services, workflow::ChannelIds, WorkflowId};
 use tardigrade::interface::Interface;
 
 /// Error persisting a [`Workflow`](crate::Workflow).

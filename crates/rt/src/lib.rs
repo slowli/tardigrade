@@ -114,16 +114,16 @@
 
 mod data;
 pub mod handle;
+pub mod manager;
 mod module;
 pub mod receipt;
-pub mod services;
 pub mod test;
 mod utils;
 mod workflow;
 
 pub use crate::{
     data::{InboundChannelState, OutboundChannelState, PersistError, TaskState, TimerState},
-    module::{ExtendLinker, WorkflowEngine, WorkflowModule, WorkflowSpawner},
+    module::{Clock, ExtendLinker, WorkflowEngine, WorkflowModule, WorkflowSpawner},
     workflow::PersistedWorkflow,
 };
 pub use tardigrade_shared::{ChannelId, FutureId, TaskId, TimerId, WakerId, WorkflowId};

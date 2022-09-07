@@ -4,12 +4,6 @@ use chrono::{DateTime, Utc};
 
 use std::{borrow::Cow, fmt};
 
-mod manager;
-
-pub use self::manager::{
-    ChannelInfo, PersistedWorkflows, TickResult, WorkflowManager, WorkflowManagerBuilder,
-};
-
 use crate::{workflow::ChannelIds, WorkflowId};
 use tardigrade::{
     interface::Interface,
@@ -39,17 +33,16 @@ impl fmt::Debug for dyn Clock {
     }
 }
 
-/// FIXME
 #[derive(Debug)]
-pub struct WorkflowAndChannelIds {
-    pub(crate) workflow_id: WorkflowId,
-    pub(crate) channel_ids: ChannelIds,
+pub(crate) struct WorkflowAndChannelIds {
+    pub workflow_id: WorkflowId,
+    pub channel_ids: ChannelIds,
 }
 
 /// Workflow manager that does not hold any workflow definitions and correspondingly
 /// cannot spawn workflows.
 #[derive(Debug)]
-pub struct NoOpWorkflowManager;
+pub(crate) struct NoOpWorkflowManager;
 
 impl ManageInterfaces for NoOpWorkflowManager {
     fn interface(&self, _definition_id: &str) -> Option<Cow<'_, Interface<()>>> {
@@ -73,7 +66,7 @@ impl ManageWorkflows<'_, ()> for NoOpWorkflowManager {
 type DynManager = dyn for<'a> ManageWorkflows<'a, (), Handle = WorkflowAndChannelIds>;
 
 /// Dynamically dispatched services available to workflows.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub(crate) struct Services<'a> {
     pub clock: &'a dyn Clock,
     pub workflows: &'a DynManager,
