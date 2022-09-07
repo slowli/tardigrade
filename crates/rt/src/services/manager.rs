@@ -71,13 +71,11 @@ impl WorkflowManager {
         self.state.lock().unwrap()
     }
 
-    fn services(&self) -> (Services, Arc<Transaction>) {
-        let transaction = Arc::new(Transaction::new(self.shared.clone()));
-        let services = Services {
-            clock: Arc::clone(&self.shared.clock),
-            workflows: Arc::clone(&transaction) as Arc<_>,
-        };
-        (services, transaction)
+    fn services<'a>(&'a self, transaction: &'a Transaction) -> Services<'a> {
+        Services {
+            clock: self.shared.clock.as_ref(),
+            workflows: transaction,
+        }
     }
 
     pub(crate) fn channel_info(&self, channel_id: ChannelId) -> ChannelInfo {
@@ -176,7 +174,8 @@ impl WorkflowManager {
             })
             .unwrap();
 
-        let (mut workflow, transaction) = self.restore_workflow(&state.committed, workflow_id);
+        let transaction = Transaction::new(self.shared.clone());
+        let mut workflow = self.restore_workflow(&state.committed, workflow_id, &transaction);
         state.executing_workflow_id = Some(workflow_id);
         let result = Self::push_message(&mut workflow, child_id, &channel_name, message.clone());
         if let Ok(Some(receipt)) = &result {
@@ -234,28 +233,28 @@ impl WorkflowManager {
     }
 
     // FIXME: sane error handling
-    fn restore_workflow(
-        &self,
+    fn restore_workflow<'a>(
+        &'a self,
         committed: &PersistedWorkflows,
         id: WorkflowId,
-    ) -> (Workflow, Arc<Transaction>) {
+        transaction: &'a Transaction,
+    ) -> Workflow<'a> {
         let persisted = committed
             .workflows
             .get(&id)
             .unwrap_or_else(|| panic!("workflow with ID {} is not persisted", id));
         let spawner = &self.shared.spawners[&persisted.definition_id];
-        let (services, transaction) = self.services();
-        let restored = persisted
+        persisted
             .workflow
             .clone()
-            .restore(spawner, services)
-            .unwrap();
-        (restored, transaction)
+            .restore(spawner, self.services(transaction))
+            .unwrap()
     }
 
     pub(crate) fn tick_workflow(&self, workflow_id: WorkflowId) -> Result<Receipt, ExecutionError> {
         let mut state = self.lock();
-        let (mut workflow, transaction) = self.restore_workflow(&state.committed, workflow_id);
+        let transaction = Transaction::new(self.shared.clone());
+        let mut workflow = self.restore_workflow(&state.committed, workflow_id, &transaction);
 
         state.executing_workflow_id = Some(workflow_id);
         let result = workflow.tick();
@@ -431,17 +430,17 @@ impl Transaction {
         }
     }
 
-    fn services(&self) -> Services {
+    fn services(&self) -> Services<'_> {
         Services {
-            clock: Arc::clone(&self.shared.clock),
-            workflows: Arc::new(NoOpWorkflowManager),
+            clock: self.shared.clock.as_ref(),
+            workflows: &NoOpWorkflowManager,
             // ^ `workflows` is not used during instantiation, so it's OK to provide
             // a no-op implementation.
         }
     }
 
-    fn into_inner(self: Arc<Self>) -> TransactionInner {
-        Arc::try_unwrap(self).unwrap().inner.into_inner().unwrap()
+    fn into_inner(self) -> TransactionInner {
+        self.inner.into_inner().unwrap()
     }
 }
 
@@ -783,11 +782,11 @@ impl<'a, W: WorkflowFn> ManageWorkflows<'a, W> for WorkflowManager {
         args: Vec<u8>,
         handles: &ChannelHandles,
     ) -> Result<Self::Handle, SpawnError> {
-        let (services, transaction) = self.services();
+        let transaction = Transaction::new(self.shared.clone());
+        let services = self.services(&transaction);
         services
             .workflows
             .create_workflow(definition_id, args, handles)?;
-        drop(services); // to successfully `unwrap()` the transaction
 
         let transaction = transaction.into_inner();
         debug_assert_eq!(transaction.new_workflows.len(), 1);

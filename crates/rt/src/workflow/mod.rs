@@ -53,12 +53,12 @@ impl ChannelIds {
 }
 
 impl WorkflowSpawner<()> {
-    pub(crate) fn spawn(
+    pub(crate) fn spawn<'a>(
         &self,
         raw_args: Vec<u8>,
         channel_ids: &ChannelIds,
-        services: Services,
-    ) -> anyhow::Result<Workflow> {
+        services: Services<'a>,
+    ) -> anyhow::Result<Workflow<'a>> {
         let state = WorkflowData::new(self.interface(), channel_ids, services);
         Workflow::from_state(self, state, Some(raw_args.into()))
     }
@@ -66,16 +66,16 @@ impl WorkflowSpawner<()> {
 
 /// Workflow instance.
 #[derive(Debug)]
-pub(crate) struct Workflow {
-    store: Store<WorkflowData>,
+pub(crate) struct Workflow<'a> {
+    store: Store<WorkflowData<'a>>,
     data_section: Option<Arc<DataSection>>,
     raw_args: Option<Message>,
 }
 
-impl Workflow {
+impl<'a> Workflow<'a> {
     fn from_state(
         spawner: &WorkflowSpawner<()>,
-        state: WorkflowData,
+        state: WorkflowData<'a>,
         raw_args: Option<Message>,
     ) -> anyhow::Result<Self> {
         let mut linker = Linker::new(spawner.module.engine());
@@ -98,12 +98,12 @@ impl Workflow {
     }
 
     #[cfg(test)]
-    pub(crate) fn data(&self) -> &WorkflowData {
+    pub(crate) fn data(&self) -> &WorkflowData<'a> {
         self.store.data()
     }
 
     #[cfg(test)]
-    pub(crate) fn data_mut(&mut self) -> &mut WorkflowData {
+    pub(crate) fn data_mut(&mut self) -> &mut WorkflowData<'a> {
         self.store.data_mut()
     }
 

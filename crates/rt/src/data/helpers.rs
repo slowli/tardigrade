@@ -384,7 +384,7 @@ impl CurrentExecution {
 }
 
 /// Waker-related `State` functionality.
-impl WorkflowData {
+impl WorkflowData<'_> {
     fn place_waker(&mut self, placement: &WakerPlacement, waker: WakerId) {
         if let Some(execution) = &mut self.current_execution {
             execution.new_wakers.insert(waker);

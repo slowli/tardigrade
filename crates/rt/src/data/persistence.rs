@@ -131,11 +131,11 @@ impl PersistedWorkflowData {
         }
     }
 
-    pub fn restore(
+    pub fn restore<'a>(
         self,
         interface: &Interface<()>,
-        services: Services,
-    ) -> anyhow::Result<WorkflowData> {
+        services: Services<'a>,
+    ) -> anyhow::Result<WorkflowData<'a>> {
         self.channels.check_on_restore(interface)?;
         Ok(WorkflowData {
             exports: None,
@@ -148,7 +148,7 @@ impl PersistedWorkflowData {
     }
 }
 
-impl WorkflowData {
+impl WorkflowData<'_> {
     pub(crate) fn check_persistence(&self) -> Result<(), PersistError> {
         // Check that we're not losing info.
         if self.current_execution.is_some() || !self.task_queue.is_empty() {

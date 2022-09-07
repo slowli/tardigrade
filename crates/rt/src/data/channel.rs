@@ -388,7 +388,7 @@ impl PersistedWorkflowData {
     }
 }
 
-impl WorkflowData {
+impl WorkflowData<'_> {
     pub(super) fn handle_inbound_channel_closure(
         &mut self,
         channel_ref: &ChannelRef,

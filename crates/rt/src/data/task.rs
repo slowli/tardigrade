@@ -116,7 +116,7 @@ impl PersistedWorkflowData {
     }
 }
 
-impl WorkflowData {
+impl WorkflowData<'_> {
     pub(super) fn current_execution(&mut self) -> &mut CurrentExecution {
         self.current_execution
             .as_mut()

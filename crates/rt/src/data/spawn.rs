@@ -74,7 +74,7 @@ impl PersistedWorkflowData {
     }
 }
 
-impl WorkflowData {
+impl WorkflowData<'_> {
     fn validate_handles(&self, definition_id: &str, handles: &ChannelHandles) -> Result<(), Trap> {
         if let Some(interface) = self.services.workflows.interface(definition_id) {
             for (name, _) in interface.inbound_channels() {

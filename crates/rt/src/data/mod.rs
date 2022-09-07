@@ -51,11 +51,11 @@ pub(crate) struct PersistedWorkflowData {
 }
 
 #[derive(Debug)]
-pub struct WorkflowData {
+pub struct WorkflowData<'a> {
     /// Functions exported by the `Instance`. Instantiated immediately after instance.
     exports: Option<ModuleExports>,
     /// Services available to the workflow.
-    services: Services,
+    services: Services<'a>,
     persisted: PersistedWorkflowData,
     /// Data related to the currently executing WASM call.
     current_execution: Option<CurrentExecution>,
@@ -65,11 +65,11 @@ pub struct WorkflowData {
     current_wakeup_cause: Option<WakeUpCause>,
 }
 
-impl WorkflowData {
+impl<'a> WorkflowData<'a> {
     pub(crate) fn new(
         interface: &Interface<()>,
         channel_ids: &ChannelIds,
-        services: Services,
+        services: Services<'a>,
     ) -> Self {
         debug_assert_eq!(
             interface

@@ -102,21 +102,21 @@ impl From<Message> for Vec<u8> {
     }
 }
 
-pub(crate) struct WasmAllocator<'a>(StoreContextMut<'a, WorkflowData>);
+pub(crate) struct WasmAllocator<'ctx, 'a>(StoreContextMut<'ctx, WorkflowData<'a>>);
 
-impl fmt::Debug for WasmAllocator<'_> {
+impl fmt::Debug for WasmAllocator<'_, '_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.debug_tuple("WasmAllocator").field(&"_").finish()
     }
 }
 
-impl<'a> WasmAllocator<'a> {
-    pub fn new(ctx: StoreContextMut<'a, WorkflowData>) -> Self {
+impl<'ctx, 'a> WasmAllocator<'ctx, 'a> {
+    pub fn new(ctx: StoreContextMut<'ctx, WorkflowData<'a>>) -> Self {
         Self(ctx)
     }
 }
 
-impl AllocateBytes for WasmAllocator<'_> {
+impl AllocateBytes for WasmAllocator<'_, '_> {
     type Error = Trap;
 
     fn copy_to_wasm(&mut self, bytes: &[u8]) -> Result<(u32, u32), Trap> {

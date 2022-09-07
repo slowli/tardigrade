@@ -215,11 +215,11 @@ impl PersistedWorkflow {
     ///
     /// Returns an error if the workflow definition from `module` and the `persisted` state
     /// do not match (e.g., differ in defined channels).
-    pub(crate) fn restore(
+    pub(crate) fn restore<'a>(
         self,
         spawner: &WorkflowSpawner<()>,
-        services: Services,
-    ) -> anyhow::Result<Workflow> {
+        services: Services<'a>,
+    ) -> anyhow::Result<Workflow<'a>> {
         let interface = spawner.interface();
         let data = self
             .state

@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Utc};
 
-use std::{borrow::Cow, fmt, sync::Arc};
+use std::{borrow::Cow, fmt};
 
 mod manager;
 
@@ -70,25 +70,17 @@ impl ManageWorkflows<'_, ()> for NoOpWorkflowManager {
     }
 }
 
+type DynManager = dyn for<'a> ManageWorkflows<'a, (), Handle = WorkflowAndChannelIds>;
+
 /// Dynamically dispatched services available to workflows.
 #[derive(Clone)]
-pub(crate) struct Services {
-    pub clock: Arc<dyn Clock>,
-    pub workflows: Arc<dyn for<'a> ManageWorkflows<'a, (), Handle = WorkflowAndChannelIds>>,
+pub(crate) struct Services<'a> {
+    pub clock: &'a dyn Clock,
+    pub workflows: &'a DynManager,
 }
 
-impl fmt::Debug for Services {
+impl fmt::Debug for Services<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.debug_struct("Services").finish_non_exhaustive()
-    }
-}
-
-#[cfg(test)]
-impl Default for Services {
-    fn default() -> Self {
-        Self {
-            clock: Arc::new(crate::test::MockScheduler::default()),
-            workflows: Arc::new(NoOpWorkflowManager),
-        }
     }
 }

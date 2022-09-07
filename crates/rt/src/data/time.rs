@@ -157,7 +157,7 @@ impl PersistedWorkflowData {
     }
 }
 
-impl WorkflowData {
+impl WorkflowData<'_> {
     fn timer_definition(timestamp_millis: i64) -> TimerDefinition {
         let expires_at = Utc.timestamp_millis(timestamp_millis);
         TimerDefinition { expires_at }
