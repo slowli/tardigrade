@@ -7,14 +7,13 @@ use std::{borrow::Cow, fmt, sync::Arc};
 mod manager;
 
 pub use self::manager::{
-    ChannelInfo, PersistedWorkflows, TickResult, WorkflowBuilderExt, WorkflowManager,
-    WorkflowManagerBuilder,
+    ChannelInfo, PersistedWorkflows, TickResult, WorkflowManager, WorkflowManagerBuilder,
 };
 
 use crate::{workflow::ChannelIds, WorkflowId};
 use tardigrade::{
     interface::Interface,
-    spawn::{ChannelHandles, ManageWorkflows, SpawnError},
+    spawn::{ChannelHandles, ManageInterfaces, ManageWorkflows, SpawnError},
 };
 
 /// Wall clock.
@@ -52,12 +51,14 @@ pub struct WorkflowAndChannelIds {
 #[derive(Debug)]
 pub struct NoOpWorkflowManager;
 
-impl ManageWorkflows for NoOpWorkflowManager {
-    type Handle = WorkflowAndChannelIds;
-
+impl ManageInterfaces for NoOpWorkflowManager {
     fn interface(&self, _definition_id: &str) -> Option<Cow<'_, Interface<()>>> {
         None
     }
+}
+
+impl ManageWorkflows<'_, ()> for NoOpWorkflowManager {
+    type Handle = WorkflowAndChannelIds;
 
     fn create_workflow(
         &self,
@@ -73,7 +74,7 @@ impl ManageWorkflows for NoOpWorkflowManager {
 #[derive(Clone)]
 pub(crate) struct Services {
     pub clock: Arc<dyn Clock>,
-    pub workflows: Arc<dyn ManageWorkflows<Handle = WorkflowAndChannelIds>>,
+    pub workflows: Arc<dyn for<'a> ManageWorkflows<'a, (), Handle = WorkflowAndChannelIds>>,
 }
 
 impl fmt::Debug for Services {

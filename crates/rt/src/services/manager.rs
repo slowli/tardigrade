@@ -10,7 +10,7 @@ use std::{
     borrow::Cow,
     collections::{HashMap, VecDeque},
     mem, ops,
-    sync::{Arc, Mutex, Weak},
+    sync::{Arc, Mutex},
 };
 
 #[cfg(test)]
@@ -19,15 +19,15 @@ mod tests;
 use crate::{
     handle::WorkflowEnv,
     receipt::{ChannelEvent, ChannelEventKind, ExecutionError, Receipt},
-    services::{Clock, Services, WorkflowAndChannelIds},
+    services::{Clock, NoOpWorkflowManager, Services, WorkflowAndChannelIds},
     utils::Message,
     workflow::ChannelIds,
     PersistedWorkflow, Workflow, WorkflowSpawner,
 };
 use tardigrade::{
     interface::Interface,
-    spawn::{ChannelHandles, ManageWorkflows, Spawner, WorkflowBuilder},
-    workflow::{TakeHandle, WorkflowFn},
+    spawn::{ChannelHandles, ManageInterfaces, ManageWorkflows},
+    workflow::WorkflowFn,
 };
 use tardigrade_shared::{ChannelId, SendError, SpawnError, WorkflowId};
 
@@ -53,23 +53,10 @@ impl ChannelInfo {
 }
 
 /// Simple implementation of a workflow manager.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct WorkflowManager {
-    clock: Arc<dyn Clock>,
-    arc: Weak<Self>,
-    spawners: HashMap<String, WorkflowSpawner<()>>,
+    shared: Shared,
     state: Mutex<WorkflowManagerState>,
-}
-
-impl Default for WorkflowManager {
-    fn default() -> Self {
-        Self {
-            clock: Arc::new(Utc::now),
-            arc: Weak::new(),
-            spawners: HashMap::new(),
-            state: Mutex::default(),
-        }
-    }
 }
 
 impl WorkflowManager {
@@ -84,12 +71,13 @@ impl WorkflowManager {
         self.state.lock().unwrap()
     }
 
-    fn services(&self) -> Services {
-        Services {
-            clock: Arc::clone(&self.clock),
-            workflows: self.arc.upgrade().unwrap(),
-            // ^ `unwrap()` should be safe provided this method is called from `Arc<Self>`
-        }
+    fn services(&self) -> (Services, Arc<Transaction>) {
+        let transaction = Arc::new(Transaction::new(self.shared.clone()));
+        let services = Services {
+            clock: Arc::clone(&self.shared.clock),
+            workflows: Arc::clone(&transaction) as Arc<_>,
+        };
+        (services, transaction)
     }
 
     pub(crate) fn channel_info(&self, channel_id: ChannelId) -> ChannelInfo {
@@ -130,7 +118,7 @@ impl WorkflowManager {
     pub(crate) fn interface_for_workflow(&self, workflow_id: WorkflowId) -> Option<&Interface<()>> {
         let state = self.lock();
         let persisted = state.committed.workflows.get(&workflow_id)?;
-        Some(self.spawners[&persisted.definition_id].interface())
+        Some(self.shared.spawners[&persisted.definition_id].interface())
     }
 
     pub(crate) fn send_message(
@@ -188,14 +176,14 @@ impl WorkflowManager {
             })
             .unwrap();
 
-        let mut workflow = self.restore_workflow(&state.committed, workflow_id);
+        let (mut workflow, transaction) = self.restore_workflow(&state.committed, workflow_id);
         state.executing_workflow_id = Some(workflow_id);
         let result = Self::push_message(&mut workflow, child_id, &channel_name, message.clone());
         if let Ok(Some(receipt)) = &result {
-            state.commit(receipt);
             state
                 .committed
-                .drain_and_persist_workflow(workflow_id, None, &mut workflow);
+                .drain_and_persist_workflow(workflow_id, None, workflow);
+            state.commit(receipt, transaction.into_inner());
         } else {
             // Do not commit the execution result. Instead, put the message back to the channel.
             // Note that this happens both in the case of `ExecutionError`, and if the message
@@ -246,30 +234,36 @@ impl WorkflowManager {
     }
 
     // FIXME: sane error handling
-    fn restore_workflow(&self, committed: &PersistedWorkflows, id: WorkflowId) -> Workflow<()> {
+    fn restore_workflow(
+        &self,
+        committed: &PersistedWorkflows,
+        id: WorkflowId,
+    ) -> (Workflow<()>, Arc<Transaction>) {
         let persisted = committed
             .workflows
             .get(&id)
             .unwrap_or_else(|| panic!("workflow with ID {} is not persisted", id));
-        let spawner = &self.spawners[&persisted.definition_id];
-        persisted
+        let spawner = &self.shared.spawners[&persisted.definition_id];
+        let (services, transaction) = self.services();
+        let restored = persisted
             .workflow
             .clone()
-            .restore(spawner, self.services())
-            .unwrap()
+            .restore(spawner, services)
+            .unwrap();
+        (restored, transaction)
     }
 
     pub(crate) fn tick_workflow(&self, workflow_id: WorkflowId) -> Result<Receipt, ExecutionError> {
         let mut state = self.lock();
-        let mut workflow = self.restore_workflow(&state.committed, workflow_id);
+        let (mut workflow, transaction) = self.restore_workflow(&state.committed, workflow_id);
 
         state.executing_workflow_id = Some(workflow_id);
         let result = workflow.tick();
         if let Ok(receipt) = &result {
-            state.commit(receipt);
             state
                 .committed
-                .drain_and_persist_workflow(workflow_id, None, &mut workflow);
+                .drain_and_persist_workflow(workflow_id, None, workflow);
+            state.commit(receipt, transaction.into_inner());
         }
         state.executing_workflow_id = None;
         result
@@ -377,12 +371,88 @@ impl WouldBlock {
     }
 }
 
-impl ManageWorkflows for WorkflowManager {
-    type Handle = WorkflowAndChannelIds;
+/// Part of the manager used during workflow instantiation.
+#[derive(Debug, Clone)]
+struct Shared {
+    clock: Arc<dyn Clock>,
+    spawners: Arc<HashMap<String, WorkflowSpawner<()>>>,
+}
 
-    fn interface(&self, id: &str) -> Option<Cow<'_, Interface<()>>> {
-        Some(Cow::Borrowed(self.spawners.get(id)?.interface()))
+impl Default for Shared {
+    fn default() -> Self {
+        Self {
+            clock: Arc::new(Utc::now),
+            spawners: Arc::new(HashMap::new()),
+        }
     }
+}
+
+#[derive(Debug, Default)]
+struct TransactionInner {
+    next_channel_id: ChannelId,
+    next_workflow_id: WorkflowId,
+    new_workflows: HashMap<WorkflowId, WorkflowWithMeta>,
+}
+
+impl TransactionInner {
+    fn allocate_channel_id(&mut self) -> ChannelId {
+        let channel_id = self.next_channel_id;
+        self.next_channel_id += 1;
+        channel_id
+    }
+
+    fn stash_workflow(&mut self, definition_id: String, workflow: &mut Workflow<()>) -> WorkflowId {
+        debug_assert!(!workflow.is_initialized());
+
+        let id = self.next_workflow_id;
+        self.next_workflow_id += 1;
+        self.new_workflows.insert(
+            id,
+            WorkflowWithMeta {
+                definition_id,
+                workflow: workflow.persist().unwrap(),
+            },
+        );
+        id
+    }
+}
+
+#[derive(Debug)]
+pub struct Transaction {
+    shared: Shared,
+    inner: Mutex<TransactionInner>,
+}
+
+impl Transaction {
+    fn new(shared: Shared) -> Self {
+        Self {
+            shared,
+            inner: Mutex::default(),
+        }
+    }
+
+    fn services(&self) -> Services {
+        Services {
+            clock: Arc::clone(&self.shared.clock),
+            workflows: Arc::new(NoOpWorkflowManager),
+            // ^ `workflows` is not used during instantiation, so it's OK to provide
+            // a no-op implementation.
+        }
+    }
+
+    fn into_inner(self: Arc<Self>) -> TransactionInner {
+        Arc::try_unwrap(self).unwrap().inner.into_inner().unwrap()
+    }
+}
+
+impl ManageInterfaces for Transaction {
+    fn interface(&self, id: &str) -> Option<Cow<'_, Interface<()>>> {
+        Some(Cow::Borrowed(self.shared.spawners.get(id)?.interface()))
+    }
+}
+
+impl ManageWorkflows<'_, ()> for Transaction {
+    type Handle = WorkflowAndChannelIds;
 
     fn create_workflow(
         &self,
@@ -391,19 +461,20 @@ impl ManageWorkflows for WorkflowManager {
         handles: &ChannelHandles,
     ) -> Result<Self::Handle, SpawnError> {
         let spawner = self
+            .shared
             .spawners
             .get(id)
             .unwrap_or_else(|| panic!("workflow with ID `{}` is not defined", id));
 
         let channel_ids = {
-            let mut state = self.state.lock().unwrap();
-            ChannelIds::new(handles, || state.committed.allocate_channel_id())
+            let mut state = self.inner.lock().unwrap();
+            ChannelIds::new(handles, || state.allocate_channel_id())
         };
         let mut workflow = spawner
             .spawn(args, &channel_ids, self.services())
             .map_err(|err| SpawnError::new(err.to_string()))?;
         let workflow_id = self
-            .state
+            .inner
             .lock()
             .unwrap()
             .stash_workflow(id.to_owned(), &mut workflow);
@@ -431,24 +502,21 @@ impl WorkflowManagerBuilder {
     /// Sets the clock to be used in the manager.
     #[must_use]
     pub fn with_clock(mut self, clock: Arc<impl Clock>) -> Self {
-        self.manager.clock = clock;
+        self.manager.shared.clock = clock;
         self
     }
 
     /// Inserts a workflow spawner into the manager.
     #[must_use]
     pub fn with_spawner<W: WorkflowFn>(mut self, id: &str, spawner: WorkflowSpawner<W>) -> Self {
-        self.manager.spawners.insert(id.to_owned(), spawner.erase());
+        let spawners = Arc::get_mut(&mut self.manager.shared.spawners).unwrap();
+        spawners.insert(id.to_owned(), spawner.erase());
         self
     }
 
     /// Finishes building the manager.
-    pub fn build(self) -> Arc<WorkflowManager> {
-        let mut manager = self.manager;
-        Arc::new_cyclic(|arc| {
-            manager.arc = Weak::clone(arc);
-            manager
-        })
+    pub fn build(self) -> WorkflowManager {
+        self.manager
     }
 }
 
@@ -536,12 +604,6 @@ impl Default for PersistedWorkflows {
 }
 
 impl PersistedWorkflows {
-    fn allocate_channel_id(&mut self) -> ChannelId {
-        let channel_id = self.next_channel_id;
-        self.next_channel_id += 1;
-        channel_id
-    }
-
     fn take_message(&mut self, channel_id: ChannelId) -> Option<Message> {
         let channel_state = self.channels.get_mut(&channel_id).unwrap();
         channel_state.pop_message()
@@ -644,7 +706,7 @@ impl PersistedWorkflows {
         &mut self,
         id: WorkflowId,
         definition_id: Option<String>,
-        workflow: &mut Workflow<()>,
+        mut workflow: Workflow<()>,
     ) {
         // Drain outbound messages generated by the executed workflow. At this point,
         // new channels are already created.
@@ -674,31 +736,15 @@ struct WorkflowManagerState {
     committed: PersistedWorkflows,
     // Fields related to the current workflow execution.
     executing_workflow_id: Option<WorkflowId>,
-    /// Successfully initialized workflows spawned by the current workflow execution.
-    new_workflows: HashMap<WorkflowId, WorkflowWithMeta>,
 }
 
 impl WorkflowManagerState {
-    fn stash_workflow(&mut self, definition_id: String, workflow: &mut Workflow<()>) -> WorkflowId {
-        debug_assert!(!workflow.is_initialized());
-
-        let id = self.committed.next_workflow_id;
-        self.committed.next_workflow_id += 1;
-        self.new_workflows.insert(
-            id,
-            WorkflowWithMeta {
-                definition_id,
-                workflow: workflow.persist().unwrap(),
-            },
-        );
-        id
-    }
-
-    fn commit(&mut self, receipt: &Receipt) {
+    fn commit(&mut self, receipt: &Receipt, transaction: TransactionInner) {
         let executed_workflow_id = self.executing_workflow_id.take();
-        let child_workflows = mem::take(&mut self.new_workflows);
+        self.committed.next_workflow_id = transaction.next_workflow_id;
+        self.committed.next_channel_id = transaction.next_channel_id;
         self.committed
-            .commit(executed_workflow_id, child_workflows, receipt);
+            .commit(executed_workflow_id, transaction.new_workflows, receipt);
     }
 }
 
@@ -720,27 +766,33 @@ impl Receipt {
     }
 }
 
-pub trait WorkflowBuilderExt {
-    type Output;
-
-    /// # Errors
-    ///
-    /// Returns an error if the workflow cannot be spawned.
-    fn build_and_commit(self) -> Result<Self::Output, SpawnError>;
+impl ManageInterfaces for WorkflowManager {
+    fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface<()>>> {
+        Some(Cow::Borrowed(
+            self.shared.spawners.get(definition_id)?.interface(),
+        ))
+    }
 }
 
-impl<'a, W> WorkflowBuilderExt for WorkflowBuilder<'a, WorkflowManager, W>
-where
-    W: TakeHandle<Spawner>,
-{
-    type Output = WorkflowEnv<'a, W>;
+impl<'a, W: WorkflowFn> ManageWorkflows<'a, W> for WorkflowManager {
+    type Handle = WorkflowEnv<'a, W>;
 
-    fn build_and_commit(self) -> Result<Self::Output, SpawnError> {
-        let manager = self.manager();
-        self.build_into_handle().map(|ids| {
-            manager.state.lock().unwrap().commit(&Receipt::new());
-            let workflow = manager.workflow(ids.workflow_id).unwrap();
-            workflow.downcast_unchecked()
-        })
+    fn create_workflow(
+        &'a self,
+        definition_id: &str,
+        args: Vec<u8>,
+        handles: &ChannelHandles,
+    ) -> Result<Self::Handle, SpawnError> {
+        let (services, transaction) = self.services();
+        services
+            .workflows
+            .create_workflow(definition_id, args, handles)?;
+        drop(services); // to successfully `unwrap()` the transaction
+
+        let transaction = transaction.into_inner();
+        debug_assert_eq!(transaction.new_workflows.len(), 1);
+        let workflow_id = *transaction.new_workflows.keys().next().unwrap();
+        self.lock().commit(&Receipt::new(), transaction);
+        Ok(self.workflow(workflow_id).unwrap().downcast_unchecked())
     }
 }

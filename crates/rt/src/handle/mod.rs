@@ -96,6 +96,11 @@ impl<'a> WorkflowEnv<'a, ()> {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn ids(&self) -> &WorkflowAndChannelIds {
+        &self.ids
+    }
+
     /// # Errors
     ///
     /// Returns an error on workflow interface mismatch.

@@ -46,30 +46,25 @@ fn instantiating_workflow() {
     let definition = manager.definition("test:latest").unwrap();
     let handle = definition
         .new_workflow(b"test_input".to_vec())
-        .build_into_handle()
+        .build()
         .unwrap();
 
-    let mut state = manager.state.lock().unwrap();
-    let stashed = &state.new_workflows[&handle.workflow_id];
-    assert_eq!(stashed.definition_id, "test:latest");
-
-    state.commit(&Receipt::new());
-    assert!(state.new_workflows.is_empty());
-    let persisted = &state.committed.workflows[&handle.workflow_id];
+    let state = manager.state.lock().unwrap();
+    let persisted = &state.committed.workflows[&handle.id()];
     assert_eq!(persisted.definition_id, "test:latest");
-    let orders_id = handle.channel_ids.inbound["orders"];
+    let orders_id = handle.ids().channel_ids.inbound["orders"];
     assert_eq!(
         state.committed.channels[&orders_id].receiver_workflow_id,
-        Some(handle.workflow_id)
+        Some(handle.id())
     );
-    let traces_id = handle.channel_ids.outbound["traces"];
+    let traces_id = handle.ids().channel_ids.outbound["traces"];
     assert_eq!(
         state.committed.channels[&traces_id].receiver_workflow_id,
         None
     );
     drop(state); // in order for `test_initializing_workflow()` not to dead-lock
 
-    test_initializing_workflow(&manager, &handle);
+    test_initializing_workflow(&manager, handle.ids());
 }
 
 fn test_initializing_workflow(manager: &WorkflowManager, handle: &WorkflowAndChannelIds) {
@@ -113,12 +108,11 @@ fn sending_message_to_workflow() {
     let definition = manager.definition("test:latest").unwrap();
     let handle = definition
         .new_workflow(b"test_input".to_vec())
-        .build_into_handle()
+        .build()
         .unwrap();
 
-    manager.state.lock().unwrap().commit(&Receipt::new());
-    manager.tick_workflow(handle.workflow_id).unwrap();
-    let orders_id = handle.channel_ids.inbound["orders"];
+    manager.tick_workflow(handle.id()).unwrap();
+    let orders_id = handle.ids().channel_ids.inbound["orders"];
     manager
         .send_message(orders_id, b"order #1".to_vec())
         .unwrap();
@@ -131,7 +125,7 @@ fn sending_message_to_workflow() {
     }
 
     let receipt = manager
-        .feed_message_to_workflow(orders_id, handle.workflow_id)
+        .feed_message_to_workflow(orders_id, handle.id())
         .unwrap()
         .unwrap();
     assert_eq!(receipt.executions().len(), 2); // waker + task

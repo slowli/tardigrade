@@ -16,7 +16,7 @@ use crate::{
 };
 use tardigrade::{
     interface::{ChannelKind, Interface},
-    spawn::{ChannelHandles, ChannelSpawnConfig, ManageWorkflows, SpawnError},
+    spawn::{ChannelHandles, ChannelSpawnConfig, ManageInterfaces, ManageWorkflows, SpawnError},
 };
 use tardigrade_shared::abi::TryFromWasm;
 
@@ -50,9 +50,7 @@ impl MockWorkflowManager {
     }
 }
 
-impl ManageWorkflows for MockWorkflowManager {
-    type Handle = WorkflowAndChannelIds;
-
+impl ManageInterfaces for MockWorkflowManager {
     fn interface(&self, id: &str) -> Option<Cow<'_, Interface<()>>> {
         if id == "test:latest" {
             Some(Cow::Borrowed(&self.interface))
@@ -60,6 +58,10 @@ impl ManageWorkflows for MockWorkflowManager {
             None
         }
     }
+}
+
+impl ManageWorkflows<'_, ()> for MockWorkflowManager {
+    type Handle = WorkflowAndChannelIds;
 
     fn create_workflow(
         &self,
