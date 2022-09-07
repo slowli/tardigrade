@@ -9,7 +9,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use super::{ChannelHandles, ManageWorkflows, RemoteHandle, Workflows};
+use super::{ChannelHandles, ManageInterfaces, ManageWorkflows, RemoteHandle, Workflows};
 use crate::channel::{
     imp::{mpsc_receiver_get, mpsc_sender_get, ACCESS_ERROR_PAD},
     RawReceiver, RawSender,
@@ -22,9 +22,7 @@ use tardigrade_shared::{
 
 static mut SPAWN_ERROR_PAD: i64 = 0;
 
-impl ManageWorkflows for Workflows {
-    type Handle = super::RemoteWorkflow;
-
+impl ManageInterfaces for Workflows {
     fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface<()>>> {
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
@@ -44,6 +42,10 @@ impl ManageWorkflows for Workflows {
         };
         raw_interface.map(|bytes| Cow::Owned(Interface::from_bytes(&bytes)))
     }
+}
+
+impl ManageWorkflows<'_, ()> for Workflows {
+    type Handle = super::RemoteWorkflow;
 
     fn create_workflow(
         &self,

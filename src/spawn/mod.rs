@@ -85,13 +85,15 @@ pub struct ChannelHandles {
     pub outbound: HashMap<String, ChannelSpawnConfig>,
 }
 
-/// Manager of workflows.
-pub trait ManageWorkflows: 'static {
-    /// Instantiated workflow.
-    type Handle;
-
+pub trait ManageInterfaces {
     /// Returns the interface spec of a workflow with the specified ID.
     fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface<()>>>;
+}
+
+/// Manager of workflows.
+pub trait ManageWorkflows<'a, W: WorkflowFn>: ManageInterfaces {
+    /// Instantiated workflow.
+    type Handle;
 
     /// Creates a new workflow.
     ///
@@ -99,19 +101,17 @@ pub trait ManageWorkflows: 'static {
     ///
     /// Returns an error if the workflow cannot be spawned, e.g., if the provided `args`
     /// are incorrect.
+    #[doc(hidden)] // implementation detail; should only be used via `WorkflowBuilder`
     fn create_workflow(
-        &self,
+        &'a self,
         definition_id: &str,
         args: Vec<u8>,
         handles: &ChannelHandles,
     ) -> Result<Self::Handle, SpawnError>;
 }
 
-pub trait ManageWorkflowsExt: ManageWorkflows {
-    fn definition<'a>(
-        &'a self,
-        definition_id: &'a str,
-    ) -> Option<WorkflowDefinition<'a, Self, ()>> {
+pub trait ManageWorkflowsExt<'a>: ManageWorkflows<'a, ()> {
+    fn definition(&'a self, definition_id: &'a str) -> Option<WorkflowDefinition<'a, Self, ()>> {
         self.interface(definition_id)
             .map(|interface| WorkflowDefinition {
                 definition_id,
@@ -121,11 +121,30 @@ pub trait ManageWorkflowsExt: ManageWorkflows {
     }
 }
 
-impl<M: ManageWorkflows> ManageWorkflowsExt for M {}
+impl<'a, M: ManageWorkflows<'a, ()>> ManageWorkflowsExt<'a> for M {}
 
 /// Client-side connection to a [workflow manager][`ManageWorkflows`].
 #[derive(Debug)]
 pub struct Workflows;
+
+impl<'a, W> ManageWorkflows<'a, W> for Workflows
+where
+    W: WorkflowFn + TakeHandle<RemoteWorkflow, Id = ()>,
+{
+    type Handle = WorkflowHandle<W>;
+
+    fn create_workflow(
+        &'a self,
+        definition_id: &str,
+        args: Vec<u8>,
+        handles: &ChannelHandles,
+    ) -> Result<Self::Handle, SpawnError> {
+        let mut workflow =
+            <Self as ManageWorkflows<'a, ()>>::create_workflow(self, definition_id, args, handles)?;
+        let api = W::take_handle(&mut workflow, &()).unwrap();
+        Ok(WorkflowHandle { api, workflow })
+    }
+}
 
 #[derive(Debug)]
 pub(crate) enum RemoteHandle<T> {
@@ -141,7 +160,7 @@ pub struct WorkflowDefinition<'a, M: ?Sized, W> {
     manager: &'a M,
 }
 
-impl<'a, M: ManageWorkflows + ?Sized> WorkflowDefinition<'a, M, ()> {
+impl<'a, M: ManageWorkflows<'a, ()> + ?Sized> WorkflowDefinition<'a, M, ()> {
     pub fn downcast<W>(self) -> Result<WorkflowDefinition<'a, M, W>, AccessError>
     where
         W: ValidateInterface<Id = ()>,
@@ -154,7 +173,11 @@ impl<'a, M: ManageWorkflows + ?Sized> WorkflowDefinition<'a, M, ()> {
     }
 }
 
-impl<M: ManageWorkflows + ?Sized, W> WorkflowDefinition<'_, M, W> {
+impl<'a, M, W> WorkflowDefinition<'a, M, W>
+where
+    M: ManageWorkflows<'a, W> + ?Sized,
+    W: WorkflowFn,
+{
     pub fn interface(&self) -> &Interface<W> {
         &self.interface
     }
@@ -162,8 +185,8 @@ impl<M: ManageWorkflows + ?Sized, W> WorkflowDefinition<'_, M, W> {
 
 impl<'a, M, W> WorkflowDefinition<'a, M, W>
 where
-    M: ManageWorkflows + ?Sized,
-    W: TakeHandle<Spawner, Id = ()> + WorkflowFn,
+    M: ManageWorkflows<'a, W> + ?Sized,
+    W: WorkflowFn + TakeHandle<Spawner, Id = ()>,
 {
     #[allow(clippy::missing_panics_doc)] // false positive
     pub fn new_workflow(&self, args: W::Args) -> WorkflowBuilder<'a, M, W> {
@@ -346,20 +369,15 @@ where
 
 impl<'a, M, W> WorkflowBuilder<'a, M, W>
 where
-    M: ManageWorkflows + ?Sized,
-    W: TakeHandle<Spawner>,
+    M: ManageWorkflows<'a, W> + ?Sized,
+    W: WorkflowFn + TakeHandle<Spawner>,
 {
     pub fn handle(&self) -> &<W as TakeHandle<Spawner>>::Handle {
         &self.handle
     }
 
-    #[doc(hidden)]
-    pub fn manager(&self) -> &'a M {
-        self.manager
-    }
-
-    #[doc(hidden)] // used by the runtime crate
-    pub fn build_into_handle(self) -> Result<M::Handle, SpawnError> {
+    #[allow(clippy::missing_panics_doc)] // false positive
+    pub fn build(self) -> Result<M::Handle, SpawnError> {
         drop(self.handle);
         let spawner = Rc::try_unwrap(self.spawner.inner).unwrap();
         self.manager.create_workflow(
@@ -367,19 +385,6 @@ where
             spawner.args,
             &spawner.channels.into_inner(),
         )
-    }
-}
-
-impl<M, W> WorkflowBuilder<'_, M, W>
-where
-    M: ManageWorkflows<Handle = RemoteWorkflow> + ?Sized,
-    W: TakeHandle<Spawner> + TakeHandle<RemoteWorkflow, Id = ()>,
-{
-    #[allow(clippy::missing_panics_doc)] // false positive
-    pub fn build(self) -> Result<WorkflowHandle<W>, SpawnError> {
-        let mut workflow = self.build_into_handle()?;
-        let api = W::take_handle(&mut workflow, &()).unwrap();
-        Ok(WorkflowHandle { api, workflow })
     }
 }
 

@@ -374,11 +374,11 @@ impl Runtime {
 
         self.workflow_registry.insert::<W>(WORKFLOW_ID);
         self.run(async {
-            let workflow_def = Workflows
-                .definition(WORKFLOW_ID)
-                .expect("failed getting workflow definition")
-                .downcast::<W>()
-                .unwrap();
+            let workflow_def =
+                <Workflows as ManageWorkflowsExt<'_>>::definition(&Workflows, WORKFLOW_ID)
+                    .expect("failed getting workflow definition")
+                    .downcast::<W>()
+                    .unwrap();
             let api = workflow_def.new_workflow(args).build().unwrap().api;
             test_fn(api).await;
         });

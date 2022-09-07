@@ -11,7 +11,9 @@ use std::{
 };
 use tardigrade_shared::interface::Interface;
 
-use super::{ChannelHandles, ChannelSpawnConfig, ManageWorkflows, RemoteHandle, Workflows};
+use super::{
+    ChannelHandles, ChannelSpawnConfig, ManageInterfaces, ManageWorkflows, RemoteHandle, Workflows,
+};
 use crate::{
     channel::{imp::raw_channel, RawReceiver, RawSender},
     interface::ChannelKind,
@@ -21,9 +23,7 @@ use crate::{
 };
 use tardigrade_shared::{JoinError, SpawnError};
 
-impl ManageWorkflows for Workflows {
-    type Handle = super::RemoteWorkflow;
-
+impl ManageInterfaces for Workflows {
     fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface<()>>> {
         Runtime::with(|rt| {
             rt.workflow_registry()
@@ -31,6 +31,10 @@ impl ManageWorkflows for Workflows {
                 .map(|interface| Cow::Owned(interface.clone()))
         })
     }
+}
+
+impl ManageWorkflows<'_, ()> for Workflows {
+    type Handle = super::RemoteWorkflow;
 
     fn create_workflow(
         &self,
