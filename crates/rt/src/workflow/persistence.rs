@@ -149,6 +149,22 @@ impl PersistedWorkflow {
         self.state.inbound_channels()
     }
 
+    pub(crate) fn close_inbound_channel(
+        &mut self,
+        workflow_id: Option<WorkflowId>,
+        channel_name: &str,
+    ) {
+        self.state.close_inbound_channel(workflow_id, channel_name);
+    }
+
+    pub(crate) fn close_outbound_channel(
+        &mut self,
+        workflow_id: Option<WorkflowId>,
+        channel_name: &str,
+    ) {
+        self.state.close_outbound_channel(workflow_id, channel_name);
+    }
+
     /// Returns the current state of a task with the specified ID.
     pub fn task(&self, task_id: TaskId) -> Option<&TaskState> {
         self.state.task(task_id)

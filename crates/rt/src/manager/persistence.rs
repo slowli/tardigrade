@@ -35,6 +35,12 @@ impl ChannelState {
         }
     }
 
+    fn closed() -> Self {
+        let mut this = Self::new(None);
+        this.close();
+        this
+    }
+
     pub(super) fn info(&self) -> ChannelInfo {
         ChannelInfo {
             is_closed: self.is_closed,
@@ -91,9 +97,11 @@ pub struct PersistedWorkflows {
 
 impl Default for PersistedWorkflows {
     fn default() -> Self {
+        let mut channels = HashMap::with_capacity(1);
+        channels.insert(0, ChannelState::closed());
         Self {
             workflows: HashMap::new(),
-            channels: HashMap::new(),
+            channels,
             next_workflow_id: 0,
             next_channel_id: 1, // avoid "pre-closed" channel ID
         }
@@ -182,17 +190,25 @@ impl PersistedWorkflows {
         self.next_channel_id = transaction.next_channel_id;
 
         // Create new channels and write outbound messages for them when appropriate.
-        for (child_id, child_workflow) in transaction.new_workflows {
+        for (child_id, mut child_workflow) in transaction.new_workflows {
             let channel_ids = child_workflow.workflow.channel_ids();
-            for &channel_id in channel_ids.inbound.values() {
-                self.channels
+            for (name, &channel_id) in &channel_ids.inbound {
+                let channel_state = self
+                    .channels
                     .entry(channel_id)
                     .or_insert_with(|| ChannelState::new(Some(child_id)));
+                if channel_state.is_closed {
+                    child_workflow.workflow.close_inbound_channel(None, name);
+                }
             }
-            for &channel_id in channel_ids.outbound.values() {
-                self.channels
+            for (name, &channel_id) in &channel_ids.outbound {
+                let channel_state = self
+                    .channels
                     .entry(channel_id)
                     .or_insert_with(|| ChannelState::new(executed_workflow_id));
+                if channel_state.is_closed {
+                    child_workflow.workflow.close_outbound_channel(None, name);
+                }
             }
 
             self.workflows.insert(child_id, child_workflow);

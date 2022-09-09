@@ -247,7 +247,7 @@ impl WorkflowManager {
             })
             .unwrap();
 
-        let transaction = Transaction::new(Some(workflow_id), self.shared.clone());
+        let transaction = Transaction::new(&state, Some(workflow_id), self.shared.clone());
         let mut workflow = self.restore_workflow(&state, workflow_id, &transaction);
         let result = Self::push_message(&mut workflow, child_id, &channel_name, message.clone());
         if let Ok(Some(receipt)) = &result {
@@ -284,7 +284,9 @@ impl WorkflowManager {
         let push_result = if let Some(message) = message {
             workflow.push_inbound_message(child_id, channel_name, message.into())
         } else {
-            workflow.close_inbound_channel(child_id, channel_name)
+            // FIXME: rework closing channel
+            workflow.close_inbound_channel(child_id, channel_name);
+            Ok(())
         };
         if push_result.is_err() {
             Ok(None)
@@ -322,7 +324,7 @@ impl WorkflowManager {
 
     pub(crate) fn tick_workflow(&self, workflow_id: WorkflowId) -> Result<Receipt, ExecutionError> {
         let mut state = self.lock();
-        let transaction = Transaction::new(Some(workflow_id), self.shared.clone());
+        let transaction = Transaction::new(&state, Some(workflow_id), self.shared.clone());
         let mut workflow = self.restore_workflow(&state, workflow_id, &transaction);
 
         let result = workflow.tick();
@@ -446,7 +448,7 @@ impl<'a, W: WorkflowFn> ManageWorkflows<'a, W> for WorkflowManager {
         args: Vec<u8>,
         handles: &ChannelHandles,
     ) -> Result<Self::Handle, SpawnError> {
-        let transaction = Transaction::new(None, self.shared.clone());
+        let transaction = Transaction::new(&self.lock(), None, self.shared.clone());
         let services = self.services(&transaction);
         services
             .workflows

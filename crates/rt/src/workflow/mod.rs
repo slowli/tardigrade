@@ -299,12 +299,11 @@ impl<'a> Workflow<'a> {
         &mut self,
         workflow_id: Option<WorkflowId>,
         channel_name: &str,
-    ) -> Result<(), ConsumeError> {
-        let result = self
-            .store
+    ) {
+        self.store
             .data_mut()
             .close_inbound_channel(workflow_id, channel_name);
-        crate::log_result!(result, "Closed inbound channel `{}`", channel_name)
+        crate::trace!("Closed inbound channel `{}`", channel_name);
     }
 
     pub(crate) fn drain_messages(&mut self) -> Vec<(ChannelId, Vec<Message>)> {

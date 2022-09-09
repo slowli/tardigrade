@@ -230,11 +230,11 @@ impl PersistedWorkflowData {
         Ok(())
     }
 
-    fn close_inbound_channel(
+    pub(crate) fn close_inbound_channel(
         &mut self,
         workflow_id: Option<WorkflowId>,
         channel_name: &str,
-    ) -> Result<(), ConsumeError> {
+    ) {
         let channel_state = self
             .channels_mut(workflow_id)
             .inbound
@@ -242,10 +242,7 @@ impl PersistedWorkflowData {
             .unwrap();
         // ^ `unwrap()` safety is guaranteed by previous checks.
         if channel_state.is_closed {
-            return Ok(()); // no further actions required
-        }
-        if channel_state.wakes_on_next_element.is_empty() {
-            return Err(ConsumeError::NotListened);
+            return; // no further actions required
         }
 
         debug_assert!(
@@ -263,7 +260,19 @@ impl PersistedWorkflowData {
                 channel_name: channel_name.to_owned(),
             },
         );
-        Ok(())
+    }
+
+    pub(crate) fn close_outbound_channel(
+        &mut self,
+        workflow_id: Option<WorkflowId>,
+        channel_name: &str,
+    ) {
+        let channel_state = self
+            .channels_mut(workflow_id)
+            .outbound
+            .get_mut(channel_name)
+            .unwrap();
+        channel_state.is_closed = true;
     }
 
     pub fn channel_ids(&self) -> ChannelIds {
@@ -282,8 +291,15 @@ impl PersistedWorkflowData {
         &self,
     ) -> impl Iterator<Item = (Option<WorkflowId>, &str, &InboundChannelState)> + '_ {
         let local_channels = self.channels.inbound.iter();
-        // FIXME: add channels for child workflows
-        local_channels.map(|(name, state)| (None, name.as_str(), state))
+        let local_channels = local_channels.map(|(name, state)| (None, name.as_str(), state));
+        let workflow_channels = self
+            .child_workflows
+            .iter()
+            .flat_map(|(&workflow_id, workflow)| {
+                let channels = workflow.channels.inbound.iter();
+                channels.map(move |(name, state)| (Some(workflow_id), name.as_str(), state))
+            });
+        local_channels.chain(workflow_channels)
     }
 
     pub(super) fn inbound_channel_mut(
@@ -419,9 +435,9 @@ impl WorkflowData<'_> {
         &mut self,
         workflow_id: Option<WorkflowId>,
         channel_name: &str,
-    ) -> Result<(), ConsumeError> {
+    ) {
         self.persisted
-            .close_inbound_channel(workflow_id, channel_name)
+            .close_inbound_channel(workflow_id, channel_name);
     }
 
     fn poll_inbound_channel(

@@ -2,7 +2,10 @@
 
 use std::{borrow::Cow, collections::HashMap, sync::Mutex};
 
-use super::{persistence::WorkflowWithMeta, Shared};
+use super::{
+    persistence::{PersistedWorkflows, WorkflowWithMeta},
+    Shared,
+};
 use crate::{
     module::{NoOpWorkflowManager, Services, WorkflowAndChannelIds},
     workflow::{ChannelIds, Workflow},
@@ -13,7 +16,7 @@ use tardigrade::{
 };
 use tardigrade_shared::{ChannelId, SpawnError, WorkflowId};
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct TransactionInner {
     pub next_channel_id: ChannelId,
     pub next_workflow_id: WorkflowId,
@@ -51,11 +54,19 @@ pub(super) struct Transaction {
 }
 
 impl Transaction {
-    pub fn new(executing_workflow_id: Option<WorkflowId>, shared: Shared) -> Self {
+    pub fn new(
+        persisted: &PersistedWorkflows,
+        executing_workflow_id: Option<WorkflowId>,
+        shared: Shared,
+    ) -> Self {
         Self {
             executing_workflow_id,
             shared,
-            inner: Mutex::default(),
+            inner: Mutex::new(TransactionInner {
+                next_channel_id: persisted.next_channel_id,
+                next_workflow_id: persisted.next_workflow_id,
+                new_workflows: HashMap::new(),
+            }),
         }
     }
 
