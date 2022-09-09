@@ -43,9 +43,9 @@ fn instantiating_workflow() {
     let manager = WorkflowManager::builder()
         .with_spawner("test:latest", test_spawner())
         .build();
-    let definition = manager.definition("test:latest").unwrap();
-    let handle = definition
-        .new_workflow(b"test_input".to_vec())
+    let handle = manager
+        .new_workflow("test:latest", b"test_input".to_vec())
+        .unwrap()
         .build()
         .unwrap();
 
@@ -102,9 +102,9 @@ fn sending_message_to_workflow() {
     let manager = WorkflowManager::builder()
         .with_spawner("test:latest", test_spawner())
         .build();
-    let definition = manager.definition("test:latest").unwrap();
-    let handle = definition
-        .new_workflow(b"test_input".to_vec())
+    let handle = manager
+        .new_workflow("test:latest", b"test_input".to_vec())
+        .unwrap()
         .build()
         .unwrap();
 

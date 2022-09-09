@@ -98,7 +98,7 @@ use std::{
 use crate::workflow::UntypedHandle;
 use crate::{
     interface::Interface,
-    spawn::{ManageWorkflowsExt, RemoteWorkflow, Spawner, Workflows},
+    spawn::{ManageWorkflowsExt, RemoteWorkflow, Spawner, WorkflowBuilder, Workflows},
     workflow::{Handle, SpawnWorkflow, TakeHandle, TaskHandle, Wasm},
 };
 
@@ -370,17 +370,14 @@ impl Runtime {
         F: FnOnce(Handle<W, RemoteWorkflow>) -> Fut,
         Fut: Future<Output = ()>,
     {
-        const WORKFLOW_ID: &str = "__tested_workflow";
+        const DEFINITION_ID: &str = "__tested_workflow";
 
-        self.workflow_registry.insert::<W>(WORKFLOW_ID);
+        self.workflow_registry.insert::<W>(DEFINITION_ID);
         self.run(async {
-            let workflow_def =
-                <Workflows as ManageWorkflowsExt<'_>>::definition(&Workflows, WORKFLOW_ID)
-                    .expect("failed getting workflow definition")
-                    .downcast::<W>()
-                    .unwrap();
-            let api = workflow_def.new_workflow(args).build().unwrap().api;
-            test_fn(api).await;
+            let builder: WorkflowBuilder<_, W> =
+                Workflows.new_workflow(DEFINITION_ID, args).unwrap();
+            let workflow = builder.build().unwrap();
+            test_fn(workflow.api).await;
         });
     }
 }

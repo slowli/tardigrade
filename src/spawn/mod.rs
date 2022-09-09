@@ -92,7 +92,7 @@ pub trait ManageInterfaces {
 
 /// Manager of workflows.
 pub trait ManageWorkflows<'a, W: WorkflowFn>: ManageInterfaces {
-    /// Instantiated workflow.
+    /// Handle to an instantiated workflow.
     type Handle;
 
     /// Creates a new workflow.
@@ -110,18 +110,31 @@ pub trait ManageWorkflows<'a, W: WorkflowFn>: ManageInterfaces {
     ) -> Result<Self::Handle, SpawnError>;
 }
 
-pub trait ManageWorkflowsExt<'a>: ManageWorkflows<'a, ()> {
-    fn definition(&'a self, definition_id: &'a str) -> Option<WorkflowDefinition<'a, Self, ()>> {
-        self.interface(definition_id)
-            .map(|interface| WorkflowDefinition {
-                definition_id,
-                interface: interface.into_owned(),
-                manager: self,
-            })
+/// Extension trait for [workflow managers](ManageWorkflows).
+pub trait ManageWorkflowsExt<'a, W: WorkflowFn>: ManageWorkflows<'a, W> {
+    /// Returns a workflow builder for the specified definition and args.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the definition is unknown, or does not conform to the interface
+    /// specified via the type param.
+    fn new_workflow(
+        &'a self,
+        definition_id: &'a str,
+        args: W::Args,
+    ) -> Result<WorkflowBuilder<'a, Self, W>, AccessError>
+    where
+        W: ValidateInterface<Id = ()> + TakeHandle<Spawner, Id = ()>,
+    {
+        let interface = self
+            .interface(definition_id)
+            .ok_or(AccessErrorKind::Unknown)?;
+        W::validate_interface(&interface, &())?;
+        Ok(WorkflowBuilder::new(self, &interface, definition_id, args))
     }
 }
 
-impl<'a, M: ManageWorkflows<'a, ()>> ManageWorkflowsExt<'a> for M {}
+impl<'a, W: WorkflowFn, M: ManageWorkflows<'a, W>> ManageWorkflowsExt<'a, W> for M {}
 
 /// Client-side connection to a [workflow manager][`ManageWorkflows`].
 #[derive(Debug)]
@@ -151,60 +164,6 @@ pub(crate) enum RemoteHandle<T> {
     None,
     NotCaptured,
     Some(T),
-}
-
-#[derive(Debug)]
-pub struct WorkflowDefinition<'a, M: ?Sized, W> {
-    definition_id: &'a str,
-    interface: Interface<W>,
-    manager: &'a M,
-}
-
-impl<'a, M: ManageWorkflows<'a, ()> + ?Sized> WorkflowDefinition<'a, M, ()> {
-    pub fn downcast<W>(self) -> Result<WorkflowDefinition<'a, M, W>, AccessError>
-    where
-        W: ValidateInterface<Id = ()>,
-    {
-        Ok(WorkflowDefinition {
-            definition_id: self.definition_id,
-            interface: self.interface.downcast()?,
-            manager: self.manager,
-        })
-    }
-}
-
-impl<'a, M, W> WorkflowDefinition<'a, M, W>
-where
-    M: ManageWorkflows<'a, W> + ?Sized,
-    W: WorkflowFn,
-{
-    pub fn interface(&self) -> &Interface<W> {
-        &self.interface
-    }
-}
-
-impl<'a, M, W> WorkflowDefinition<'a, M, W>
-where
-    M: ManageWorkflows<'a, W> + ?Sized,
-    W: WorkflowFn + TakeHandle<Spawner, Id = ()>,
-{
-    #[allow(clippy::missing_panics_doc)] // false positive
-    pub fn new_workflow(&self, args: W::Args) -> WorkflowBuilder<'a, M, W> {
-        let raw_args = W::Codec::default().encode_value(args);
-        let mut spawner = Spawner {
-            inner: Rc::new(SpawnerInner::new(
-                &self.interface,
-                self.definition_id,
-                raw_args,
-            )),
-        };
-        let handle = W::take_handle(&mut spawner, &()).unwrap();
-        WorkflowBuilder {
-            spawner,
-            handle,
-            manager: self.manager,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -370,8 +329,21 @@ where
 impl<'a, M, W> WorkflowBuilder<'a, M, W>
 where
     M: ManageWorkflows<'a, W> + ?Sized,
-    W: WorkflowFn + TakeHandle<Spawner>,
+    W: WorkflowFn + TakeHandle<Spawner, Id = ()>,
 {
+    fn new(manager: &'a M, interface: &Interface<()>, definition_id: &str, args: W::Args) -> Self {
+        let raw_args = W::Codec::default().encode_value(args);
+        let mut spawner = Spawner {
+            inner: Rc::new(SpawnerInner::new(interface, definition_id, raw_args)),
+        };
+        let handle = W::take_handle(&mut spawner, &()).unwrap();
+        Self {
+            spawner,
+            handle,
+            manager,
+        }
+    }
+
     pub fn handle(&self) -> &<W as TakeHandle<Spawner>>::Handle {
         &self.handle
     }
