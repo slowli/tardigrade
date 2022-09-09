@@ -192,8 +192,10 @@ impl AsyncEnv {
     /// determines that the workflow cannot be rolled back.
     ///
     /// [`select`]: futures::select
-    // FIXME: require `&mut WorkflowManager` for correctness (no concurrent edits)
-    pub async fn run(&mut self, manager: &WorkflowManager) -> Result<Termination, ExecutionError> {
+    pub async fn run(
+        &mut self,
+        manager: &mut WorkflowManager,
+    ) -> Result<Termination, ExecutionError> {
         loop {
             if let Some(termination) = self.tick(manager).await? {
                 return Ok(termination);
@@ -203,7 +205,7 @@ impl AsyncEnv {
 
     async fn tick(
         &mut self,
-        manager: &WorkflowManager,
+        manager: &mut WorkflowManager,
     ) -> Result<Option<Termination>, ExecutionError> {
         if manager.is_finished() {
             return Ok(Some(Termination::Finished));
@@ -251,14 +253,13 @@ impl AsyncEnv {
 
     fn tick_manager(
         &mut self,
-        manager: &WorkflowManager,
+        manager: &mut WorkflowManager,
     ) -> Result<Option<DateTime<Utc>>, ExecutionError> {
         loop {
             let mut tick_result = match manager.tick() {
                 Ok(result) => result,
                 Err(blocked) => break Ok(blocked.nearest_timer_expiration()),
             };
-            self.flush_outbound_messages(manager);
 
             let recovered_from_error =
                 if self.drop_erroneous_messages && tick_result.can_drop_erroneous_message() {
@@ -280,6 +281,8 @@ impl AsyncEnv {
             if let Some(sx) = &self.results_sx {
                 sx.unbounded_send(event).ok();
             }
+
+            self.flush_outbound_messages(manager);
         }
     }
 

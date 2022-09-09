@@ -58,13 +58,14 @@ impl ChannelInfo {
 
 #[derive(Debug)]
 struct DropMessageAction<'a> {
-    manager: &'a WorkflowManager,
+    manager: &'a mut WorkflowManager,
     channel_id: ChannelId,
 }
 
 impl DropMessageAction<'_> {
     fn execute(self) {
-        self.manager.lock().take_message(self.channel_id);
+        let state = self.manager.state.get_mut().unwrap();
+        state.take_message(self.channel_id);
     }
 }
 
@@ -339,9 +340,10 @@ impl WorkflowManager {
     /// # Errors
     ///
     /// Returns an error if the manager cannot be progressed.
-    // FIXME: require `&mut self` or lock for the entire duration
-    pub fn tick(&self) -> Result<TickResult<'_>, WouldBlock> {
-        let workflow_id = self.lock().find_workflow_with_pending_tasks();
+    pub fn tick(&mut self) -> Result<TickResult<'_>, WouldBlock> {
+        let state = self.state.get_mut().unwrap();
+
+        let workflow_id = state.find_workflow_with_pending_tasks();
         if let Some(workflow_id) = workflow_id {
             let result = self.tick_workflow(workflow_id);
             return Ok(TickResult {
@@ -351,7 +353,7 @@ impl WorkflowManager {
             });
         }
 
-        let ids = self.lock().find_consumable_channel();
+        let ids = state.find_consumable_channel();
         if let Some((channel_id, workflow_id)) = ids {
             let result = self.feed_message_to_workflow(channel_id, workflow_id);
             return Ok(TickResult {
@@ -369,7 +371,7 @@ impl WorkflowManager {
         }
 
         Err(WouldBlock {
-            nearest_timer_expiration: self.lock().nearest_timer_expiration(),
+            nearest_timer_expiration: state.nearest_timer_expiration(),
         })
     }
 }
