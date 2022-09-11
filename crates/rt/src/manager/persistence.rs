@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     mem,
 };
 
@@ -20,15 +20,20 @@ use tardigrade_shared::{ChannelId, SendError, WorkflowId};
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct ChannelState {
     pub receiver_workflow_id: Option<WorkflowId>, // `None` means external receiver
+    pub sender_workflow_ids: HashSet<WorkflowId>,
     pub is_closed: bool,
     pub messages: VecDeque<Message>,
     pub next_message_idx: usize,
 }
 
 impl ChannelState {
-    fn new(receiver_workflow_id: Option<WorkflowId>) -> Self {
+    fn new(
+        sender_workflow_id: Option<WorkflowId>,
+        receiver_workflow_id: Option<WorkflowId>,
+    ) -> Self {
         Self {
             receiver_workflow_id,
+            sender_workflow_ids: sender_workflow_id.into_iter().collect(),
             is_closed: false,
             messages: VecDeque::new(),
             next_message_idx: 0,
@@ -36,7 +41,7 @@ impl ChannelState {
     }
 
     fn closed() -> Self {
-        let mut this = Self::new(None);
+        let mut this = Self::new(None, None);
         this.close();
         this
     }
@@ -109,9 +114,9 @@ impl Default for PersistedWorkflows {
 }
 
 impl PersistedWorkflows {
-    pub(super) fn take_message(&mut self, channel_id: ChannelId) -> Option<Message> {
+    pub(super) fn take_message(&mut self, channel_id: ChannelId) -> Option<(Message, bool)> {
         let channel_state = self.channels.get_mut(&channel_id).unwrap();
-        channel_state.pop_message()
+        channel_state.pop_message().map(|message| (message, channel_state.is_closed))
     }
 
     pub(super) fn revert_taking_message(&mut self, channel_id: ChannelId, message: Message) {
@@ -131,6 +136,29 @@ impl PersistedWorkflows {
     pub(super) fn close_channel_sender(&mut self, channel_id: ChannelId) {
         let channel_state = self.channels.get_mut(&channel_id).unwrap();
         channel_state.close();
+
+        if channel_state.messages.is_empty() {
+            // We can notify the receiver immediately only if there are no unconsumed messages
+            // in the channel.
+            if let Some(receiver_workflow_id) = channel_state.receiver_workflow_id {
+                let workflow = &mut self
+                    .workflows
+                    .get_mut(&receiver_workflow_id)
+                    .unwrap()
+                    .workflow;
+                let (child_id, name) = workflow.find_inbound_channel(channel_id);
+                workflow.close_inbound_channel(child_id, &name);
+            }
+        }
+
+        for sender_workflow_id in &channel_state.sender_workflow_ids {
+            let workflow = &mut self
+                .workflows
+                .get_mut(sender_workflow_id)
+                .unwrap()
+                .workflow;
+            workflow.close_outbound_channels_by_id(channel_id);
+        }
     }
 
     pub(super) fn channel_ids(&self, workflow_id: WorkflowId) -> Option<ChannelIds> {
@@ -196,7 +224,7 @@ impl PersistedWorkflows {
                 let channel_state = self
                     .channels
                     .entry(channel_id)
-                    .or_insert_with(|| ChannelState::new(Some(child_id)));
+                    .or_insert_with(|| ChannelState::new(executed_workflow_id, Some(child_id)));
                 if channel_state.is_closed {
                     child_workflow.workflow.close_inbound_channel(None, name);
                 }
@@ -205,7 +233,7 @@ impl PersistedWorkflows {
                 let channel_state = self
                     .channels
                     .entry(channel_id)
-                    .or_insert_with(|| ChannelState::new(executed_workflow_id));
+                    .or_insert_with(|| ChannelState::new(Some(child_id), executed_workflow_id));
                 if channel_state.is_closed {
                     child_workflow.workflow.close_outbound_channel(None, name);
                 }

@@ -295,17 +295,6 @@ impl<'a> Workflow<'a> {
         )
     }
 
-    pub(crate) fn close_inbound_channel(
-        &mut self,
-        workflow_id: Option<WorkflowId>,
-        channel_name: &str,
-    ) {
-        self.store
-            .data_mut()
-            .close_inbound_channel(workflow_id, channel_name);
-        crate::trace!("Closed inbound channel `{}`", channel_name);
-    }
-
     pub(crate) fn drain_messages(&mut self) -> Vec<(ChannelId, Vec<Message>)> {
         self.store.data_mut().drain_messages()
     }

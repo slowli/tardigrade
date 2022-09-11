@@ -14,7 +14,7 @@ use crate::{
     receipt::WakeUpCause,
     utils::Message,
     workflow::{ChannelIds, Workflow},
-    TaskId, TimerId, WorkflowId,
+    TaskId, TimerId, WorkflowId, ChannelId,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,6 +163,14 @@ impl PersistedWorkflow {
         channel_name: &str,
     ) {
         self.state.close_outbound_channel(workflow_id, channel_name);
+    }
+
+    pub(crate) fn close_outbound_channels_by_id(&mut self, channel_id: ChannelId) {
+        for channel_state in self.state.outbound_channels_mut() {
+            if channel_state.id() == channel_id {
+                channel_state.close();
+            }
+        }
     }
 
     /// Returns the current state of a task with the specified ID.

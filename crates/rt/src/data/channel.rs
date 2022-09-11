@@ -136,6 +136,11 @@ impl OutboundChannelState {
         self.channel_id
     }
 
+    /// Is this channel ready to receive another message?
+    fn is_ready(&self) -> bool {
+        !self.is_closed && self.capacity.map_or(true, |cap| self.messages.len() < cap)
+    }
+
     fn acquire(&mut self) -> Result<(), AccessErrorKind> {
         if mem::replace(&mut self.is_acquired, true) {
             Err(AccessErrorKind::AlreadyAcquired)
@@ -144,9 +149,9 @@ impl OutboundChannelState {
         }
     }
 
-    /// Is this channel ready to receive another message?
-    fn is_ready(&self) -> bool {
-        !self.is_closed && self.capacity.map_or(true, |cap| self.messages.len() < cap)
+    pub(crate) fn close(&mut self) {
+        debug_assert!(self.wakes_on_flush.is_empty());
+        self.is_closed = true;
     }
 }
 
@@ -272,7 +277,7 @@ impl PersistedWorkflowData {
             .outbound
             .get_mut(channel_name)
             .unwrap();
-        channel_state.is_closed = true;
+        channel_state.close();
     }
 
     pub fn channel_ids(&self) -> ChannelIds {
@@ -345,7 +350,7 @@ impl PersistedWorkflowData {
         local_channels.chain(workflow_channels)
     }
 
-    pub(super) fn outbound_channels_mut(
+    pub(crate) fn outbound_channels_mut(
         &mut self,
     ) -> impl Iterator<Item = &mut OutboundChannelState> + '_ {
         let workflow_channels = self
@@ -431,15 +436,6 @@ impl WorkflowData<'_> {
             .push_inbound_message(workflow_id, channel_name, message)
     }
 
-    pub(crate) fn close_inbound_channel(
-        &mut self,
-        workflow_id: Option<WorkflowId>,
-        channel_name: &str,
-    ) {
-        self.persisted
-            .close_inbound_channel(workflow_id, channel_name);
-    }
-
     fn poll_inbound_channel(
         &mut self,
         channel_ref: &ChannelRef,
@@ -471,7 +467,12 @@ impl WorkflowData<'_> {
         let should_block =
             !channel_state.is_ready() || (flush && !channel_state.messages.is_empty());
         let poll_result = if channel_state.is_closed {
-            Poll::Ready(Err(SendError::Closed))
+            Poll::Ready(if flush {
+                // In the current implementation, flushing a closed channel always succeeds.
+                Ok(())
+            } else {
+                Err(SendError::Closed)
+            })
         } else if should_block {
             Poll::Pending
         } else {

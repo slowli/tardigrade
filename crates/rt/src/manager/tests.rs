@@ -4,7 +4,7 @@ use assert_matches::assert_matches;
 use mimicry::Answers;
 use wasmtime::{AsContextMut, StoreContextMut, Trap};
 
-use std::task::Poll;
+use std::{collections::HashSet, task::Poll};
 
 use super::*;
 use crate::{
@@ -22,11 +22,25 @@ use tardigrade_shared::abi::AllocateBytes;
 
 const POLL_CX: WasmContextPtr = 123;
 
-fn test_spawner() -> WorkflowSpawner<()> {
+fn create_test_spawner() -> WorkflowSpawner<()> {
     let engine = WorkflowEngine::default();
     WorkflowModule::new(&engine, ExportsMock::MOCK_MODULE_BYTES)
         .unwrap()
         .for_untyped_workflow("TestWorkflow")
+        .unwrap()
+}
+
+fn create_test_manager() -> WorkflowManager {
+    WorkflowManager::builder()
+        .with_spawner("test:latest", create_test_spawner())
+        .build()
+}
+
+fn create_test_workflow(manager: &WorkflowManager) -> WorkflowHandle<'_, ()> {
+    manager
+        .new_workflow("test:latest", b"test_input".to_vec())
+        .unwrap()
+        .build()
         .unwrap()
 }
 
@@ -49,14 +63,8 @@ fn initialize_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()
 fn instantiating_workflow() {
     let poll_fns = Answers::from_value(initialize_task as MockPollFn);
     let _guard = ExportsMock::prepare(poll_fns);
-    let manager = WorkflowManager::builder()
-        .with_spawner("test:latest", test_spawner())
-        .build();
-    let workflow = manager
-        .new_workflow("test:latest", b"test_input".to_vec())
-        .unwrap()
-        .build()
-        .unwrap();
+    let manager = create_test_manager();
+    let workflow = create_test_workflow(&manager);
 
     let state = manager.state.lock().unwrap();
     let persisted = &state.workflows[&workflow.id()];
@@ -66,8 +74,17 @@ fn instantiating_workflow() {
         state.channels[&orders_id].receiver_workflow_id,
         Some(workflow.id())
     );
+    assert_eq!(
+        state.channels[&orders_id].sender_workflow_ids,
+        HashSet::new()
+    );
+
     let traces_id = workflow.ids().channel_ids.outbound["traces"];
     assert_eq!(state.channels[&traces_id].receiver_workflow_id, None);
+    assert_eq!(
+        state.channels[&traces_id].sender_workflow_ids,
+        HashSet::from_iter([workflow.id()])
+    );
     drop(state); // in order for `test_initializing_workflow()` not to dead-lock
 
     test_initializing_workflow(&manager, workflow.ids());
@@ -103,9 +120,7 @@ fn initializing_workflow_with_closed_channels() {
     };
 
     let _guard = ExportsMock::prepare(Answers::from_value(test_channels));
-    let manager = WorkflowManager::builder()
-        .with_spawner("test:latest", test_spawner())
-        .build();
+    let manager = create_test_manager();
     let builder: WorkflowBuilder<_, ()> = manager
         .new_workflow("test:latest", b"test_input".to_vec())
         .unwrap();
@@ -133,8 +148,169 @@ fn initializing_workflow_with_closed_channels() {
 
 #[test]
 fn closing_workflow_channels() {
-    // instantiate workflow, then close inbound & outbound channels
-    todo!()
+    let block_on_flush: MockPollFn = |mut ctx| {
+        let events = Some(WorkflowData::outbound_channel_ref(None, "events"));
+        let (ptr, len) = WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"event #1")?;
+        WorkflowFunctions::start_send(ctx.as_context_mut(), events.clone(), ptr, len)?;
+        let poll_result =
+            WorkflowFunctions::poll_flush_for_sender(ctx.as_context_mut(), events, POLL_CX)?;
+        assert_eq!(poll_result, -1); // Pending
+        Ok(Poll::Pending)
+    };
+    let drop_inbound_channel: MockPollFn = |mut ctx| {
+        // Check that the outbound channel is closed. Note that flushing the channel
+        // must succeed (messages are flushed before the closure).
+        let events = Some(WorkflowData::outbound_channel_ref(None, "events"));
+        let poll_result = WorkflowFunctions::poll_flush_for_sender(
+            ctx.as_context_mut(),
+            events.clone(),
+            POLL_CX,
+        )?;
+        assert_eq!(poll_result, 0); // Ok(())
+
+        let poll_result =
+            WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), events, POLL_CX)?;
+        assert_eq!(poll_result, 2); // Err(Closed)
+
+        let orders = Some(WorkflowData::inbound_channel_ref(None, "orders"));
+        WorkflowFunctions::drop_ref(ctx.as_context_mut(), orders)?;
+        Ok(Poll::Pending)
+    };
+
+    let poll_fns = Answers::from_values([block_on_flush, drop_inbound_channel]);
+    let _guard = ExportsMock::prepare(poll_fns);
+    let manager = create_test_manager();
+    let workflow = create_test_workflow(&manager);
+    workflow.tick().unwrap(); // initializes the workflow
+
+    let events_id = workflow.ids().channel_ids.outbound["events"];
+    manager.close_channel_sender(events_id);
+    let channel_info = manager.channel_info(events_id);
+    assert!(channel_info.is_closed());
+    {
+        let persisted = workflow.persisted();
+        let events: Vec<_> = persisted.pending_events().collect();
+        assert_matches!(
+            events.as_slice(),
+            [WakeUpCause::Flush { workflow_id: None, channel_name, .. }]
+                if channel_name == "events"
+        );
+    }
+
+    workflow.tick().unwrap();
+    let orders_id = workflow.ids().channel_ids.inbound["orders"];
+    let channel_info = manager.channel_info(orders_id);
+    assert!(channel_info.is_closed());
+}
+
+fn extract_order_events(receipt: &Receipt) -> Vec<&ChannelEventKind> {
+    let events = receipt
+        .executions()
+        .iter()
+        .flat_map(|execution| &execution.events);
+    let order_events = events.filter_map(|event| {
+        if let Some(ChannelEvent {
+            kind, channel_name, ..
+        }) = event.as_channel_event()
+        {
+            if channel_name == "orders" {
+                return Some(kind);
+            }
+        }
+        None
+    });
+    order_events.collect()
+}
+
+fn test_closing_inbound_channel_from_host_side(with_message: bool) {
+    let poll_inbound_channel: MockPollFn = |mut ctx| {
+        let orders = Some(WorkflowData::inbound_channel_ref(None, "orders"));
+        let poll_result = WorkflowFunctions::poll_next_for_receiver(
+            ctx.as_context_mut(),
+            orders.clone(),
+            POLL_CX,
+        )?;
+        assert_ne!(poll_result, -1); // Poll::Ready(Some(_))
+
+        let poll_result = WorkflowFunctions::poll_next_for_receiver(ctx, orders, POLL_CX)?;
+        assert_eq!(poll_result, -1);
+        // ^ Poll::Pending; we don't dispatch the closure signal immediately
+
+        Ok(Poll::Pending)
+    };
+    let test_closed_channel: MockPollFn = |ctx| {
+        let orders = Some(WorkflowData::inbound_channel_ref(None, "orders"));
+        let poll_result = WorkflowFunctions::poll_next_for_receiver(ctx, orders, POLL_CX)?;
+        assert_eq!(poll_result, -2); // Poll::Ready(None)
+
+        Ok(Poll::Pending)
+    };
+
+    let poll_fns: Vec<MockPollFn> = if with_message {
+        vec![initialize_task, poll_inbound_channel, test_closed_channel]
+    } else {
+        vec![initialize_task, test_closed_channel]
+    };
+    let _guard = ExportsMock::prepare(Answers::from_values(poll_fns));
+    let manager = create_test_manager();
+    let workflow = create_test_workflow(&manager);
+    workflow.tick().unwrap(); // initializes the workflow
+
+    let orders_id = workflow.ids().channel_ids.inbound["orders"];
+    if with_message {
+        manager
+            .send_message(orders_id, b"order #1".to_vec())
+            .unwrap();
+    }
+    manager.close_channel_sender(orders_id);
+
+    if with_message {
+        let receipt = manager
+            .feed_message_to_workflow(orders_id, workflow.id())
+            .unwrap()
+            .unwrap();
+        let order_events = extract_order_events(&receipt);
+        assert_matches!(
+            order_events.as_slice(),
+            [
+                ChannelEventKind::InboundChannelPolled {
+                    result: Poll::Ready(Some(8)),
+                },
+                ChannelEventKind::InboundChannelPolled {
+                    result: Poll::Pending,
+                },
+            ]
+        );
+    }
+
+    {
+        let persisted = workflow.persisted();
+        let pending_events = persisted.pending_events().collect::<Vec<_>>();
+        assert_matches!(
+            pending_events.as_slice(),
+            [WakeUpCause::ChannelClosed { workflow_id: None, channel_name }]
+                if channel_name == "orders"
+        );
+    }
+
+    let receipt = workflow.tick().unwrap();
+    let order_events = extract_order_events(&receipt);
+    assert_matches!(
+        order_events.as_slice(),
+        [ChannelEventKind::InboundChannelPolled {
+            result: Poll::Ready(None),
+        }]
+    );
+}
+
+#[test]
+fn closing_inbound_channel_from_host_side() {
+    test_closing_inbound_channel_from_host_side(false);
+}
+
+#[test]
+fn closing_inbound_channel_with_message_from_host_side() {
+    test_closing_inbound_channel_from_host_side(true);
 }
 
 #[test]
@@ -142,14 +318,8 @@ fn error_initializing_workflow() {
     let error_on_initialization: MockPollFn = |_| Err(Trap::new("oops"));
     let poll_fns = Answers::from_value(error_on_initialization);
     let _guard = ExportsMock::prepare(poll_fns);
-    let manager = WorkflowManager::builder()
-        .with_spawner("test:latest", test_spawner())
-        .build();
-    let workflow: WorkflowHandle<()> = manager
-        .new_workflow("test:latest", b"test_input".to_vec())
-        .unwrap()
-        .build()
-        .unwrap();
+    let manager = create_test_manager();
+    let workflow = create_test_workflow(&manager);
 
     let err = workflow.tick().unwrap_err();
     let err = err.trap().display_reason().to_string();
@@ -181,14 +351,8 @@ fn consume_message(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()
 fn sending_message_to_workflow() {
     let poll_fns = Answers::from_values([poll_receiver as MockPollFn, consume_message]);
     let _guard = ExportsMock::prepare(poll_fns);
-    let manager = WorkflowManager::builder()
-        .with_spawner("test:latest", test_spawner())
-        .build();
-    let workflow = manager
-        .new_workflow("test:latest", b"test_input".to_vec())
-        .unwrap()
-        .build()
-        .unwrap();
+    let manager = create_test_manager();
+    let workflow = create_test_workflow(&manager);
 
     manager.tick_workflow(workflow.id()).unwrap();
     let orders_id = workflow.ids().channel_ids.inbound["orders"];
@@ -244,14 +408,8 @@ fn error_processing_inbound_message_in_workflow() {
         initialize,
         error_after_consuming_message,
     ]));
-    let manager = WorkflowManager::builder()
-        .with_spawner("test:latest", test_spawner())
-        .build();
-    let workflow = manager
-        .new_workflow("test:latest", b"test_input".to_vec())
-        .unwrap()
-        .build()
-        .unwrap();
+    let manager = create_test_manager();
+    let workflow = create_test_workflow(&manager);
     workflow.tick().unwrap(); // initialize
 
     let orders_id = workflow.ids().channel_ids.inbound["orders"];

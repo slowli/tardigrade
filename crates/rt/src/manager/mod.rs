@@ -226,26 +226,9 @@ impl WorkflowManager {
         workflow_id: WorkflowId,
     ) -> Result<Option<Receipt>, ExecutionError> {
         let mut state = self.lock();
-        let message = state.take_message(channel_id);
-        let message = if let Some(message) = message {
-            Some(message)
-        } else if state.channels[&channel_id].is_closed {
-            None
-        } else {
-            return Ok(None);
-        };
-
+        let (message, is_closed) = state.take_message(channel_id).expect("no message to feed");
         let workflow = &state.workflows[&workflow_id].workflow;
-        let (child_id, channel_name) = workflow
-            .inbound_channels()
-            .find_map(|(child_id, name, state)| {
-                if state.id() == channel_id {
-                    Some((child_id, name.to_owned()))
-                } else {
-                    None
-                }
-            })
-            .unwrap();
+        let (child_id, channel_name) = workflow.find_inbound_channel(channel_id);
 
         let transaction = Transaction::new(&state, Some(workflow_id), self.shared.clone());
         let mut workflow = self.restore_workflow(&state, workflow_id, &transaction);
@@ -253,6 +236,15 @@ impl WorkflowManager {
         if let Ok(Some(receipt)) = &result {
             state.drain_and_persist_workflow(workflow_id, None, workflow);
             state.commit(transaction, receipt);
+
+            if is_closed {
+                // Signal to the workflow that the channel is closed. This can be performed
+                // on a persisted workflow, without executing it.
+                let workflow_record = state.workflows.get_mut(&workflow_id).unwrap();
+                workflow_record
+                    .workflow
+                    .close_inbound_channel(child_id, &channel_name);
+            }
         } else {
             // Do not commit the execution result. Instead, put the message back to the channel.
             // Note that this happens both in the case of `ExecutionError`, and if the message
@@ -266,9 +258,7 @@ impl WorkflowManager {
                     workflow_id
                 );
             }
-            if let Some(message) = message {
-                state.revert_taking_message(channel_id, message);
-            }
+            state.revert_taking_message(channel_id, message);
         }
         result
     }
@@ -279,17 +269,11 @@ impl WorkflowManager {
         workflow: &mut Workflow,
         child_id: Option<WorkflowId>,
         channel_name: &str,
-        message: Option<Message>,
+        message: Message,
     ) -> Result<Option<Receipt>, ExecutionError> {
-        let push_result = if let Some(message) = message {
-            workflow.push_inbound_message(child_id, channel_name, message.into())
-        } else {
-            // FIXME: rework closing channel
-            workflow.close_inbound_channel(child_id, channel_name);
-            Ok(())
-        };
+        let push_result = workflow.push_inbound_message(child_id, channel_name, message.into());
         if push_result.is_err() {
-            Ok(None)
+            Ok(None) // FIXME: panic here? (instead, return `None` if the message was not consumed)
         } else {
             workflow.tick().map(Some)
         }
@@ -413,24 +397,6 @@ impl WorkflowManagerBuilder {
     }
 }
 
-impl Receipt {
-    fn closed_channel_ids(&self) -> impl Iterator<Item = ChannelId> + '_ {
-        self.executions().iter().flat_map(|execution| {
-            execution.events.iter().filter_map(|event| {
-                if let Some(ChannelEvent {
-                    kind: ChannelEventKind::InboundChannelClosed(channel_id),
-                    ..
-                }) = event.as_channel_event()
-                {
-                    Some(*channel_id)
-                } else {
-                    None
-                }
-            })
-        })
-    }
-}
-
 impl ManageInterfaces for WorkflowManager {
     fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface<()>>> {
         Some(Cow::Borrowed(
@@ -457,5 +423,37 @@ impl<'a, W: WorkflowFn> ManageWorkflows<'a, W> for WorkflowManager {
         let workflow_id = transaction.single_new_workflow_id().unwrap();
         self.lock().commit(transaction, &Receipt::new());
         Ok(self.workflow(workflow_id).unwrap().downcast_unchecked())
+    }
+}
+
+impl Receipt {
+    fn closed_channel_ids(&self) -> impl Iterator<Item = ChannelId> + '_ {
+        self.executions().iter().flat_map(|execution| {
+            execution.events.iter().filter_map(|event| {
+                if let Some(ChannelEvent {
+                    kind: ChannelEventKind::InboundChannelClosed(channel_id),
+                    ..
+                }) = event.as_channel_event()
+                {
+                    Some(*channel_id)
+                } else {
+                    None
+                }
+            })
+        })
+    }
+}
+
+impl PersistedWorkflow {
+    fn find_inbound_channel(&self, channel_id: ChannelId) -> (Option<WorkflowId>, String) {
+        self.inbound_channels()
+            .find_map(|(child_id, name, state)| {
+                if state.id() == channel_id {
+                    Some((child_id, name.to_owned()))
+                } else {
+                    None
+                }
+            })
+            .unwrap()
     }
 }
