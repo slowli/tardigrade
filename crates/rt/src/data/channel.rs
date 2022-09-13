@@ -335,7 +335,7 @@ impl PersistedWorkflowData {
             .get_mut(&channel_ref.name)
     }
 
-    pub(super) fn outbound_channels(
+    pub(crate) fn outbound_channels(
         &self,
     ) -> impl Iterator<Item = (Option<WorkflowId>, &str, &OutboundChannelState)> + '_ {
         let local_channels = self.channels.outbound.iter();

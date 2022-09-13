@@ -85,6 +85,7 @@ fn instantiating_workflow() {
         state.channels[&orders_id].sender_workflow_ids,
         HashSet::new()
     );
+    assert!(state.channels[&orders_id].has_external_sender);
 
     let traces_id = workflow.ids().channel_ids.outbound["traces"];
     assert_eq!(state.channels[&traces_id].receiver_workflow_id, None);
@@ -92,6 +93,7 @@ fn instantiating_workflow() {
         state.channels[&traces_id].sender_workflow_ids,
         HashSet::from_iter([workflow.id()])
     );
+    assert!(!state.channels[&traces_id].has_external_sender);
     drop(state); // in order for `test_initializing_workflow()` not to dead-lock
 
     test_initializing_workflow(&manager, workflow.ids());
@@ -193,7 +195,7 @@ fn closing_workflow_channels() {
     workflow.tick().unwrap(); // initializes the workflow
 
     let events_id = workflow.ids().channel_ids.outbound["events"];
-    manager.close_channel_sender(events_id);
+    manager.close_host_receiver(events_id);
     let channel_info = manager.channel_info(events_id);
     assert!(channel_info.is_closed());
     {
@@ -273,7 +275,7 @@ fn test_closing_inbound_channel_from_host_side(with_message: bool) {
             .send_message(orders_id, b"order #1".to_vec())
             .unwrap();
     }
-    manager.close_channel_sender(orders_id);
+    manager.close_host_sender(orders_id);
 
     if with_message {
         assert_eq!(

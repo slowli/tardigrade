@@ -127,6 +127,7 @@ fn spawning_child_workflow() {
             state.channels[&traces_id].sender_workflow_ids,
             HashSet::from_iter([child_id])
         );
+        assert!(!state.channels[&traces_id].has_external_sender);
         assert_eq!(state.find_workflow_with_pending_tasks(), Some(child_id));
     }
 
@@ -169,6 +170,11 @@ fn child_workflow_completion() {
             WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), child_orders, POLL_CX)?;
         assert_eq!(poll_result, 2); // Err(Closed)
 
+        let child_traces = Some(WorkflowData::inbound_channel_ref(Some(CHILD_ID), "traces"));
+        let poll_result =
+            WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), child_traces, POLL_CX)?;
+        assert_eq!(poll_result, -2); // Poll::Ready(None)
+
         let child = Some(WorkflowData::child_ref(CHILD_ID));
         let poll_result =
             SpawnFunctions::poll_workflow_completion(ctx.as_context_mut(), child, POLL_CX)?;
@@ -193,10 +199,12 @@ fn child_workflow_completion() {
     let (child_id, child_state) = children.pop().unwrap();
     assert_eq!(child_id, CHILD_ID);
     let orders_id = child_state.outbound_channel("orders").unwrap().id();
-    // FIXME: also test inbound channels
+    let traces_id = child_state.inbound_channel("traces").unwrap().id();
 
     manager.tick_workflow(child_id).unwrap();
     let channel_info = manager.channel_info(orders_id);
+    assert!(channel_info.is_closed);
+    let channel_info = manager.channel_info(traces_id);
     assert!(channel_info.is_closed);
 
     let persisted = workflow.persisted();
@@ -205,7 +213,10 @@ fn child_workflow_completion() {
     let events: Vec<_> = persisted.pending_events().collect();
     assert_matches!(
         events.as_slice(),
-        [WakeUpCause::CompletedWorkflow(CHILD_ID)]
+        [
+            WakeUpCause::ChannelClosed { workflow_id: Some(CHILD_ID), channel_name },
+            WakeUpCause::CompletedWorkflow(CHILD_ID),
+        ] if channel_name == "traces"
     );
 
     let receipt = workflow.tick().unwrap();

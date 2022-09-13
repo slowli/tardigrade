@@ -182,7 +182,7 @@ impl<'a, T, C: Encode<T>> MessageSender<'a, T, C> {
 
     /// Closes this channel from the host side.
     pub fn close(self) {
-        self.manager.close_channel_sender(self.channel_id);
+        self.manager.close_host_sender(self.channel_id);
     }
 }
 
@@ -236,6 +236,11 @@ impl<T, C: Decode<T>> MessageReceiver<'_, T, C> {
             codec: &mut self.codec,
             _item: PhantomData,
         }
+    }
+
+    /// Closes this channel from the host side.
+    pub fn close(self) {
+        self.manager.close_host_receiver(self.channel_id);
     }
 }
 

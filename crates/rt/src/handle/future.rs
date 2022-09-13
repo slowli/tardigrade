@@ -239,7 +239,7 @@ impl AsyncEnv {
                 if let Some(message) = message {
                     manager.send_message(id, message).unwrap();
                 } else {
-                    manager.close_channel_sender(id);
+                    manager.close_host_sender(id);
                 }
             }
 

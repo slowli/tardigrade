@@ -134,10 +134,10 @@ impl Default for Shared {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum ChannelClosureCause {
-    Host,
+enum ChannelSide {
+    HostSender,
+    WorkflowSender(WorkflowId),
     Receiver,
-    // FIXME: also add sender
 }
 
 /// Simple in-memory implementation of a workflow manager.
@@ -206,9 +206,19 @@ impl WorkflowManager {
         self.lock().send_message(channel_id, message.into())
     }
 
-    pub(crate) fn close_channel_sender(&self, channel_id: ChannelId) {
-        self.lock()
-            .close_channel(channel_id, ChannelClosureCause::Host);
+    pub(crate) fn close_host_sender(&self, channel_id: ChannelId) {
+        let mut state = self.lock();
+        state.close_channel_side(channel_id, ChannelSide::HostSender);
+    }
+
+    pub(crate) fn close_host_receiver(&self, channel_id: ChannelId) {
+        let mut state = self.lock();
+        debug_assert!(
+            state.channels[&channel_id].receiver_workflow_id.is_none(),
+            "Attempted to close channel {} for which the host doesn't hold receiver",
+            channel_id
+        );
+        state.close_channel_side(channel_id, ChannelSide::Receiver);
     }
 
     pub(crate) fn take_outbound_messages(&self, channel_id: ChannelId) -> (usize, Vec<Message>) {

@@ -9,7 +9,7 @@ use std::{
 };
 
 use crate::{
-    manager::{transaction::Transaction, ChannelClosureCause, ChannelInfo},
+    manager::{transaction::Transaction, ChannelInfo, ChannelSide},
     receipt::Receipt,
     utils::Message,
     workflow::{ChannelIds, Workflow},
@@ -21,6 +21,7 @@ use tardigrade_shared::{ChannelId, SendError, WorkflowId};
 pub(super) struct ChannelState {
     pub receiver_workflow_id: Option<WorkflowId>, // `None` means external receiver
     pub sender_workflow_ids: HashSet<WorkflowId>,
+    pub has_external_sender: bool,
     pub is_closed: bool,
     pub messages: VecDeque<Message>,
     pub next_message_idx: usize,
@@ -34,6 +35,7 @@ impl ChannelState {
         Self {
             receiver_workflow_id,
             sender_workflow_ids: sender_workflow_id.into_iter().collect(),
+            has_external_sender: sender_workflow_id.is_none(),
             is_closed: false,
             messages: VecDeque::new(),
             next_message_idx: 0,
@@ -42,7 +44,8 @@ impl ChannelState {
 
     fn closed() -> Self {
         let mut this = Self::new(None, None);
-        this.close();
+        this.has_external_sender = false;
+        this.is_closed = true;
         this
     }
 
@@ -80,8 +83,25 @@ impl ChannelState {
         (start_idx, mem::take(&mut self.messages))
     }
 
-    fn close(&mut self) {
-        self.is_closed = true;
+    /// Returns `true` if the channel was closed.
+    fn close_side(&mut self, side: ChannelSide) -> bool {
+        match side {
+            ChannelSide::HostSender => {
+                self.has_external_sender = false;
+            }
+            ChannelSide::WorkflowSender(id) => {
+                self.sender_workflow_ids.remove(&id);
+            }
+            ChannelSide::Receiver => {
+                self.is_closed = true;
+                return true;
+            }
+        }
+
+        if !self.has_external_sender && self.sender_workflow_ids.is_empty() {
+            self.is_closed = true;
+        }
+        self.is_closed
     }
 }
 
@@ -136,12 +156,15 @@ impl PersistedWorkflows {
         channel_state.push_messages([message])
     }
 
-    pub(super) fn close_channel(&mut self, channel_id: ChannelId, cause: ChannelClosureCause) {
+    pub(super) fn close_channel_side(&mut self, channel_id: ChannelId, side: ChannelSide) {
         let channel_state = self.channels.get_mut(&channel_id).unwrap();
-        channel_state.close();
+        if !channel_state.close_side(side) {
+            // The channel was not closed; no further actions are necessary.
+            return;
+        }
 
         // If the channel is closed by the receiver, no need to notify it again.
-        if !matches!(cause, ChannelClosureCause::Receiver) && channel_state.messages.is_empty() {
+        if !matches!(side, ChannelSide::Receiver) && channel_state.messages.is_empty() {
             // We can notify the receiver immediately only if there are no unconsumed messages
             // in the channel.
             if let Some(receiver_workflow_id) = channel_state.receiver_workflow_id {
@@ -245,7 +268,7 @@ impl PersistedWorkflows {
         }
 
         for channel_id in receipt.closed_channel_ids() {
-            self.close_channel(channel_id, ChannelClosureCause::Receiver);
+            self.close_channel_side(channel_id, ChannelSide::Receiver);
         }
     }
 
@@ -265,9 +288,12 @@ impl PersistedWorkflows {
             completion_notification_receiver = persisted.parent_id;
             // Close all channels linked to the workflow.
             for (.., state) in workflow.inbound_channels() {
-                self.close_channel(state.id(), ChannelClosureCause::Receiver);
+                self.close_channel_side(state.id(), ChannelSide::Receiver);
             }
-            // FIXME: close outbound channels as well
+            for (.., state) in workflow.outbound_channels() {
+                self.close_channel_side(state.id(), ChannelSide::WorkflowSender(id));
+            }
+            // Garbage-collect the workflow state.
             self.workflows.remove(&id);
         } else {
             persisted.workflow = workflow;

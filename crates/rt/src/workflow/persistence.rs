@@ -7,8 +7,8 @@ use wasmtime::Store;
 
 use crate::{
     data::{
-        ChildWorkflowState, InboundChannelState, PersistError, PersistedWorkflowData, Refs,
-        TaskState, TimerState, Wakers, WorkflowData,
+        ChildWorkflowState, InboundChannelState, OutboundChannelState, PersistError,
+        PersistedWorkflowData, Refs, TaskState, TimerState, Wakers, WorkflowData,
     },
     module::{DataSection, Services, WorkflowSpawner},
     receipt::WakeUpCause,
@@ -148,6 +148,12 @@ impl PersistedWorkflow {
         &self,
     ) -> impl Iterator<Item = (Option<WorkflowId>, &str, &InboundChannelState)> + '_ {
         self.state.inbound_channels()
+    }
+
+    pub(crate) fn outbound_channels(
+        &self,
+    ) -> impl Iterator<Item = (Option<WorkflowId>, &str, &OutboundChannelState)> + '_ {
+        self.state.outbound_channels()
     }
 
     pub(crate) fn close_inbound_channel(
