@@ -185,10 +185,7 @@ impl WorkflowManager {
 
     /// Checks whether all workflows contained in this manager are finished.
     pub fn is_finished(&self) -> bool {
-        self.lock()
-            .workflows
-            .values()
-            .all(|persisted| persisted.workflow.is_finished())
+        self.lock().workflows.is_empty() // finished workflows are removed
     }
 
     pub(crate) fn persisted_workflow(&self, workflow_id: WorkflowId) -> PersistedWorkflow {

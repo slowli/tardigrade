@@ -112,6 +112,8 @@ fn spawning_child_workflow() {
     let (child_id, child_state) = children.pop().unwrap();
     assert_eq!(child_id, CHILD_ID);
     let traces_id = child_state.inbound_channel("traces").unwrap().id();
+    let pending_events: Vec<_> = persisted.pending_events().collect();
+    assert!(pending_events.is_empty(), "{:?}", pending_events);
 
     {
         let state = manager.lock();
@@ -125,10 +127,16 @@ fn spawning_child_workflow() {
             state.channels[&traces_id].sender_workflow_ids,
             HashSet::from_iter([child_id])
         );
+        assert_eq!(state.find_workflow_with_pending_tasks(), Some(child_id));
     }
 
     // Emulate the child workflow putting a message to the `traces` channel.
     manager.send_message(traces_id, b"trace".to_vec()).unwrap();
+    assert_eq!(
+        manager.lock().find_consumable_channel(),
+        Some((traces_id, workflow.id()))
+    );
+
     let receipt = manager
         .feed_message_to_workflow(traces_id, workflow.id())
         .unwrap()
@@ -212,5 +220,3 @@ fn child_workflow_completion() {
     });
     assert!(child_completed);
 }
-
-// FIXME: test scheduling (also polish given changes in channel closure)

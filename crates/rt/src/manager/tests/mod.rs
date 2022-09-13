@@ -69,7 +69,11 @@ fn instantiating_workflow() {
     let manager = create_test_manager();
     let workflow = create_test_workflow(&manager);
 
-    let state = manager.state.lock().unwrap();
+    let state = manager.lock();
+    assert_eq!(
+        state.find_workflow_with_pending_tasks(),
+        Some(workflow.id())
+    );
     let persisted = &state.workflows[&workflow.id()];
     assert_eq!(persisted.definition_id, "test:latest");
     let orders_id = workflow.ids().channel_ids.inbound["orders"];
@@ -100,7 +104,9 @@ fn test_initializing_workflow(manager: &WorkflowManager, handle: &WorkflowAndCha
     assert_matches!(main_execution.function, ExecutedFunction::Entry { .. });
 
     let traces_id = handle.channel_ids.outbound["traces"];
-    let state = manager.state.lock().unwrap();
+    let state = manager.lock();
+    assert_eq!(state.find_workflow_with_pending_tasks(), None);
+    assert_eq!(state.find_consumable_channel(), None);
     let traces = &state.channels[&traces_id].messages;
     assert_eq!(traces.len(), 1);
     assert_eq!(traces[0].as_ref(), b"trace #1");
@@ -270,6 +276,11 @@ fn test_closing_inbound_channel_from_host_side(with_message: bool) {
     manager.close_channel_sender(orders_id);
 
     if with_message {
+        assert_eq!(
+            manager.lock().find_consumable_channel(),
+            Some((orders_id, workflow.id()))
+        );
+
         let receipt = manager
             .feed_message_to_workflow(orders_id, workflow.id())
             .unwrap()
@@ -286,6 +297,8 @@ fn test_closing_inbound_channel_from_host_side(with_message: bool) {
                 },
             ]
         );
+    } else {
+        assert_eq!(manager.lock().find_consumable_channel(), None);
     }
 
     {
@@ -370,6 +383,10 @@ fn sending_message_to_workflow() {
         let orders = &state.channels[&orders_id].messages;
         assert_eq!(orders.len(), 1);
         assert_eq!(orders[0].as_ref(), b"order #1");
+        assert_eq!(
+            state.find_consumable_channel(),
+            Some((orders_id, workflow.id()))
+        );
     }
 
     let receipt = manager

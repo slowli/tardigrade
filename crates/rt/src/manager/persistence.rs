@@ -68,7 +68,7 @@ impl ChannelState {
     }
 
     fn can_provide_message(&self) -> bool {
-        !self.messages.is_empty() || self.is_closed
+        !self.messages.is_empty()
     }
 
     fn pop_message(&mut self) -> Option<Message> {
