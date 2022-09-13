@@ -70,14 +70,6 @@ impl ChannelState {
         Ok(())
     }
 
-    fn can_provide_message(&self) -> bool {
-        !self.messages.is_empty()
-    }
-
-    fn pop_message(&mut self) -> Option<Message> {
-        self.messages.pop_front()
-    }
-
     pub fn drain_messages(&mut self) -> (usize, VecDeque<Message>) {
         let start_idx = self.next_message_idx - self.messages.len();
         (start_idx, mem::take(&mut self.messages))
@@ -137,9 +129,10 @@ impl Default for PersistedWorkflows {
 impl PersistedWorkflows {
     pub(super) fn take_message(&mut self, channel_id: ChannelId) -> Option<(Message, bool)> {
         let channel_state = self.channels.get_mut(&channel_id).unwrap();
-        channel_state
-            .pop_message()
-            .map(|message| (message, channel_state.is_closed))
+        channel_state.messages.pop_front().map(|message| {
+            let signal_closure = channel_state.is_closed && channel_state.messages.is_empty();
+            (message, signal_closure)
+        })
     }
 
     pub(super) fn revert_taking_message(&mut self, channel_id: ChannelId, message: Message) {
@@ -226,7 +219,7 @@ impl PersistedWorkflows {
         all_channels.find_map(|(workflow_id, state)| {
             if state.waits_for_message() {
                 let channel_id = state.id();
-                if self.channels[&channel_id].can_provide_message() {
+                if !self.channels[&channel_id].messages.is_empty() {
                     return Some((channel_id, workflow_id));
                 }
             }

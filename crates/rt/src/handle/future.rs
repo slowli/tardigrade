@@ -301,7 +301,7 @@ impl AsyncEnv {
     /// to the consumers that the channel cannot be written to.
     fn gc(&mut self, manager: &WorkflowManager) {
         self.inbound_channels
-            .retain(|&id, _| !manager.channel_info(id).is_closed());
+            .retain(|&id, _| !manager.channel_info(id).unwrap().is_closed());
     }
 }
 

@@ -126,6 +126,7 @@ impl<'a> WorkflowHandle<'a, ()> {
     }
 }
 
+// FIXME: improve API so that the handle cannot be invalidated (e.g., by `tick()`)
 impl<W: TakeHandle<Self, Id = ()>> WorkflowHandle<'_, W> {
     /// Returns the ID of this workflow.
     pub fn id(&self) -> WorkflowId {
@@ -164,9 +165,15 @@ pub struct MessageSender<'a, T, C> {
 }
 
 impl<'a, T, C: Encode<T>> MessageSender<'a, T, C> {
+    /// Returns the ID of the channel this sender is connected to.
+    pub fn channel_id(&self) -> ChannelId {
+        self.channel_id
+    }
+
     /// Returns the current state of the channel.
+    #[allow(clippy::missing_panics_doc)] // false positive: channels are never removed
     pub fn channel_info(&self) -> ChannelInfo {
-        self.manager.channel_info(self.channel_id)
+        self.manager.channel_info(self.channel_id).unwrap()
     }
 
     /// Sends a message over the channel.
@@ -218,9 +225,15 @@ pub struct MessageReceiver<'a, T, C> {
 }
 
 impl<T, C: Decode<T>> MessageReceiver<'_, T, C> {
+    /// Returns the ID of the channel this receiver is connected to.
+    pub fn channel_id(&self) -> ChannelId {
+        self.channel_id
+    }
+
     /// Returns the current state of the channel.
+    #[allow(clippy::missing_panics_doc)] // false positive: channels are never removed
     pub fn channel_info(&self) -> ChannelInfo {
-        self.manager.channel_info(self.channel_id)
+        self.manager.channel_info(self.channel_id).unwrap()
     }
 
     /// Takes messages from the channel and progresses the flow marking the channel as flushed.

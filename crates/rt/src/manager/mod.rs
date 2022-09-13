@@ -166,8 +166,8 @@ impl WorkflowManager {
         }
     }
 
-    pub(crate) fn channel_info(&self, channel_id: ChannelId) -> ChannelInfo {
-        self.lock().channels[&channel_id].info()
+    pub fn channel_info(&self, channel_id: ChannelId) -> Option<ChannelInfo> {
+        Some(self.lock().channels.get(&channel_id)?.info())
     }
 
     /// Returns a handle to a workflow with the specified ID.

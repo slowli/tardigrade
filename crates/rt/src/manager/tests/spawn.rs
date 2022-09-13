@@ -202,9 +202,9 @@ fn child_workflow_completion() {
     let traces_id = child_state.inbound_channel("traces").unwrap().id();
 
     manager.tick_workflow(child_id).unwrap();
-    let channel_info = manager.channel_info(orders_id);
+    let channel_info = manager.channel_info(orders_id).unwrap();
     assert!(channel_info.is_closed);
-    let channel_info = manager.channel_info(traces_id);
+    let channel_info = manager.channel_info(traces_id).unwrap();
     assert!(channel_info.is_closed);
 
     let persisted = workflow.persisted();
