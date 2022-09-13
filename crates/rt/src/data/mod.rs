@@ -127,6 +127,11 @@ impl<'a> WorkflowData<'a> {
     ) -> ExternRef {
         HostResource::outbound_channel(workflow_id, name.into()).into_ref()
     }
+
+    #[cfg(test)]
+    pub(crate) fn child_ref(workflow_id: WorkflowId) -> ExternRef {
+        HostResource::Workflow(workflow_id).into_ref()
+    }
 }
 
 /// Functions operating on `WorkflowData` exported to WASM.

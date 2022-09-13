@@ -6,6 +6,8 @@ use wasmtime::{AsContextMut, StoreContextMut, Trap};
 
 use std::{collections::HashSet, task::Poll};
 
+mod spawn;
+
 use super::*;
 use crate::{
     data::{WasmContextPtr, WorkflowData, WorkflowFunctions},
@@ -21,6 +23,7 @@ use tardigrade::{
 use tardigrade_shared::abi::AllocateBytes;
 
 const POLL_CX: WasmContextPtr = 123;
+const ERROR_PTR: u32 = 1_024;
 
 fn create_test_spawner() -> WorkflowSpawner<()> {
     let engine = WorkflowEngine::default();
@@ -203,23 +206,25 @@ fn closing_workflow_channels() {
     assert!(channel_info.is_closed());
 }
 
-fn extract_order_events(receipt: &Receipt) -> Vec<&ChannelEventKind> {
-    let events = receipt
-        .executions()
-        .iter()
-        .flat_map(|execution| &execution.events);
-    let order_events = events.filter_map(|event| {
+fn extract_channel_events<'a>(
+    receipt: &'a Receipt,
+    child_id: Option<WorkflowId>,
+    name: &str,
+) -> Vec<&'a ChannelEventKind> {
+    let channel_events = receipt.events().filter_map(|event| {
         if let Some(ChannelEvent {
-            kind, channel_name, ..
+            kind,
+            channel_name,
+            workflow_id,
         }) = event.as_channel_event()
         {
-            if channel_name == "orders" {
+            if channel_name == name && *workflow_id == child_id {
                 return Some(kind);
             }
         }
         None
     });
-    order_events.collect()
+    channel_events.collect()
 }
 
 fn test_closing_inbound_channel_from_host_side(with_message: bool) {
@@ -269,7 +274,7 @@ fn test_closing_inbound_channel_from_host_side(with_message: bool) {
             .feed_message_to_workflow(orders_id, workflow.id())
             .unwrap()
             .unwrap();
-        let order_events = extract_order_events(&receipt);
+        let order_events = extract_channel_events(&receipt, None, "orders");
         assert_matches!(
             order_events.as_slice(),
             [
@@ -294,7 +299,7 @@ fn test_closing_inbound_channel_from_host_side(with_message: bool) {
     }
 
     let receipt = workflow.tick().unwrap();
-    let order_events = extract_order_events(&receipt);
+    let order_events = extract_channel_events(&receipt, None, "orders");
     assert_matches!(
         order_events.as_slice(),
         [ChannelEventKind::InboundChannelPolled {
@@ -388,13 +393,6 @@ fn sending_message_to_workflow() {
 
 #[test]
 fn error_processing_inbound_message_in_workflow() {
-    let initialize: MockPollFn = |mut ctx| {
-        let orders = Some(WorkflowData::inbound_channel_ref(None, "orders"));
-        let poll_result =
-            WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
-        assert_eq!(poll_result, -1); // Pending
-        Ok(Poll::Pending)
-    };
     let error_after_consuming_message: MockPollFn = |mut ctx| {
         let orders = Some(WorkflowData::inbound_channel_ref(None, "orders"));
         let poll_result =
@@ -405,7 +403,7 @@ fn error_processing_inbound_message_in_workflow() {
     };
 
     let _guard = ExportsMock::prepare(Answers::from_values([
-        initialize,
+        initialize_task,
         error_after_consuming_message,
     ]));
     let manager = create_test_manager();

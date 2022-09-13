@@ -81,7 +81,7 @@ impl TaskState {
         self.spawned_by
     }
 
-    /// Returns current poll state of this task.
+    /// Returns the current poll state of this task.
     pub fn result(&self) -> Poll<Result<(), &JoinError>> {
         match &self.completion_result {
             Poll::Pending => Poll::Pending,
@@ -97,6 +97,10 @@ impl TaskState {
 impl PersistedWorkflowData {
     pub(crate) fn task(&self, task_id: TaskId) -> Option<&TaskState> {
         self.tasks.get(&task_id)
+    }
+
+    pub(crate) fn main_task(&self) -> Option<&TaskState> {
+        self.tasks.values().find(|state| state.spawned_by.is_none())
     }
 
     pub(crate) fn tasks(&self) -> impl Iterator<Item = (TaskId, &TaskState)> + '_ {

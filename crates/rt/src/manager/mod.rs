@@ -133,6 +133,13 @@ impl Default for Shared {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ChannelClosureCause {
+    Host,
+    Receiver,
+    // FIXME: also add sender
+}
+
 /// Simple in-memory implementation of a workflow manager.
 #[derive(Debug, Default)]
 pub struct WorkflowManager {
@@ -203,7 +210,8 @@ impl WorkflowManager {
     }
 
     pub(crate) fn close_channel_sender(&self, channel_id: ChannelId) {
-        self.lock().close_channel_sender(channel_id);
+        self.lock()
+            .close_channel(channel_id, ChannelClosureCause::Host);
     }
 
     pub(crate) fn take_outbound_messages(&self, channel_id: ChannelId) -> (usize, Vec<Message>) {
@@ -234,7 +242,7 @@ impl WorkflowManager {
         let mut workflow = self.restore_workflow(&state, workflow_id, &transaction);
         let result = Self::push_message(&mut workflow, child_id, &channel_name, message.clone());
         if let Ok(Some(receipt)) = &result {
-            state.drain_and_persist_workflow(workflow_id, None, workflow);
+            state.drain_and_persist_workflow(workflow_id, workflow);
             state.commit(transaction, receipt);
 
             if is_closed {
@@ -313,7 +321,7 @@ impl WorkflowManager {
 
         let result = workflow.tick();
         if let Ok(receipt) = &result {
-            state.drain_and_persist_workflow(workflow_id, None, workflow);
+            state.drain_and_persist_workflow(workflow_id, workflow);
             state.commit(transaction, receipt);
         }
         result
@@ -428,18 +436,16 @@ impl<'a, W: WorkflowFn> ManageWorkflows<'a, W> for WorkflowManager {
 
 impl Receipt {
     fn closed_channel_ids(&self) -> impl Iterator<Item = ChannelId> + '_ {
-        self.executions().iter().flat_map(|execution| {
-            execution.events.iter().filter_map(|event| {
-                if let Some(ChannelEvent {
-                    kind: ChannelEventKind::InboundChannelClosed(channel_id),
-                    ..
-                }) = event.as_channel_event()
-                {
-                    Some(*channel_id)
-                } else {
-                    None
-                }
-            })
+        self.events().filter_map(|event| {
+            if let Some(ChannelEvent {
+                kind: ChannelEventKind::InboundChannelClosed(channel_id),
+                ..
+            }) = event.as_channel_event()
+            {
+                Some(*channel_id)
+            } else {
+                None
+            }
         })
     }
 }

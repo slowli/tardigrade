@@ -30,7 +30,12 @@ impl TransactionInner {
         channel_id
     }
 
-    fn stash_workflow(&mut self, definition_id: String, workflow: &mut Workflow) -> WorkflowId {
+    fn stash_workflow(
+        &mut self,
+        definition_id: String,
+        parent_id: Option<WorkflowId>,
+        mut workflow: Workflow,
+    ) -> WorkflowId {
         debug_assert!(!workflow.is_initialized());
 
         let id = self.next_workflow_id;
@@ -39,6 +44,7 @@ impl TransactionInner {
             id,
             WorkflowWithMeta {
                 definition_id,
+                parent_id,
                 workflow: workflow.persist().unwrap(),
             },
         );
@@ -122,14 +128,14 @@ impl ManageWorkflows<'_, ()> for Transaction {
             let mut state = self.inner.lock().unwrap();
             ChannelIds::new(handles, || state.allocate_channel_id())
         };
-        let mut workflow = spawner
+        let workflow = spawner
             .spawn(args, &channel_ids, self.services())
             .map_err(|err| SpawnError::new(err.to_string()))?;
-        let workflow_id = self
-            .inner
-            .lock()
-            .unwrap()
-            .stash_workflow(id.to_owned(), &mut workflow);
+        let workflow_id = self.inner.lock().unwrap().stash_workflow(
+            id.to_owned(),
+            self.executing_workflow_id,
+            workflow,
+        );
         Ok(WorkflowAndChannelIds {
             workflow_id,
             channel_ids,

@@ -16,7 +16,7 @@ use crate::{
         helpers::{HostResource, WakeIfPending, WakerPlacement, WasmContext, WasmContextPtr},
         PersistedWorkflowData, WorkflowData,
     },
-    receipt::{ResourceEventKind, ResourceId},
+    receipt::{ResourceEventKind, ResourceId, WakeUpCause},
     utils::{copy_bytes_from_wasm, copy_string_from_wasm, drop_value, serde_poll, WasmAllocator},
     workflow::ChannelIds,
 };
@@ -51,6 +51,14 @@ impl ChildWorkflowState {
         }
     }
 
+    /// Returns the current poll state of this workflow.
+    pub fn result(&self) -> Poll<Result<(), &JoinError>> {
+        match &self.completion_result {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(res) => Poll::Ready(res.as_ref().copied()),
+        }
+    }
+
     pub fn inbound_channel(&self, name: &str) -> Option<&InboundChannelState> {
         self.channels.inbound.get(name)
     }
@@ -71,6 +79,14 @@ impl PersistedWorkflowData {
 
     pub fn child_workflow(&self, id: WorkflowId) -> Option<&ChildWorkflowState> {
         self.child_workflows.get(&id)
+    }
+
+    pub fn notify_on_child_completion(&mut self, id: WorkflowId, result: Result<(), JoinError>) {
+        let state = self.child_workflows.get_mut(&id).unwrap();
+        debug_assert!(state.completion_result.is_pending());
+        state.completion_result = Poll::Ready(result);
+        let wakers = mem::take(&mut state.wakes_on_completion);
+        self.schedule_wakers(wakers, WakeUpCause::CompletedWorkflow(id));
     }
 }
 

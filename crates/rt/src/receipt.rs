@@ -65,6 +65,8 @@ pub enum WakeUpCause {
         /// Timer ID.
         id: TimerId,
     },
+    /// Woken up by completion of a child workflow.
+    CompletedWorkflow(WorkflowId),
 }
 
 /// Executed top-level WASM function.
@@ -292,6 +294,13 @@ impl Receipt {
     /// have occurred during their execution.
     pub fn executions(&self) -> &[Execution] {
         &self.executions
+    }
+
+    /// Iterates over events in all executions in order.
+    pub fn events(&self) -> impl Iterator<Item = &Event> + '_ {
+        self.executions
+            .iter()
+            .flat_map(|execution| &execution.events)
     }
 
     /// Returns the root cause of the workflow execution that corresponds to this receipt, if any.

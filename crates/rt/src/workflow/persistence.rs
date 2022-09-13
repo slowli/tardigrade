@@ -14,8 +14,9 @@ use crate::{
     receipt::WakeUpCause,
     utils::Message,
     workflow::{ChannelIds, Workflow},
-    TaskId, TimerId, WorkflowId, ChannelId,
+    ChannelId, TaskId, TimerId, WorkflowId,
 };
+use tardigrade_shared::JoinError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -178,6 +179,12 @@ impl PersistedWorkflow {
         self.state.task(task_id)
     }
 
+    /// Returns the current state of the main task (the task that initializes the workflow),
+    /// or `None` if the workflow is not initialized.
+    pub fn main_task(&self) -> Option<&TaskState> {
+        self.state.main_task()
+    }
+
     /// Lists all tasks in this workflow.
     pub fn tasks(&self) -> impl Iterator<Item = (TaskId, &TaskState)> + '_ {
         self.state.tasks()
@@ -194,14 +201,24 @@ impl PersistedWorkflow {
         self.state.child_workflow(id)
     }
 
+    pub(crate) fn notify_on_child_completion(
+        &mut self,
+        id: WorkflowId,
+        result: Result<(), JoinError>,
+    ) {
+        self.state.notify_on_child_completion(id, result);
+    }
+
     /// Checks whether the workflow is initialized.
     pub fn is_initialized(&self) -> bool {
         self.args.is_none()
     }
 
-    /// Checks whether the workflow is finished, i.e., all tasks in it have completed.
+    /// Checks whether the workflow is finished, i.e., its main task is completed.
     pub fn is_finished(&self) -> bool {
-        self.is_initialized() && self.tasks().all(|(_, state)| state.result().is_ready())
+        self.state
+            .main_task()
+            .map_or(false, |state| state.result().is_ready())
     }
 
     /// Returns the current time for the workflow.
