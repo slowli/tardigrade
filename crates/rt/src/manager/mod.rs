@@ -446,10 +446,12 @@ impl Receipt {
         self.events().filter_map(|event| {
             if let Some(ChannelEvent { kind, .. }) = event.as_channel_event() {
                 return match kind {
-                    ChannelEventKind::InboundChannelClosed(channel_id) =>
-                        Some((ChannelKind::Inbound, *channel_id)),
-                    ChannelEventKind::OutboundChannelClosed(channel_id) =>
-                        Some((ChannelKind::Outbound, *channel_id)),
+                    ChannelEventKind::InboundChannelClosed(channel_id) => {
+                        Some((ChannelKind::Inbound, *channel_id))
+                    }
+                    ChannelEventKind::OutboundChannelClosed(channel_id) => {
+                        Some((ChannelKind::Outbound, *channel_id))
+                    }
                     _ => None,
                 };
             }

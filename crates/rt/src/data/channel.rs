@@ -420,8 +420,11 @@ impl WorkflowData<'_> {
         if !channel_state.is_closed {
             channel_state.is_closed = true;
             let channel_id = channel_state.channel_id;
-            self.current_execution()
-                .push_channel_closure(ChannelKind::Inbound, channel_ref, channel_id);
+            self.current_execution().push_channel_closure(
+                ChannelKind::Inbound,
+                channel_ref,
+                channel_id,
+            );
         }
         wakers
     }
@@ -436,8 +439,11 @@ impl WorkflowData<'_> {
         if !channel_state.is_closed {
             channel_state.is_closed = true;
             let channel_id = channel_state.channel_id;
-            self.current_execution()
-                .push_channel_closure(ChannelKind::Outbound, channel_ref, channel_id);
+            self.current_execution().push_channel_closure(
+                ChannelKind::Outbound,
+                channel_ref,
+                channel_id,
+            );
         }
         wakers
     }
