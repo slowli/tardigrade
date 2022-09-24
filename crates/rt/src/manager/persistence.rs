@@ -15,7 +15,7 @@ use crate::{
     workflow::{ChannelIds, Workflow},
     PersistedWorkflow,
 };
-use tardigrade_shared::{ChannelId, SendError, WorkflowId};
+use tardigrade_shared::{interface::ChannelKind, ChannelId, SendError, WorkflowId};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct ChannelState {
@@ -260,8 +260,14 @@ impl PersistedWorkflows {
             self.workflows.insert(child_id, child_workflow);
         }
 
-        for channel_id in receipt.closed_channel_ids() {
-            self.close_channel_side(channel_id, ChannelSide::Receiver);
+        for (channel_kind, channel_id) in receipt.closed_channel_ids() {
+            let side = match channel_kind {
+                ChannelKind::Inbound => ChannelSide::Receiver,
+                ChannelKind::Outbound => ChannelSide::WorkflowSender(executed_workflow_id.unwrap()),
+                // ^ `unwrap()` is safe: for "external" executions, the `receipt` is empty
+                // TODO: handle & test cases with multiple senders for the channel per workflow
+            };
+            self.close_channel_side(channel_id, side);
         }
     }
 

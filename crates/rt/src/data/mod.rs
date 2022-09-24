@@ -144,19 +144,33 @@ impl WorkflowFunctions {
         dropped: Option<ExternRef>,
     ) -> Result<(), Trap> {
         let dropped = HostResource::from_ref(dropped.as_ref())?;
-        if let HostResource::InboundChannel(channel_ref) = dropped {
-            let wakers = ctx.data_mut().handle_inbound_channel_closure(channel_ref);
-            let exports = ctx.data().exports();
-            for waker in wakers {
-                let result = exports.drop_waker(ctx.as_context_mut(), waker);
-                let result = crate::log_result!(
-                    result,
-                    "Dropped waker {} for inbound channel {:?} closed by the workflow",
-                    waker,
-                    channel_ref
-                );
-                result.ok();
+        crate::trace!("{:?} dropped by workflow code", dropped);
+
+        let wakers = match dropped {
+            HostResource::InboundChannel(channel_ref) => {
+                ctx.data_mut().handle_inbound_channel_drop(channel_ref)
             }
+            HostResource::OutboundChannel(channel_ref) => {
+                ctx.data_mut().handle_outbound_channel_drop(channel_ref)
+            }
+            HostResource::Workflow(workflow_id) => {
+                ctx.data_mut().handle_child_handle_drop(*workflow_id)
+            }
+
+            HostResource::ChannelHandles(_) => return Ok(()),
+            // ^ no associated wakers, thus no cleanup necessary
+        };
+
+        let exports = ctx.data().exports();
+        for waker in wakers {
+            let result = exports.drop_waker(ctx.as_context_mut(), waker);
+            let result = crate::log_result!(
+                result,
+                "Dropped waker {} for {:?} dropped by the workflow",
+                waker,
+                dropped
+            );
+            result.ok(); // We assume traps during dropping wakers is not significant
         }
         Ok(())
     }

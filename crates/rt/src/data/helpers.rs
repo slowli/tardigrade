@@ -13,7 +13,7 @@ use crate::{
     },
     ChannelId, TaskId, TimerId, WakerId, WorkflowId,
 };
-use tardigrade_shared::{JoinError, PollMessage, SendError};
+use tardigrade_shared::{interface::ChannelKind, JoinError, PollMessage, SendError};
 
 /// Unique reference to a channel within a workflow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -243,13 +243,17 @@ impl CurrentExecution {
         });
     }
 
-    pub fn push_inbound_channel_closure(
+    pub fn push_channel_closure(
         &mut self,
+        kind: ChannelKind,
         channel_ref: &ChannelRef,
         channel_id: ChannelId,
     ) {
         self.push_event(ChannelEvent {
-            kind: ChannelEventKind::InboundChannelClosed(channel_id),
+            kind: match kind {
+                ChannelKind::Inbound => ChannelEventKind::InboundChannelClosed(channel_id),
+                ChannelKind::Outbound => ChannelEventKind::OutboundChannelClosed(channel_id),
+            },
             channel_name: channel_ref.name.clone(),
             workflow_id: channel_ref.workflow_id,
         });

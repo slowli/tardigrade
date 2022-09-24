@@ -231,3 +231,5 @@ fn child_workflow_completion() {
     });
     assert!(child_completed);
 }
+
+// FIXME: test inbound / outbound channel closures in child workflow *before* completion

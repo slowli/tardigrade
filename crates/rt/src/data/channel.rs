@@ -21,7 +21,7 @@ use crate::{
     workflow::ChannelIds,
     ChannelId, WakerId, WorkflowId,
 };
-use tardigrade::interface::AccessErrorKind;
+use tardigrade::interface::{AccessErrorKind, ChannelKind};
 use tardigrade_shared::{abi::IntoWasm, PollMessage, SendError};
 
 /// Errors that can occur when consuming messages in a workflow.
@@ -410,7 +410,7 @@ impl PersistedWorkflowData {
 }
 
 impl WorkflowData<'_> {
-    pub(super) fn handle_inbound_channel_closure(
+    pub(super) fn handle_inbound_channel_drop(
         &mut self,
         channel_ref: &ChannelRef,
     ) -> HashSet<WakerId> {
@@ -421,7 +421,23 @@ impl WorkflowData<'_> {
             channel_state.is_closed = true;
             let channel_id = channel_state.channel_id;
             self.current_execution()
-                .push_inbound_channel_closure(channel_ref, channel_id);
+                .push_channel_closure(ChannelKind::Inbound, channel_ref, channel_id);
+        }
+        wakers
+    }
+
+    pub(super) fn handle_outbound_channel_drop(
+        &mut self,
+        channel_ref: &ChannelRef,
+    ) -> HashSet<WakerId> {
+        let channels = self.persisted.channels_mut(channel_ref.workflow_id);
+        let channel_state = channels.outbound.get_mut(&channel_ref.name).unwrap();
+        let wakers = mem::take(&mut channel_state.wakes_on_flush);
+        if !channel_state.is_closed {
+            channel_state.is_closed = true;
+            let channel_id = channel_state.channel_id;
+            self.current_execution()
+                .push_channel_closure(ChannelKind::Outbound, channel_ref, channel_id);
         }
         wakers
     }

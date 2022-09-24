@@ -191,6 +191,21 @@ impl WorkflowData<'_> {
         );
         poll_result.wake_if_pending(cx, || WakerPlacement::WorkflowCompletion(workflow_id))
     }
+
+    /// Handles dropping the child workflow handle from the workflow side. Returns wakers
+    /// that should be dropped.
+    pub(super) fn handle_child_handle_drop(&mut self, workflow_id: WorkflowId) -> HashSet<WakerId> {
+        self.current_execution().push_resource_event(
+            ResourceId::Workflow(workflow_id),
+            ResourceEventKind::Dropped,
+        );
+        let state = self
+            .persisted
+            .child_workflows
+            .get_mut(&workflow_id)
+            .unwrap();
+        mem::take(&mut state.wakes_on_completion)
+    }
 }
 
 #[derive(Debug)]

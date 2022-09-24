@@ -187,6 +187,7 @@ pub enum ChannelEventKind {
     },
     /// Inbound channel closed by the workflow logic.
     InboundChannelClosed(ChannelId),
+
     /// Outbound channel was polled for readiness.
     OutboundChannelReady {
         /// Result of a poll.
@@ -202,6 +203,8 @@ pub enum ChannelEventKind {
         /// Result of a poll.
         result: Poll<Result<(), SendError>>,
     },
+    /// Outbound channel closed by the workflow logic.
+    OutboundChannelClosed(ChannelId),
 }
 
 /// Event related to an inbound or outbound [`Workflow`](crate::Workflow) channel.
@@ -310,6 +313,7 @@ impl Receipt {
 }
 
 /// Result of executing a transactional piece of work on the [`Workflow`](crate::Workflow).
+// FIXME: rework (e.g., add workflow ID)
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ExecutionResult {

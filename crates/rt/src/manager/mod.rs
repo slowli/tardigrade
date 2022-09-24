@@ -29,7 +29,7 @@ use crate::{
     PersistedWorkflow, WorkflowSpawner,
 };
 use tardigrade::{
-    interface::Interface,
+    interface::{ChannelKind, Interface},
     spawn::{ChannelHandles, ManageInterfaces, ManageWorkflows},
     workflow::WorkflowFn,
 };
@@ -442,17 +442,18 @@ impl<'a, W: WorkflowFn> ManageWorkflows<'a, W> for WorkflowManager {
 }
 
 impl Receipt {
-    fn closed_channel_ids(&self) -> impl Iterator<Item = ChannelId> + '_ {
+    fn closed_channel_ids(&self) -> impl Iterator<Item = (ChannelKind, ChannelId)> + '_ {
         self.events().filter_map(|event| {
-            if let Some(ChannelEvent {
-                kind: ChannelEventKind::InboundChannelClosed(channel_id),
-                ..
-            }) = event.as_channel_event()
-            {
-                Some(*channel_id)
-            } else {
-                None
+            if let Some(ChannelEvent { kind, .. }) = event.as_channel_event() {
+                return match kind {
+                    ChannelEventKind::InboundChannelClosed(channel_id) =>
+                        Some((ChannelKind::Inbound, *channel_id)),
+                    ChannelEventKind::OutboundChannelClosed(channel_id) =>
+                        Some((ChannelKind::Outbound, *channel_id)),
+                    _ => None,
+                };
             }
+            None
         })
     }
 }
