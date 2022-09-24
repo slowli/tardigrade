@@ -177,6 +177,7 @@ impl Future for RemoteWorkflow {
     type Output = Result<(), JoinError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        #[externref]
         #[link(wasm_import_module = "tardigrade_rt")]
         #[allow(improper_ctypes)]
         extern "C" {

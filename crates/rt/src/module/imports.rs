@@ -14,6 +14,8 @@ use crate::{
     TaskId, TimerId,
 };
 
+type Ref = Option<ExternRef>;
+
 #[derive(Debug)]
 pub(super) struct ModuleImports;
 
@@ -34,8 +36,6 @@ impl ModuleImports {
     }
 
     fn validate_import(ty: &ExternType, fn_name: &str) -> anyhow::Result<()> {
-        type Ref = Option<ExternRef>;
-
         match fn_name {
             "task::poll_completion" => ensure_func_ty::<(TaskId, WasmContextPtr), i64>(ty, fn_name),
             "task::spawn" => ensure_func_ty::<(u32, u32, TaskId), ()>(ty, fn_name),
@@ -59,6 +59,8 @@ impl ModuleImports {
 
             "drop_ref" => ensure_func_ty::<Ref, ()>(ty, fn_name),
             "panic" => ensure_func_ty::<(u32, u32, u32, u32, u32, u32), ()>(ty, fn_name),
+
+            other if other.starts_with("workflow::") => SpawnFunctions::validate_import(ty, other),
 
             other => {
                 bail!(
@@ -119,7 +121,28 @@ impl ExtendLinker for WorkflowFunctions {
     }
 }
 
-// FIXME: also check types
+impl SpawnFunctions {
+    fn validate_import(ty: &ExternType, fn_name: &str) -> anyhow::Result<()> {
+        match fn_name {
+            "workflow::interface" => ensure_func_ty::<(u32, u32), i64>(ty, fn_name),
+            "workflow::create_handles" => ensure_func_ty::<(), Ref>(ty, fn_name),
+            "workflow::set_handle" => ensure_func_ty::<(Ref, i32, u32, u32, i32), ()>(ty, fn_name),
+            "workflow::spawn" => ensure_func_ty::<(u32, u32, u32, u32, Ref, u32), Ref>(ty, fn_name),
+            "workflow::poll_completion" => {
+                ensure_func_ty::<(Ref, WasmContextPtr), i64>(ty, fn_name)
+            }
+
+            other => {
+                bail!(
+                    "Unknown import from `{}` module: `{}`",
+                    ModuleImports::RT_MODULE,
+                    other
+                );
+            }
+        }
+    }
+}
+
 impl ExtendLinker for SpawnFunctions {
     const MODULE_NAME: &'static str = "tardigrade_rt";
 
@@ -198,6 +221,10 @@ mod tests {
         WorkflowFunctions
             .extend_linker(&mut store, &mut linker)
             .unwrap();
+        SpawnFunctions
+            .extend_linker(&mut store, &mut linker)
+            .unwrap();
+
         let linker_contents: Vec<_> = linker.iter(&mut store).collect();
         for (module, name, value) in linker_contents {
             assert_eq!(module, ModuleImports::RT_MODULE);

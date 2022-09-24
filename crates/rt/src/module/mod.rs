@@ -6,7 +6,7 @@ use wasmtime::{Engine, ExternType, Func, Linker, Module, Store, WasmParams, Wasm
 
 use std::{collections::HashMap, fmt, str, sync::Arc};
 
-use crate::data::{WorkflowData, WorkflowFunctions};
+use crate::data::{SpawnFunctions, WorkflowData, WorkflowFunctions};
 use tardigrade::{interface::Interface, workflow::GetInterface};
 
 mod exports;
@@ -346,7 +346,7 @@ impl<W> WorkflowSpawner<W> {
             module,
             interface,
             workflow_name: workflow_name.to_owned(),
-            linker_extensions: vec![Box::new(WorkflowFunctions)],
+            linker_extensions: vec![Box::new(WorkflowFunctions), Box::new(SpawnFunctions)],
             data_section: OnceCell::new(),
         }
     }
