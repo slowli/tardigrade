@@ -16,7 +16,7 @@ use std::{error, fmt, ops::Range, task::Poll};
 use crate::{ChannelId, TaskId, TimerId, WakerId, WorkflowId};
 use tardigrade_shared::SendError;
 
-/// Cause of waking up a [`Workflow`](crate::Workflow) task.
+/// Cause of waking up a workflow task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -207,7 +207,7 @@ pub enum ChannelEventKind {
     OutboundChannelClosed(ChannelId),
 }
 
-/// Event related to an inbound or outbound [`Workflow`](crate::Workflow) channel.
+/// Event related to an inbound or outbound workflow channel.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct ChannelEvent {
@@ -271,12 +271,7 @@ pub struct Execution {
     pub events: Vec<Event>,
 }
 
-/// Receipt for executing tasks in a [`Workflow`](crate::Workflow).
-///
-/// A receipt can be optionally associated with an output value, which depends on the context
-/// in which a workflow is getting executed. See [`WorkflowSpawner::spawn()`] for an example.
-///
-/// [`WorkflowSpawner::spawn()`]: crate::WorkflowSpawner::spawn()
+/// Receipt for executing tasks in a workflow.
 #[derive(Debug)]
 pub struct Receipt {
     pub(crate) executions: Vec<Execution>,
@@ -312,7 +307,7 @@ impl Receipt {
     }
 }
 
-/// Result of executing a transactional piece of work on the [`Workflow`](crate::Workflow).
+/// Result of executing a transactional piece of work on the workflow.
 // FIXME: rework (e.g., add workflow ID)
 #[derive(Debug)]
 #[non_exhaustive]
@@ -345,7 +340,7 @@ impl fmt::Display for ExtendedTrap {
     }
 }
 
-/// Error occurring during [`Workflow`](crate::Workflow) execution.
+/// Error occurring during workflow execution.
 ///
 /// An error is caused by the executed WASM code [`Trap`]ping, which can be caused by a panic
 /// in the workflow logic, or misuse of Tardigrade runtime APIs. (The latter should not happen

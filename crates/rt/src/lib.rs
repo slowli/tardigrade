@@ -1,10 +1,10 @@
 //! Tardigrade runtime library.
 //!
-//! The runtime provides host environment in which [`Workflow`]s defined in a WASM module
+//! The runtime provides a [`WorkflowManager`] in which workflows defined in a WASM module
 //! can be executed and [persisted](PersistedWorkflow) / restored. Interaction with a workflow
 //! (e.g., submitting messages to inbound channels or taking messages from outbound channels)
-//! can be performed using low-level, synchronous [`WorkflowHandle`], or more high-level,
-//! future-based [`AsyncEnv`].
+//! can be performed using low-level, synchronous [`WorkflowHandle`], or by driving the manager
+//! using future-based [`AsyncEnv`].
 //!
 //! # Instantiating workflows
 //!
@@ -15,9 +15,10 @@
 //!   interfaces). It can be instantiated from the module binary using a `WorkflowEngine`.
 //! 3. [`WorkflowSpawner`] allows to spawn workflows using a particular workflow definition
 //!   from the module. A spawner can be obtained from [`WorkflowModule`].
-//! 4. [`Workflow`] is an instance of a workflow. It can be created from a [`WorkflowSpawner`].
+//! 4. [`WorkflowManager`] contains workflow instances together with communication channels.
 //!
 //! [`wasmtime`]: https://docs.rs/wasmtime/latest/wasmtime/
+//! [`WorkflowManager`]: crate::manager::WorkflowManager
 //! [`WorkflowHandle`]: crate::handle::WorkflowHandle
 //! [`AsyncEnv`]: crate::handle::future::AsyncEnv
 //!
@@ -27,7 +28,7 @@
 //!
 //! *(Off by default)*
 //!
-//! Exposes async handles for [`Workflow`]s in the [`handle::future`] module.
+//! Exposes async handles for workflows in the [`handle::future`] module.
 //!
 //! ## `async-io`
 //!
@@ -79,11 +80,8 @@
 //! # Ok::<_, anyhow::Error>(())
 //! ```
 //!
-//! See [`WorkflowEnv`] and [`AsyncEnv`] docs for examples of what to do with workflows
+//! See [`WorkflowManager`] and [`AsyncEnv`] docs for examples of what to do with workflows
 //! after instantiation.
-//!
-//! [`WorkflowEnv`]: crate::handle::WorkflowEnv
-//! [`AsyncEnv`]: crate::handle::future::AsyncEnv
 //!
 //! ## Persisting and restoring workflow
 //!
@@ -122,7 +120,7 @@ mod utils;
 mod workflow;
 
 pub use crate::{
-    data::{InboundChannelState, OutboundChannelState, PersistError, TaskState, TimerState},
+    data::{InboundChannelState, OutboundChannelState, TaskState, TimerState},
     module::{Clock, ExtendLinker, WorkflowEngine, WorkflowModule, WorkflowSpawner},
     workflow::PersistedWorkflow,
 };

@@ -12,7 +12,7 @@
 //! - Tasks
 //!
 //! Timers [can be created dynamically](sleep) during workflow operation; likewise, tasks
-//! can be [`spawn`]ed to achieve concurrency (but not parallelism!). In contrast, the
+//! can be [`spawn()`]ed to achieve concurrency (but not parallelism!). In contrast, the
 //! set of channels and their direction (inbound or outbound)
 //! are static / predefined in the workflow [`Interface`].
 //!

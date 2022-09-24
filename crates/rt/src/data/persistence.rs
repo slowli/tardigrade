@@ -17,10 +17,9 @@ use super::{
 use crate::{module::Services, workflow::ChannelIds, WorkflowId};
 use tardigrade::interface::Interface;
 
-/// Error persisting a [`Workflow`](crate::Workflow).
+/// Error persisting a workflow.
 #[derive(Debug)]
-#[non_exhaustive]
-pub enum PersistError {
+pub(crate) enum PersistError {
     /// There is a pending task.
     PendingTask,
     /// There is an non-flushed outbound message.

@@ -105,6 +105,9 @@ pub(super) struct WorkflowWithMeta {
     pub workflow: PersistedWorkflow,
 }
 
+/// Serializable persisted view of the workflows and channels managed by a [`WorkflowManager`].
+///
+/// [`WorkflowManager`]: crate::manager::WorkflowManager
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PersistedWorkflows {
     pub(super) workflows: HashMap<WorkflowId, WorkflowWithMeta>,

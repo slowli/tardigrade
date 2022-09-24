@@ -46,7 +46,7 @@ impl TaskQueue {
     }
 }
 
-/// State of task within a [`Workflow`](crate::Workflow).
+/// State of task within a workflow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskState {
     name: String,

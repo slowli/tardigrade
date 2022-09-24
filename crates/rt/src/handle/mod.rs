@@ -1,4 +1,6 @@
-//! Handles for `WorkflowManager`.
+//! Handles for workflows in a [`WorkflowManager`] and their components (e.g., channels).
+//!
+//! See [`WorkflowHandle`] and [`AsyncEnv`](future::AsyncEnv) docs for examples of usage.
 
 use anyhow::Context;
 
@@ -26,7 +28,7 @@ use tardigrade::{
 };
 use tardigrade_shared::SendError;
 
-/// Environment for executing [`Workflow`]s.
+/// Handle to a workflow in a [`WorkflowManager`].
 ///
 /// This type is used as a type param for the [`TakeHandle`] trait. The returned handles
 /// allow interacting with the workflow (e.g., [send messages](MessageSender) via inbound channels
@@ -102,6 +104,8 @@ impl<'a> WorkflowHandle<'a, ()> {
         &self.ids
     }
 
+    /// Attempts to downcast this handle to a specific workflow interface.
+    ///
     /// # Errors
     ///
     /// Returns an error on workflow interface mismatch.
@@ -147,7 +151,7 @@ impl<W: TakeHandle<Self, Id = ()>> WorkflowHandle<'_, W> {
         self.manager.persisted_workflow(self.ids.workflow_id)
     }
 
-    /// Returns a handle for the workflow.
+    /// Returns a handle for the workflow that allows interacting with its channels.
     #[allow(clippy::missing_panics_doc)] // false positive
     pub fn handle(&mut self) -> <W as TakeHandle<Self>>::Handle {
         W::take_handle(self, &()).unwrap()

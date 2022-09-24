@@ -1,4 +1,4 @@
-//! Async handles for [`Workflow`].
+//! Async handles for workflows.
 
 use anyhow::Context as _;
 use chrono::{DateTime, Utc};
@@ -86,29 +86,25 @@ enum ListenedEventOutput {
     Timer(DateTime<Utc>),
 }
 
-/// Terminal status of a [`Workflow`].
+/// Terminal status of a [`WorkflowManager`].
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Termination {
-    /// The workflow is finished.
+    /// The workflow manager is finished: all workflows managed by it have run to completion.
     Finished,
-    /// The workflow has stalled: its progress does not depend on any external futures
+    /// The manager has stalled: its progress does not depend on any external futures
     /// (inbound messages or timers).
     Stalled,
 }
 
-/// Asynchronous environment for executing [`Workflow`]s.
-///
-/// This type is used as a type param for the [`TakeHandle`] trait. The returned handles
-/// allow interacting with the workflow (e.g., [send messages](MessageSender) via inbound channels
-/// and [take messages](MessageReceiver) from outbound channels).
+/// Asynchronous environment for driving workflows in a [`WorkflowManager`].
 ///
 /// # Error handling
 ///
 /// By default, workflow execution via [`Self::run()`] terminates immediately after a trap.
 /// Only rudimentary cleanup is performed; thus, the workflow may be in an inconsistent state.
-/// To change this behavior, set a rollback strategy via [`Self::set_rollback_strategy()`],
-/// such as [`Rollback::any_trap()`]. As an example, rolling back receiving a message
+/// To drop incoming messages that have led to an error, call [`Self::drop_erroneous_messages()`].
+/// Rolling back receiving a message
 /// means that from the workflow perspective, the message was never received in the first place,
 /// and all progress resulting from receiving the message is lost (new tasks, timers, etc.).
 /// Whether this makes sense, depends on a use case; e.g., it seems reasonable to roll back
@@ -179,17 +175,17 @@ impl AsyncEnv {
         self.drop_erroneous_messages = true;
     }
 
-    /// Executes the enclosed [`Workflow`] until it is terminated or an error occurs.
-    /// As the workflow executes, outbound messages and [`Receipt`]s will be sent using
-    /// respective channels.
+    /// Executes the enclosed [`WorkflowManager`] until all workflows in it are terminated,
+    /// or an execution error occurs. As the workflows execute, outbound messages and
+    /// [`ExecutionResult`]s will be sent using respective channels.
     ///
     /// Note that it is possible to cancel this future (e.g., by [`select`]ing between it
-    /// and a cancellation signal) and continue working with the enclosed workflow.
+    /// and a cancellation signal) and continue working with the enclosed workflow manager.
     ///
     /// # Errors
     ///
-    /// Returns an error if workflow execution traps and the [`RollbackStrategy`] (if any)
-    /// determines that the workflow cannot be rolled back.
+    /// Returns an error if workflow execution traps and is not rolled back due to
+    /// [`Self::drop_erroneous_messages()`] flag being set.
     ///
     /// [`select`]: futures::select
     pub async fn run(

@@ -1,6 +1,5 @@
 //! `WorkflowManager` and tightly related types.
 
-#![allow(missing_docs)] // FIXME
 #![allow(clippy::missing_panics_doc)] // lots of `unwrap()`s on mutex locks
 
 use chrono::{DateTime, Utc};
@@ -8,7 +7,7 @@ use chrono::{DateTime, Utc};
 use std::{
     borrow::Cow,
     collections::HashMap,
-    ops,
+    error, fmt, ops,
     sync::{Arc, Mutex},
 };
 
@@ -35,6 +34,7 @@ use tardigrade::{
 };
 use tardigrade_shared::{ChannelId, SendError, WorkflowId};
 
+/// Information about a channel managed by a [`WorkflowManager`].
 #[derive(Debug)]
 pub struct ChannelInfo {
     is_closed: bool,
@@ -43,14 +43,17 @@ pub struct ChannelInfo {
 }
 
 impl ChannelInfo {
+    /// Checks if the channel is closed (i.e., no new messages can be written into it).
     pub fn is_closed(&self) -> bool {
         self.is_closed
     }
 
+    /// Returns the number of messages written to the channel.
     pub fn received_messages(&self) -> usize {
         self.next_message_idx
     }
 
+    /// Returns the number of messages consumed by the channel receiver.
     pub fn flushed_messages(&self) -> usize {
         self.next_message_idx - self.message_count
     }
@@ -69,6 +72,7 @@ impl DropMessageAction<'_> {
     }
 }
 
+/// Result of [ticking](WorkflowManager::tick()) a [`WorkflowManager`].
 #[derive(Debug)]
 #[must_use = "Result can contain an execution error which should be handled"]
 pub struct TickResult<'a> {
@@ -78,19 +82,28 @@ pub struct TickResult<'a> {
 }
 
 impl TickResult<'_> {
+    /// Returns the ID of the executed workflow.
     pub fn workflow_id(&self) -> WorkflowId {
         self.workflow_id
     }
 
+    /// Returns a reference to the underlying execution result.
     #[allow(clippy::missing_errors_doc)] // doesn't make sense semantically
     pub fn as_ref(&self) -> Result<&Receipt, &ExecutionError> {
         self.result.as_ref()
     }
 
+    /// Returns true if the workflow execution failed and the execution was triggered
+    /// by consuming a message from a certain channel.
     pub fn can_drop_erroneous_message(&self) -> bool {
         self.drop_message_action.is_some()
     }
 
+    /// Drops a message that led to erroneous workflow execution.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Self::can_drop_erroneous_message()`] returns `false`.
     pub fn drop_erroneous_message(&mut self) {
         let action = self
             .drop_message_action
@@ -106,16 +119,30 @@ impl TickResult<'_> {
     }
 }
 
+/// An error returned by [`WorkflowManager::tick()`] if the manager cannot progress.
 #[derive(Debug)]
 pub struct WouldBlock {
     nearest_timer_expiration: Option<DateTime<Utc>>,
 }
 
 impl WouldBlock {
+    /// Returns the nearest timer expiration for the workflows within the manager.
     pub fn nearest_timer_expiration(&self) -> Option<DateTime<Utc>> {
         self.nearest_timer_expiration
     }
 }
+
+impl fmt::Display for WouldBlock {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "cannot progress workflow manager")?;
+        if let Some(expiration) = self.nearest_timer_expiration {
+            write!(formatter, " (nearest timer expiration: {})", expiration)?;
+        }
+        Ok(())
+    }
+}
+
+impl error::Error for WouldBlock {}
 
 /// Part of the manager used during workflow instantiation.
 #[derive(Debug, Clone)]
@@ -166,6 +193,8 @@ impl WorkflowManager {
         }
     }
 
+    /// Returns current information about the channel with the specified ID, or `None` if a channel
+    /// with this ID does not exist.
     pub fn channel_info(&self, channel_id: ChannelId) -> Option<ChannelInfo> {
         Some(self.lock().channels.get(&channel_id)?.info())
     }
@@ -294,7 +323,8 @@ impl WorkflowManager {
         }
     }
 
-    // TODO: clearly not efficient
+    /// Sets the current time for this manager. This may expire timers in some of the contained
+    /// workflows.
     pub fn set_current_time(&self, time: DateTime<Utc>) {
         let mut state = self.lock();
         for persisted in state.workflows.values_mut() {
@@ -334,10 +364,18 @@ impl WorkflowManager {
         result
     }
 
+    /// Acesses persisted views of the workflows managed by this manager.
     pub fn persist<T>(&self, persist_fn: impl FnOnce(&PersistedWorkflows) -> T) -> T {
         persist_fn(&self.lock())
     }
 
+    /// Attempts to advance a single workflow within this manager.
+    ///
+    /// A workflow can be advanced if it has outstanding wakers, e.g., ones produced by
+    /// [expiring timers](Self::set_current_time()) or by flushing outbound messages
+    /// during previous workflow executions. Alternatively, there is an inbound message
+    /// that can be consumed by the workflow.
+    ///
     /// # Errors
     ///
     /// Returns an error if the manager cannot be progressed.

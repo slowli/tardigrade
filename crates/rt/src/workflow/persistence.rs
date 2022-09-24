@@ -119,7 +119,7 @@ impl Memory {
     }
 }
 
-/// Persisted version of a [`Workflow`] containing the state of its external dependencies
+/// Persisted version of a workflow containing the state of its external dependencies
 /// (channels and timers), and its linear WASM memory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedWorkflow {

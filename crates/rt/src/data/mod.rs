@@ -17,12 +17,11 @@ mod time;
 pub(crate) use self::{
     channel::ConsumeError,
     helpers::{Wakers, WasmContextPtr},
-    persistence::Refs,
+    persistence::{PersistError, Refs},
     spawn::SpawnFunctions,
 };
 pub use self::{
     channel::{InboundChannelState, OutboundChannelState},
-    persistence::PersistError,
     spawn::ChildWorkflowState,
     task::TaskState,
     time::TimerState,

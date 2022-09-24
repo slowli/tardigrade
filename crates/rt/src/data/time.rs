@@ -21,7 +21,7 @@ use crate::{
 };
 use tardigrade_shared::{abi::IntoWasm, TimerDefinition};
 
-/// State of a [`Workflow`](crate::Workflow) timer.
+/// State of a workflow timer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimerState {
     definition: TimerDefinition,

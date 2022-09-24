@@ -237,7 +237,7 @@ where
         self
     }
 
-    /// Specifies a task name to use when [spawning a task](crate::spawn) to support
+    /// Specifies a task name to use when [spawning a task](crate::spawn()) to support
     /// request / response processing. The default task name is `_requests`.
     #[must_use]
     pub fn with_task_name(mut self, task_name: &'a str) -> Self {

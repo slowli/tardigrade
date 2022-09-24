@@ -1,6 +1,6 @@
 //! Spawning and managing child workflows.
-
-#![allow(missing_docs, clippy::missing_errors_doc)]
+//!
+//! TODO: add example
 
 use futures::{
     stream::{Fuse, FusedStream},
@@ -79,18 +79,24 @@ impl TryFromWasm for ChannelSpawnConfig {
     }
 }
 
+/// Configuration of the spawned workflow channels.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChannelHandles {
+    /// Configurations of inbound channels.
     pub inbound: HashMap<String, ChannelSpawnConfig>,
+    /// Configurations of outbound channels.
     pub outbound: HashMap<String, ChannelSpawnConfig>,
 }
 
+/// Manager of [`Interface`]s that allows obtaining an interface by a string identifier.
 pub trait ManageInterfaces {
     /// Returns the interface spec of a workflow with the specified ID.
     fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface<()>>>;
 }
 
-/// Manager of workflows.
+/// Manager of workflows that allows spawning workflows of a certain type.
+///
+/// This trait is low-level; use [`ManageWorkflowsExt`] for a high-level alternative.
 pub trait ManageWorkflows<'a, W: WorkflowFn>: ManageInterfaces {
     /// Handle to an instantiated workflow.
     type Handle;
@@ -119,7 +125,7 @@ pub trait ManageWorkflowsExt<'a, W: WorkflowFn>: ManageWorkflows<'a, W> {
     /// # Errors
     ///
     /// Returns an error if the definition is unknown, or does not conform to the interface
-    /// specified via the type param.
+    /// specified via the type param of this trait.
     fn new_workflow(
         &'a self,
         definition_id: &'a str,
@@ -218,7 +224,8 @@ impl SpawnerInner {
     }
 }
 
-/// Spawn environment.
+/// Spawn [environment](TakeHandle) that can be used to configure channels before spawning
+/// a workflow.
 #[derive(Debug, Clone)]
 pub struct Spawner {
     inner: Rc<SpawnerInner>,
@@ -242,6 +249,7 @@ impl TakeHandle<Spawner> for () {
     }
 }
 
+/// Configurator of an [inbound workflow channel](Receiver).
 #[derive(Debug)]
 pub struct ReceiverConfig<T, C> {
     spawner: Spawner,
@@ -250,6 +258,7 @@ pub struct ReceiverConfig<T, C> {
 }
 
 impl<T, C: Encode<T>> ReceiverConfig<T, C> {
+    /// Closes the channel immediately on workflow instantiation.
     pub fn close(&self) {
         self.spawner.inner.close_inbound_channel(&self.channel_name);
     }
@@ -268,6 +277,7 @@ impl<T, C: Encode<T>> TakeHandle<Spawner> for Receiver<T, C> {
     }
 }
 
+/// Configurator of an [outbound workflow channel](Sender).
 #[derive(Debug)]
 pub struct SenderConfig<T, C> {
     spawner: Spawner,
@@ -276,6 +286,7 @@ pub struct SenderConfig<T, C> {
 }
 
 impl<T, C: Encode<T>> SenderConfig<T, C> {
+    /// Closes the channel immediately on workflow instantiation.
     pub fn close(&self) {
         self.spawner
             .inner
@@ -309,6 +320,7 @@ impl<C: Encode<FutureUpdate>> TakeHandle<Spawner> for Tracer<C> {
     }
 }
 
+/// Builder allowing to configure workflow aspects, such as channels, before instantiation.
 pub struct WorkflowBuilder<'a, M: ?Sized, W: TakeHandle<Spawner>> {
     spawner: Spawner,
     handle: <W as TakeHandle<Spawner>>::Handle,
@@ -347,10 +359,17 @@ where
         }
     }
 
+    /// Returns a [handle](TakeHandle) that can be used to configure created workflow channels.
     pub fn handle(&self) -> &<W as TakeHandle<Spawner>>::Handle {
         &self.handle
     }
 
+    /// Instantiates the child workflow and returns a handle to it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if instantiation fails for whatever reason. Error handling is specific
+    /// to the [manager](ManageWorkflows) being used.
     #[allow(clippy::missing_panics_doc)] // false positive
     pub fn build(self) -> Result<M::Handle, M::Error> {
         drop(self.handle);
@@ -364,6 +383,10 @@ where
 }
 
 pin_project! {
+    /// Handle to a remote workflow (usually, a child workflow previously spawned using
+    /// [`Workflows`]).
+    ///
+    /// The handle can be polled for completion.
     #[derive(Debug)]
     #[repr(transparent)]
     pub struct RemoteWorkflow {
@@ -380,10 +403,13 @@ impl Future for RemoteWorkflow {
     }
 }
 
-/// Handle to a remote workflow.
+/// Handle to a remote workflow together with channel handles connected to the workflow.
 #[non_exhaustive]
 pub struct WorkflowHandle<W: TakeHandle<RemoteWorkflow>> {
+    /// Channel handles associated with the workflow. Each inbound channel in the remote workflow
+    /// is mapped to a local outbound channel, and vice versa.
     pub api: <W as TakeHandle<RemoteWorkflow>>::Handle,
+    /// Workflow handle that can be polled for completion.
     pub workflow: RemoteWorkflow,
 }
 
@@ -442,7 +468,9 @@ impl<C: Decode<FutureUpdate> + Default> TakeHandle<RemoteWorkflow> for Tracer<C>
     }
 }
 
-/// Handle for traced futures in the [test environment](TestHost).
+/// Handle for traced futures from a [`RemoteWorkflow`].
+///
+/// [`RemoteWorkflow`]: crate::spawn::RemoteWorkflow
 #[derive(Debug)]
 pub struct TracerHandle<C> {
     receiver: Fuse<Receiver<FutureUpdate, C>>,

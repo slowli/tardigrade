@@ -12,9 +12,7 @@ use tardigrade::{
 
 /// Wall clock.
 pub trait Clock: Send + Sync + 'static {
-    /// Returns the current timestamp. This is used in [`Workflow`]s when creating new timers.
-    ///
-    /// [`Workflow`]: crate::Workflow
+    /// Returns the current timestamp. This is used in workflows when creating new timers.
     fn now(&self) -> DateTime<Utc>;
 }
 
