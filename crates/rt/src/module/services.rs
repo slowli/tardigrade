@@ -7,7 +7,7 @@ use std::{borrow::Cow, fmt};
 use crate::{workflow::ChannelIds, WorkflowId};
 use tardigrade::{
     interface::Interface,
-    spawn::{ChannelHandles, ManageInterfaces, ManageWorkflows, SpawnError},
+    spawn::{ChannelHandles, ManageInterfaces, ManageWorkflows},
 };
 
 /// Wall clock.
@@ -52,18 +52,20 @@ impl ManageInterfaces for NoOpWorkflowManager {
 
 impl ManageWorkflows<'_, ()> for NoOpWorkflowManager {
     type Handle = WorkflowAndChannelIds;
+    type Error = anyhow::Error;
 
     fn create_workflow(
         &self,
         _definition_id: &str,
         _args: Vec<u8>,
         _handles: &ChannelHandles,
-    ) -> Result<Self::Handle, SpawnError> {
+    ) -> Result<Self::Handle, Self::Error> {
         unreachable!("No definitions, thus `create_workflow` should never be called")
     }
 }
 
-type DynManager = dyn for<'a> ManageWorkflows<'a, (), Handle = WorkflowAndChannelIds>;
+type DynManager =
+    dyn for<'a> ManageWorkflows<'a, (), Handle = WorkflowAndChannelIds, Error = anyhow::Error>;
 
 /// Dynamically dispatched services available to workflows.
 #[derive(Clone, Copy)]

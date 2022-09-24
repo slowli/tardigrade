@@ -14,7 +14,7 @@ use tardigrade::{
     interface::Interface,
     spawn::{ChannelHandles, ManageInterfaces, ManageWorkflows},
 };
-use tardigrade_shared::{ChannelId, SpawnError, WorkflowId};
+use tardigrade_shared::{ChannelId, WorkflowId};
 
 #[derive(Debug)]
 pub(super) struct TransactionInner {
@@ -111,13 +111,14 @@ impl ManageInterfaces for Transaction {
 
 impl ManageWorkflows<'_, ()> for Transaction {
     type Handle = WorkflowAndChannelIds;
+    type Error = anyhow::Error;
 
     fn create_workflow(
         &self,
         id: &str,
         args: Vec<u8>,
         handles: &ChannelHandles,
-    ) -> Result<Self::Handle, SpawnError> {
+    ) -> Result<Self::Handle, Self::Error> {
         let spawner = self
             .shared
             .spawners
@@ -128,9 +129,7 @@ impl ManageWorkflows<'_, ()> for Transaction {
             let mut state = self.inner.lock().unwrap();
             ChannelIds::new(handles, || state.allocate_channel_id())
         };
-        let workflow = spawner
-            .spawn(args, &channel_ids, self.services())
-            .map_err(|err| SpawnError::new(err.to_string()))?;
+        let workflow = spawner.spawn(args, &channel_ids, self.services())?;
         let workflow_id = self.inner.lock().unwrap().stash_workflow(
             id.to_owned(),
             self.executing_workflow_id,

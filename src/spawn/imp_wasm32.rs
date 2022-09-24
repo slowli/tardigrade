@@ -46,13 +46,14 @@ impl ManageInterfaces for Workflows {
 
 impl ManageWorkflows<'_, ()> for Workflows {
     type Handle = super::RemoteWorkflow;
+    type Error = SpawnError;
 
     fn create_workflow(
         &self,
         definition_id: &str,
         args: Vec<u8>,
         handles: &ChannelHandles,
-    ) -> Result<Self::Handle, SpawnError> {
+    ) -> Result<Self::Handle, Self::Error> {
         #[externref]
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {

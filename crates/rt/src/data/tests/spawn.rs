@@ -16,7 +16,7 @@ use crate::{
 };
 use tardigrade::{
     interface::{ChannelKind, Interface},
-    spawn::{ChannelHandles, ChannelSpawnConfig, ManageInterfaces, ManageWorkflows, SpawnError},
+    spawn::{ChannelHandles, ChannelSpawnConfig, ManageInterfaces, ManageWorkflows},
 };
 use tardigrade_shared::abi::TryFromWasm;
 
@@ -62,32 +62,33 @@ impl ManageInterfaces for MockWorkflowManager {
 
 impl ManageWorkflows<'_, ()> for MockWorkflowManager {
     type Handle = WorkflowAndChannelIds;
+    type Error = anyhow::Error;
 
     fn create_workflow(
         &self,
         id: &str,
         args: Vec<u8>,
         handles: &ChannelHandles,
-    ) -> Result<Self::Handle, SpawnError> {
+    ) -> Result<Self::Handle, Self::Error> {
         assert_eq!(id, "test:latest");
         assert_eq!(handles.inbound.len(), 1);
         assert_eq!(handles.outbound.len(), 1);
 
         if args == b"err_input" {
-            Err(SpawnError::new("invalid input!"))
-        } else {
-            let channel_ids = ChannelIds::new(handles, || self.allocate_channel_id());
-            let mut calls = self.calls.lock().unwrap();
-            calls.push(NewWorkflowCall {
-                args,
-                commands_channel_id: channel_ids.inbound["commands"],
-                traces_channel_id: channel_ids.outbound["traces"],
-            });
-            Ok(WorkflowAndChannelIds {
-                workflow_id: calls.len() as WorkflowId,
-                channel_ids,
-            })
+            anyhow::bail!("invalid input!");
         }
+
+        let channel_ids = ChannelIds::new(handles, || self.allocate_channel_id());
+        let mut calls = self.calls.lock().unwrap();
+        calls.push(NewWorkflowCall {
+            args,
+            commands_channel_id: channel_ids.inbound["commands"],
+            traces_channel_id: channel_ids.outbound["traces"],
+        });
+        Ok(WorkflowAndChannelIds {
+            workflow_id: calls.len() as WorkflowId,
+            channel_ids,
+        })
     }
 }
 

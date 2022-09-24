@@ -33,7 +33,7 @@ use tardigrade::{
     spawn::{ChannelHandles, ManageInterfaces, ManageWorkflows},
     workflow::WorkflowFn,
 };
-use tardigrade_shared::{ChannelId, SendError, SpawnError, WorkflowId};
+use tardigrade_shared::{ChannelId, SendError, WorkflowId};
 
 #[derive(Debug)]
 pub struct ChannelInfo {
@@ -422,13 +422,14 @@ impl ManageInterfaces for WorkflowManager {
 
 impl<'a, W: WorkflowFn> ManageWorkflows<'a, W> for WorkflowManager {
     type Handle = WorkflowHandle<'a, W>;
+    type Error = anyhow::Error;
 
     fn create_workflow(
         &'a self,
         definition_id: &str,
         args: Vec<u8>,
         handles: &ChannelHandles,
-    ) -> Result<Self::Handle, SpawnError> {
+    ) -> Result<Self::Handle, Self::Error> {
         let transaction = Transaction::new(&self.lock(), None, self.shared.clone());
         let services = self.services(&transaction);
         services

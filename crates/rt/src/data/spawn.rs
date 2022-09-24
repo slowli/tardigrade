@@ -175,6 +175,7 @@ impl WorkflowData<'_> {
             ids.workflow_id
         });
         crate::log_result!(result, "Spawned workflow using `{}`", definition_id)
+            .map_err(|err| SpawnError::new(err.to_string()))
     }
 
     fn poll_workflow_completion(

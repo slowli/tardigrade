@@ -94,6 +94,8 @@ pub trait ManageInterfaces {
 pub trait ManageWorkflows<'a, W: WorkflowFn>: ManageInterfaces {
     /// Handle to an instantiated workflow.
     type Handle;
+    /// Error spawning a workflow.
+    type Error: 'static + Send + Sync;
 
     /// Creates a new workflow.
     ///
@@ -107,7 +109,7 @@ pub trait ManageWorkflows<'a, W: WorkflowFn>: ManageInterfaces {
         definition_id: &str,
         args: Vec<u8>,
         handles: &ChannelHandles,
-    ) -> Result<Self::Handle, SpawnError>;
+    ) -> Result<Self::Handle, Self::Error>;
 }
 
 /// Extension trait for [workflow managers](ManageWorkflows).
@@ -145,13 +147,14 @@ where
     W: WorkflowFn + TakeHandle<RemoteWorkflow, Id = ()>,
 {
     type Handle = WorkflowHandle<W>;
+    type Error = SpawnError;
 
     fn create_workflow(
         &'a self,
         definition_id: &str,
         args: Vec<u8>,
         handles: &ChannelHandles,
-    ) -> Result<Self::Handle, SpawnError> {
+    ) -> Result<Self::Handle, Self::Error> {
         let mut workflow =
             <Self as ManageWorkflows<'a, ()>>::create_workflow(self, definition_id, args, handles)?;
         let api = W::take_handle(&mut workflow, &()).unwrap();
@@ -349,7 +352,7 @@ where
     }
 
     #[allow(clippy::missing_panics_doc)] // false positive
-    pub fn build(self) -> Result<M::Handle, SpawnError> {
+    pub fn build(self) -> Result<M::Handle, M::Error> {
         drop(self.handle);
         let spawner = Rc::try_unwrap(self.spawner.inner).unwrap();
         self.manager.create_workflow(
