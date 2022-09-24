@@ -11,34 +11,45 @@ use tardigrade::{
     Decode, Encode, Json,
 };
 use tardigrade_rt::{
+    handle::WorkflowHandle,
+    manager::WorkflowManager,
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, ExecutionError, WakeUpCause,
     },
-    services::{WorkflowBuilderExt, WorkflowManager},
     test::MockScheduler,
+    WorkflowId,
 };
 use tardigrade_test_basic::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOrder};
 
 use super::{TestResult, MODULE};
 
+pub fn get_workflow(
+    manager: &WorkflowManager,
+    id: WorkflowId,
+) -> WorkflowHandle<'_, PizzaDelivery> {
+    manager
+        .workflow(id)
+        .unwrap()
+        .downcast::<PizzaDelivery>()
+        .unwrap()
+}
+
 #[test]
 fn basic_workflow() -> TestResult {
     let clock = Arc::new(MockScheduler::default());
     let spawner = MODULE.for_workflow::<PizzaDelivery>()?;
-    let manager = WorkflowManager::builder()
+    let mut manager = WorkflowManager::builder()
         .with_clock(clock.clone())
         .with_spawner("pizza", spawner)
         .build();
-    let definition = manager
-        .definition("pizza")
-        .unwrap()
-        .downcast::<PizzaDelivery>()?;
 
     let inputs = Args {
         oven_count: 1,
         deliverer_count: 1,
     };
-    let mut workflow = definition.new_workflow(inputs).build_and_commit()?;
+    let mut workflow: WorkflowHandle<PizzaDelivery> =
+        manager.new_workflow("pizza", inputs)?.build()?;
+    let workflow_id = workflow.id();
     let receipt = workflow.tick()?;
 
     assert_eq!(receipt.executions().len(), 2);
@@ -84,6 +95,8 @@ fn basic_workflow() -> TestResult {
     let receipt = manager.tick().unwrap().into_inner()?;
     dbg!(&receipt); // FIXME: assert on receipt
 
+    let mut workflow = get_workflow(&manager, workflow_id);
+    let mut handle = workflow.handle();
     let events = handle.shared.events.take_messages();
     assert_eq!(events.message_indices(), 0..1);
     assert_eq!(
@@ -133,19 +146,17 @@ fn basic_workflow() -> TestResult {
 #[test]
 fn workflow_with_concurrency() -> TestResult {
     let spawner = MODULE.for_workflow::<PizzaDelivery>()?;
-    let manager = WorkflowManager::builder()
+    let mut manager = WorkflowManager::builder()
         .with_spawner("pizza", spawner)
         .build();
-    let definition = manager
-        .definition("pizza")
-        .unwrap()
-        .downcast::<PizzaDelivery>()?;
 
     let inputs = Args {
         oven_count: 2,
         deliverer_count: 1,
     };
-    let mut workflow = definition.new_workflow(inputs).build_and_commit()?;
+    let mut workflow: WorkflowHandle<PizzaDelivery> =
+        manager.new_workflow("pizza", inputs)?.build()?;
+    let workflow_id = workflow.id();
     workflow.tick()?;
     let mut handle = workflow.handle();
 
@@ -169,6 +180,7 @@ fn workflow_with_concurrency() -> TestResult {
     }
     assert_eq!(message_indices, [0, 1]);
 
+    let mut handle = get_workflow(&manager, workflow_id).handle();
     let events = handle.shared.events.take_messages();
     assert_eq!(
         events.decode()?,
@@ -187,20 +199,18 @@ fn workflow_with_concurrency() -> TestResult {
 fn persisting_workflow() -> TestResult {
     let clock = Arc::new(MockScheduler::default());
     let spawner = MODULE.for_workflow::<PizzaDelivery>()?;
-    let manager = WorkflowManager::builder()
+    let mut manager = WorkflowManager::builder()
         .with_clock(Arc::clone(&clock))
         .with_spawner("pizza", spawner)
         .build();
-    let definition = manager
-        .definition("pizza")
-        .unwrap()
-        .downcast::<PizzaDelivery>()?;
 
     let inputs = Args {
         oven_count: 1,
         deliverer_count: 1,
     };
-    let mut workflow = definition.new_workflow(inputs).build_and_commit()?;
+    let mut workflow: WorkflowHandle<PizzaDelivery> =
+        manager.new_workflow("pizza", inputs)?.build()?;
+    let workflow_id = workflow.id();
     workflow.tick()?;
     let mut handle = workflow.handle();
 
@@ -211,6 +221,7 @@ fn persisting_workflow() -> TestResult {
     handle.orders.send(order)?;
     manager.tick().unwrap().into_inner()?;
 
+    let mut handle = get_workflow(&manager, workflow_id).handle();
     let events = handle.shared.events.take_messages();
     assert_eq!(
         events.decode()?,
@@ -222,17 +233,13 @@ fn persisting_workflow() -> TestResult {
     let persisted_json = manager.persist(serde_json::to_string)?;
     assert!(persisted_json.len() < 5_000, "{}", persisted_json);
     let persisted = serde_json::from_str(&persisted_json)?;
-    let workflow_id = workflow.id();
     let manager = WorkflowManager::builder()
         .with_state(persisted)
         .with_clock(Arc::clone(&clock))
         .with_spawner("pizza", MODULE.for_workflow::<PizzaDelivery>()?)
         .build();
 
-    let mut workflow = manager
-        .workflow(workflow_id)
-        .unwrap()
-        .downcast::<PizzaDelivery>()?;
+    let mut workflow = get_workflow(&manager, workflow_id);
     let mut handle = workflow.handle();
     handle.shared.tracer.set_futures(traced_futures);
     assert!(!workflow.tick()?.executions().is_empty());
@@ -270,16 +277,16 @@ fn persisting_workflow() -> TestResult {
 #[test]
 fn untyped_workflow() -> TestResult {
     let spawner = MODULE.for_untyped_workflow("PizzaDelivery").unwrap();
-    let manager = WorkflowManager::builder()
+    let mut manager = WorkflowManager::builder()
         .with_spawner("pizza", spawner)
         .build();
-    let definition = manager.definition("pizza").unwrap();
 
     let data = Json.encode_value(Args {
         oven_count: 1,
         deliverer_count: 1,
     });
-    let mut workflow = definition.new_workflow(data).build_and_commit()?;
+    let mut workflow: WorkflowHandle<()> = manager.new_workflow("pizza", data)?.build()?;
+    let workflow_id = workflow.id();
     let receipt = workflow.tick()?;
     assert_eq!(receipt.executions().len(), 2);
     let mut handle = workflow.handle();
@@ -292,6 +299,7 @@ fn untyped_workflow() -> TestResult {
     let receipt = manager.tick().unwrap().into_inner()?;
     dbg!(&receipt);
 
+    let mut handle = manager.workflow(workflow_id).unwrap().handle();
     let events = handle[OutboundChannel("events")].take_messages();
     assert_eq!(events.message_indices(), 0..1);
     let events: Vec<DomainEvent> = events
@@ -316,18 +324,17 @@ fn workflow_recovery_after_trap() -> TestResult {
     const SAMPLES: usize = 5;
 
     let spawner = MODULE.for_untyped_workflow("PizzaDelivery").unwrap();
-    let manager = WorkflowManager::builder()
+    let mut manager = WorkflowManager::builder()
         .with_spawner("pizza", spawner)
         .build();
-    let definition = manager.definition("pizza").unwrap();
 
     let data = Json.encode_value(Args {
         oven_count: SAMPLES,
         deliverer_count: 1,
     });
-    let mut workflow = definition.new_workflow(data).build_and_commit()?;
+    let workflow: WorkflowHandle<()> = manager.new_workflow("pizza", data)?.build()?;
+    let workflow_id = workflow.id();
     workflow.tick()?;
-    let mut handle = workflow.handle();
 
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,
@@ -342,7 +349,9 @@ fn workflow_recovery_after_trap() -> TestResult {
     });
 
     for (i, message) in messages.enumerate() {
+        let mut handle = manager.workflow(workflow_id).unwrap().handle();
         handle[InboundChannel("orders")].send(message)?;
+
         let mut result = loop {
             let tick_result = manager.tick().unwrap();
             let receipt = tick_result.as_ref().unwrap_or_else(ExecutionError::receipt);
@@ -378,6 +387,7 @@ fn workflow_recovery_after_trap() -> TestResult {
         } else {
             result.into_inner()?;
 
+            let mut handle = manager.workflow(workflow_id).unwrap().handle();
             let events = handle[OutboundChannel("events")].take_messages();
             assert_eq!(events.message_indices(), (i / 2)..(i / 2 + 1));
         }
