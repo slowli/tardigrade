@@ -14,6 +14,7 @@ use tardigrade::{
     FutureExt as _, Json,
 };
 
+pub mod spawn;
 pub mod tasks;
 #[cfg(test)]
 mod tests;
