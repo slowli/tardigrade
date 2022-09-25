@@ -14,7 +14,7 @@ use tardigrade_rt::{
         WorkflowHandle,
     },
     manager::WorkflowManager,
-    receipt::{Event, ExecutionResult, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
+    receipt::{Event, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
     WorkflowModule,
 };
 use tardigrade_test_basic::{
@@ -72,10 +72,7 @@ async fn spawning_child_workflows() -> TestResult {
     let results: Vec<_> = results.collect().await;
     let receipts: Vec<_> = results
         .into_iter()
-        .map(|result| match result {
-            ExecutionResult::Ok(receipt) => receipt,
-            other => panic!("unexpected result: {:?}", other),
-        })
+        .map(|result| result.into_inner().unwrap())
         .collect();
 
     // Check that child-related events are complete.

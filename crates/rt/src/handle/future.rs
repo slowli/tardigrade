@@ -16,8 +16,8 @@ use std::{
 };
 
 use crate::{
-    manager::WorkflowManager,
-    receipt::{ExecutionError, ExecutionResult},
+    manager::{TickResult, WorkflowManager},
+    receipt::ExecutionError,
     ChannelId, FutureId,
 };
 use tardigrade::{
@@ -158,7 +158,7 @@ pub struct AsyncEnv {
     scheduler: Box<dyn Schedule>,
     inbound_channels: HashMap<ChannelId, mpsc::Receiver<Vec<u8>>>,
     outbound_channels: HashMap<ChannelId, mpsc::UnboundedSender<Vec<u8>>>,
-    results_sx: Option<mpsc::UnboundedSender<ExecutionResult>>,
+    results_sx: Option<mpsc::UnboundedSender<TickResult<()>>>,
     drop_erroneous_messages: bool,
 }
 
@@ -176,7 +176,7 @@ impl AsyncEnv {
     }
 
     /// Returns the receiver of [`ExecutionResult`]s generated during workflow execution.
-    pub fn execution_results(&mut self) -> mpsc::UnboundedReceiver<ExecutionResult> {
+    pub fn execution_results(&mut self) -> mpsc::UnboundedReceiver<TickResult<()>> {
         let (sx, rx) = mpsc::unbounded();
         self.results_sx = Some(sx);
         rx
@@ -265,30 +265,22 @@ impl AsyncEnv {
         manager: &mut WorkflowManager,
     ) -> Result<Option<DateTime<Utc>>, ExecutionError> {
         loop {
-            let mut tick_result = match manager.tick() {
+            let tick_result = match manager.tick() {
                 Ok(result) => result,
                 Err(blocked) => break Ok(blocked.nearest_timer_expiration()),
             };
 
-            let recovered_from_error =
+            let (tick_result, recovered_from_error) =
                 if self.drop_erroneous_messages && tick_result.can_drop_erroneous_message() {
-                    tick_result.drop_erroneous_message();
-                    true
+                    (tick_result.drop_erroneous_message(), true)
                 } else {
-                    false
+                    (tick_result.drop_extra(), false)
                 };
-            let event = match tick_result.into_inner() {
-                Ok(receipt) => ExecutionResult::Ok(receipt),
-                Err(err) => {
-                    if recovered_from_error {
-                        ExecutionResult::RolledBack(err)
-                    } else {
-                        return Err(err);
-                    }
-                }
-            };
-            if let Some(sx) = &self.results_sx {
-                sx.unbounded_send(event).ok();
+
+            if tick_result.as_ref().is_err() && !recovered_from_error {
+                return Err(tick_result.into_inner().unwrap_err());
+            } else if let Some(sx) = &self.results_sx {
+                sx.unbounded_send(tick_result).ok();
             }
 
             self.flush_outbound_messages(manager);

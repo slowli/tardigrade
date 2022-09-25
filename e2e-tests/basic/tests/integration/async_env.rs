@@ -21,8 +21,8 @@ use tardigrade_rt::{
         AsyncEnv, AsyncIoScheduler, MessageReceiver, MessageSender, Termination, TracerHandle,
     },
     handle::WorkflowHandle,
-    manager::WorkflowManager,
-    receipt::{Event, ExecutionResult, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
+    manager::{TickResult, WorkflowManager},
+    receipt::{Event, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
     test::MockScheduler,
     TimerId, WorkflowSpawner,
 };
@@ -236,7 +236,7 @@ struct AsyncRig {
     scheduler: Arc<MockScheduler>,
     events: MessageReceiver<DomainEvent, Json>,
     tracer: TracerHandle<Json>,
-    results: mpsc::UnboundedReceiver<ExecutionResult>,
+    results: mpsc::UnboundedReceiver<TickResult<()>>,
 }
 
 async fn initialize_workflow() -> TestResult<AsyncRig> {
@@ -302,10 +302,7 @@ async fn async_handle_with_mock_scheduler() -> TestResult {
         mut tracer,
         results,
     } = initialize_workflow().await?;
-    let mut receipts = results.map(|result| match result {
-        ExecutionResult::Ok(receipt) => receipt,
-        _ => unreachable!(),
-    });
+    let mut receipts = results.map(|result| result.into_inner().unwrap());
 
     wait_timer(&mut receipts, 1, ResourceEventKind::Created).await;
     let now = scheduler.now();
@@ -375,10 +372,7 @@ async fn async_handle_with_mock_scheduler_and_bulk_update() -> TestResult {
         results,
         ..
     } = initialize_workflow().await?;
-    let mut receipts = results.map(|result| match result {
-        ExecutionResult::Ok(receipt) => receipt,
-        _ => unreachable!(),
-    });
+    let mut receipts = results.map(|result| result.into_inner().unwrap());
 
     let now = scheduler.now();
     scheduler.set_now(now + chrono::Duration::milliseconds(55));
@@ -595,12 +589,12 @@ async fn rollbacks_on_trap() -> TestResult {
     orders_sx.send(b"invalid".to_vec()).await?;
     drop(orders_sx); // to terminate the workflow
 
-    let results: Vec<_> = results.collect().await;
+    let results: Vec<_> = results.map(TickResult::into_inner).collect().await;
     let err = match results.as_slice() {
         [
-            ExecutionResult::Ok(_), // initialization
-            ExecutionResult::RolledBack(err), // receiving message
-            ExecutionResult::Ok(_), // closing inbound channel
+            Ok(_), // initialization
+            Err(err), // receiving message
+            Ok(_), // closing inbound channel
         ] => err,
         _ => panic!("unexpected results: {:#?}", results),
     };

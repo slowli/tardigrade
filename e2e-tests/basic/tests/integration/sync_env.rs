@@ -352,7 +352,7 @@ fn workflow_recovery_after_trap() -> TestResult {
         let mut handle = manager.workflow(workflow_id).unwrap().handle();
         handle[InboundChannel("orders")].send(message)?;
 
-        let mut result = loop {
+        let result = loop {
             let tick_result = manager.tick().unwrap();
             let receipt = tick_result.as_ref().unwrap_or_else(ExecutionError::receipt);
             if matches!(
@@ -365,8 +365,7 @@ fn workflow_recovery_after_trap() -> TestResult {
 
         if i % 2 == 0 {
             assert!(result.can_drop_erroneous_message());
-            result.drop_erroneous_message();
-            let err = result.into_inner().unwrap_err();
+            let err = result.drop_erroneous_message().into_inner().unwrap_err();
             let panic_info = err.panic_info().unwrap();
             let panic_message = panic_info.message.as_ref().unwrap();
             assert!(

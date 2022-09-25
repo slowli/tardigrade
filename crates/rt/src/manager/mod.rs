@@ -75,13 +75,13 @@ impl DropMessageAction<'_> {
 /// Result of [ticking](WorkflowManager::tick()) a [`WorkflowManager`].
 #[derive(Debug)]
 #[must_use = "Result can contain an execution error which should be handled"]
-pub struct TickResult<'a> {
+pub struct TickResult<T> {
     workflow_id: WorkflowId,
     result: Result<Receipt, ExecutionError>,
-    drop_message_action: Option<DropMessageAction<'a>>,
+    extra: T,
 }
 
-impl TickResult<'_> {
+impl<T> TickResult<T> {
     /// Returns the ID of the executed workflow.
     pub fn workflow_id(&self) -> WorkflowId {
         self.workflow_id
@@ -93,29 +93,49 @@ impl TickResult<'_> {
         self.result.as_ref()
     }
 
+    /// Returns the underlying execution result.
+    #[allow(clippy::missing_errors_doc)] // doesn't make sense semantically
+    pub fn into_inner(self) -> Result<Receipt, ExecutionError> {
+        self.result
+    }
+
+    pub(crate) fn drop_extra(self) -> TickResult<()> {
+        TickResult {
+            workflow_id: self.workflow_id,
+            result: self.result,
+            extra: (),
+        }
+    }
+}
+
+/// Actions
+#[derive(Debug)]
+pub struct Actions<'a> {
+    drop_message_action: Option<DropMessageAction<'a>>,
+}
+
+impl TickResult<Actions<'_>> {
     /// Returns true if the workflow execution failed and the execution was triggered
     /// by consuming a message from a certain channel.
     pub fn can_drop_erroneous_message(&self) -> bool {
-        self.drop_message_action.is_some()
+        self.extra.drop_message_action.is_some()
     }
 
     /// Drops a message that led to erroneous workflow execution.
     ///
     /// # Panics
     ///
-    /// Panics if [`Self::can_drop_erroneous_message()`] returns `false`.
-    pub fn drop_erroneous_message(&mut self) {
+    /// Panics if [`Self::can_drop_erroneous_message()`] returns `false`, or if called more than
+    /// once on the same object.
+    pub fn drop_erroneous_message(mut self) -> TickResult<()> {
         let action = self
+            .extra
             .drop_message_action
             .take()
             .expect("cannot drop message");
         action.execute();
-    }
 
-    /// Returns the underlying execution result.
-    #[allow(clippy::missing_errors_doc)] // doesn't make sense semantically
-    pub fn into_inner(self) -> Result<Receipt, ExecutionError> {
-        self.result
+        self.drop_extra()
     }
 }
 
@@ -388,7 +408,7 @@ impl WorkflowManager {
     /// # Errors
     ///
     /// Returns an error if the manager cannot be progressed.
-    pub fn tick(&mut self) -> Result<TickResult<'_>, WouldBlock> {
+    pub fn tick(&mut self) -> Result<TickResult<Actions<'_>>, WouldBlock> {
         let state = self.state.get_mut().unwrap();
 
         let workflow_id = state.find_workflow_with_pending_tasks();
@@ -397,7 +417,9 @@ impl WorkflowManager {
             return Ok(TickResult {
                 workflow_id,
                 result,
-                drop_message_action: None,
+                extra: Actions {
+                    drop_message_action: None,
+                },
             });
         }
 
@@ -406,13 +428,15 @@ impl WorkflowManager {
             let result = self.feed_message_to_workflow(channel_id, workflow_id);
             return Ok(TickResult {
                 workflow_id,
-                drop_message_action: if result.is_err() {
-                    Some(DropMessageAction {
-                        manager: self,
-                        channel_id,
-                    })
-                } else {
-                    None
+                extra: Actions {
+                    drop_message_action: if result.is_err() {
+                        Some(DropMessageAction {
+                            manager: self,
+                            channel_id,
+                        })
+                    } else {
+                        None
+                    },
                 },
                 result: result.map(|receipt| receipt.unwrap_or_else(Receipt::new)),
             });
