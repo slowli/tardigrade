@@ -116,25 +116,38 @@ pub enum Termination {
 /// use async_std::task;
 /// use futures::prelude::*;
 /// use tardigrade::interface::{InboundChannel, OutboundChannel};
-/// use tardigrade_rt::{handle::future::{AsyncEnv, AsyncIoScheduler}, Workflow};
+/// use tardigrade_rt::handle::{future::{AsyncEnv, AsyncIoScheduler}, WorkflowHandle};
+/// use tardigrade_rt::manager::WorkflowManager;
+/// # use tardigrade_rt::WorkflowId;
 ///
-/// # async fn test_wrapper(workflow: Workflow<()>) -> anyhow::Result<()> {
+/// # async fn test_wrapper(
+/// #     manager: WorkflowManager,
+/// #     workflow_id: WorkflowId,
+/// # ) -> anyhow::Result<()> {
 /// // Assume we have a dynamically typed workflow:
-/// let workflow: Workflow<()> = // ...
-/// #   workflow;
-/// // First, create an environment to execute the workflow in.
-/// let mut env = AsyncEnv::new(workflow, AsyncIoScheduler);
-/// let mut handle = env.handle();
-/// // Run the environment in a separate task.
-/// task::spawn(async move { env.run().await });
+/// let mut manager: WorkflowManager = // ...
+/// #   manager;
+/// let mut workflow = manager.workflow(workflow_id).unwrap();
 ///
+/// // First, create an environment to execute the workflow in.
+/// let mut env = AsyncEnv::new(AsyncIoScheduler);
+/// // Take relevant channels from the workflow and convert them to async form.
+/// let mut handle = workflow.handle();
+/// let mut commands_sx = handle.remove(InboundChannel("commands"))
+///     .unwrap()
+///     .into_async(&mut env);
+/// let events_rx = handle.remove(OutboundChannel("events"))
+///     .unwrap()
+///     .into_async(&mut env);
+///
+/// // Run the environment in a separate task.
+/// task::spawn(async move { env.run(&mut manager).await });
 /// // Let's send a message via an inbound channel...
 /// let message = b"hello".to_vec();
-/// handle[InboundChannel("commands")].send(message).await?;
+/// commands_sx.send(message).await?;
 ///
 /// // ...and wait for some outbound messages
-/// let events = handle[OutboundChannel("events")].by_ref();
-/// let events: Vec<Vec<u8>> = events.take(2).try_collect().await.unwrap();
+/// let events: Vec<Vec<u8>> = events_rx.take(2).try_collect().await.unwrap();
 /// // ^ `unwrap()` always succeeds because the codec for untyped workflows
 /// // is just an identity.
 /// # Ok(())

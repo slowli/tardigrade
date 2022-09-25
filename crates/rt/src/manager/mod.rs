@@ -429,7 +429,7 @@ impl WorkflowManagerBuilder {
         self
     }
 
-    /// Sets the clock to be used in the manager.
+    /// Sets the wall clock to be used in the manager.
     #[must_use]
     pub fn with_clock(mut self, clock: Arc<impl Clock>) -> Self {
         self.manager.shared.clock = clock;

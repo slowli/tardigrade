@@ -9,7 +9,7 @@
 //! ```
 //! # use std::time::Duration;
 //! # use assert_matches::assert_matches;
-//! # use futures::{FutureExt, StreamExt};
+//! # use futures::{FutureExt, SinkExt, StreamExt};
 //! # use serde::{Deserialize, Serialize};
 //! # use tardigrade::{
 //! #     channel::Sender,
@@ -56,27 +56,31 @@
 //!         TaskHandle::new(async move {
 //!             for i in 0..counter {
 //!                 tardigrade::sleep(Duration::from_millis(100)).await;
-//!                 events.send(Event::Count(i)).await;
+//!                 events.send(Event::Count(i)).await.ok();
 //!             }
 //!         })
 //!     }
 //! }
 //!
 //! // We can test the workflow as follows:
-//! use tardigrade::test::{TestHandle, TestWorkflow};
+//! use tardigrade::{spawn::RemoteWorkflow, test::{Runtime, Timers}};
 //!
-//! async fn test_workflow(mut handle: TestHandle<MyWorkflow>) {
+//! async fn test_workflow(handle: MyHandle<RemoteWorkflow>) {
 //!     // The workflow should be waiting for a timer to emit an event.
-//!     assert!(handle.api.events.next().now_or_never().is_none());
+//!     let mut events = handle.events.unwrap();
+//!     assert!(events.next().now_or_never().is_none());
 //!
-//!     let now = handle.timers.now();
-//!     let new_now = handle.timers.next_timer_expiration().unwrap();
+//!     let now = Timers::now();
+//!     let new_now = Timers::next_timer_expiration().unwrap();
 //!     assert_eq!((new_now - now).num_milliseconds(), 100);
-//!     handle.timers.set_now(new_now);
-//!     let event = handle.api.events.next().await.unwrap();
+//!     Timers::set_now(new_now);
+//!     let event = events.next().await.unwrap();
 //!     assert_matches!(event, Event::Count(0));
 //! }
-//! MyWorkflow::test(Args { counter: 1 }, test_workflow);
+//! Runtime::default().test::<MyWorkflow, _, _>(
+//!     Args { counter: 1 },
+//!     test_workflow,
+//! );
 //! ```
 
 use chrono::{DateTime, TimeZone, Utc};
@@ -377,6 +381,7 @@ impl Runtime {
             let builder: WorkflowBuilder<_, W> =
                 Workflows.new_workflow(DEFINITION_ID, args).unwrap();
             let workflow = builder.build().unwrap();
+            crate::yield_now().await; // allow the workflow to initialize
             test_fn(workflow.api).await;
         });
     }

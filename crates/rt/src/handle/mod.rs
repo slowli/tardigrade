@@ -40,37 +40,34 @@ use tardigrade_shared::SendError;
 ///
 /// ```
 /// use tardigrade::interface::{InboundChannel, OutboundChannel};
-/// use tardigrade_rt::{handle::WorkflowHandle, Workflow};
+/// use tardigrade_rt::handle::WorkflowHandle;
 ///
-/// # fn test_wrapper(workflow: Workflow<()>) -> anyhow::Result<()> {
+/// # fn test_wrapper(workflow: WorkflowHandle<'_, ()>) -> anyhow::Result<()> {
 /// // Assume we have a dynamically typed workflow:
-/// let mut workflow: Workflow<()> = // ...
+/// let mut workflow: WorkflowHandle<()> = // ...
 /// #   workflow;
 /// // We can create a handle to manipulate the workflow.
-/// let mut handle = WorkflowHandle::new(&mut workflow).handle();
+/// let mut handle = workflow.handle();
 ///
 /// // Let's send a message via an inbound channel.
 /// let message = b"hello".to_vec();
-/// let receipt = handle.api[InboundChannel("commands")]
-///     .send(message)?
-///     .flush()?;
+/// handle[InboundChannel("commands")].send(message)?;
+/// // Try progressing the workflow, which can consume the provided message.
+/// let receipt = workflow.tick()?;
 /// // `receipt` contains information about executed functions,
 /// // spawned tasks, timers, etc.
 /// println!("{:?}", receipt.executions());
 ///
 /// // Let's then take outbound messages from a certain channel:
-/// let receipt = handle.api[OutboundChannel("events")].take_messages()?;
-/// let messages: Vec<Vec<u8>> = receipt.into_inner().decode().unwrap();
+/// let messages = handle[OutboundChannel("events")].take_messages();
+/// let messages: Vec<Vec<u8>> = messages.decode().unwrap();
 /// // ^ `decode().unwrap()` always succeeds because the codec
 /// // for untyped workflows is just an identity.
 ///
-/// // It is possible to access / manipulate the underlying `Workflow`:
-/// let receipt = handle.with(|workflow| {
-///     println!("{:?}", workflow.tasks().collect::<Vec<_>>());
-///     let now = workflow.current_time();
-///     workflow.set_current_time(now + chrono::Duration::seconds(1))
-/// })?;
-/// println!("{:?}", receipt.executions());
+/// // It is possible to access the underlying workflow state:
+/// let persisted = workflow.persisted();
+/// println!("{:?}", persisted.tasks().collect::<Vec<_>>());
+/// let now = persisted.current_time();
 /// # Ok(())
 /// # }
 /// ```

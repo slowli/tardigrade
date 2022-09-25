@@ -54,7 +54,12 @@
 //! ## Instantiating workflow
 //!
 //! ```no_run
-//! use tardigrade_rt::{Workflow, WorkflowEngine, WorkflowModule};
+//! use tardigrade_rt::{
+//!     handle::WorkflowHandle,
+//!     manager::WorkflowManager,
+//!     WorkflowEngine, WorkflowModule,
+//! };
+//! use tardigrade::spawn::ManageWorkflowsExt;
 //!
 //! let module_bytes: Vec<u8> = // e.g., take from a file
 //! #   vec![];
@@ -69,14 +74,20 @@
 //! // (which requires depending on the workflow crate), and dynamically typed
 //! // workflows. The code below uses the second approach.
 //! let spawner = module.for_untyped_workflow("TestWorkflow").unwrap();
-//! let receipt = spawner.spawn(br#"{ "data": "..." }"#.to_vec())?.init()?;
+//! // Workflows are created within a manager that is responsible
+//! //  for their persistence and managing channels, time, and child workflows.
+//! let manager = WorkflowManager::builder()
+//!     .with_spawner("test", spawner)
+//!     .build();
+//! let new_workflow: WorkflowHandle<()> =
+//!     manager.new_workflow("test", b"data".to_vec())?.build()?;
+//!
+//! // Let's initialize the workflow.
+//! let receipt = new_workflow.tick()?;
 //! // `receipt` contains information about WASM code execution. E.g.,
 //! // this will print the executed functions and a list of important
 //! // events for each of executions:
 //! println!("{:?}", receipt.executions());
-//!
-//! // The workflow is contained within the receipt:
-//! let workflow: Workflow<()> = receipt.into_inner();
 //! # Ok::<_, anyhow::Error>(())
 //! ```
 //!
@@ -86,18 +97,28 @@
 //! ## Persisting and restoring workflow
 //!
 //! ```
-//! # use tardigrade_rt::{PersistedWorkflow, Workflow, WorkflowSpawner};
-//! # fn test_wrapper(spawner: WorkflowSpawner<()>, workflow: Workflow<()>) -> anyhow::Result<()> {
-//! let mut workflow: Workflow<()> = // ...
-//! #   workflow;
-//! let persisted: PersistedWorkflow = workflow.persist()?;
+//! # use tardigrade_rt::{
+//! #     manager::{PersistedWorkflows, WorkflowManager},
+//! #     PersistedWorkflow, WorkflowId,
+//! # };
+//! # fn test_wrapper(manager: WorkflowManager, workflow_id: WorkflowId) -> anyhow::Result<()> {
+//! let manager: WorkflowManager = // ...
+//! #   manager;
+//! let workflow = manager.workflow(workflow_id).unwrap();
+//! let persisted: PersistedWorkflow = workflow.persisted();
 //! // The persisted workflow can be serialized:
 //! let json = serde_json::to_string(&persisted)?;
-//! let persisted: PersistedWorkflow = serde_json::from_str(&json)?;
-//! // The workflow can then be instantiated again using a `WorkflowSpawner`:
-//! let spawner: WorkflowSpawner<()> = // ...
-//! #   spawner;
-//! let restored_workflow: Workflow<()> = persisted.restore(&spawner)?;
+//!
+//! // The manager state can be serialized as well. It will contain
+//! // all non-terminated workflows managed by the manager.
+//!
+//! let json = manager.persist(serde_json::to_string)?;
+//! let persisted: PersistedWorkflows = serde_json::from_str(&json)?;
+//! // The manager can then be instantiated again:
+//! let manager = WorkflowManager::builder()
+//!     .with_state(persisted)
+//!     // set other options...
+//!     .build();
 //! # Ok(())
 //! # }
 //! ```

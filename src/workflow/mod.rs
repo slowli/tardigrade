@@ -7,7 +7,7 @@
 //! Simple workflow definition:
 //!
 //! ```
-//! # use futures::StreamExt;
+//! # use futures::{SinkExt, StreamExt};
 //! # use serde::{Deserialize, Serialize};
 //! use tardigrade::{
 //!     channel::{Sender, Receiver},
@@ -56,7 +56,7 @@
 //!             Command::Ping(ping) => {
 //!                 let pong = format!("{}, counter={}", ping, *counter);
 //!                 *counter += 1;
-//!                 self.events.send(Event::Pong(pong)).await;
+//!                 self.events.send(Event::Pong(pong)).await.ok();
 //!             }
 //!             // other commands...
 //!         }

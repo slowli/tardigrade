@@ -216,32 +216,36 @@ impl ModuleCompiler {
 /// ```
 /// # use async_std::task;
 /// # use futures::TryStreamExt;
-/// use tardigrade::interface::OutboundChannel;
-/// use tardigrade_rt::{test::MockScheduler, Workflow, WorkflowModule};
-/// use tardigrade_rt::handle::future::AsyncEnv;
+/// # use std::sync::Arc;
+/// use tardigrade::{interface::OutboundChannel, spawn::ManageWorkflowsExt};
+/// use tardigrade_rt::{test::MockScheduler, manager::WorkflowManager, WorkflowModule};
+/// use tardigrade_rt::handle::{future::AsyncEnv, WorkflowHandle};
 ///
 /// # async fn test_wrapper(module: WorkflowModule) -> anyhow::Result<()> {
-/// let module: WorkflowModule = // ...
-/// #   module;
-/// let scheduler = MockScheduler::default();
-/// let spawner = module.for_untyped_workflow("TestWorkflow").unwrap();
-/// // Set the mocked wall clock for the workflow spawner.
-/// let spawner = spawner.with_clock(scheduler.clone());
+/// let scheduler = Arc::new(MockScheduler::default());
+/// // Set the mocked wall clock for the workflow manager.
+/// let mut manager = WorkflowManager::builder()
+///     .with_clock(Arc::clone(&scheduler))
+///     // set other options (e.g., spawners)
+///     .build();
 /// let inputs: Vec<u8> = // ...
 /// #   vec![];
-/// let workflow = spawner.spawn(inputs)?.init()?.into_inner();
+/// let mut workflow: WorkflowHandle<()> =
+///     manager.new_workflow("test", inputs)?.build()?;
 ///
 /// // Spin up the environment to execute the `workflow`.
-/// let mut env = AsyncEnv::new(workflow, scheduler.clone());
-/// let mut handle = env.handle();
-/// task::spawn(async move { env.run().await });
+/// let mut env = AsyncEnv::new(scheduler.clone());
+/// let mut handle = workflow.handle();
+/// let mut events_rx = handle.remove(OutboundChannel("events"))
+///     .unwrap()
+///     .into_async(&mut env);
+/// task::spawn(async move { env.run(&mut manager).await });
 ///
 /// // Advance mocked wall clock.
 /// let now = scheduler.now();
 /// scheduler.set_now(now + chrono::Duration::seconds(1));
 /// // This can lead to the workflow progressing, e.g., by emitting messages
-/// let message: Option<Vec<u8>> =
-///     handle[OutboundChannel("events")].try_next().await?;
+/// let message: Option<Vec<u8>> = events_rx.try_next().await?;
 /// // Assert on `message`...
 /// # Ok(())
 /// # }
