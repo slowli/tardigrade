@@ -31,7 +31,7 @@ impl fmt::Debug for dyn Clock {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct WorkflowAndChannelIds {
     pub workflow_id: WorkflowId,
     pub channel_ids: ChannelIds,

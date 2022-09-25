@@ -102,11 +102,11 @@ fn spawning_child_workflow() {
 
     let poll_fns = Answers::from_values([spawn_child, poll_child_channel]);
     let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager();
-    let workflow = create_test_workflow(&manager);
-    manager.tick_workflow(workflow.id()).unwrap();
+    let mut manager = create_test_manager();
+    let workflow_id = create_test_workflow(&manager).id();
+    manager.tick_workflow(workflow_id).unwrap();
 
-    let persisted = workflow.persisted();
+    let persisted = manager.workflow(workflow_id).unwrap().persisted();
     let mut children: Vec<_> = persisted.child_workflows().collect();
     assert_eq!(children.len(), 1);
     let (child_id, child_state) = children.pop().unwrap();
@@ -121,7 +121,7 @@ fn spawning_child_workflow() {
         assert!(state.workflows.contains_key(&child_id));
         assert_eq!(
             state.channels[&traces_id].receiver_workflow_id,
-            Some(workflow.id())
+            Some(workflow_id)
         );
         assert_eq!(
             state.channels[&traces_id].sender_workflow_ids,
@@ -135,11 +135,11 @@ fn spawning_child_workflow() {
     manager.send_message(traces_id, b"trace".to_vec()).unwrap();
     assert_eq!(
         manager.lock().find_consumable_channel(),
-        Some((traces_id, workflow.id()))
+        Some((traces_id, workflow_id))
     );
 
     let receipt = manager
-        .feed_message_to_workflow(traces_id, workflow.id())
+        .feed_message_to_workflow(traces_id, workflow_id)
         .unwrap()
         .unwrap();
     let events = extract_channel_events(&receipt, Some(child_id), "traces");
@@ -213,11 +213,11 @@ fn test_child_workflow_channel_management(complete_child: bool) {
         test_child_resources,
     ]);
     let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager();
-    let workflow = create_test_workflow(&manager);
-    manager.tick_workflow(workflow.id()).unwrap();
+    let mut manager = create_test_manager();
+    let workflow_id = create_test_workflow(&manager).id();
+    manager.tick_workflow(workflow_id).unwrap();
 
-    let persisted = workflow.persisted();
+    let persisted = manager.workflow(workflow_id).unwrap().persisted();
     let mut children: Vec<_> = persisted.child_workflows().collect();
     assert_eq!(children.len(), 1);
     let (child_id, child_state) = children.pop().unwrap();
@@ -231,7 +231,7 @@ fn test_child_workflow_channel_management(complete_child: bool) {
     let channel_info = manager.channel_info(traces_id).unwrap();
     assert!(channel_info.is_closed);
 
-    let persisted = workflow.persisted();
+    let persisted = manager.workflow(workflow_id).unwrap().persisted();
     let child_state = persisted.child_workflow(child_id).unwrap();
     if complete_child {
         assert_matches!(child_state.result(), Poll::Ready(Ok(())));
@@ -253,7 +253,7 @@ fn test_child_workflow_channel_management(complete_child: bool) {
         assert_eq!(events.len(), 1);
     }
 
-    let receipt = manager.tick_workflow(workflow.id()).unwrap();
+    let receipt = manager.tick_workflow(workflow_id).unwrap();
     if complete_child {
         let child_completed = receipt.events().any(|event| {
             matches!(

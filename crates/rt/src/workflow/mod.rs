@@ -21,7 +21,7 @@ use crate::{
 };
 use tardigrade::spawn::{ChannelHandles, ChannelSpawnConfig};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct ChannelIds {
     pub inbound: HashMap<String, ChannelId>,
     pub outbound: HashMap<String, ChannelId>,

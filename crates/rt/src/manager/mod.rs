@@ -1,4 +1,4 @@
-//! `WorkflowManager` and tightly related types.
+//! [`WorkflowManager`] and tightly related types.
 
 #![allow(clippy::missing_panics_doc)] // lots of `unwrap()`s on mutex locks
 
@@ -160,6 +160,34 @@ impl Default for Shared {
     }
 }
 
+impl Shared {
+    fn services<'a>(&'a self, transaction: &'a Transaction) -> Services<'a> {
+        Services {
+            clock: self.clock.as_ref(),
+            workflows: transaction,
+        }
+    }
+
+    // FIXME: sane error handling
+    fn restore_workflow<'a>(
+        &'a self,
+        committed: &PersistedWorkflows,
+        id: WorkflowId,
+        transaction: &'a Transaction,
+    ) -> Workflow<'a> {
+        let persisted = committed
+            .workflows
+            .get(&id)
+            .unwrap_or_else(|| panic!("workflow with ID {} is not persisted", id));
+        let spawner = &self.spawners[&persisted.definition_id];
+        persisted
+            .workflow
+            .clone()
+            .restore(spawner, self.services(transaction))
+            .unwrap()
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum ChannelSide {
     HostSender,
@@ -184,13 +212,6 @@ impl WorkflowManager {
 
     fn lock(&self) -> impl ops::DerefMut<Target = PersistedWorkflows> + '_ {
         self.state.lock().unwrap()
-    }
-
-    fn services<'a>(&'a self, transaction: &'a Transaction) -> Services<'a> {
-        Services {
-            clock: self.shared.clock.as_ref(),
-            workflows: transaction,
-        }
     }
 
     /// Returns current information about the channel with the specified ID, or `None` if a channel
@@ -275,7 +296,9 @@ impl WorkflowManager {
         let (child_id, channel_name) = workflow.find_inbound_channel(channel_id);
 
         let transaction = Transaction::new(&state, Some(workflow_id), self.shared.clone());
-        let mut workflow = self.restore_workflow(&state, workflow_id, &transaction);
+        let mut workflow = self
+            .shared
+            .restore_workflow(&state, workflow_id, &transaction);
         let result = Self::push_message(&mut workflow, child_id, &channel_name, message.clone());
         if let Ok(Some(receipt)) = &result {
             state.drain_and_persist_workflow(workflow_id, workflow);
@@ -332,29 +355,15 @@ impl WorkflowManager {
         }
     }
 
-    // FIXME: sane error handling
-    fn restore_workflow<'a>(
-        &'a self,
-        committed: &PersistedWorkflows,
-        id: WorkflowId,
-        transaction: &'a Transaction,
-    ) -> Workflow<'a> {
-        let persisted = committed
-            .workflows
-            .get(&id)
-            .unwrap_or_else(|| panic!("workflow with ID {} is not persisted", id));
-        let spawner = &self.shared.spawners[&persisted.definition_id];
-        persisted
-            .workflow
-            .clone()
-            .restore(spawner, self.services(transaction))
-            .unwrap()
-    }
-
-    pub(crate) fn tick_workflow(&self, workflow_id: WorkflowId) -> Result<Receipt, ExecutionError> {
-        let mut state = self.lock();
-        let transaction = Transaction::new(&state, Some(workflow_id), self.shared.clone());
-        let mut workflow = self.restore_workflow(&state, workflow_id, &transaction);
+    pub(crate) fn tick_workflow(
+        &mut self,
+        workflow_id: WorkflowId,
+    ) -> Result<Receipt, ExecutionError> {
+        let state = self.state.get_mut().unwrap();
+        let transaction = Transaction::new(state, Some(workflow_id), self.shared.clone());
+        let mut workflow = self
+            .shared
+            .restore_workflow(state, workflow_id, &transaction);
 
         let result = workflow.tick();
         if let Ok(receipt) = &result {
@@ -364,7 +373,7 @@ impl WorkflowManager {
         result
     }
 
-    /// Acesses persisted views of the workflows managed by this manager.
+    /// Accesses persisted views of the workflows managed by this manager.
     pub fn persist<T>(&self, persist_fn: impl FnOnce(&PersistedWorkflows) -> T) -> T {
         persist_fn(&self.lock())
     }
@@ -469,7 +478,7 @@ impl<'a, W: WorkflowFn> ManageWorkflows<'a, W> for WorkflowManager {
         handles: &ChannelHandles,
     ) -> Result<Self::Handle, Self::Error> {
         let transaction = Transaction::new(&self.lock(), None, self.shared.clone());
-        let services = self.services(&transaction);
+        let services = self.shared.services(&transaction);
         services
             .workflows
             .create_workflow(definition_id, args, handles)?;
