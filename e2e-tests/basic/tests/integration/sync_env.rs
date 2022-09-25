@@ -47,10 +47,9 @@ fn basic_workflow() -> TestResult {
         oven_count: 1,
         deliverer_count: 1,
     };
-    let mut workflow: WorkflowHandle<PizzaDelivery> =
-        manager.new_workflow("pizza", inputs)?.build()?;
+    let workflow: WorkflowHandle<PizzaDelivery> = manager.new_workflow("pizza", inputs)?.build()?;
     let workflow_id = workflow.id();
-    let receipt = workflow.tick()?;
+    let receipt = manager.tick()?.into_inner()?;
 
     assert_eq!(receipt.executions().len(), 2);
     let init_execution = &receipt.executions()[0];
@@ -77,6 +76,7 @@ fn basic_workflow() -> TestResult {
         }) if channel_name == "orders"
     );
 
+    let mut workflow = get_workflow(&manager, workflow_id);
     {
         let persisted = workflow.persisted();
         let mut tasks: Vec<_> = persisted.tasks().collect();
@@ -93,7 +93,7 @@ fn basic_workflow() -> TestResult {
     };
     handle.orders.send(order)?;
     let receipt = manager.tick().unwrap().into_inner()?;
-    dbg!(&receipt); // FIXME: assert on receipt
+    dbg!(&receipt); // TODO: assert on receipt
 
     let mut workflow = get_workflow(&manager, workflow_id);
     let mut handle = workflow.handle();
@@ -112,11 +112,11 @@ fn basic_workflow() -> TestResult {
             pending_events[0],
             WakeUpCause::Flush { workflow_id: None, channel_name, .. } if channel_name == "events"
         );
-        workflow.tick()?;
     }
 
+    manager.tick()?.into_inner()?;
     let new_time = {
-        let persisted = workflow.persisted();
+        let persisted = get_workflow(&manager, workflow_id).persisted();
         let timers: Vec<_> = persisted.timers().collect();
         assert_eq!(timers.len(), 1);
         let (_, timer) = timers[0];
@@ -127,8 +127,9 @@ fn basic_workflow() -> TestResult {
     clock.set_now(new_time);
     manager.set_current_time(new_time);
 
-    let receipt = workflow.tick()?;
-    dbg!(&receipt); // FIXME: assert on receipt
+    let receipt = manager.tick()?.into_inner()?;
+    dbg!(&receipt); // TODO: assert on receipt
+    let mut handle = get_workflow(&manager, workflow_id).handle();
     let events = handle.shared.events.take_messages();
     assert_eq!(events.decode()?, [DomainEvent::Baked { index: 1, order }]);
 
@@ -154,12 +155,11 @@ fn workflow_with_concurrency() -> TestResult {
         oven_count: 2,
         deliverer_count: 1,
     };
-    let mut workflow: WorkflowHandle<PizzaDelivery> =
-        manager.new_workflow("pizza", inputs)?.build()?;
+    let workflow: WorkflowHandle<PizzaDelivery> = manager.new_workflow("pizza", inputs)?.build()?;
     let workflow_id = workflow.id();
-    workflow.tick()?;
-    let mut handle = workflow.handle();
+    manager.tick()?.into_inner()?;
 
+    let mut handle = get_workflow(&manager, workflow_id).handle();
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,
         delivery_distance: 10,
@@ -208,12 +208,11 @@ fn persisting_workflow() -> TestResult {
         oven_count: 1,
         deliverer_count: 1,
     };
-    let mut workflow: WorkflowHandle<PizzaDelivery> =
-        manager.new_workflow("pizza", inputs)?.build()?;
+    let workflow: WorkflowHandle<PizzaDelivery> = manager.new_workflow("pizza", inputs)?.build()?;
     let workflow_id = workflow.id();
-    workflow.tick()?;
-    let mut handle = workflow.handle();
+    manager.tick()?.into_inner()?;
 
+    let mut handle = get_workflow(&manager, workflow_id).handle();
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,
         delivery_distance: 10,
@@ -233,37 +232,38 @@ fn persisting_workflow() -> TestResult {
     let persisted_json = manager.persist(serde_json::to_string)?;
     assert!(persisted_json.len() < 5_000, "{}", persisted_json);
     let persisted = serde_json::from_str(&persisted_json)?;
-    let manager = WorkflowManager::builder()
+    let mut manager = WorkflowManager::builder()
         .with_state(persisted)
         .with_clock(Arc::clone(&clock))
         .with_spawner("pizza", MODULE.for_workflow::<PizzaDelivery>()?)
         .build();
 
-    let mut workflow = get_workflow(&manager, workflow_id);
-    let mut handle = workflow.handle();
-    handle.shared.tracer.set_futures(traced_futures);
-    assert!(!workflow.tick()?.executions().is_empty());
-
+    assert!(!manager.tick()?.into_inner()?.executions().is_empty());
     let new_time = clock.now() + chrono::Duration::milliseconds(100);
     clock.set_now(new_time);
     manager.set_current_time(new_time);
-    assert!(!workflow.tick()?.executions().is_empty());
+    assert!(!manager.tick()?.into_inner()?.executions().is_empty());
 
     // Check that the pizza is ready now.
+    let mut handle = get_workflow(&manager, workflow_id).handle();
     let events = handle.shared.events.take_messages();
     assert_eq!(events.decode()?, [DomainEvent::Baked { index: 1, order }]);
+
     // We need to flush a second time to get the "started delivering" event.
-    workflow.tick()?;
+    manager.tick()?.into_inner()?;
+    let mut handle = get_workflow(&manager, workflow_id).handle();
     let events = handle.shared.events.take_messages();
     assert_eq!(
         events.decode()?,
         [DomainEvent::StartedDelivering { index: 1, order }]
     );
     // ...and flush again to activate the delivery timer
-    workflow.tick()?;
+    manager.tick()?.into_inner()?;
 
     // Check that the delivery timer is now active.
+    let mut handle = get_workflow(&manager, workflow_id).handle();
     let tracer_handle = &mut handle.shared.tracer;
+    tracer_handle.set_futures(traced_futures);
     tracer_handle.take_traces()?;
     let mut futures = tracer_handle.futures().iter().map(|(_, state)| state);
     let delivery_future = futures
@@ -285,12 +285,12 @@ fn untyped_workflow() -> TestResult {
         oven_count: 1,
         deliverer_count: 1,
     });
-    let mut workflow: WorkflowHandle<()> = manager.new_workflow("pizza", data)?.build()?;
+    let workflow: WorkflowHandle<()> = manager.new_workflow("pizza", data)?.build()?;
     let workflow_id = workflow.id();
-    let receipt = workflow.tick()?;
+    let receipt = manager.tick()?.into_inner()?;
     assert_eq!(receipt.executions().len(), 2);
-    let mut handle = workflow.handle();
 
+    let mut handle = manager.workflow(workflow_id).unwrap().handle();
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,
         delivery_distance: 10,
@@ -334,7 +334,7 @@ fn workflow_recovery_after_trap() -> TestResult {
     });
     let workflow: WorkflowHandle<()> = manager.new_workflow("pizza", data)?.build()?;
     let workflow_id = workflow.id();
-    workflow.tick()?;
+    manager.tick()?.into_inner()?;
 
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,

@@ -13,7 +13,6 @@ pub mod future;
 use crate::{
     manager::{ChannelInfo, WorkflowManager},
     module::WorkflowAndChannelIds,
-    receipt::{ExecutionError, Receipt},
     utils::Message,
     ChannelId, PersistedWorkflow, WorkflowId,
 };
@@ -127,20 +126,10 @@ impl<'a> WorkflowHandle<'a, ()> {
     }
 }
 
-// FIXME: improve API so that the handle cannot be invalidated (e.g., by `tick()`)
 impl<W: TakeHandle<Self, Id = ()>> WorkflowHandle<'_, W> {
     /// Returns the ID of this workflow.
     pub fn id(&self) -> WorkflowId {
         self.ids.workflow_id
-    }
-
-    /// Executes this workflow.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if an error occurs during execution.
-    pub fn tick(&self) -> Result<Receipt, ExecutionError> {
-        self.manager.tick_workflow(self.ids.workflow_id)
     }
 
     /// Returns the current persisted state of the workflow.

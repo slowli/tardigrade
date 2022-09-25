@@ -104,7 +104,7 @@ fn spawning_child_workflow() {
     let _guard = ExportsMock::prepare(poll_fns);
     let manager = create_test_manager();
     let workflow = create_test_workflow(&manager);
-    workflow.tick().unwrap();
+    manager.tick_workflow(workflow.id()).unwrap();
 
     let persisted = workflow.persisted();
     let mut children: Vec<_> = persisted.child_workflows().collect();
@@ -215,7 +215,7 @@ fn test_child_workflow_channel_management(complete_child: bool) {
     let _guard = ExportsMock::prepare(poll_fns);
     let manager = create_test_manager();
     let workflow = create_test_workflow(&manager);
-    workflow.tick().unwrap();
+    manager.tick_workflow(workflow.id()).unwrap();
 
     let persisted = workflow.persisted();
     let mut children: Vec<_> = persisted.child_workflows().collect();
@@ -253,7 +253,7 @@ fn test_child_workflow_channel_management(complete_child: bool) {
         assert_eq!(events.len(), 1);
     }
 
-    let receipt = workflow.tick().unwrap();
+    let receipt = manager.tick_workflow(workflow.id()).unwrap();
     if complete_child {
         let child_completed = receipt.events().any(|event| {
             matches!(

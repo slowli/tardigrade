@@ -142,7 +142,7 @@ fn initializing_workflow_with_closed_channels() {
     assert_eq!(workflow.ids().channel_ids.inbound["orders"], 0);
     assert_eq!(workflow.ids().channel_ids.outbound["traces"], 0);
 
-    workflow.tick().unwrap();
+    manager.tick_workflow(workflow.id()).unwrap();
     let mut handle = workflow.handle();
     let channel_info = handle[InboundChannel("orders")].channel_info();
     assert!(channel_info.is_closed());
@@ -192,7 +192,7 @@ fn closing_workflow_channels() {
     let _guard = ExportsMock::prepare(poll_fns);
     let manager = create_test_manager();
     let workflow = create_test_workflow(&manager);
-    workflow.tick().unwrap(); // initializes the workflow
+    manager.tick_workflow(workflow.id()).unwrap(); // initializes the workflow
 
     let events_id = workflow.ids().channel_ids.outbound["events"];
     manager.close_host_receiver(events_id);
@@ -208,7 +208,7 @@ fn closing_workflow_channels() {
         );
     }
 
-    workflow.tick().unwrap();
+    manager.tick_workflow(workflow.id()).unwrap();
     let orders_id = workflow.ids().channel_ids.inbound["orders"];
     let channel_info = manager.channel_info(orders_id).unwrap();
     assert!(channel_info.is_closed());
@@ -267,7 +267,7 @@ fn test_closing_inbound_channel_from_host_side(with_message: bool) {
     let _guard = ExportsMock::prepare(Answers::from_values(poll_fns));
     let manager = create_test_manager();
     let workflow = create_test_workflow(&manager);
-    workflow.tick().unwrap(); // initializes the workflow
+    manager.tick_workflow(workflow.id()).unwrap(); // initializes the workflow
 
     let orders_id = workflow.ids().channel_ids.inbound["orders"];
     if with_message {
@@ -313,7 +313,7 @@ fn test_closing_inbound_channel_from_host_side(with_message: bool) {
         );
     }
 
-    let receipt = workflow.tick().unwrap();
+    let receipt = manager.tick_workflow(workflow.id()).unwrap();
     let order_events = extract_channel_events(&receipt, None, "orders");
     assert_matches!(
         order_events.as_slice(),
@@ -341,7 +341,7 @@ fn error_initializing_workflow() {
     let manager = create_test_manager();
     let workflow = create_test_workflow(&manager);
 
-    let err = workflow.tick().unwrap_err();
+    let err = manager.tick_workflow(workflow.id()).unwrap_err();
     let err = err.trap().display_reason().to_string();
     assert!(err.contains("oops"), "{}", err);
 
@@ -427,7 +427,7 @@ fn error_processing_inbound_message_in_workflow() {
     ]));
     let manager = create_test_manager();
     let workflow = create_test_workflow(&manager);
-    workflow.tick().unwrap(); // initialize
+    manager.tick_workflow(workflow.id()).unwrap(); // initializes the workflow
 
     let orders_id = workflow.ids().channel_ids.inbound["orders"];
     manager.send_message(orders_id, b"test".to_vec()).unwrap();
