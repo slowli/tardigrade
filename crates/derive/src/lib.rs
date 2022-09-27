@@ -5,6 +5,8 @@
 //!
 //! [`tardigrade`]: https://docs.rs/tardigrade/
 
+// TODO: allow reusing handles for multiple workflows
+
 #![recursion_limit = "128"]
 // Documentation settings.
 #![doc(html_root_url = "https://docs.rs/tardigrade-derive/0.1.0")]

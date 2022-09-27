@@ -29,7 +29,7 @@ use crate::{
 };
 use tardigrade::{
     interface::{ChannelKind, Interface},
-    spawn::{ChannelHandles, ManageInterfaces, ManageWorkflows},
+    spawn::{ChannelsConfig, ManageInterfaces, ManageWorkflows},
     workflow::WorkflowFn,
 };
 use tardigrade_shared::{ChannelId, SendError, WorkflowId};
@@ -499,13 +499,13 @@ impl<'a, W: WorkflowFn> ManageWorkflows<'a, W> for WorkflowManager {
         &'a self,
         definition_id: &str,
         args: Vec<u8>,
-        handles: &ChannelHandles,
+        channels: &ChannelsConfig,
     ) -> Result<Self::Handle, Self::Error> {
         let transaction = Transaction::new(&self.lock(), None, self.shared.clone());
         let services = self.shared.services(&transaction);
         services
             .workflows
-            .create_workflow(definition_id, args, handles)?;
+            .create_workflow(definition_id, args, channels)?;
 
         let workflow_id = transaction.single_new_workflow_id().unwrap();
         self.lock().commit(transaction, &Receipt::new());

@@ -9,7 +9,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use super::{ChannelHandles, ManageInterfaces, ManageWorkflows, RemoteHandle, Workflows};
+use super::{ChannelsConfig, ManageInterfaces, ManageWorkflows, RemoteHandle, Workflows};
 use crate::channel::{
     imp::{mpsc_receiver_get, mpsc_sender_get, ACCESS_ERROR_PAD},
     RawReceiver, RawSender,
@@ -52,7 +52,7 @@ impl ManageWorkflows<'_, ()> for Workflows {
         &self,
         definition_id: &str,
         args: Vec<u8>,
-        handles: &ChannelHandles,
+        channels: &ChannelsConfig,
     ) -> Result<Self::Handle, Self::Error> {
         #[externref]
         #[link(wasm_import_module = "tardigrade_rt")]
@@ -63,7 +63,7 @@ impl ManageWorkflows<'_, ()> for Workflows {
                 id_len: usize,
                 args_ptr: *const u8,
                 args_len: usize,
-                handles: Resource<ChannelHandles>,
+                handles: Resource<ChannelsConfig>,
                 error_ptr: *mut i64,
             ) -> Option<Resource<RemoteWorkflow>>;
         }
@@ -74,7 +74,7 @@ impl ManageWorkflows<'_, ()> for Workflows {
                 definition_id.len(),
                 args.as_ptr(),
                 args.len(),
-                transform_handles(handles),
+                transform_channels(channels),
                 &mut SPAWN_ERROR_PAD,
             );
             Result::<(), SpawnError>::from_abi_in_wasm(SPAWN_ERROR_PAD).map(|()| RemoteWorkflow {
@@ -85,17 +85,17 @@ impl ManageWorkflows<'_, ()> for Workflows {
     }
 }
 
-unsafe fn transform_handles(handles: &ChannelHandles) -> Resource<ChannelHandles> {
+unsafe fn transform_channels(channels: &ChannelsConfig) -> Resource<ChannelsConfig> {
     #[externref]
     #[link(wasm_import_module = "tardigrade_rt")]
     extern "C" {
         #[link_name = "workflow::create_handles"]
-        fn create_handles() -> Resource<ChannelHandles>;
+        fn create_handles() -> Resource<ChannelsConfig>;
 
         // FIXME: also support forwarding
         #[link_name = "workflow::set_handle"]
         fn set_handle(
-            spawner: &Resource<ChannelHandles>,
+            spawner: &Resource<ChannelsConfig>,
             channel_kind: ChannelKind,
             name_ptr: *const u8,
             name_len: usize,
@@ -104,7 +104,7 @@ unsafe fn transform_handles(handles: &ChannelHandles) -> Resource<ChannelHandles
     }
 
     let resource = create_handles();
-    for (name, config) in &handles.inbound {
+    for (name, config) in &channels.inbound {
         set_handle(
             &resource,
             ChannelKind::Inbound,
@@ -113,7 +113,7 @@ unsafe fn transform_handles(handles: &ChannelHandles) -> Resource<ChannelHandles
             config.into_abi_in_wasm(),
         );
     }
-    for (name, config) in &handles.outbound {
+    for (name, config) in &channels.outbound {
         set_handle(
             &resource,
             ChannelKind::Outbound,

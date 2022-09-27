@@ -12,7 +12,7 @@ use crate::{
 };
 use tardigrade::{
     interface::Interface,
-    spawn::{ChannelHandles, ManageInterfaces, ManageWorkflows},
+    spawn::{ChannelsConfig, ManageInterfaces, ManageWorkflows},
 };
 use tardigrade_shared::{ChannelId, WorkflowId};
 
@@ -117,7 +117,7 @@ impl ManageWorkflows<'_, ()> for Transaction {
         &self,
         id: &str,
         args: Vec<u8>,
-        handles: &ChannelHandles,
+        channels: &ChannelsConfig,
     ) -> Result<Self::Handle, Self::Error> {
         let spawner = self
             .shared
@@ -127,7 +127,7 @@ impl ManageWorkflows<'_, ()> for Transaction {
 
         let channel_ids = {
             let mut state = self.inner.lock().unwrap();
-            ChannelIds::new(handles, || state.allocate_channel_id())
+            ChannelIds::new(channels, || state.allocate_channel_id())
         };
         let workflow = spawner.spawn(args, &channel_ids, self.services())?;
         let workflow_id = self.inner.lock().unwrap().stash_workflow(

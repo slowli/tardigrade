@@ -19,7 +19,7 @@ use crate::{
     utils::Message,
     ChannelId, TaskId, WorkflowId,
 };
-use tardigrade::spawn::{ChannelHandles, ChannelSpawnConfig};
+use tardigrade::spawn::{ChannelSpawnConfig, ChannelsConfig};
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ChannelIds {
@@ -28,10 +28,10 @@ pub(crate) struct ChannelIds {
 }
 
 impl ChannelIds {
-    pub fn new(handles: &ChannelHandles, mut new_channel: impl FnMut() -> ChannelId) -> Self {
+    pub fn new(channels: &ChannelsConfig, mut new_channel: impl FnMut() -> ChannelId) -> Self {
         Self {
-            inbound: Self::map_channels(&handles.inbound, &mut new_channel),
-            outbound: Self::map_channels(&handles.outbound, new_channel),
+            inbound: Self::map_channels(&channels.inbound, &mut new_channel),
+            outbound: Self::map_channels(&channels.outbound, new_channel),
         }
     }
 

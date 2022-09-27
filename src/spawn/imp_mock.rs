@@ -12,7 +12,7 @@ use std::{
 use tardigrade_shared::interface::Interface;
 
 use super::{
-    ChannelHandles, ChannelSpawnConfig, ManageInterfaces, ManageWorkflows, RemoteHandle, Workflows,
+    ChannelSpawnConfig, ChannelsConfig, ManageInterfaces, ManageWorkflows, RemoteHandle, Workflows,
 };
 use crate::{
     channel::{imp::raw_channel, RawReceiver, RawSender},
@@ -41,9 +41,9 @@ impl ManageWorkflows<'_, ()> for Workflows {
         &self,
         definition_id: &str,
         args: Vec<u8>,
-        handles: &ChannelHandles,
+        channels: &ChannelsConfig,
     ) -> Result<Self::Handle, Self::Error> {
-        let (local_handles, remote_handles) = handles.create_handles();
+        let (local_handles, remote_handles) = channels.create_handles();
         let main_task = Runtime::with(|rt| {
             rt.workflow_registry()
                 .create_workflow(definition_id, args, remote_handles)
@@ -69,7 +69,7 @@ impl Default for ChannelPair {
     }
 }
 
-impl ChannelHandles {
+impl ChannelsConfig {
     fn create_handles(&self) -> (UntypedHandle<super::RemoteWorkflow>, UntypedHandle<Wasm>) {
         let mut inbound_channel_pairs: HashMap<_, _> =
             Self::map_config(&self.inbound, ChannelKind::Inbound);

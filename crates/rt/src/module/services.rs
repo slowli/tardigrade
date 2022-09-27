@@ -7,7 +7,7 @@ use std::{borrow::Cow, fmt};
 use crate::{workflow::ChannelIds, WorkflowId};
 use tardigrade::{
     interface::Interface,
-    spawn::{ChannelHandles, ManageInterfaces, ManageWorkflows},
+    spawn::{ChannelsConfig, ManageInterfaces, ManageWorkflows},
 };
 
 /// Wall clock.
@@ -56,7 +56,7 @@ impl ManageWorkflows<'_, ()> for NoOpWorkflowManager {
         &self,
         _definition_id: &str,
         _args: Vec<u8>,
-        _handles: &ChannelHandles,
+        _channels: &ChannelsConfig,
     ) -> Result<Self::Handle, Self::Error> {
         unreachable!("No definitions, thus `create_workflow` should never be called")
     }

@@ -91,8 +91,6 @@ pub enum InterfaceLocation {
     },
     /// Arguments supplied to the workflow on creation.
     Args,
-    /// Extension with the specified name.
-    Extension(String),
 }
 
 impl fmt::Display for InterfaceLocation {
@@ -102,7 +100,6 @@ impl fmt::Display for InterfaceLocation {
                 write!(formatter, "{} channel `{}`", kind, name)
             }
             Self::Args => write!(formatter, "arguments"),
-            Self::Extension(name) => write!(formatter, "extension `{}`", name),
         }
     }
 }

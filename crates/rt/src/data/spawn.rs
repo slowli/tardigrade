@@ -20,7 +20,7 @@ use crate::{
     utils::{copy_bytes_from_wasm, copy_string_from_wasm, drop_value, serde_poll, WasmAllocator},
     workflow::ChannelIds,
 };
-use tardigrade::spawn::{ChannelHandles, ChannelSpawnConfig};
+use tardigrade::spawn::{ChannelSpawnConfig, ChannelsConfig};
 use tardigrade_shared::{
     abi::{IntoWasm, TryFromWasm},
     interface::{ChannelKind, Interface},
@@ -29,7 +29,7 @@ use tardigrade_shared::{
 
 #[derive(Debug, Clone)]
 pub(super) struct SharedChannelHandles {
-    inner: Arc<Mutex<ChannelHandles>>,
+    inner: Arc<Mutex<ChannelsConfig>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,27 +91,27 @@ impl PersistedWorkflowData {
 }
 
 impl WorkflowData<'_> {
-    fn validate_handles(&self, definition_id: &str, handles: &ChannelHandles) -> Result<(), Trap> {
+    fn validate_handles(&self, definition_id: &str, channels: &ChannelsConfig) -> Result<(), Trap> {
         if let Some(interface) = self.services.workflows.interface(definition_id) {
             for (name, _) in interface.inbound_channels() {
-                if !handles.inbound.contains_key(name) {
+                if !channels.inbound.contains_key(name) {
                     let message = format!("missing handle for inbound channel `{}`", name);
                     return Err(Trap::new(message));
                 }
             }
             for (name, _) in interface.outbound_channels() {
-                if !handles.outbound.contains_key(name) {
+                if !channels.outbound.contains_key(name) {
                     let message = format!("missing handle for outbound channel `{}`", name);
                     return Err(Trap::new(message));
                 }
             }
 
-            if handles.inbound.len() != interface.inbound_channels().len() {
-                let err = Self::extra_handles_error(&interface, handles, ChannelKind::Inbound);
+            if channels.inbound.len() != interface.inbound_channels().len() {
+                let err = Self::extra_handles_error(&interface, channels, ChannelKind::Inbound);
                 return Err(err);
             }
-            if handles.outbound.len() != interface.outbound_channels().len() {
-                let err = Self::extra_handles_error(&interface, handles, ChannelKind::Outbound);
+            if channels.outbound.len() != interface.outbound_channels().len() {
+                let err = Self::extra_handles_error(&interface, channels, ChannelKind::Outbound);
                 return Err(err);
             }
             Ok(())
@@ -125,7 +125,7 @@ impl WorkflowData<'_> {
 
     fn extra_handles_error(
         interface: &Interface<()>,
-        handles: &ChannelHandles,
+        channels: &ChannelsConfig,
         channel_kind: ChannelKind,
     ) -> Trap {
         use std::fmt::Write as _;
@@ -134,11 +134,11 @@ impl WorkflowData<'_> {
         let (handle_keys, channel_filter) = match channel_kind {
             ChannelKind::Inbound => {
                 closure_in = |name| interface.inbound_channel(name).is_none();
-                (handles.inbound.keys(), &closure_in as &dyn Fn(_) -> _)
+                (channels.inbound.keys(), &closure_in as &dyn Fn(_) -> _)
             }
             ChannelKind::Outbound => {
                 closure_out = |name| interface.outbound_channel(name).is_none();
-                (handles.outbound.keys(), &closure_out as &dyn Fn(_) -> _)
+                (channels.outbound.keys(), &closure_out as &dyn Fn(_) -> _)
             }
         };
 
@@ -157,12 +157,12 @@ impl WorkflowData<'_> {
         &mut self,
         definition_id: &str,
         args: Vec<u8>,
-        handles: &ChannelHandles,
+        channels: &ChannelsConfig,
     ) -> Result<WorkflowId, SpawnError> {
         let result = self
             .services
             .workflows
-            .create_workflow(definition_id, args, handles);
+            .create_workflow(definition_id, args, channels);
         let result = result.map(|mut ids| {
             mem::swap(&mut ids.channel_ids.inbound, &mut ids.channel_ids.outbound);
             self.persisted
@@ -244,7 +244,7 @@ impl SpawnFunctions {
     #[allow(clippy::unnecessary_wraps)] // required by wasmtime
     pub fn create_channel_handles() -> Option<ExternRef> {
         let resource = HostResource::from(SharedChannelHandles {
-            inner: Arc::new(Mutex::new(ChannelHandles::default())),
+            inner: Arc::new(Mutex::new(ChannelsConfig::default())),
         });
         Some(resource.into_ref())
     }

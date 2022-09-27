@@ -43,14 +43,15 @@ pub(crate) mod imp;
 #[path = "imp_mock.rs"]
 mod imp;
 
-/// Configuration of a workflow channel.
+/// Configuration for a single workflow channel during workflow instantiation.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
+#[doc(hidden)] // used only in low-level `ManageWorkflows` API
 pub enum ChannelSpawnConfig {
     /// Create a new channel.
     New,
-    /// Close the channel on workflow creation.
+    /// Close the channel immediately on workflow creation.
     Closed,
 }
 
@@ -81,7 +82,8 @@ impl TryFromWasm for ChannelSpawnConfig {
 
 /// Configuration of the spawned workflow channels.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ChannelHandles {
+#[doc(hidden)] // used only in low-level `ManageWorkflows` API
+pub struct ChannelsConfig {
     /// Configurations of inbound channels.
     pub inbound: HashMap<String, ChannelSpawnConfig>,
     /// Configurations of outbound channels.
@@ -114,7 +116,7 @@ pub trait ManageWorkflows<'a, W: WorkflowFn>: ManageInterfaces {
         &'a self,
         definition_id: &str,
         args: Vec<u8>,
-        handles: &ChannelHandles,
+        channels: &ChannelsConfig,
     ) -> Result<Self::Handle, Self::Error>;
 }
 
@@ -159,10 +161,14 @@ where
         &'a self,
         definition_id: &str,
         args: Vec<u8>,
-        handles: &ChannelHandles,
+        channels: &ChannelsConfig,
     ) -> Result<Self::Handle, Self::Error> {
-        let mut workflow =
-            <Self as ManageWorkflows<'a, ()>>::create_workflow(self, definition_id, args, handles)?;
+        let mut workflow = <Self as ManageWorkflows<'a, ()>>::create_workflow(
+            self,
+            definition_id,
+            args,
+            channels,
+        )?;
         let api = W::take_handle(&mut workflow, &()).unwrap();
         Ok(WorkflowHandle { api, workflow })
     }
@@ -180,7 +186,7 @@ struct SpawnerInner {
     definition_id: String,
     interface: Interface<()>,
     args: Vec<u8>,
-    channels: RefCell<ChannelHandles>,
+    channels: RefCell<ChannelsConfig>,
 }
 
 impl SpawnerInner {
@@ -197,7 +203,7 @@ impl SpawnerInner {
             definition_id: definition_id.to_owned(),
             interface: interface.clone().erase(),
             args,
-            channels: RefCell::new(ChannelHandles { inbound, outbound }),
+            channels: RefCell::new(ChannelsConfig { inbound, outbound }),
         }
     }
 
@@ -394,6 +400,8 @@ pin_project! {
         inner: imp::RemoteWorkflow,
     }
 }
+
+// TODO: allow to abort workflows for symmetry with tasks
 
 impl Future for RemoteWorkflow {
     type Output = Result<(), JoinError>;
