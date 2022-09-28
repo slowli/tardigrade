@@ -8,7 +8,7 @@ on:
 
 env:
   msrv: 1.59.0
-  nightly: nightly-2022-05-21
+  nightly: nightly-2022-09-22
 
 jobs:
   build-msrv:
