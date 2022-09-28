@@ -247,7 +247,7 @@ pub struct WorkflowRegistry {
 impl WorkflowRegistry {
     /// Inserts a new workflow into this registry.
     #[allow(clippy::missing_panics_doc)] // false positive
-    pub fn insert<W: SpawnWorkflow>(&mut self, id: impl Into<String>) {
+    pub fn insert<W: SpawnWorkflow, S: Into<String>>(&mut self, id: S) {
         let interface = W::interface().erase();
         let spawn_fn = |args, wasm| TaskHandle::from_workflow::<W>(args, wasm).unwrap();
         self.workflows.insert(
@@ -383,7 +383,7 @@ impl Runtime {
     {
         const DEFINITION_ID: &str = "__tested_workflow";
 
-        self.workflow_registry.insert::<W>(DEFINITION_ID);
+        self.workflow_registry.insert::<W, _>(DEFINITION_ID);
         self.run(async {
             let builder: WorkflowBuilder<_, W> =
                 Workflows.new_workflow(DEFINITION_ID, args).unwrap();

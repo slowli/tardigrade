@@ -46,7 +46,7 @@
 //! # use tardigrade::test::Runtime;
 //!
 //! # let mut runtime = Runtime::default();
-//! # runtime.workflow_registry_mut().insert::<ChildWorkflow>("child");
+//! # runtime.workflow_registry_mut().insert::<ChildWorkflow, _>("child");
 //! # runtime.run(async {
 //! let builder: WorkflowBuilder<_, ChildWorkflow> =
 //!     Workflows.new_workflow("child", ())?;

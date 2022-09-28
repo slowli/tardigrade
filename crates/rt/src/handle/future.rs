@@ -42,7 +42,7 @@ impl fmt::Debug for dyn Schedule {
 
 impl<T: Schedule + ?Sized> Schedule for Arc<T> {
     fn create_timer(&self, expires_at: DateTime<Utc>) -> TimerFuture {
-        (&**self).create_timer(expires_at)
+        (**self).create_timer(expires_at)
     }
 }
 
