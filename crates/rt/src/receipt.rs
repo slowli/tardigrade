@@ -81,6 +81,7 @@ pub enum ExecutedFunction {
     #[non_exhaustive]
     Entry {
         /// ID of the created main task.
+        // TODO: kind of awkward; ideally, this field should be removed
         task_id: TaskId,
     },
     /// Polling a task.

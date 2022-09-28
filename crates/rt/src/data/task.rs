@@ -58,14 +58,11 @@ pub struct TaskState {
 }
 
 impl TaskState {
-    fn new(name: String, spawned_by: &ExecutedFunction) -> Self {
+    fn new(name: String, spawned_by: Option<TaskId>) -> Self {
         Self {
             name,
             completion_result: Poll::Pending,
-            spawned_by: match spawned_by {
-                ExecutedFunction::Task { task_id, .. } => Some(*task_id),
-                _ => None,
-            },
+            spawned_by,
             wakes_on_completion: HashSet::new(),
         }
     }
@@ -100,6 +97,15 @@ impl PersistedWorkflowData {
     }
 
     pub(crate) fn main_task(&self) -> Option<&TaskState> {
+        debug_assert_eq!(
+            self.tasks
+                .values()
+                .filter(|state| state.spawned_by.is_none())
+                .count(),
+            1,
+            "Cannot find main task in workflow: {:#?}",
+            self
+        );
         self.tasks.values().find(|state| state.spawned_by.is_none())
     }
 
@@ -164,14 +170,20 @@ impl WorkflowData<'_> {
 
         let execution = self.current_execution();
         execution.push_resource_event(ResourceId::Task(task_id), ResourceEventKind::Created);
-        let task_state = TaskState::new(task_name, &execution.function);
+        let task_state = TaskState::new(task_name, execution.function.task_id());
         self.persisted.tasks.insert(task_id, task_state);
         Ok(())
     }
 
     pub(crate) fn spawn_main_task(&mut self, task_id: TaskId) {
-        let spawned_by = ExecutedFunction::Entry { task_id };
-        let task_state = TaskState::new("_main".to_owned(), &spawned_by);
+        // Patch task ID mentions in other tasks (if any). This may be necessary
+        // if any initialization code is executed before the main task is created.
+        for state in self.persisted.tasks.values_mut() {
+            debug_assert_eq!(state.spawned_by, Some(0));
+            state.spawned_by = Some(task_id);
+        }
+
+        let task_state = TaskState::new("_main".to_owned(), None);
         self.persisted.tasks.insert(task_id, task_state);
         self.task_queue.insert_task(task_id, &WakeUpCause::Spawned);
     }
