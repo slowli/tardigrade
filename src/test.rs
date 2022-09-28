@@ -356,13 +356,20 @@ impl Runtime {
             .expect("failed spawning task")
     }
 
-    /// Executes the provided future in the context of this runtime.
-    pub fn run<Fut>(self, test_future: Fut)
+    /// Executes the provided future in the context of this runtime. Thus, the future will
+    /// have access to globals provided by a runtime such as [`Workflows`], or test-specific
+    /// globals such as [`Timers`].
+    ///
+    /// This method can be used to handle more complex tests than [`Self::test()`], e.g.,
+    /// ones that do not want to spin a specific workflow.
+    ///
+    /// [`Workflows`]: crate::spawn::Workflows
+    pub fn run<T, Fut>(self, test_future: Fut) -> T
     where
-        Fut: Future<Output = ()>,
+        Fut: Future<Output = T>,
     {
         let (_guard, mut local_pool) = self.setup();
-        local_pool.run_until(test_future);
+        local_pool.run_until(test_future)
     }
 
     /// Executes the provided test code for a specific workflow definition in the context

@@ -1,4 +1,6 @@
 //! [`WorkflowManager`] and tightly related types.
+//!
+//! See `WorkflowManager` docs for an overview and examples of usage.
 
 #![allow(clippy::missing_panics_doc)] // lots of `unwrap()`s on mutex locks
 
@@ -216,6 +218,49 @@ enum ChannelSide {
 }
 
 /// Simple in-memory implementation of a workflow manager.
+///
+/// A workflow manager is responsible for managing state and interfacing with workflows
+/// and channels connected to the workflows. In particular, a manager supports the following
+/// operations:
+///
+/// - Spawning new workflows (including from the workflow code)
+/// - Writing messages to channels and reading messages from channels
+/// - Driving the contained workflows to completion (either [directly](Self::tick()) or
+///   using [future-based API][`AsyncEnv`])
+///
+/// This is the simplest manager implementation that stores the entire state in RAM.
+/// It is not a good choice for high-load, but is sufficiently flexible to support
+/// most basic use cases (e.g., persisting / resuming workflows).
+///
+/// [`AsyncEnv`]: crate::handle::future::AsyncEnv
+///
+/// # Examples
+///
+/// ```
+/// # use tardigrade_rt::{handle::WorkflowHandle, manager::WorkflowManager, WorkflowModule};
+/// # fn test_wrapper(module: WorkflowModule) -> anyhow::Result<()> {
+/// // A manager is instantiated using the builder pattern:
+/// let module: WorkflowModule = // ...
+/// #   module;
+/// let spawner = module.for_untyped_workflow("TestWorkflow").unwrap();
+/// let mut manager = WorkflowManager::builder()
+///     .with_spawner("test", spawner)
+///     .build();
+///
+/// // After that, new workflows can be spawned using `ManageWorkflowsExt`
+/// // trait from the `tardigrade` crate:
+/// use tardigrade::spawn::ManageWorkflowsExt;
+/// let args = b"test_args".to_vec();
+/// let workflow: WorkflowHandle<()> =
+///     manager.new_workflow("test", args)?.build()?;
+/// // Do something with `workflow`, e.g., write something to its channels...
+///
+/// // Initialize the workflow:
+/// let receipt = manager.tick()?.into_inner()?;
+/// println!("{:?}", receipt);
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Default)]
 pub struct WorkflowManager {
     shared: Shared,

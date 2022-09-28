@@ -76,14 +76,14 @@
 //! let spawner = module.for_untyped_workflow("TestWorkflow").unwrap();
 //! // Workflows are created within a manager that is responsible
 //! //  for their persistence and managing channels, time, and child workflows.
-//! let manager = WorkflowManager::builder()
+//! let mut manager = WorkflowManager::builder()
 //!     .with_spawner("test", spawner)
 //!     .build();
 //! let new_workflow: WorkflowHandle<()> =
 //!     manager.new_workflow("test", b"data".to_vec())?.build()?;
 //!
 //! // Let's initialize the workflow.
-//! let receipt = new_workflow.tick()?;
+//! let receipt = manager.tick()?.into_inner()?;
 //! // `receipt` contains information about WASM code execution. E.g.,
 //! // this will print the executed functions and a list of important
 //! // events for each of executions:

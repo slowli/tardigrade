@@ -51,11 +51,6 @@ use tardigrade_shared::SendError;
 /// // Let's send a message via an inbound channel.
 /// let message = b"hello".to_vec();
 /// handle[InboundChannel("commands")].send(message)?;
-/// // Try progressing the workflow, which can consume the provided message.
-/// let receipt = workflow.tick()?;
-/// // `receipt` contains information about executed functions,
-/// // spawned tasks, timers, etc.
-/// println!("{:?}", receipt.executions());
 ///
 /// // Let's then take outbound messages from a certain channel:
 /// let messages = handle[OutboundChannel("events")].take_messages();

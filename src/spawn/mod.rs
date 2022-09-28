@@ -1,6 +1,71 @@
 //! Spawning and managing child workflows.
 //!
-//! TODO: add example
+//! # Examples
+//!
+//! ```
+//! # use futures::{SinkExt, StreamExt};
+//! # use std::error;
+//! # use tardigrade::{
+//! #     channel::{Sender, Receiver},
+//! #     workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm, WorkflowFn},
+//! #     Json,
+//! # };
+//! // Assume we want to spawn a child workflow defined as follows:
+//! #[derive(Debug, GetInterface)]
+//! # #[tardigrade(interface = r#"{
+//! #     "v": 0,
+//! #     "in": { "commands": {} },
+//! #     "out": { "events": {} }
+//! # }"#)]
+//! pub struct ChildWorkflow(());
+//!
+//! #[tardigrade::handle(for = "ChildWorkflow")]
+//! #[derive(Debug)]
+//! pub struct ChildHandle<Env> {
+//!     pub commands: Handle<Receiver<String, Json>, Env>,
+//!     pub events: Handle<Sender<String, Json>, Env>,
+//! }
+//!
+//! impl WorkflowFn for ChildWorkflow {
+//!     type Args = ();
+//!     type Codec = Json;
+//! }
+//! # impl SpawnWorkflow for ChildWorkflow {
+//! #     fn spawn(_args: (), handle: ChildHandle<Wasm>) -> TaskHandle {
+//! #         TaskHandle::new(async move {
+//! #             handle.commands.map(Ok).forward(handle.events).await.unwrap();
+//! #         })
+//! #     }
+//! # }
+//!
+//! // To spawn a workflow, we should use the following code
+//! // in the parent workflow:
+//! use tardigrade::spawn::{
+//!     ManageWorkflowsExt, Workflows, WorkflowBuilder, WorkflowHandle,
+//! };
+//! # use tardigrade::test::Runtime;
+//!
+//! # let mut runtime = Runtime::default();
+//! # runtime.workflow_registry_mut().insert::<ChildWorkflow>("child");
+//! # runtime.run(async {
+//! let builder: WorkflowBuilder<_, ChildWorkflow> =
+//!     Workflows.new_workflow("child", ())?;
+//! // It is possible to customize child workflow initialization via
+//! // `builder.handle()`, but zero config is fine as well.
+//! let child = builder.build()?;
+//! // `child` contains handles to the created channels.
+//! // These handles are optional (in some configurations, handles are
+//! // not available).
+//! let mut commands = child.api.commands.unwrap();
+//! commands.send("ping".to_owned()).await?;
+//! # drop(commands);
+//! let mut events = child.api.events.unwrap();
+//! let event: String = events.next().await.unwrap();
+//! # assert_eq!(event, "ping");
+//! child.workflow.await?;
+//! # Ok::<_, Box<dyn error::Error>>(())
+//! # }).unwrap();
+//! ```
 
 use futures::{
     stream::{Fuse, FusedStream},
