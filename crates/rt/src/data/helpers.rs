@@ -3,59 +3,44 @@
 use serde::{Deserialize, Serialize};
 use wasmtime::{AsContextMut, ExternRef, Store, StoreContextMut, Trap};
 
-use std::{collections::HashSet, fmt, mem, task::Poll};
+use std::{collections::HashSet, mem, task::Poll};
 
 use crate::{
-    data::WorkflowData,
+    data::{spawn::SharedChannelHandles, PersistedWorkflowData, WorkflowData},
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, PanicInfo, ResourceEvent,
         ResourceEventKind, ResourceId, WakeUpCause,
     },
-    utils::serde_b64,
-    TaskId, TimerId, WakerId,
+    ChannelId, TaskId, TimerId, WakerId, WorkflowId,
 };
-use tardigrade_shared::{JoinError, PollMessage};
+use tardigrade_shared::{interface::ChannelKind, JoinError, PollMessage, SendError};
 
-/// Thin wrapper around `Vec<u8>`.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub(super) struct Message(#[serde(with = "serde_b64")] Vec<u8>);
-
-impl fmt::Debug for Message {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("Message")
-            .field("len", &self.0.len())
-            .finish()
-    }
-}
-
-impl AsRef<[u8]> for Message {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl From<Vec<u8>> for Message {
-    fn from(bytes: Vec<u8>) -> Self {
-        Self(bytes)
-    }
-}
-
-impl From<Message> for Vec<u8> {
-    fn from(message: Message) -> Self {
-        message.0
-    }
+/// Unique reference to a channel within a workflow.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct ChannelRef {
+    pub workflow_id: Option<WorkflowId>,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum HostResource {
-    InboundChannel(String),
-    OutboundChannel(String),
+    InboundChannel(ChannelRef),
+    OutboundChannel(ChannelRef),
+    #[serde(skip)]
+    ChannelHandles(SharedChannelHandles),
+    Workflow(WorkflowId),
 }
 
 impl HostResource {
+    pub fn inbound_channel(workflow_id: Option<WorkflowId>, name: String) -> Self {
+        Self::InboundChannel(ChannelRef { workflow_id, name })
+    }
+
+    pub fn outbound_channel(workflow_id: Option<WorkflowId>, name: String) -> Self {
+        Self::OutboundChannel(ChannelRef { workflow_id, name })
+    }
+
     pub fn from_ref(reference: Option<&ExternRef>) -> Result<&Self, Trap> {
         let reference = reference.ok_or_else(|| Trap::new("null reference provided to runtime"))?;
         reference
@@ -68,9 +53,9 @@ impl HostResource {
         ExternRef::new(self)
     }
 
-    pub fn as_inbound_channel(&self) -> Result<&str, Trap> {
-        if let Self::InboundChannel(name) = self {
-            Ok(name)
+    pub fn as_inbound_channel(&self) -> Result<&ChannelRef, Trap> {
+        if let Self::InboundChannel(channel_ref) = self {
+            Ok(channel_ref)
         } else {
             let message = format!(
                 "unexpected reference type: expected inbound channel, got {:?}",
@@ -80,9 +65,9 @@ impl HostResource {
         }
     }
 
-    pub fn as_outbound_channel(&self) -> Result<&str, Trap> {
-        if let Self::OutboundChannel(name) = self {
-            Ok(name)
+    pub fn as_outbound_channel(&self) -> Result<&ChannelRef, Trap> {
+        if let Self::OutboundChannel(channel_ref) = self {
+            Ok(channel_ref)
         } else {
             let message = format!(
                 "unexpected reference type: expected outbound channel, got {:?}",
@@ -91,6 +76,36 @@ impl HostResource {
             Err(Trap::new(message))
         }
     }
+
+    pub fn as_channel_handles(&self) -> Result<&SharedChannelHandles, Trap> {
+        if let Self::ChannelHandles(handles) = self {
+            Ok(handles)
+        } else {
+            let message = format!(
+                "unexpected reference type: expected workflow spawn config, got {:?}",
+                self
+            );
+            Err(Trap::new(message))
+        }
+    }
+
+    pub fn as_workflow(&self) -> Result<WorkflowId, Trap> {
+        if let Self::Workflow(id) = self {
+            Ok(*id)
+        } else {
+            let message = format!(
+                "unexpected reference type: expected workflow handle, got {:?}",
+                self
+            );
+            Err(Trap::new(message))
+        }
+    }
+}
+
+impl From<SharedChannelHandles> for HostResource {
+    fn from(handles: SharedChannelHandles) -> Self {
+        Self::ChannelHandles(handles)
+    }
 }
 
 /// Pointer to the WASM `Context`, i.e., `*mut Context<'_>`.
@@ -98,10 +113,11 @@ pub(crate) type WasmContextPtr = u32;
 
 #[derive(Debug)]
 pub(super) enum WakerPlacement {
-    InboundChannel(String),
-    OutboundChannel(String),
+    InboundChannel(ChannelRef),
+    OutboundChannel(ChannelRef),
     Timer(TimerId),
     TaskCompletion(TaskId),
+    WorkflowCompletion(WorkflowId),
 }
 
 #[derive(Debug)]
@@ -155,23 +171,24 @@ impl<T> WakeIfPending for Poll<T> {
 }
 
 #[must_use = "Wakers need to be actually woken up"]
-#[derive(Debug)]
-pub(super) struct Wakers {
-    inner: HashSet<WakerId>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct Wakers {
+    ids: HashSet<WakerId>,
     cause: WakeUpCause,
 }
 
 impl Wakers {
-    pub fn new(wakers: HashSet<WakerId>, cause: WakeUpCause) -> Self {
-        Self {
-            inner: wakers,
-            cause,
-        }
+    pub fn new(ids: HashSet<WakerId>, cause: WakeUpCause) -> Self {
+        Self { ids, cause }
+    }
+
+    pub fn cause(&self) -> &WakeUpCause {
+        &self.cause
     }
 
     pub fn into_iter(self) -> impl Iterator<Item = (WakerId, WakeUpCause)> {
         let cause = self.cause;
-        self.inner
+        self.ids
             .into_iter()
             .map(move |waker_id| (waker_id, cause.clone()))
     }
@@ -213,7 +230,7 @@ impl CurrentExecution {
         self.tasks_to_be_awoken.insert(task_id);
     }
 
-    pub fn push_inbound_channel_event(&mut self, channel_name: &str, result: &PollMessage) {
+    pub fn push_inbound_channel_event(&mut self, channel_ref: &ChannelRef, result: &PollMessage) {
         self.push_event(ChannelEvent {
             kind: ChannelEventKind::InboundChannelPolled {
                 result: match result {
@@ -221,25 +238,49 @@ impl CurrentExecution {
                     Poll::Ready(maybe_message) => Poll::Ready(maybe_message.as_ref().map(Vec::len)),
                 },
             },
-            channel_name: channel_name.to_owned(),
+            channel_name: channel_ref.name.clone(),
+            workflow_id: channel_ref.workflow_id,
         });
     }
 
-    pub fn push_outbound_poll_event(&mut self, channel_name: &str, flush: bool, result: Poll<()>) {
+    pub fn push_channel_closure(
+        &mut self,
+        kind: ChannelKind,
+        channel_ref: &ChannelRef,
+        channel_id: ChannelId,
+    ) {
+        self.push_event(ChannelEvent {
+            kind: match kind {
+                ChannelKind::Inbound => ChannelEventKind::InboundChannelClosed(channel_id),
+                ChannelKind::Outbound => ChannelEventKind::OutboundChannelClosed(channel_id),
+            },
+            channel_name: channel_ref.name.clone(),
+            workflow_id: channel_ref.workflow_id,
+        });
+    }
+
+    pub fn push_outbound_poll_event(
+        &mut self,
+        channel_ref: &ChannelRef,
+        flush: bool,
+        result: Poll<Result<(), SendError>>,
+    ) {
         self.push_event(ChannelEvent {
             kind: if flush {
                 ChannelEventKind::OutboundChannelFlushed { result }
             } else {
                 ChannelEventKind::OutboundChannelReady { result }
             },
-            channel_name: channel_name.to_owned(),
+            channel_name: channel_ref.name.clone(),
+            workflow_id: channel_ref.workflow_id,
         });
     }
 
-    pub fn push_outbound_message_event(&mut self, channel_name: &str, message_len: usize) {
+    pub fn push_outbound_message_event(&mut self, channel_ref: &ChannelRef, message_len: usize) {
         self.push_event(ChannelEvent {
             kind: ChannelEventKind::OutboundMessageSent { message_len },
-            channel_name: channel_name.to_owned(),
+            channel_name: channel_ref.name.clone(),
+            workflow_id: channel_ref.workflow_id,
         });
     }
 
@@ -273,23 +314,34 @@ impl CurrentExecution {
         use self::ResourceEventKind::{Created, Dropped};
 
         crate::trace!("Committing {:?} onto {:?}", self, state);
+
+        let cause = if let ExecutedFunction::Waker { wake_up_cause, .. } = self.function {
+            // Copy the cause; we're not really interested in
+            // `WakeUpCause::Function { task_id: None }` that would result otherwise.
+            wake_up_cause
+        } else {
+            WakeUpCause::Function {
+                task_id: self.function.task_id(),
+            }
+        };
+
         for event in Self::resource_events(&self.events) {
             match (event.kind, event.resource_id) {
                 (Created, ResourceId::Task(task_id)) => {
-                    let cause = WakeUpCause::Function(Box::new(self.function.clone()));
                     state.task_queue.insert_task(task_id, &cause);
                 }
                 (Dropped, ResourceId::Timer(timer_id)) => {
-                    state.timers.remove(timer_id);
+                    state.persisted.timers.remove(timer_id);
                 }
                 (Dropped, ResourceId::Task(task_id)) => {
-                    state.complete_task(task_id, Err(JoinError::Aborted));
+                    state
+                        .persisted
+                        .complete_task(task_id, Err(JoinError::Aborted));
                 }
                 _ => { /* Do nothing */ }
             }
         }
 
-        let cause = WakeUpCause::Function(Box::new(self.function));
         for task_id in self.tasks_to_be_awoken {
             state.task_queue.insert_task(task_id, &cause);
         }
@@ -304,12 +356,12 @@ impl CurrentExecution {
         for event in Self::resource_events(&self.events) {
             match (event.kind, event.resource_id) {
                 (Created, ResourceId::Task(task_id)) => {
-                    state.tasks.remove(&task_id);
+                    state.persisted.tasks.remove(&task_id);
                     // Since new tasks can only be mentioned in `self.tasks_to_be_awoken`, not in
                     // `state.task_queue`, cleaning up the queue is not needed.
                 }
                 (Created, ResourceId::Timer(timer_id)) => {
-                    state.timers.remove(timer_id);
+                    state.persisted.timers.remove(timer_id);
                 }
                 _ => { /* Do nothing */ }
             }
@@ -320,8 +372,11 @@ impl CurrentExecution {
         for event in Self::channel_events(&self.events) {
             if matches!(event.kind, ChannelEventKind::OutboundMessageSent { .. }) {
                 let channel = state
-                    .outbound_channels
-                    .get_mut(&event.channel_name)
+                    .persisted
+                    .outbound_channel_mut(&ChannelRef {
+                        workflow_id: event.workflow_id,
+                        name: event.channel_name.clone(), // TODO: avoid cloning here
+                    })
                     .unwrap();
                 channel.messages.pop();
             }
@@ -333,52 +388,55 @@ impl CurrentExecution {
 }
 
 /// Waker-related `State` functionality.
-impl WorkflowData {
+impl WorkflowData<'_> {
     fn place_waker(&mut self, placement: &WakerPlacement, waker: WakerId) {
         if let Some(execution) = &mut self.current_execution {
             execution.new_wakers.insert(waker);
         }
 
         crate::trace!("Placing waker {} in {:?}", waker, placement);
+        let persisted = &mut self.persisted;
         match placement {
-            WakerPlacement::InboundChannel(name) => {
-                let channel_state = self.inbound_channels.get_mut(name).unwrap();
+            WakerPlacement::InboundChannel(channel_ref) => {
+                let channel_state = persisted.inbound_channel_mut(channel_ref).unwrap();
                 channel_state.wakes_on_next_element.insert(waker);
             }
-            WakerPlacement::OutboundChannel(name) => {
-                let channel_state = self.outbound_channels.get_mut(name).unwrap();
+            WakerPlacement::OutboundChannel(channel_ref) => {
+                let channel_state = persisted.outbound_channel_mut(channel_ref).unwrap();
                 channel_state.wakes_on_flush.insert(waker);
             }
             WakerPlacement::Timer(id) => {
-                self.timers.place_waker(*id, waker);
+                persisted.timers.place_waker(*id, waker);
             }
             WakerPlacement::TaskCompletion(task) => {
-                self.tasks.get_mut(task).unwrap().insert_waker(waker);
+                persisted.tasks.get_mut(task).unwrap().insert_waker(waker);
+            }
+            WakerPlacement::WorkflowCompletion(workflow) => {
+                persisted
+                    .child_workflows
+                    .get_mut(workflow)
+                    .unwrap()
+                    .insert_waker(waker);
             }
         }
     }
 
     fn remove_wakers(&mut self, wakers: &HashSet<WakerId>) {
-        for state in self.inbound_channels.values_mut() {
+        for state in self.persisted.inbound_channels_mut() {
             state
                 .wakes_on_next_element
                 .retain(|waker_id| !wakers.contains(waker_id));
         }
-        for state in self.outbound_channels.values_mut() {
+        for state in self.persisted.outbound_channels_mut() {
             state
                 .wakes_on_flush
                 .retain(|waker_id| !wakers.contains(waker_id));
         }
-        self.timers.remove_wakers(wakers);
-    }
-
-    pub(super) fn schedule_wakers(&mut self, wakers: HashSet<WakerId>, cause: WakeUpCause) {
-        crate::trace!("Scheduled wakers {:?} with cause {:?}", wakers, cause);
-        self.waker_queue.push(Wakers::new(wakers, cause));
+        self.persisted.timers.remove_wakers(wakers);
     }
 
     pub(crate) fn take_wakers(&mut self) -> impl Iterator<Item = (WakerId, WakeUpCause)> {
-        let wakers = mem::take(&mut self.waker_queue);
+        let wakers = mem::take(&mut self.persisted.waker_queue);
         wakers.into_iter().flat_map(Wakers::into_iter)
     }
 
@@ -394,5 +452,15 @@ impl WorkflowData {
             .wake_waker(store.as_context_mut(), waker_id);
         store.data_mut().current_wakeup_cause = None;
         result
+    }
+}
+
+impl PersistedWorkflowData {
+    pub(super) fn schedule_wakers(&mut self, wakers: HashSet<WakerId>, cause: WakeUpCause) {
+        if wakers.is_empty() {
+            return; // no need to schedule anything
+        }
+        crate::trace!("Scheduled wakers {:?} with cause {:?}", wakers, cause);
+        self.waker_queue.push(Wakers::new(wakers, cause));
     }
 }

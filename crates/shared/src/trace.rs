@@ -142,26 +142,12 @@ impl TracedFuture {
 }
 
 /// Container for traced futures.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TracedFutures {
-    channel_name: String,
     futures: HashMap<FutureId, TracedFuture>,
 }
 
 impl TracedFutures {
-    /// Creates a new container for traced futures.
-    pub fn new(channel_name: impl Into<String>) -> Self {
-        Self {
-            channel_name: channel_name.into(),
-            futures: HashMap::new(),
-        }
-    }
-
-    /// Returns the name of a channel the traced futures are attached to.
-    pub fn channel_name(&self) -> &str {
-        &self.channel_name
-    }
-
     /// Returns the number of traced futures.
     pub fn len(&self) -> usize {
         self.futures.len()

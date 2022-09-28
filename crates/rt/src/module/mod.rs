@@ -6,7 +6,7 @@ use wasmtime::{Engine, ExternType, Func, Linker, Module, Store, WasmParams, Wasm
 
 use std::{collections::HashMap, fmt, str, sync::Arc};
 
-use crate::data::{WorkflowData, WorkflowFunctions};
+use crate::data::{SpawnFunctions, WorkflowData, WorkflowFunctions};
 use tardigrade::{interface::Interface, workflow::GetInterface};
 
 mod exports;
@@ -15,11 +15,15 @@ mod services;
 #[cfg(test)]
 mod tests;
 
-use self::imports::ModuleImports;
 pub use self::services::Clock;
 #[cfg(test)]
 pub(crate) use self::tests::{ExportsMock, MockPollFn};
-pub(crate) use self::{exports::ModuleExports, services::Services};
+pub(crate) use self::{
+    exports::ModuleExports,
+    services::{NoOpWorkflowManager, Services, WorkflowAndChannelIds},
+};
+
+use self::imports::ModuleImports;
 
 fn ensure_func_ty<Args, Out>(ty: &ExternType, fn_name: &str) -> anyhow::Result<()>
 where
@@ -38,7 +42,7 @@ where
 
 /// WASM linker extension allowing to define additional functions (besides ones provided
 /// by the Tardigrade runtime) to be imported into the workflow WASM module.
-pub trait ExtendLinker: 'static {
+pub trait ExtendLinker: Send + Sync + 'static {
     /// Name of the module imported into WASM.
     const MODULE_NAME: &'static str;
 
@@ -47,7 +51,7 @@ pub trait ExtendLinker: 'static {
 }
 
 /// Object-safe version of `ExtendLinker`.
-trait LowLevelExtendLinker {
+trait LowLevelExtendLinker: Send + Sync + 'static {
     fn extend_linker(
         &self,
         store: &mut Store<WorkflowData>,
@@ -319,7 +323,6 @@ impl WorkflowModule {
 /// [`WorkflowModule::for_untyped_workflow`].
 pub struct WorkflowSpawner<W> {
     pub(crate) module: Module,
-    pub(crate) services: Services,
     interface: Interface<W>,
     workflow_name: String,
     linker_extensions: Vec<Box<dyn LowLevelExtendLinker>>,
@@ -343,8 +346,7 @@ impl<W> WorkflowSpawner<W> {
             module,
             interface,
             workflow_name: workflow_name.to_owned(),
-            services: Services::default(),
-            linker_extensions: vec![Box::new(WorkflowFunctions)],
+            linker_extensions: vec![Box::new(WorkflowFunctions), Box::new(SpawnFunctions)],
             data_section: OnceCell::new(),
         }
     }
@@ -391,13 +393,13 @@ impl<W> WorkflowSpawner<W> {
         &self.workflow_name
     }
 
-    /// Specifies a [`Clock`] implementation to be used with [`Workflow`]s instantiated
-    /// from this module.
-    ///
-    /// [`Workflow`]: crate::Workflow
-    #[must_use]
-    pub fn with_clock(mut self, clock: impl Clock) -> Self {
-        self.services.clock = Arc::new(clock);
-        self
+    pub(crate) fn erase(self) -> WorkflowSpawner<()> {
+        WorkflowSpawner {
+            module: self.module,
+            interface: self.interface.erase(),
+            workflow_name: self.workflow_name,
+            linker_extensions: self.linker_extensions,
+            data_section: self.data_section,
+        }
     }
 }

@@ -12,7 +12,7 @@
 //! - Tasks
 //!
 //! Timers [can be created dynamically](sleep) during workflow operation; likewise, tasks
-//! can be [`spawn`]ed to achieve concurrency (but not parallelism!). In contrast, the
+//! can be [`spawn()`]ed to achieve concurrency (but not parallelism!). In contrast, the
 //! set of channels and their direction (inbound or outbound)
 //! are static / predefined in the workflow [`Interface`].
 //!
@@ -54,11 +54,16 @@
 // Linter settings.
 #![warn(missing_debug_implementations, missing_docs, bare_trait_objects)]
 #![warn(clippy::all, clippy::pedantic)]
-#![allow(clippy::must_use_candidate, clippy::module_name_repetitions)]
+#![allow(
+    clippy::must_use_candidate,
+    clippy::module_name_repetitions,
+    clippy::trait_duplication_in_bounds
+)]
 
 pub mod channel;
 mod codec;
 mod ext;
+pub mod spawn;
 mod task;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod test;
@@ -150,7 +155,8 @@ macro_rules! workflow_entry {
                 $crate::workflow::Wasm::set_panic_hook();
                 // ^ Needs to be set at the very start of the workflow
                 let data = std::vec::Vec::from_raw_parts(data_ptr, data_len, data_len);
-                $crate::workflow::TaskHandle::from_workflow::<$workflow>(data).unwrap()
+                $crate::workflow::TaskHandle::from_workflow::<$workflow>(data, Wasm::default())
+                    .unwrap()
             }
         };
     };

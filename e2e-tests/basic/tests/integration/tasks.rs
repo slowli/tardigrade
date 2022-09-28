@@ -6,8 +6,14 @@ use futures::{channel::mpsc, future, stream, SinkExt, StreamExt, TryStreamExt};
 
 use std::cmp;
 
-use tardigrade::channel::WithId;
-use tardigrade_rt::handle::future::{AsyncEnv, AsyncIoScheduler, Termination};
+use tardigrade::{channel::WithId, spawn::ManageWorkflowsExt};
+use tardigrade_rt::{
+    handle::{
+        future::{AsyncEnv, AsyncIoScheduler, Termination},
+        WorkflowHandle,
+    },
+    manager::WorkflowManager,
+};
 use tardigrade_test_basic::{
     tasks::{Args, PizzaDeliveryWithTasks},
     DomainEvent, PizzaKind, PizzaOrder,
@@ -22,19 +28,26 @@ async fn test_external_tasks(
 ) -> TestResult {
     let module = task::spawn_blocking(|| &*MODULE).await;
     let spawner = module.for_workflow::<PizzaDeliveryWithTasks>()?;
+    let mut manager = WorkflowManager::builder()
+        .with_spawner("pizza", spawner)
+        .build();
 
-    let inputs = Args { oven_count };
-    let workflow = spawner.spawn(inputs)?.init()?.into_inner();
-    let mut env = AsyncEnv::new(workflow, AsyncIoScheduler);
-    let mut handle = env.handle();
-    let join_handle = task::spawn(async move { env.run().await });
+    let mut workflow: WorkflowHandle<PizzaDeliveryWithTasks> = manager
+        .new_workflow("pizza", Args { oven_count })?
+        .build()?;
+    let handle = workflow.handle();
+    let mut env = AsyncEnv::new(AsyncIoScheduler);
+    let responses_sx = handle.baking_responses.into_async(&mut env);
+    let baking_tasks_rx = handle.baking_tasks.into_async(&mut env);
+    let mut orders_sx = handle.orders.into_async(&mut env);
+    let events_rx = handle.shared.events.into_async(&mut env);
+    let join_handle = task::spawn(async move { env.run(&mut manager).await });
 
-    let responses = handle.baking_responses;
     let (executor_events_sx, executor_events_rx) = mpsc::unbounded();
-    let tasks_stream = handle.baking_tasks.try_for_each_concurrent(
+    let tasks_stream = baking_tasks_rx.try_for_each_concurrent(
         task_concurrency,
         move |WithId { id, data: order }| {
-            let mut responses = responses.clone();
+            let mut responses = responses_sx.clone();
             let executor_events_sx = executor_events_sx.clone();
             let index = id as usize;
             async move {
@@ -63,10 +76,10 @@ async fn test_external_tasks(
             delivery_distance: 10,
         })
     });
-    handle.orders.send_all(&mut stream::iter(orders)).await?;
-    drop(handle.orders);
+    orders_sx.send_all(&mut stream::iter(orders)).await?;
+    drop(orders_sx);
 
-    let events: Vec<_> = handle.shared.events.try_collect().await?;
+    let events: Vec<_> = events_rx.try_collect().await?;
     assert_eq!(events.len(), 2 * order_count, "{:?}", events);
     for i in 1..=order_count {
         let order_events: Vec<_> = events.iter().filter(|event| event.index() == i).collect();
@@ -138,20 +151,28 @@ async fn closing_task_responses_on_host() -> TestResult {
 
     let module = task::spawn_blocking(|| &*MODULE).await;
     let spawner = module.for_workflow::<PizzaDeliveryWithTasks>()?;
+    let mut manager = WorkflowManager::builder()
+        .with_spawner("pizza", spawner)
+        .build();
 
-    let inputs = Args { oven_count: 2 };
-    let workflow = spawner.spawn(inputs)?.init()?.into_inner();
-    let mut env = AsyncEnv::new(workflow, AsyncIoScheduler);
-    let mut handle = env.handle();
-    let join_handle = task::spawn(async move { env.run().await });
+    let mut workflow: WorkflowHandle<PizzaDeliveryWithTasks> = manager
+        .new_workflow("pizza", Args { oven_count: 2 })?
+        .build()?;
 
-    let responses = handle.baking_responses;
-    let tasks_stream = handle.baking_tasks.map(move |res| {
+    let mut env = AsyncEnv::new(AsyncIoScheduler);
+    let handle = workflow.handle();
+    let responses_sx = handle.baking_responses.into_async(&mut env);
+    let baking_tasks_rx = handle.baking_tasks.into_async(&mut env);
+    let mut orders_sx = handle.orders.into_async(&mut env);
+    let events_rx = handle.shared.events.into_async(&mut env);
+    let join_handle = task::spawn(async move { env.run(&mut manager).await });
+
+    let tasks_stream = baking_tasks_rx.map(move |res| {
         let WithId { id, data: order } = res.unwrap();
-        let mut responses = responses.clone();
+        let mut responses_sx = responses_sx.clone();
         async move {
             task::sleep(order.kind.baking_time()).await;
-            responses.send(WithId { id, data: () }).await.ok();
+            responses_sx.send(WithId { id, data: () }).await.ok();
         }
     });
     // Complete first `SUCCESSFUL_TASK_COUNT` tasks, then drop the executor.
@@ -172,10 +193,10 @@ async fn closing_task_responses_on_host() -> TestResult {
             delivery_distance: 10,
         })
     });
-    handle.orders.send_all(&mut stream::iter(orders)).await?;
-    drop(handle.orders);
+    orders_sx.send_all(&mut stream::iter(orders)).await?;
+    drop(orders_sx);
 
-    let events: Vec<_> = handle.shared.events.try_collect().await?;
+    let events: Vec<_> = events_rx.try_collect().await?;
     assert_eq!(
         events.len(),
         ORDER_COUNT + SUCCESSFUL_TASK_COUNT,

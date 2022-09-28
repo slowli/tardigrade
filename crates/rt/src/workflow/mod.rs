@@ -1,117 +1,82 @@
 //! `Workflow` and tightly related types.
 
 use anyhow::Context;
-use chrono::{DateTime, Utc};
 use wasmtime::{AsContextMut, Linker, Store, Trap};
 
-use std::{fmt, marker::PhantomData, sync::Arc, task::Poll};
+use std::{collections::HashMap, sync::Arc, task::Poll};
 
 mod persistence;
-#[cfg(test)]
-mod tests;
 
 pub use self::persistence::PersistedWorkflow;
 
 use crate::{
-    data::{
-        ConsumeError, InboundChannelState, OutboundChannelState, PersistError, TaskState,
-        TimerState, WorkflowData,
-    },
-    module::{DataSection, ModuleExports, WorkflowSpawner},
+    data::{ConsumeError, PersistError, WorkflowData},
+    module::{DataSection, ModuleExports, Services, WorkflowSpawner},
     receipt::{
         Event, ExecutedFunction, Execution, ExecutionError, ExtendedTrap, Receipt,
         ResourceEventKind, ResourceId, WakeUpCause,
     },
-    TaskId, TimerId,
+    utils::Message,
+    ChannelId, TaskId, WorkflowId,
 };
-use tardigrade::{interface::Interface, workflow::WorkflowFn, Encode};
+use tardigrade::spawn::{ChannelSpawnConfig, ChannelsConfig};
 
-#[cfg(feature = "async")]
-#[derive(Debug)]
-pub(crate) struct ListenedEvents {
-    pub inbound_channels: Vec<String>,
-    pub nearest_timer: Option<DateTime<Utc>>,
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ChannelIds {
+    pub inbound: HashMap<String, ChannelId>,
+    pub outbound: HashMap<String, ChannelId>,
 }
 
-#[cfg(feature = "async")]
-impl ListenedEvents {
-    pub fn is_empty(&self) -> bool {
-        self.inbound_channels.is_empty() && self.nearest_timer.is_none()
+impl ChannelIds {
+    pub fn new(channels: &ChannelsConfig, mut new_channel: impl FnMut() -> ChannelId) -> Self {
+        Self {
+            inbound: Self::map_channels(&channels.inbound, &mut new_channel),
+            outbound: Self::map_channels(&channels.outbound, new_channel),
+        }
+    }
+
+    fn map_channels(
+        config: &HashMap<String, ChannelSpawnConfig>,
+        mut new_channel: impl FnMut() -> ChannelId,
+    ) -> HashMap<String, ChannelId> {
+        let channel_ids = config.iter().map(|(name, config)| {
+            let channel_id = match config {
+                ChannelSpawnConfig::New => new_channel(),
+                ChannelSpawnConfig::Closed => 0,
+                _ => unreachable!(),
+            };
+            (name.clone(), channel_id)
+        });
+        channel_ids.collect()
     }
 }
 
-impl<W: WorkflowFn> WorkflowSpawner<W> {
-    /// Instantiates a new workflow from the `module` and the provided `inputs`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error in case preparations for instantiation (e.g., extending the WASM linker
-    /// with imports) fails.
-    pub fn spawn(&self, data: W::Args) -> anyhow::Result<InitializingWorkflow<W>> {
-        let raw_data = W::Codec::default().encode_value(data);
-        let state =
-            WorkflowData::from_interface(self.interface().clone().erase(), self.services.clone());
-        let workflow = Workflow::from_state(self, state)?;
-        Ok(InitializingWorkflow {
-            inner: workflow,
-            raw_data,
-        })
-    }
-}
-
-/// [`Workflow`] that has not been initialized yet.
-///
-/// The encapsulated workflow should be initialized by calling [`Self::init()`].
-#[must_use = "Should be initialized by calling `Self::init()`"]
-pub struct InitializingWorkflow<W> {
-    inner: Workflow<W>,
-    raw_data: Vec<u8>,
-}
-
-impl<W> fmt::Debug for InitializingWorkflow<W> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("InitializingWorkflow")
-            .field("inner", &self.inner)
-            .field("raw_data_len", &self.raw_data.len())
-            .finish()
-    }
-}
-
-impl<W> InitializingWorkflow<W> {
-    /// Initializes the workflow by spawning the main task and polling it. Note that depending
-    /// on the workflow config, other tasks may be immediately spawned as well.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the entry point of the workflow or initially polling it fails.
-    pub fn init(mut self) -> Result<Receipt<Workflow<W>>, ExecutionError> {
-        let mut spawn_receipt = self.inner.spawn_main_task(&self.raw_data)?;
-        let tick_receipt = self.inner.tick()?;
-        spawn_receipt.extend(tick_receipt);
-        Ok(spawn_receipt.map(|()| self.inner))
+impl WorkflowSpawner<()> {
+    pub(crate) fn spawn<'a>(
+        &self,
+        raw_args: Vec<u8>,
+        channel_ids: &ChannelIds,
+        services: Services<'a>,
+    ) -> anyhow::Result<Workflow<'a>> {
+        let state = WorkflowData::new(self.interface(), channel_ids, services);
+        Workflow::from_state(self, state, Some(raw_args.into()))
     }
 }
 
 /// Workflow instance.
-pub struct Workflow<W> {
-    store: Store<WorkflowData>,
+#[derive(Debug)]
+pub(crate) struct Workflow<'a> {
+    store: Store<WorkflowData<'a>>,
     data_section: Option<Arc<DataSection>>,
-    _ty: PhantomData<W>,
+    raw_args: Option<Message>,
 }
 
-impl<W> fmt::Debug for Workflow<W> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("Workflow")
-            .field("store", &self.store)
-            .field("data_section", &self.data_section)
-            .finish()
-    }
-}
-
-impl<W> Workflow<W> {
-    fn from_state(spawner: &WorkflowSpawner<W>, state: WorkflowData) -> anyhow::Result<Self> {
+impl<'a> Workflow<'a> {
+    fn from_state(
+        spawner: &WorkflowSpawner<()>,
+        state: WorkflowData<'a>,
+        raw_args: Option<Message>,
+    ) -> anyhow::Result<Self> {
         let mut linker = Linker::new(spawner.module.engine());
         let mut store = Store::new(spawner.module.engine(), state);
         spawner
@@ -127,12 +92,33 @@ impl<W> Workflow<W> {
         Ok(Self {
             store,
             data_section,
-            _ty: PhantomData,
+            raw_args,
         })
     }
 
-    pub(crate) fn interface(&self) -> &Interface<()> {
-        self.store.data().interface()
+    #[cfg(test)]
+    pub(crate) fn data(&self) -> &WorkflowData<'a> {
+        self.store.data()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn data_mut(&mut self) -> &mut WorkflowData<'a> {
+        self.store.data_mut()
+    }
+
+    pub(crate) fn is_initialized(&self) -> bool {
+        self.raw_args.is_none()
+    }
+
+    pub(crate) fn initialize(&mut self) -> Result<Receipt, ExecutionError> {
+        let raw_args = self
+            .raw_args
+            .take()
+            .expect("workflow is already initialized");
+        let mut spawn_receipt = self.spawn_main_task(raw_args.as_ref())?;
+        let tick_receipt = self.tick()?;
+        spawn_receipt.extend(tick_receipt);
+        Ok(spawn_receipt)
     }
 
     fn spawn_main_task(&mut self, raw_data: &[u8]) -> Result<Receipt, ExecutionError> {
@@ -143,29 +129,11 @@ impl<W> Workflow<W> {
         }
 
         let task_id = match &receipt.executions[0].function {
-            ExecutedFunction::Entry { task_id, .. } => *task_id,
+            ExecutedFunction::Entry { task_id } => *task_id,
             _ => unreachable!(),
         };
         self.store.data_mut().spawn_main_task(task_id);
         Ok(receipt)
-    }
-
-    /// Returns the current state of a task with the specified ID.
-    pub fn task(&self, task_id: TaskId) -> Option<&TaskState> {
-        self.store.data().task(task_id)
-    }
-
-    /// Lists all tasks in this workflow.
-    pub fn tasks(&self) -> impl Iterator<Item = (TaskId, &TaskState)> + '_ {
-        self.store.data().tasks()
-    }
-
-    /// Checks whether the workflow is finished, i.e., all tasks in it have completed.
-    pub fn is_finished(&self) -> bool {
-        self.store
-            .data()
-            .tasks()
-            .all(|(_, state)| state.result().is_ready())
     }
 
     fn do_execute(
@@ -287,6 +255,10 @@ impl<W> Workflow<W> {
     }
 
     pub(crate) fn tick(&mut self) -> Result<Receipt, ExecutionError> {
+        if !self.is_initialized() {
+            return self.initialize();
+        }
+
         let mut receipt = Receipt::new();
         match self.do_tick(&mut receipt) {
             Ok(()) => Ok(receipt),
@@ -304,19 +276,9 @@ impl<W> Workflow<W> {
         Ok(())
     }
 
-    /// Returns the current state of an inbound channel with the specified name.
-    // TODO: better interface (maybe, via an immutable handle?)
-    pub fn inbound_channel(&self, channel_name: &str) -> Option<&InboundChannelState> {
-        self.store.data().inbound_channel(channel_name)
-    }
-
-    /// Returns the current state of an outbound channel with the specified name.
-    pub fn outbound_channel(&self, channel_name: &str) -> Option<&OutboundChannelState> {
-        self.store.data().outbound_channel(channel_name)
-    }
-
     pub(crate) fn push_inbound_message(
         &mut self,
+        workflow_id: Option<WorkflowId>,
         channel_name: &str,
         message: Vec<u8>,
     ) -> Result<(), ConsumeError> {
@@ -324,7 +286,7 @@ impl<W> Workflow<W> {
         let result = self
             .store
             .data_mut()
-            .push_inbound_message(channel_name, message);
+            .push_inbound_message(workflow_id, channel_name, message);
         crate::log_result!(
             result,
             "Consumed message ({} bytes) for channel `{}`",
@@ -333,74 +295,8 @@ impl<W> Workflow<W> {
         )
     }
 
-    pub(crate) fn close_inbound_channel(&mut self, channel_name: &str) -> Result<(), ConsumeError> {
-        let result = self.store.data_mut().close_inbound_channel(channel_name);
-        crate::log_result!(result, "Closed inbound channel `{}`", channel_name)
-    }
-
-    #[cfg(feature = "async")]
-    pub(crate) fn listened_events(&self) -> ListenedEvents {
-        let data = self.store.data();
-        let expirations = data.timers().iter().filter_map(|(_, state)| {
-            if state.completed_at().is_none() {
-                Some(state.definition().expires_at)
-            } else {
-                None
-            }
-        });
-        ListenedEvents {
-            inbound_channels: data
-                .listened_inbound_channels()
-                .map(str::to_owned)
-                .collect(),
-            nearest_timer: expirations.min(),
-        }
-    }
-
-    pub(crate) fn take_outbound_messages(&mut self, channel_name: &str) -> (usize, Vec<Vec<u8>>) {
-        let (start_idx, messages) = self.store.data_mut().take_outbound_messages(channel_name);
-        crate::trace!(
-            "Taken messages with lengths {:?} from channel `{}`",
-            messages.iter().map(Vec::len).collect::<Vec<_>>(),
-            channel_name
-        );
-        (start_idx, messages)
-    }
-
-    /// Returns the current time for the workflow.
-    pub fn current_time(&self) -> DateTime<Utc> {
-        self.store.data().timers().last_known_time()
-    }
-
-    /// Sets the current time for the workflow and completes the relevant timers.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if workflow execution traps.
-    pub fn set_current_time(&mut self, time: DateTime<Utc>) -> Result<Receipt, ExecutionError> {
-        self.store.data_mut().set_current_time(time);
-        crate::trace!("Set current time to {}", time);
-        self.tick()
-    }
-
-    /// Returns a timer with the specified `id`.
-    pub fn timer(&self, id: TimerId) -> Option<&TimerState> {
-        self.store.data().timers().get(id)
-    }
-
-    /// Enumerates all timers together with their states.
-    pub fn timers(&self) -> impl Iterator<Item = (TimerId, &TimerState)> + '_ {
-        self.store.data().timers().iter()
-    }
-
-    /// Checks whether this workflow can be persisted right now.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the workflow cannot be persisted. The error points out
-    /// a reason (potentially, one of the reasons if there are multiple).
-    pub fn check_persistence(&self) -> Result<(), PersistError> {
-        self.store.data().check_persistence()
+    pub(crate) fn drain_messages(&mut self) -> Vec<(ChannelId, Vec<Message>)> {
+        self.store.data_mut().drain_messages()
     }
 
     /// Persists this workflow.
@@ -409,29 +305,8 @@ impl<W> Workflow<W> {
     ///
     /// Returns an error if the workflow is in such a state that it cannot be persisted
     /// right now.
-    pub fn persist(&mut self) -> Result<PersistedWorkflow, PersistError> {
+    pub(crate) fn persist(&mut self) -> Result<PersistedWorkflow, PersistError> {
         PersistedWorkflow::new(self)
-    }
-
-    /// Executes the provided closure, reverting any workflow progress if an error occurs.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the workflow cannot be persisted (e.g., due to non-flushed messages).
-    /// Call [`Self::check_persistence()`] beforehand to determine whether this is the case.
-    ///
-    /// # Errors
-    ///
-    /// Passes through errors returned by the closure.
-    pub fn rollback_on_error<T, E>(
-        &mut self,
-        action: impl FnOnce(&mut Self) -> Result<T, E>,
-    ) -> Result<T, E> {
-        let backup = self.persist().unwrap();
-        action(self).map_err(|err| {
-            backup.restore_to_workflow(self); // `unwrap()` should be safe by design
-            err
-        })
     }
 
     fn copy_memory(&mut self, offset: usize, memory_contents: &[u8]) -> anyhow::Result<()> {

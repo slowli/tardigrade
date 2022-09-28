@@ -4,7 +4,6 @@ use externref::{externref, Resource};
 use futures::{Sink, Stream};
 
 use std::{
-    convert::Infallible,
     mem::ManuallyDrop,
     pin::Pin,
     sync::Arc,
@@ -12,16 +11,36 @@ use std::{
 };
 
 use crate::{
+    channel::SendError,
     interface::{AccessError, AccessErrorKind, InboundChannel, OutboundChannel},
+    spawn::imp::RemoteWorkflow,
     workflow::{TakeHandle, Wasm},
 };
 use tardigrade_shared::abi::IntoWasm;
 
-static mut ACCESS_ERROR_PAD: i64 = 0;
+pub(crate) static mut ACCESS_ERROR_PAD: i64 = 0;
+
+#[externref]
+#[link(wasm_import_module = "tardigrade_rt")]
+extern "C" {
+    #[link_name = "mpsc_receiver::get"]
+    pub(crate) fn mpsc_receiver_get(
+        workflow: Option<&Resource<RemoteWorkflow>>,
+        channel_name_ptr: *const u8,
+        channel_name_len: usize,
+        error_ptr: *mut i64,
+    ) -> Option<Resource<MpscReceiver>>;
+}
 
 #[derive(Debug)]
 pub struct MpscReceiver {
     resource: Resource<Self>,
+}
+
+impl From<Resource<Self>> for MpscReceiver {
+    fn from(resource: Resource<Self>) -> Self {
+        Self { resource }
+    }
 }
 
 impl TakeHandle<Wasm> for MpscReceiver {
@@ -29,23 +48,10 @@ impl TakeHandle<Wasm> for MpscReceiver {
     type Handle = Self;
 
     fn take_handle(_env: &mut Wasm, id: &str) -> Result<Self, AccessError> {
-        #[externref]
-        #[link(wasm_import_module = "tardigrade_rt")]
-        extern "C" {
-            #[link_name = "mpsc_receiver::get"]
-            fn mpsc_receiver_get(
-                channel_name_ptr: *const u8,
-                channel_name_len: usize,
-                error_ptr: *mut i64,
-            ) -> Option<Resource<MpscReceiver>>;
-        }
-
         unsafe {
-            let resource = mpsc_receiver_get(id.as_ptr(), id.len(), &mut ACCESS_ERROR_PAD);
+            let resource = mpsc_receiver_get(None, id.as_ptr(), id.len(), &mut ACCESS_ERROR_PAD);
             Result::<(), AccessErrorKind>::from_abi_in_wasm(ACCESS_ERROR_PAD)
-                .map(|()| Self {
-                    resource: resource.unwrap(),
-                })
+                .map(|()| resource.unwrap().into())
                 .map_err(|kind| kind.with_location(InboundChannel(id)))
         }
     }
@@ -73,10 +79,30 @@ impl Stream for MpscReceiver {
     }
 }
 
+#[externref]
+#[link(wasm_import_module = "tardigrade_rt")]
+extern "C" {
+    #[link_name = "mpsc_sender::get"]
+    pub(crate) fn mpsc_sender_get(
+        workflow: Option<&Resource<RemoteWorkflow>>,
+        channel_name_ptr: *const u8,
+        channel_name_len: usize,
+        error_ptr: *mut i64,
+    ) -> Option<Resource<MpscSender>>;
+}
+
 /// Unbounded sender end of an MPSC channel. Guaranteed to never close.
 #[derive(Debug, Clone)]
 pub struct MpscSender {
     resource: Arc<Resource<Self>>,
+}
+
+impl From<Resource<Self>> for MpscSender {
+    fn from(resource: Resource<Self>) -> Self {
+        Self {
+            resource: Arc::new(resource),
+        }
+    }
 }
 
 impl TakeHandle<Wasm> for MpscSender {
@@ -84,49 +110,17 @@ impl TakeHandle<Wasm> for MpscSender {
     type Handle = Self;
 
     fn take_handle(_env: &mut Wasm, id: &str) -> Result<Self, AccessError> {
-        #[externref]
-        #[link(wasm_import_module = "tardigrade_rt")]
-        extern "C" {
-            #[link_name = "mpsc_sender::get"]
-            fn mpsc_sender_get(
-                channel_name_ptr: *const u8,
-                channel_name_len: usize,
-                error_ptr: *mut i64,
-            ) -> Option<Resource<MpscSender>>;
-        }
-
         unsafe {
-            let resource = mpsc_sender_get(id.as_ptr(), id.len(), &mut ACCESS_ERROR_PAD);
+            let resource = mpsc_sender_get(None, id.as_ptr(), id.len(), &mut ACCESS_ERROR_PAD);
             Result::<(), AccessErrorKind>::from_abi_in_wasm(ACCESS_ERROR_PAD)
-                .map(|()| Self {
-                    resource: Arc::new(resource.unwrap()),
-                })
+                .map(|()| resource.unwrap().into())
                 .map_err(|kind| kind.with_location(OutboundChannel(id)))
         }
     }
 }
 
-impl MpscSender {
-    fn do_send(&self, message: &[u8]) {
-        #[externref]
-        #[link(wasm_import_module = "tardigrade_rt")]
-        extern "C" {
-            #[link_name = "mpsc_sender::start_send"]
-            fn mpsc_sender_start_send(
-                sender: &Resource<MpscSender>,
-                message_ptr: *const u8,
-                message_len: usize,
-            );
-        }
-
-        unsafe {
-            mpsc_sender_start_send(&self.resource, message.as_ptr(), message.len());
-        }
-    }
-}
-
 impl Sink<&[u8]> for MpscSender {
-    type Error = Infallible;
+    type Error = SendError;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         #[externref]
@@ -139,13 +133,26 @@ impl Sink<&[u8]> for MpscSender {
 
         unsafe {
             let poll_result = mpsc_sender_poll_ready(&self.resource, cx);
-            Poll::<()>::from_abi_in_wasm(poll_result).map(Ok)
+            Poll::<Result<(), SendError>>::from_abi_in_wasm(poll_result)
         }
     }
 
     fn start_send(self: Pin<&mut Self>, item: &[u8]) -> Result<(), Self::Error> {
-        self.do_send(item.as_ref());
-        Ok(())
+        #[externref]
+        #[link(wasm_import_module = "tardigrade_rt")]
+        extern "C" {
+            #[link_name = "mpsc_sender::start_send"]
+            fn mpsc_sender_start_send(
+                sender: &Resource<MpscSender>,
+                message_ptr: *const u8,
+                message_len: usize,
+            ) -> i32;
+        }
+
+        unsafe {
+            let result = mpsc_sender_start_send(&self.resource, item.as_ptr(), item.len());
+            Result::<(), SendError>::from_abi_in_wasm(result)
+        }
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -159,7 +166,7 @@ impl Sink<&[u8]> for MpscSender {
 
         unsafe {
             let poll_result = mpsc_sender_poll_flush(&self.resource, cx);
-            Poll::<()>::from_abi_in_wasm(poll_result).map(Ok)
+            Poll::<Result<(), SendError>>::from_abi_in_wasm(poll_result)
         }
     }
 

@@ -52,6 +52,6 @@ pub fn spawn<T: 'static>(
     _task_name: &str,
     task: impl Future<Output = T> + 'static,
 ) -> JoinHandle<T> {
-    let handle = Runtime::with_mut(|rt| rt.spawn_task(task));
+    let handle = Runtime::with(|rt| rt.spawn_task(task));
     JoinHandle(Some(handle))
 }

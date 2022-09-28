@@ -18,6 +18,10 @@ pub type TaskId = u64;
 pub type TimerId = u64;
 /// ID of a (traced) future defined by a workflow.
 pub type FutureId = u64;
+/// ID of a workflow.
+pub type WorkflowId = u64;
+/// ID of a channel.
+pub type ChannelId = u128;
 
 /// Errors that can occur when joining a task (i.e., waiting for its completion).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,3 +50,52 @@ pub struct TimerDefinition {
     /// Expiration timestamp of the timer.
     pub expires_at: DateTime<Utc>,
 }
+
+/// Errors that can occur when sending a message over a channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SendError {
+    /// The channel is full.
+    Full,
+    /// The channel is closed.
+    Closed,
+}
+
+impl fmt::Display for SendError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Full => formatter.write_str("channel is full"),
+            Self::Closed => formatter.write_str("channel is closed"),
+        }
+    }
+}
+
+impl error::Error for SendError {}
+
+/// Errors that can occur when spawning a workflow.
+// TODO: generalize as a trap?
+#[derive(Debug)]
+pub struct SpawnError {
+    message: String,
+}
+
+impl SpawnError {
+    /// Creates an error with the specified `message`.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for SpawnError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "error has occurred during workflow instantiation: {}",
+            self.message
+        )
+    }
+}
+
+impl error::Error for SpawnError {}

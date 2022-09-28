@@ -12,7 +12,7 @@ use std::{
 
 use super::{
     helpers::{WakeIfPending, WakerPlacement, Wakers, WasmContext, WasmContextPtr},
-    WorkflowData, WorkflowFunctions,
+    PersistedWorkflowData, WorkflowData, WorkflowFunctions,
 };
 use crate::{
     receipt::{ResourceEventKind, ResourceId, WakeUpCause},
@@ -21,7 +21,7 @@ use crate::{
 };
 use tardigrade_shared::{abi::IntoWasm, TimerDefinition};
 
-/// State of a [`Workflow`](crate::Workflow) timer.
+/// State of a workflow timer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimerState {
     definition: TimerDefinition,
@@ -131,7 +131,7 @@ impl Timers {
     }
 
     /// **NB.** The returned iterator must be completely consumed!
-    fn set_current_time(
+    pub(super) fn set_current_time(
         &mut self,
         time: DateTime<Utc>,
     ) -> impl Iterator<Item = (TimerId, HashSet<WakerId>)> + '_ {
@@ -146,33 +146,7 @@ impl Timers {
     }
 }
 
-impl WorkflowData {
-    fn timer_definition(timestamp_millis: i64) -> TimerDefinition {
-        let expires_at = Utc.timestamp_millis(timestamp_millis);
-        TimerDefinition { expires_at }
-    }
-
-    pub(crate) fn timers(&self) -> &Timers {
-        &self.timers
-    }
-
-    fn create_timer(&mut self, definition: TimerDefinition) -> TimerId {
-        let timer_id = self.timers.insert(definition);
-        self.current_execution()
-            .push_resource_event(ResourceId::Timer(timer_id), ResourceEventKind::Created);
-        timer_id
-    }
-
-    fn drop_timer(&mut self, timer_id: TimerId) -> Result<(), Trap> {
-        if self.timers.get(timer_id).is_none() {
-            let message = format!("Timer ID {} is not defined", timer_id);
-            return Err(Trap::new(message));
-        }
-        self.current_execution()
-            .push_resource_event(ResourceId::Timer(timer_id), ResourceEventKind::Dropped);
-        Ok(())
-    }
-
+impl PersistedWorkflowData {
     pub(crate) fn set_current_time(&mut self, time: DateTime<Utc>) {
         let wakers_by_timer = self.timers.set_current_time(time);
         for (id, wakers) in wakers_by_timer {
@@ -181,13 +155,37 @@ impl WorkflowData {
             self.waker_queue.push(Wakers::new(wakers, cause));
         }
     }
+}
+
+impl WorkflowData<'_> {
+    fn timer_definition(timestamp_millis: i64) -> TimerDefinition {
+        let expires_at = Utc.timestamp_millis(timestamp_millis);
+        TimerDefinition { expires_at }
+    }
+
+    fn create_timer(&mut self, definition: TimerDefinition) -> TimerId {
+        let timer_id = self.persisted.timers.insert(definition);
+        self.current_execution()
+            .push_resource_event(ResourceId::Timer(timer_id), ResourceEventKind::Created);
+        timer_id
+    }
+
+    fn drop_timer(&mut self, timer_id: TimerId) -> Result<(), Trap> {
+        if self.persisted.timers.get(timer_id).is_none() {
+            let message = format!("Timer ID {} is not defined", timer_id);
+            return Err(Trap::new(message));
+        }
+        self.current_execution()
+            .push_resource_event(ResourceId::Timer(timer_id), ResourceEventKind::Dropped);
+        Ok(())
+    }
 
     fn poll_timer(
         &mut self,
         timer_id: TimerId,
         cx: &mut WasmContext,
     ) -> Result<Poll<DateTime<Utc>>, Trap> {
-        let poll_result = self.timers.poll(timer_id)?;
+        let poll_result = self.persisted.timers.poll(timer_id)?;
         self.current_execution().push_resource_event(
             ResourceId::Timer(timer_id),
             ResourceEventKind::Polled(poll_result.map(drop)),

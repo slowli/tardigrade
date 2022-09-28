@@ -16,7 +16,7 @@ in a fully sandboxed, controlled environment.
 A key observation is that a workflow is essentially a future that interacts with the external
 world via well-defined interfaces:
 
-- Data inputs provided to the workflow on creation
+- Arguments provided to the workflow on creation
 - Inbound and outbound message channels
 - Timers
 - Tasks

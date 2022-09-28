@@ -17,7 +17,7 @@ pub use tardigrade_shared::trace::{
 use crate::{
     channel::Sender,
     interface::{AccessError, AccessErrorKind, Interface, OutboundChannel, ValidateInterface},
-    workflow::{EnvExtensions, ExtendEnv, TakeHandle, Wasm},
+    workflow::{TakeHandle, Wasm},
     Encode,
 };
 use tardigrade_shared::FutureId;
@@ -78,23 +78,6 @@ where
             let err = AccessErrorKind::Unknown.with_location(OutboundChannel(id));
             Err(err)
         }
-    }
-}
-
-impl ExtendEnv for TracedFutures {
-    fn id(&self) -> String {
-        format!("traces::{}", self.channel_name())
-    }
-}
-
-impl<C> TakeHandle<EnvExtensions> for Tracer<C> {
-    type Id = str;
-    type Handle = TracedFutures;
-
-    fn take_handle(env: &mut EnvExtensions, id: &Self::Id) -> Result<Self::Handle, AccessError> {
-        Ok(env
-            .take::<TracedFutures>(&format!("traces::{}", id))?
-            .unwrap_or_else(|| TracedFutures::new(id)))
     }
 }
 

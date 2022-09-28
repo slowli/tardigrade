@@ -11,6 +11,7 @@ use tardigrade_rt::{
 };
 
 mod async_env;
+mod spawn;
 mod sync_env;
 mod tasks;
 

@@ -1,84 +1,103 @@
 //! Workflow state.
 
+use serde::{Deserialize, Serialize};
 use wasmtime::{AsContextMut, ExternRef, StoreContextMut, Trap};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 mod channel;
 mod helpers;
 mod persistence;
+mod spawn;
 mod task;
+#[cfg(test)]
+mod tests;
 mod time;
 
+pub(crate) use self::{
+    channel::ConsumeError,
+    helpers::{Wakers, WasmContextPtr},
+    persistence::{PersistError, Refs},
+    spawn::SpawnFunctions,
+};
 pub use self::{
-    channel::{ConsumeError, ConsumeErrorKind, InboundChannelState, OutboundChannelState},
-    persistence::PersistError,
+    channel::{InboundChannelState, OutboundChannelState},
+    spawn::ChildWorkflowState,
     task::TaskState,
     time::TimerState,
 };
-pub(crate) use self::{
-    helpers::WasmContextPtr,
-    persistence::{Refs, WorkflowState},
-};
 
-use self::{
-    helpers::{CurrentExecution, Wakers},
-    task::TaskQueue,
-    time::Timers,
-};
+use self::{channel::ChannelStates, helpers::CurrentExecution, task::TaskQueue, time::Timers};
 use crate::{
     data::helpers::HostResource,
     module::{ModuleExports, Services},
     receipt::{PanicInfo, PanicLocation, WakeUpCause},
     utils::copy_string_from_wasm,
-    TaskId,
+    workflow::ChannelIds,
+    TaskId, WorkflowId,
 };
 use tardigrade::interface::Interface;
 
+/// `Workflow` state that can be persisted between workflow invocations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct PersistedWorkflowData {
+    pub timers: Timers,
+    pub tasks: HashMap<TaskId, TaskState>,
+    child_workflows: HashMap<WorkflowId, ChildWorkflowState>,
+    channels: ChannelStates,
+    pub waker_queue: Vec<Wakers>,
+}
+
 #[derive(Debug)]
-pub struct WorkflowData {
+pub struct WorkflowData<'a> {
     /// Functions exported by the `Instance`. Instantiated immediately after instance.
     exports: Option<ModuleExports>,
-    // Workflow interface, such as channels.
-    interface: Interface<()>,
-    inbound_channels: HashMap<String, InboundChannelState>,
-    outbound_channels: HashMap<String, OutboundChannelState>,
-    timers: Timers,
-    services: Services,
-    /// All tasks together with relevant info.
-    tasks: HashMap<TaskId, TaskState>,
+    /// Services available to the workflow.
+    services: Services<'a>,
+    persisted: PersistedWorkflowData,
     /// Data related to the currently executing WASM call.
     current_execution: Option<CurrentExecution>,
     /// Tasks that should be polled after `current_task`.
     task_queue: TaskQueue,
-    /// Wakers that need to be woken up.
-    waker_queue: Vec<Wakers>,
     /// Wakeup cause set when waking up tasks.
     current_wakeup_cause: Option<WakeUpCause>,
 }
 
-impl WorkflowData {
-    pub(crate) fn from_interface(interface: Interface<()>, services: Services) -> Self {
-        let inbound_channels = interface
-            .inbound_channels()
-            .map(|(name, _)| (name.to_owned(), InboundChannelState::default()))
-            .collect();
-        let outbound_channels = interface
-            .outbound_channels()
-            .map(|(name, _)| (name.to_owned(), OutboundChannelState::default()))
-            .collect();
+impl<'a> WorkflowData<'a> {
+    pub(crate) fn new(
+        interface: &Interface<()>,
+        channel_ids: &ChannelIds,
+        services: Services<'a>,
+    ) -> Self {
+        debug_assert_eq!(
+            interface
+                .inbound_channels()
+                .map(|(name, _)| name)
+                .collect::<HashSet<_>>(),
+            channel_ids
+                .inbound
+                .keys()
+                .map(String::as_str)
+                .collect::<HashSet<_>>()
+        );
+        debug_assert_eq!(
+            interface
+                .outbound_channels()
+                .map(|(name, _)| name)
+                .collect::<HashSet<_>>(),
+            channel_ids
+                .outbound
+                .keys()
+                .map(String::as_str)
+                .collect::<HashSet<_>>()
+        );
 
         Self {
+            persisted: PersistedWorkflowData::new(interface, channel_ids, services.clock.now()),
             exports: None,
-            interface,
-            inbound_channels,
-            outbound_channels,
-            timers: Timers::new(services.clock.now()),
             services,
-            tasks: HashMap::new(),
             current_execution: None,
             task_queue: TaskQueue::default(),
-            waker_queue: Vec::new(),
             current_wakeup_cause: None,
         }
     }
@@ -92,26 +111,25 @@ impl WorkflowData {
         self.exports = Some(exports);
     }
 
-    pub(crate) fn interface(&self) -> &Interface<()> {
-        &self.interface
+    #[cfg(test)]
+    pub(crate) fn inbound_channel_ref(
+        workflow_id: Option<WorkflowId>,
+        name: impl Into<String>,
+    ) -> ExternRef {
+        HostResource::inbound_channel(workflow_id, name.into()).into_ref()
     }
 
     #[cfg(test)]
-    pub(crate) fn outbound_channel_wakers(&self) -> impl Iterator<Item = crate::WakerId> + '_ {
-        self.outbound_channels
-            .values()
-            .flat_map(|state| &state.wakes_on_flush)
-            .copied()
+    pub(crate) fn outbound_channel_ref(
+        workflow_id: Option<WorkflowId>,
+        name: impl Into<String>,
+    ) -> ExternRef {
+        HostResource::outbound_channel(workflow_id, name.into()).into_ref()
     }
 
     #[cfg(test)]
-    pub(crate) fn inbound_channel_ref(name: impl Into<String>) -> ExternRef {
-        HostResource::InboundChannel(name.into()).into_ref()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn outbound_channel_ref(name: impl Into<String>) -> ExternRef {
-        HostResource::OutboundChannel(name.into()).into_ref()
+    pub(crate) fn child_ref(workflow_id: WorkflowId) -> ExternRef {
+        HostResource::Workflow(workflow_id).into_ref()
     }
 }
 
@@ -125,19 +143,33 @@ impl WorkflowFunctions {
         dropped: Option<ExternRef>,
     ) -> Result<(), Trap> {
         let dropped = HostResource::from_ref(dropped.as_ref())?;
-        if let HostResource::InboundChannel(name) = dropped {
-            let wakers = ctx.data_mut().handle_inbound_channel_closure(name);
-            let exports = ctx.data().exports();
-            for waker in wakers {
-                let result = exports.drop_waker(ctx.as_context_mut(), waker);
-                let result = crate::log_result!(
-                    result,
-                    "Dropped waker {} for inbound channel `{}` closed by the workflow",
-                    waker,
-                    name
-                );
-                result.ok();
+        crate::trace!("{:?} dropped by workflow code", dropped);
+
+        let wakers = match dropped {
+            HostResource::InboundChannel(channel_ref) => {
+                ctx.data_mut().handle_inbound_channel_drop(channel_ref)
             }
+            HostResource::OutboundChannel(channel_ref) => {
+                ctx.data_mut().handle_outbound_channel_drop(channel_ref)
+            }
+            HostResource::Workflow(workflow_id) => {
+                ctx.data_mut().handle_child_handle_drop(*workflow_id)
+            }
+
+            HostResource::ChannelHandles(_) => return Ok(()),
+            // ^ no associated wakers, thus no cleanup necessary
+        };
+
+        let exports = ctx.data().exports();
+        for waker in wakers {
+            let result = exports.drop_waker(ctx.as_context_mut(), waker);
+            let result = crate::log_result!(
+                result,
+                "Dropped waker {} for {:?} dropped by the workflow",
+                waker,
+                dropped
+            );
+            result.ok(); // We assume traps during dropping wakers is not significant
         }
         Ok(())
     }

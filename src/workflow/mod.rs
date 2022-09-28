@@ -7,7 +7,7 @@
 //! Simple workflow definition:
 //!
 //! ```
-//! # use futures::StreamExt;
+//! # use futures::{SinkExt, StreamExt};
 //! # use serde::{Deserialize, Serialize};
 //! use tardigrade::{
 //!     channel::{Sender, Receiver},
@@ -56,7 +56,7 @@
 //!             Command::Ping(ping) => {
 //!                 let pong = format!("{}, counter={}", ping, *counter);
 //!                 *counter += 1;
-//!                 self.events.send(Event::Pong(pong)).await;
+//!                 self.events.send(Event::Pong(pong)).await.ok();
 //!             }
 //!             // other commands...
 //!         }
@@ -83,7 +83,7 @@
 //! tardigrade::workflow_entry!(MyWorkflow);
 //! ```
 
-use std::{collections::HashMap, fmt, future::Future, mem, ops};
+use std::{future::Future, mem};
 
 /// Derives the [`GetInterface`] trait for a workflow type.
 ///
@@ -93,17 +93,17 @@ use std::{collections::HashMap, fmt, future::Future, mem, ops};
 pub use tardigrade_derive::GetInterface;
 
 use crate::{
-    channel::{RawReceiver, RawSender},
-    interface::{
-        AccessError, AccessErrorKind, InboundChannel, Interface, InterfaceLocation,
-        OutboundChannel, ValidateInterface,
-    },
+    interface::{AccessError, AccessErrorKind, Interface, InterfaceLocation, ValidateInterface},
     Decode, Encode, Raw,
 };
 
 mod handle;
+mod untyped;
 
-pub use self::handle::{EnvExtensions, ExtendEnv, Handle, TakeHandle};
+pub use self::{
+    handle::{Handle, TakeHandle},
+    untyped::{UntypedHandle, UntypedHandleIndex},
+};
 
 #[cfg(target_arch = "wasm32")]
 mod imp {
@@ -197,7 +197,10 @@ pub trait GetInterface: ValidateInterface<Id = ()> {
 /// are ones provided via Tardigrade runtime imports for the WASM module, or emulated
 /// in case of [tests](crate::test).
 #[derive(Debug, Default)]
-pub struct Wasm(());
+pub struct Wasm {
+    #[cfg(not(target_arch = "wasm32"))]
+    handles: UntypedHandle<Self>,
+}
 
 impl Wasm {
     /// Sets the panic hook to pass panic messages to the host.
@@ -271,6 +274,27 @@ impl Wasm {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl Wasm {
+    pub(crate) fn new(handles: UntypedHandle<Self>) -> Self {
+        Self { handles }
+    }
+
+    pub(crate) fn take_inbound_channel(
+        &mut self,
+        channel_name: &str,
+    ) -> Option<crate::channel::RawReceiver> {
+        self.handles.inbound_channels.remove(channel_name)
+    }
+
+    pub(crate) fn take_outbound_channel(
+        &mut self,
+        channel_name: &str,
+    ) -> Option<crate::channel::RawSender> {
+        self.handles.outbound_channels.remove(channel_name)
+    }
+}
+
 /// Functional interface of a workflow.
 pub trait WorkflowFn {
     /// Argument(s) supplied to the workflow on its creation.
@@ -303,13 +327,15 @@ impl TaskHandle {
     }
 
     #[doc(hidden)] // only used in the `workflow_entry` macro
-    pub fn from_workflow<W: SpawnWorkflow>(raw_data: Vec<u8>) -> Result<Self, AccessError> {
+    pub fn from_workflow<W: SpawnWorkflow>(
+        raw_data: Vec<u8>,
+        mut wasm: Wasm,
+    ) -> Result<Self, AccessError> {
         let data = W::Codec::default()
             .try_decode_bytes(raw_data)
             .map_err(|err| {
                 AccessErrorKind::Custom(Box::new(err)).with_location(InterfaceLocation::Args)
             })?;
-        let mut wasm = Wasm::default();
         let handle = <W as TakeHandle<Wasm>>::take_handle(&mut wasm, &())?;
         Ok(W::spawn(data, handle))
     }
@@ -317,151 +343,6 @@ impl TaskHandle {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn into_inner(self) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         self.0 .0
-    }
-}
-
-/// Dynamically-typed handle to a workflow containing handles to its inputs
-/// and channels.
-pub struct UntypedHandle<Env>
-where
-    RawReceiver: TakeHandle<Env, Id = str>,
-    RawSender: TakeHandle<Env, Id = str>,
-{
-    inbound_channels: HashMap<String, <RawReceiver as TakeHandle<Env>>::Handle>,
-    outbound_channels: HashMap<String, <RawSender as TakeHandle<Env>>::Handle>,
-}
-
-#[allow(clippy::type_repetition_in_bounds, clippy::trait_duplication_in_bounds)] // false positive
-impl<Env> fmt::Debug for UntypedHandle<Env>
-where
-    RawReceiver: TakeHandle<Env, Id = str>,
-    <RawReceiver as TakeHandle<Env>>::Handle: fmt::Debug,
-    RawSender: TakeHandle<Env, Id = str>,
-    <RawSender as TakeHandle<Env>>::Handle: fmt::Debug,
-{
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("UntypedHandle")
-            .field("inbound_channels", &self.inbound_channels)
-            .field("outbound_channels", &self.outbound_channels)
-            .finish()
-    }
-}
-
-impl<Env> UntypedHandle<Env>
-where
-    RawReceiver: TakeHandle<Env, Id = str>,
-    RawSender: TakeHandle<Env, Id = str>,
-{
-    /// Removes an element with the specified index from this handle. Returns `None` if
-    /// the element is not present in the handle.
-    pub fn remove<I>(&mut self, index: I) -> Option<I::Output>
-    where
-        I: UntypedHandleIndex<Env>,
-    {
-        index.remove_from(self)
-    }
-}
-
-impl<Env> TakeHandle<Env> for UntypedHandle<Env>
-where
-    RawReceiver: TakeHandle<Env, Id = str>,
-    RawSender: TakeHandle<Env, Id = str>,
-    Interface<()>: TakeHandle<Env, Id = (), Handle = Interface<()>>,
-{
-    type Id = ();
-    type Handle = Self;
-
-    fn take_handle(env: &mut Env, _id: &()) -> Result<Self, AccessError> {
-        let interface = Interface::<()>::take_handle(env, &())?;
-
-        let inbound_channels = interface
-            .inbound_channels()
-            .map(|(name, _)| Ok((name.to_owned(), RawReceiver::take_handle(&mut *env, name)?)))
-            .collect::<Result<_, AccessError>>()?;
-        let outbound_channels = interface
-            .outbound_channels()
-            .map(|(name, _)| Ok((name.to_owned(), RawSender::take_handle(&mut *env, name)?)))
-            .collect::<Result<_, AccessError>>()?;
-
-        Ok(Self {
-            inbound_channels,
-            outbound_channels,
-        })
-    }
-}
-
-/// Types that can be used for indexing [`UntypedHandle`].
-pub trait UntypedHandleIndex<Env>: Copy + fmt::Display
-where
-    RawReceiver: TakeHandle<Env, Id = str>,
-    RawSender: TakeHandle<Env, Id = str>,
-{
-    /// Output type for the indexing operation.
-    type Output;
-
-    #[doc(hidden)]
-    fn get_from(self, handle: &UntypedHandle<Env>) -> Option<&Self::Output>;
-
-    #[doc(hidden)]
-    fn get_mut_from(self, handle: &mut UntypedHandle<Env>) -> Option<&mut Self::Output>;
-
-    #[doc(hidden)]
-    fn remove_from(self, handle: &mut UntypedHandle<Env>) -> Option<Self::Output>;
-}
-
-macro_rules! impl_index {
-    ($target:ty => $raw:ty, $field:ident) => {
-        impl<Env> UntypedHandleIndex<Env> for $target
-        where
-            RawReceiver: TakeHandle<Env, Id = str>,
-            RawSender: TakeHandle<Env, Id = str>,
-        {
-            type Output = <$raw as TakeHandle<Env>>::Handle;
-
-            fn get_from(self, handle: &UntypedHandle<Env>) -> Option<&Self::Output> {
-                handle.$field.get(self.0)
-            }
-
-            fn get_mut_from(self, handle: &mut UntypedHandle<Env>) -> Option<&mut Self::Output> {
-                handle.$field.get_mut(self.0)
-            }
-
-            fn remove_from(self, handle: &mut UntypedHandle<Env>) -> Option<Self::Output> {
-                handle.$field.remove(self.0)
-            }
-        }
-    };
-}
-
-impl_index!(InboundChannel<'_> => RawReceiver, inbound_channels);
-impl_index!(OutboundChannel<'_> => RawSender, outbound_channels);
-
-impl<Env, I> ops::Index<I> for UntypedHandle<Env>
-where
-    I: UntypedHandleIndex<Env>,
-    RawReceiver: TakeHandle<Env, Id = str>,
-    RawSender: TakeHandle<Env, Id = str>,
-{
-    type Output = I::Output;
-
-    fn index(&self, index: I) -> &Self::Output {
-        index
-            .get_from(self)
-            .unwrap_or_else(|| panic!("{} is not defined", index))
-    }
-}
-
-impl<Env, I> ops::IndexMut<I> for UntypedHandle<Env>
-where
-    I: UntypedHandleIndex<Env>,
-    RawReceiver: TakeHandle<Env, Id = str>,
-    RawSender: TakeHandle<Env, Id = str>,
-{
-    fn index_mut(&mut self, index: I) -> &mut Self::Output {
-        index
-            .get_mut_from(self)
-            .unwrap_or_else(|| panic!("{} is not defined", index))
     }
 }
 

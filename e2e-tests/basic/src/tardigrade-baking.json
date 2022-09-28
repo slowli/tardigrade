@@ -1,0 +1,18 @@
+{
+  "v": 0,
+  "in": {},
+  "out": {
+    "events": {
+      "description": "Domain events emitted during pizza order lifecycle"
+    },
+    "traces": {
+      "capacity": null,
+      "description": "Structured logs for traced futures"
+    }
+  },
+  "data": {
+    "inputs": {
+      "description": "Tuple of the order index and the order itself"
+    }
+  }
+}

@@ -32,7 +32,7 @@ wasmtime = "0.37.0"
 [dev-dependencies.externref]
 version = "0.1.0"
 git = "https://github.com/slowli/externref.git"
-rev = "2737e549d882c6309989d11cb8aa5befc99dd261"
+rev = "1320af1df269cb3df4710da1b3e4e9efb9b43ed3"
 features = ["processor-log"]
 
 [dev-dependencies.tardigrade-rt]

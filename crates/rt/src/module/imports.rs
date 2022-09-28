@@ -9,10 +9,12 @@ use wasmtime::{
 use std::str;
 
 use crate::{
-    data::{WasmContextPtr, WorkflowData, WorkflowFunctions},
+    data::{SpawnFunctions, WasmContextPtr, WorkflowData, WorkflowFunctions},
     module::{ensure_func_ty, ExtendLinker},
     TaskId, TimerId,
 };
+
+type Ref = Option<ExternRef>;
 
 #[derive(Debug)]
 pub(super) struct ModuleImports;
@@ -34,15 +36,13 @@ impl ModuleImports {
     }
 
     fn validate_import(ty: &ExternType, fn_name: &str) -> anyhow::Result<()> {
-        type Ref = Option<ExternRef>;
-
         match fn_name {
             "task::poll_completion" => ensure_func_ty::<(TaskId, WasmContextPtr), i64>(ty, fn_name),
             "task::spawn" => ensure_func_ty::<(u32, u32, TaskId), ()>(ty, fn_name),
             "task::wake" | "task::abort" => ensure_func_ty::<TaskId, ()>(ty, fn_name),
 
             "mpsc_receiver::get" | "mpsc_sender::get" => {
-                ensure_func_ty::<(u32, u32, u32), Ref>(ty, fn_name)
+                ensure_func_ty::<(Ref, u32, u32, u32), Ref>(ty, fn_name)
             }
 
             "mpsc_receiver::poll_next" => ensure_func_ty::<(Ref, WasmContextPtr), i64>(ty, fn_name),
@@ -50,7 +50,7 @@ impl ModuleImports {
             "mpsc_sender::poll_ready" | "mpsc_sender::poll_flush" => {
                 ensure_func_ty::<(Ref, WasmContextPtr), i32>(ty, fn_name)
             }
-            "mpsc_sender::start_send" => ensure_func_ty::<(Ref, u32, u32), ()>(ty, fn_name),
+            "mpsc_sender::start_send" => ensure_func_ty::<(Ref, u32, u32), i32>(ty, fn_name),
 
             "timer::now" => ensure_func_ty::<(), i64>(ty, fn_name),
             "timer::new" => ensure_func_ty::<i64, TimerId>(ty, fn_name),
@@ -59,6 +59,8 @@ impl ModuleImports {
 
             "drop_ref" => ensure_func_ty::<Ref, ()>(ty, fn_name),
             "panic" => ensure_func_ty::<(u32, u32, u32, u32, u32, u32), ()>(ty, fn_name),
+
+            other if other.starts_with("workflow::") => SpawnFunctions::validate_import(ty, other),
 
             other => {
                 bail!(
@@ -88,12 +90,12 @@ impl ExtendLinker for WorkflowFunctions {
                 wrap1(&mut *store, Self::schedule_task_abortion),
             ),
             // Channel functions
-            ("mpsc_receiver::get", wrap3(&mut *store, Self::get_receiver)),
+            ("mpsc_receiver::get", wrap4(&mut *store, Self::get_receiver)),
             (
                 "mpsc_receiver::poll_next",
                 wrap2(&mut *store, Self::poll_next_for_receiver),
             ),
-            ("mpsc_sender::get", wrap3(&mut *store, Self::get_sender)),
+            ("mpsc_sender::get", wrap4(&mut *store, Self::get_sender)),
             (
                 "mpsc_sender::poll_ready",
                 wrap2(&mut *store, Self::poll_ready_for_sender),
@@ -119,6 +121,54 @@ impl ExtendLinker for WorkflowFunctions {
     }
 }
 
+impl SpawnFunctions {
+    fn validate_import(ty: &ExternType, fn_name: &str) -> anyhow::Result<()> {
+        match fn_name {
+            "workflow::interface" => ensure_func_ty::<(u32, u32), i64>(ty, fn_name),
+            "workflow::create_handles" => ensure_func_ty::<(), Ref>(ty, fn_name),
+            "workflow::set_handle" => ensure_func_ty::<(Ref, i32, u32, u32, i32), ()>(ty, fn_name),
+            "workflow::spawn" => ensure_func_ty::<(u32, u32, u32, u32, Ref, u32), Ref>(ty, fn_name),
+            "workflow::poll_completion" => {
+                ensure_func_ty::<(Ref, WasmContextPtr), i64>(ty, fn_name)
+            }
+
+            other => {
+                bail!(
+                    "Unknown import from `{}` module: `{}`",
+                    ModuleImports::RT_MODULE,
+                    other
+                );
+            }
+        }
+    }
+}
+
+impl ExtendLinker for SpawnFunctions {
+    const MODULE_NAME: &'static str = "tardigrade_rt";
+
+    fn functions(&self, store: &mut Store<WorkflowData>) -> Vec<(&'static str, Func)> {
+        vec![
+            (
+                "workflow::interface",
+                wrap2(&mut *store, Self::workflow_interface),
+            ),
+            (
+                "workflow::create_handles",
+                Func::wrap(&mut *store, Self::create_channel_handles),
+            ),
+            (
+                "workflow::set_handle",
+                wrap5(&mut *store, Self::set_channel_handle),
+            ),
+            ("workflow::spawn", wrap6(&mut *store, Self::spawn)),
+            (
+                "workflow::poll_completion",
+                wrap2(&mut *store, Self::poll_workflow_completion),
+            ),
+        ]
+    }
+}
+
 macro_rules! impl_wrapper {
     ($fn_name:ident => $($arg:ident : $arg_ty:ident),*) => {
         fn $fn_name<R, $($arg_ty,)*>(
@@ -140,6 +190,8 @@ impl_wrapper!(wrap0 =>);
 impl_wrapper!(wrap1 => a: A);
 impl_wrapper!(wrap2 => a: A, b: B);
 impl_wrapper!(wrap3 => a: A, b: B, c: C);
+impl_wrapper!(wrap4 => a: A, b: B, c: C, d: D);
+impl_wrapper!(wrap5 => a: A, b: B, c: C, d: D, e: E);
 impl_wrapper!(wrap6 => a: A, b: B, c: C, d: D, e: E, f: F);
 
 #[cfg(test)]
@@ -147,13 +199,21 @@ mod tests {
     use wasmtime::{Engine, Linker};
 
     use super::*;
-    use crate::module::{LowLevelExtendLinker, Services};
+    use crate::{
+        module::{LowLevelExtendLinker, NoOpWorkflowManager, Services},
+        test::MockScheduler,
+        workflow::ChannelIds,
+    };
     use tardigrade::interface::Interface;
 
     #[test]
     fn import_checks_are_consistent() {
         let interface = Interface::default();
-        let state = WorkflowData::from_interface(interface, Services::default());
+        let services = Services {
+            clock: &MockScheduler::default(),
+            workflows: &NoOpWorkflowManager,
+        };
+        let state = WorkflowData::new(&interface, &ChannelIds::default(), services);
         let engine = Engine::default();
         let mut store = Store::new(&engine, state);
         let mut linker = Linker::new(&engine);
@@ -161,6 +221,10 @@ mod tests {
         WorkflowFunctions
             .extend_linker(&mut store, &mut linker)
             .unwrap();
+        SpawnFunctions
+            .extend_linker(&mut store, &mut linker)
+            .unwrap();
+
         let linker_contents: Vec<_> = linker.iter(&mut store).collect();
         for (module, name, value) in linker_contents {
             assert_eq!(module, ModuleImports::RT_MODULE);

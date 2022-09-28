@@ -1,50 +1,40 @@
 //! Functionality to manage channel state.
 
+use serde::{Deserialize, Serialize};
 use wasmtime::{AsContextMut, ExternRef, StoreContextMut, Trap};
 
-use std::{collections::HashSet, error, fmt, mem, task::Poll};
+use std::{
+    collections::{HashMap, HashSet},
+    error, fmt, mem,
+    task::Poll,
+};
 
 use super::{
-    helpers::{HostResource, Message, WakeIfPending, WakerPlacement, WasmContext, WasmContextPtr},
-    WorkflowData, WorkflowFunctions,
+    helpers::{
+        ChannelRef, HostResource, WakeIfPending, WakerPlacement, WasmContext, WasmContextPtr,
+    },
+    PersistedWorkflowData, WorkflowData, WorkflowFunctions,
 };
 use crate::{
     receipt::WakeUpCause,
-    utils::{copy_bytes_from_wasm, copy_string_from_wasm, WasmAllocator},
-    WakerId,
+    utils::{copy_bytes_from_wasm, copy_string_from_wasm, Message, WasmAllocator},
+    workflow::ChannelIds,
+    ChannelId, WakerId, WorkflowId,
 };
-use tardigrade::interface::{AccessErrorKind, OutboundChannelSpec};
-use tardigrade_shared::{abi::IntoWasm, PollMessage};
+use tardigrade::interface::{AccessErrorKind, ChannelKind};
+use tardigrade_shared::{abi::IntoWasm, PollMessage, SendError};
 
-/// Kind of a [`ConsumeError`].
-#[derive(Debug, Clone)]
+/// Errors that can occur when consuming messages in a workflow.
+#[derive(Debug)]
 #[non_exhaustive]
-pub enum ConsumeErrorKind {
+pub(crate) enum ConsumeError {
     /// No tasks listen to the channel.
     NotListened,
     /// The channel is closed.
     Closed,
 }
 
-impl ConsumeErrorKind {
-    pub(crate) fn for_message(self, channel_name: &str, message: Vec<u8>) -> ConsumeError {
-        ConsumeError {
-            kind: self,
-            channel_name: channel_name.to_owned(),
-            message: Some(message),
-        }
-    }
-
-    pub(crate) fn for_closure(self, channel_name: &str) -> ConsumeError {
-        ConsumeError {
-            kind: self,
-            channel_name: channel_name.to_owned(),
-            message: None,
-        }
-    }
-}
-
-impl fmt::Display for ConsumeErrorKind {
+impl fmt::Display for ConsumeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::NotListened => "channel is not currently listened to",
@@ -53,75 +43,46 @@ impl fmt::Display for ConsumeErrorKind {
     }
 }
 
-/// Errors that can occur when feeding a message to an inbound
-/// [`Workflow`](crate::Workflow) channel.
-#[derive(Debug)]
-pub struct ConsumeError {
-    channel_name: String,
-    message: Option<Vec<u8>>,
-    kind: ConsumeErrorKind,
-}
-
-impl fmt::Display for ConsumeError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(message) = &self.message {
-            write!(
-                formatter,
-                "cannot push message ({} bytes) into inbound channel `{}`: {}",
-                message.len(),
-                self.channel_name,
-                self.kind
-            )
-        } else {
-            write!(
-                formatter,
-                "cannot close inbound channel `{}`: {}",
-                self.channel_name, self.kind
-            )
-        }
-    }
-}
-
 impl error::Error for ConsumeError {}
 
-impl ConsumeError {
-    /// Returns the kind of this error.
-    pub fn kind(&self) -> &ConsumeErrorKind {
-        &self.kind
-    }
-
-    /// Returns the channel name.
-    pub fn channel_name(&self) -> &str {
-        &self.channel_name
-    }
-
-    /// Retrieves message bytes from this error, if the error was caused by sending a message.
-    /// Otherwise, returns `None`.
-    pub fn into_message(self) -> Option<Vec<u8>> {
-        self.message
-    }
+#[allow(clippy::trivially_copy_pass_by_ref)] // required by serde
+fn flip_bool(&flag: &bool) -> bool {
+    !flag
 }
 
 /// State of an inbound workflow channel.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InboundChannelState {
+    pub(super) channel_id: ChannelId,
     pub(super) is_acquired: bool,
+    #[serde(default, skip_serializing_if = "flip_bool")]
     pub(super) is_closed: bool,
     pub(super) received_messages: usize,
+    #[serde(default, skip)]
     pub(super) pending_message: Option<Message>,
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     pub(super) wakes_on_next_element: HashSet<WakerId>,
 }
 
 impl InboundChannelState {
-    /// Checks whether this channel is closed.
-    pub fn is_closed(&self) -> bool {
-        self.is_closed
+    pub(crate) fn new(channel_id: ChannelId) -> Self {
+        Self {
+            channel_id,
+            is_acquired: false,
+            is_closed: false,
+            received_messages: 0,
+            pending_message: None,
+            wakes_on_next_element: HashSet::new(),
+        }
     }
 
-    /// Returns the total number of messages received by this channel. Only processed messages
-    /// are counted, the pending message (if any) is not.
-    pub fn received_messages(&self) -> usize {
-        self.received_messages
+    /// Returns ID of the channel.
+    pub fn id(&self) -> ChannelId {
+        self.channel_id
+    }
+
+    pub(crate) fn waits_for_message(&self) -> bool {
+        !self.is_closed && !self.wakes_on_next_element.is_empty()
     }
 
     fn acquire(&mut self) -> Result<(), AccessErrorKind> {
@@ -144,18 +105,40 @@ impl InboundChannelState {
 }
 
 /// State of an outbound workflow channel.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutboundChannelState {
+    pub(super) channel_id: ChannelId,
+    pub(super) capacity: Option<usize>,
     pub(super) is_acquired: bool,
+    pub(super) is_closed: bool,
     pub(super) flushed_messages: usize,
+    #[serde(default, skip)]
     pub(super) messages: Vec<Message>,
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     pub(super) wakes_on_flush: HashSet<WakerId>,
 }
 
 impl OutboundChannelState {
-    /// Returns the number of messages flushed to this channel.
-    pub fn flushed_messages(&self) -> usize {
-        self.flushed_messages
+    pub(crate) fn new(channel_id: ChannelId, capacity: Option<usize>) -> Self {
+        Self {
+            channel_id,
+            capacity,
+            is_acquired: false,
+            is_closed: false,
+            flushed_messages: 0,
+            messages: Vec::new(),
+            wakes_on_flush: HashSet::new(),
+        }
+    }
+
+    /// Returns ID of the channel.
+    pub fn id(&self) -> ChannelId {
+        self.channel_id
+    }
+
+    /// Is this channel ready to receive another message?
+    fn is_ready(&self) -> bool {
+        !self.is_closed && self.capacity.map_or(true, |cap| self.messages.len() < cap)
     }
 
     fn acquire(&mut self) -> Result<(), AccessErrorKind> {
@@ -166,26 +149,69 @@ impl OutboundChannelState {
         }
     }
 
-    /// Is this channel ready to receive another message?
-    fn is_ready(&self, spec: &OutboundChannelSpec) -> bool {
-        spec.capacity.map_or(true, |cap| self.messages.len() < cap)
+    pub(crate) fn close(&mut self) {
+        debug_assert!(self.wakes_on_flush.is_empty());
+        self.is_closed = true;
     }
 }
 
-impl WorkflowData {
-    pub(crate) fn push_inbound_message(
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct ChannelStates {
+    pub inbound: HashMap<String, InboundChannelState>,
+    pub outbound: HashMap<String, OutboundChannelState>,
+}
+
+impl ChannelStates {
+    pub fn new<F>(channel_ids: &ChannelIds, outbound_cap_fn: F) -> Self
+    where
+        F: Fn(&str) -> Option<usize>,
+    {
+        let inbound = channel_ids
+            .inbound
+            .iter()
+            .map(|(name, channel_id)| (name.clone(), InboundChannelState::new(*channel_id)))
+            .collect();
+        let outbound = channel_ids
+            .outbound
+            .iter()
+            .map(|(name, channel_id)| {
+                (
+                    name.clone(),
+                    OutboundChannelState::new(*channel_id, outbound_cap_fn(name)),
+                )
+            })
+            .collect();
+        Self { inbound, outbound }
+    }
+}
+
+impl PersistedWorkflowData {
+    fn channels_mut(&mut self, workflow_id: Option<WorkflowId>) -> &mut ChannelStates {
+        if let Some(workflow_id) = workflow_id {
+            &mut self.child_workflows.get_mut(&workflow_id).unwrap().channels
+        } else {
+            &mut self.channels
+        }
+    }
+
+    fn push_inbound_message(
         &mut self,
+        workflow_id: Option<WorkflowId>,
         channel_name: &str,
         message: Vec<u8>,
     ) -> Result<(), ConsumeError> {
-        let channel_state = self.inbound_channels.get_mut(channel_name).unwrap();
+        let channel_state = self
+            .channels_mut(workflow_id)
+            .inbound
+            .get_mut(channel_name)
+            .unwrap();
         // ^ `unwrap()` safety is guaranteed by previous checks.
 
         if channel_state.is_closed {
-            return Err(ConsumeErrorKind::Closed.for_message(channel_name, message));
+            return Err(ConsumeError::Closed);
         }
         if channel_state.wakes_on_next_element.is_empty() {
-            return Err(ConsumeErrorKind::NotListened.for_message(channel_name, message));
+            return Err(ConsumeError::NotListened);
         }
 
         debug_assert!(
@@ -201,6 +227,7 @@ impl WorkflowData {
         self.schedule_wakers(
             wakers,
             WakeUpCause::InboundMessage {
+                workflow_id,
                 channel_name: channel_name.to_owned(),
                 message_index,
             },
@@ -208,14 +235,19 @@ impl WorkflowData {
         Ok(())
     }
 
-    pub(crate) fn close_inbound_channel(&mut self, channel_name: &str) -> Result<(), ConsumeError> {
-        let channel_state = self.inbound_channels.get_mut(channel_name).unwrap();
+    pub(crate) fn close_inbound_channel(
+        &mut self,
+        workflow_id: Option<WorkflowId>,
+        channel_name: &str,
+    ) {
+        let channel_state = self
+            .channels_mut(workflow_id)
+            .inbound
+            .get_mut(channel_name)
+            .unwrap();
         // ^ `unwrap()` safety is guaranteed by previous checks.
         if channel_state.is_closed {
-            return Ok(()); // no further actions required
-        }
-        if channel_state.wakes_on_next_element.is_empty() {
-            return Err(ConsumeErrorKind::NotListened.for_closure(channel_name));
+            return; // no further actions required
         }
 
         debug_assert!(
@@ -229,94 +261,116 @@ impl WorkflowData {
         self.schedule_wakers(
             wakers,
             WakeUpCause::ChannelClosed {
+                workflow_id,
                 channel_name: channel_name.to_owned(),
             },
         );
-        Ok(())
     }
 
-    pub(crate) fn handle_inbound_channel_closure(
+    pub(crate) fn close_outbound_channel(
         &mut self,
+        workflow_id: Option<WorkflowId>,
         channel_name: &str,
-    ) -> HashSet<WakerId> {
-        let channel_state = self.inbound_channels.get_mut(channel_name).unwrap();
-        // ^ `unwrap()` safety is guaranteed by previous checks.
-        mem::take(&mut channel_state.wakes_on_next_element)
+    ) {
+        let channel_state = self
+            .channels_mut(workflow_id)
+            .outbound
+            .get_mut(channel_name)
+            .unwrap();
+        channel_state.close();
     }
 
-    #[cfg(feature = "async")]
-    pub(crate) fn listened_inbound_channels(&self) -> impl Iterator<Item = &str> + '_ {
-        self.inbound_channels.iter().filter_map(|(name, state)| {
-            if state.wakes_on_next_element.is_empty() {
-                None
-            } else {
-                Some(name.as_str())
-            }
-        })
+    pub fn channel_ids(&self) -> ChannelIds {
+        let inbound = self.channels.inbound.iter();
+        let inbound = inbound.map(|(name, state)| (name.clone(), state.id()));
+        let outbound = self.channels.outbound.iter();
+        let outbound = outbound.map(|(name, state)| (name.clone(), state.id()));
+
+        ChannelIds {
+            inbound: inbound.collect(),
+            outbound: outbound.collect(),
+        }
     }
 
-    pub(crate) fn inbound_channel(&self, channel_name: &str) -> Option<&InboundChannelState> {
-        self.inbound_channels.get(channel_name)
+    pub fn inbound_channels(
+        &self,
+    ) -> impl Iterator<Item = (Option<WorkflowId>, &str, &InboundChannelState)> + '_ {
+        let local_channels = self.channels.inbound.iter();
+        let local_channels = local_channels.map(|(name, state)| (None, name.as_str(), state));
+        let workflow_channels = self
+            .child_workflows
+            .iter()
+            .flat_map(|(&workflow_id, workflow)| {
+                let channels = workflow.channels.inbound.iter();
+                channels.map(move |(name, state)| (Some(workflow_id), name.as_str(), state))
+            });
+        local_channels.chain(workflow_channels)
     }
 
-    fn inbound_channel_mut(&mut self, channel_name: &str) -> Option<&mut InboundChannelState> {
-        self.inbound_channels.get_mut(channel_name)
-    }
-
-    pub(crate) fn outbound_channel(&self, channel_name: &str) -> Option<&OutboundChannelState> {
-        self.outbound_channels.get(channel_name)
-    }
-
-    fn outbound_channel_mut(&mut self, channel_name: &str) -> Option<&mut OutboundChannelState> {
-        self.outbound_channels.get_mut(channel_name)
-    }
-
-    fn push_outbound_message(&mut self, channel_name: &str, message: Vec<u8>) {
-        let channel_state = self.outbound_channel_mut(channel_name).unwrap();
-        // ^ `unwrap()` safety is guaranteed by resource handling
-        let message_len = message.len();
-        channel_state.messages.push(message.into());
-        self.current_execution()
-            .push_outbound_message_event(channel_name, message_len);
-    }
-
-    fn poll_inbound_channel(&mut self, channel_name: &str, cx: &mut WasmContext) -> PollMessage {
-        let channel_state = self.inbound_channel_mut(channel_name).unwrap();
-        // ^ `unwrap()` safety is guaranteed by resource handling
-        let poll_result = channel_state.poll_next();
-        self.current_execution()
-            .push_inbound_channel_event(channel_name, &poll_result);
-        poll_result.wake_if_pending(cx, || {
-            WakerPlacement::InboundChannel(channel_name.to_owned())
-        })
-    }
-
-    fn poll_outbound_channel(
+    pub(super) fn inbound_channel_mut(
         &mut self,
-        channel_name: &str,
-        flush: bool,
-        cx: &mut WasmContext,
-    ) -> Poll<()> {
-        let channel_state = &self.outbound_channels[channel_name];
-        let spec = self.interface.outbound_channel(channel_name).unwrap();
-
-        let should_block =
-            !channel_state.is_ready(spec) || (flush && !channel_state.messages.is_empty());
-        let poll_result = if should_block {
-            Poll::Pending
-        } else {
-            Poll::Ready(())
-        };
-
-        self.current_execution()
-            .push_outbound_poll_event(channel_name, flush, poll_result);
-        poll_result.wake_if_pending(cx, || {
-            WakerPlacement::OutboundChannel(channel_name.to_owned())
-        })
+        channel_ref: &ChannelRef,
+    ) -> Option<&mut InboundChannelState> {
+        self.channels_mut(channel_ref.workflow_id)
+            .inbound
+            .get_mut(&channel_ref.name)
     }
 
-    pub(crate) fn take_outbound_messages(&mut self, channel_name: &str) -> (usize, Vec<Vec<u8>>) {
-        let channel_state = self.outbound_channels.get_mut(channel_name).unwrap();
+    pub(super) fn inbound_channels_mut(
+        &mut self,
+    ) -> impl Iterator<Item = &mut InboundChannelState> + '_ {
+        let workflow_channels = self
+            .child_workflows
+            .values_mut()
+            .flat_map(|workflow| workflow.channels.inbound.values_mut());
+        self.channels.inbound.values_mut().chain(workflow_channels)
+    }
+
+    pub(super) fn outbound_channel_mut(
+        &mut self,
+        channel_ref: &ChannelRef,
+    ) -> Option<&mut OutboundChannelState> {
+        self.channels_mut(channel_ref.workflow_id)
+            .outbound
+            .get_mut(&channel_ref.name)
+    }
+
+    pub(crate) fn outbound_channels(
+        &self,
+    ) -> impl Iterator<Item = (Option<WorkflowId>, &str, &OutboundChannelState)> + '_ {
+        let local_channels = self.channels.outbound.iter();
+        let local_channels = local_channels.map(|(name, state)| (None, name.as_str(), state));
+        let workflow_channels = self
+            .child_workflows
+            .iter()
+            .flat_map(|(&workflow_id, workflow)| {
+                let channels = workflow.channels.outbound.iter();
+                channels.map(move |(name, state)| (Some(workflow_id), name.as_str(), state))
+            });
+        local_channels.chain(workflow_channels)
+    }
+
+    pub(crate) fn outbound_channels_mut(
+        &mut self,
+    ) -> impl Iterator<Item = &mut OutboundChannelState> + '_ {
+        let workflow_channels = self
+            .child_workflows
+            .values_mut()
+            .flat_map(|workflow| workflow.channels.outbound.values_mut());
+        self.channels.outbound.values_mut().chain(workflow_channels)
+    }
+
+    // Increased visibility for tests
+    pub(super) fn take_outbound_messages(
+        &mut self,
+        workflow_id: Option<WorkflowId>,
+        channel_name: &str,
+    ) -> (usize, Vec<Message>) {
+        let channel_state = self
+            .channels_mut(workflow_id)
+            .outbound
+            .get_mut(channel_name)
+            .unwrap();
         let start_message_idx = channel_state.flushed_messages;
         let messages = mem::take(&mut channel_state.messages);
         channel_state.flushed_messages += messages.len();
@@ -326,13 +380,155 @@ impl WorkflowData {
             self.schedule_wakers(
                 wakers,
                 WakeUpCause::Flush {
+                    workflow_id,
                     channel_name: channel_name.to_owned(),
                     message_indexes: start_message_idx..(start_message_idx + messages.len()),
                 },
             );
         }
-        let messages = messages.into_iter().map(Into::into).collect();
+        let messages = messages.into_iter().collect();
         (start_message_idx, messages)
+    }
+
+    #[allow(clippy::needless_collect)] // false positive
+    fn drain_messages(&mut self) -> Vec<(ChannelId, Vec<Message>)> {
+        let channels = self.channels.outbound.iter();
+        let channel_ids: Vec<_> = channels
+            .map(|(name, state)| (name.clone(), state.channel_id))
+            .collect();
+
+        let messages = channel_ids.into_iter().filter_map(|(name, channel_id)| {
+            let (_, messages) = self.take_outbound_messages(None, &name);
+            if messages.is_empty() {
+                None
+            } else {
+                Some((channel_id, messages))
+            }
+        });
+        messages.collect()
+    }
+}
+
+impl WorkflowData<'_> {
+    pub(super) fn handle_inbound_channel_drop(
+        &mut self,
+        channel_ref: &ChannelRef,
+    ) -> HashSet<WakerId> {
+        let channels = self.persisted.channels_mut(channel_ref.workflow_id);
+        let channel_state = channels.inbound.get_mut(&channel_ref.name).unwrap();
+        let wakers = mem::take(&mut channel_state.wakes_on_next_element);
+        if !channel_state.is_closed {
+            channel_state.is_closed = true;
+            let channel_id = channel_state.channel_id;
+            self.current_execution().push_channel_closure(
+                ChannelKind::Inbound,
+                channel_ref,
+                channel_id,
+            );
+        }
+        wakers
+    }
+
+    pub(super) fn handle_outbound_channel_drop(
+        &mut self,
+        channel_ref: &ChannelRef,
+    ) -> HashSet<WakerId> {
+        let channels = self.persisted.channels_mut(channel_ref.workflow_id);
+        let channel_state = channels.outbound.get_mut(&channel_ref.name).unwrap();
+        let wakers = mem::take(&mut channel_state.wakes_on_flush);
+        if !channel_state.is_closed {
+            channel_state.is_closed = true;
+            let channel_id = channel_state.channel_id;
+            self.current_execution().push_channel_closure(
+                ChannelKind::Outbound,
+                channel_ref,
+                channel_id,
+            );
+        }
+        wakers
+    }
+
+    pub(crate) fn push_inbound_message(
+        &mut self,
+        workflow_id: Option<WorkflowId>,
+        channel_name: &str,
+        message: Vec<u8>,
+    ) -> Result<(), ConsumeError> {
+        self.persisted
+            .push_inbound_message(workflow_id, channel_name, message)
+    }
+
+    fn poll_inbound_channel(
+        &mut self,
+        channel_ref: &ChannelRef,
+        cx: &mut WasmContext,
+    ) -> PollMessage {
+        let channels = self.persisted.channels_mut(channel_ref.workflow_id);
+        let channel_state = channels.inbound.get_mut(&channel_ref.name).unwrap();
+        // ^ `unwrap()` safety is guaranteed by resource handling
+
+        let poll_result = channel_state.poll_next();
+        self.current_execution()
+            .push_inbound_channel_event(channel_ref, &poll_result);
+        poll_result.wake_if_pending(cx, || WakerPlacement::InboundChannel(channel_ref.clone()))
+    }
+
+    fn poll_outbound_channel(
+        &mut self,
+        channel_ref: &ChannelRef,
+        flush: bool,
+        cx: &mut WasmContext,
+    ) -> Poll<Result<(), SendError>> {
+        let channels = if let Some(workflow_id) = channel_ref.workflow_id {
+            &self.persisted.child_workflows[&workflow_id].channels
+        } else {
+            &self.persisted.channels
+        };
+        let channel_state = &channels.outbound[&channel_ref.name];
+
+        let should_block =
+            !channel_state.is_ready() || (flush && !channel_state.messages.is_empty());
+        let poll_result = if channel_state.is_closed {
+            Poll::Ready(if flush {
+                // In the current implementation, flushing a closed channel always succeeds.
+                Ok(())
+            } else {
+                Err(SendError::Closed)
+            })
+        } else if should_block {
+            Poll::Pending
+        } else {
+            Poll::Ready(Ok(()))
+        };
+
+        self.current_execution()
+            .push_outbound_poll_event(channel_ref, flush, poll_result.clone());
+        poll_result.wake_if_pending(cx, || WakerPlacement::OutboundChannel(channel_ref.clone()))
+    }
+
+    fn push_outbound_message(
+        &mut self,
+        channel_ref: &ChannelRef,
+        message: Vec<u8>,
+    ) -> Result<(), SendError> {
+        let channels = self.persisted.channels_mut(channel_ref.workflow_id);
+        let channel_state = channels.outbound.get_mut(&channel_ref.name).unwrap();
+
+        if channel_state.is_closed {
+            return Err(SendError::Closed);
+        } else if !channel_state.is_ready() {
+            return Err(SendError::Full);
+        }
+
+        let message_len = message.len();
+        channel_state.messages.push(message.into());
+        self.current_execution()
+            .push_outbound_message_event(channel_ref, message_len);
+        Ok(())
+    }
+
+    pub(crate) fn drain_messages(&mut self) -> Vec<(ChannelId, Vec<Message>)> {
+        self.persisted.drain_messages()
     }
 }
 
@@ -353,6 +549,7 @@ impl WorkflowFunctions {
 
     pub fn get_receiver(
         mut ctx: StoreContextMut<'_, WorkflowData>,
+        workflow: Option<ExternRef>,
         channel_name_ptr: u32,
         channel_name_len: u32,
         error_ptr: u32,
@@ -360,9 +557,12 @@ impl WorkflowFunctions {
         let memory = ctx.data().exports().memory;
         let channel_name =
             copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
-        let result = ctx
-            .data_mut()
-            .inbound_channel_mut(&channel_name)
+        let data = &mut ctx.data_mut().persisted;
+        let (workflow_id, channels) = Self::channels(data, workflow.as_ref())?;
+
+        let result = channels
+            .inbound
+            .get_mut(&channel_name)
             .ok_or(AccessErrorKind::Unknown)
             .and_then(InboundChannelState::acquire);
         let result = crate::log_result!(result, "Acquired inbound channel `{}`", channel_name);
@@ -370,9 +570,25 @@ impl WorkflowFunctions {
         let channel_ref = result
             .as_ref()
             .ok()
-            .map(|()| HostResource::InboundChannel(channel_name).into_ref());
+            .map(|()| HostResource::inbound_channel(workflow_id, channel_name).into_ref());
         Self::write_access_result(&mut ctx, result, error_ptr)?;
         Ok(channel_ref)
+    }
+
+    fn channels<'a>(
+        data: &'a mut PersistedWorkflowData,
+        workflow: Option<&ExternRef>,
+    ) -> Result<(Option<WorkflowId>, &'a mut ChannelStates), Trap> {
+        if let Some(workflow) = workflow {
+            let id = HostResource::from_ref(Some(workflow))?.as_workflow()?;
+            let workflow = data.child_workflows.get_mut(&id).ok_or_else(|| {
+                let message = format!("unknown workflow ID {}", id);
+                Trap::new(message)
+            })?;
+            Ok((Some(id), &mut workflow.channels))
+        } else {
+            Ok((None, &mut data.channels))
+        }
     }
 
     pub fn poll_next_for_receiver(
@@ -380,15 +596,15 @@ impl WorkflowFunctions {
         channel_ref: Option<ExternRef>,
         poll_cx: WasmContextPtr,
     ) -> Result<i64, Trap> {
-        let channel_name = HostResource::from_ref(channel_ref.as_ref())?.as_inbound_channel()?;
+        let channel_ref = HostResource::from_ref(channel_ref.as_ref())?.as_inbound_channel()?;
 
         let mut poll_cx = WasmContext::new(poll_cx);
         let poll_result = ctx
             .data_mut()
-            .poll_inbound_channel(channel_name, &mut poll_cx);
+            .poll_inbound_channel(channel_ref, &mut poll_cx);
         crate::trace!(
-            "Polled inbound channel `{}` with context {:?}: {:?}",
-            channel_name,
+            "Polled inbound channel {:?} with context {:?}: {:?}",
+            channel_ref,
             poll_cx,
             poll_result,
         );
@@ -399,6 +615,7 @@ impl WorkflowFunctions {
 
     pub fn get_sender(
         mut ctx: StoreContextMut<'_, WorkflowData>,
+        workflow: Option<ExternRef>,
         channel_name_ptr: u32,
         channel_name_len: u32,
         error_ptr: u32,
@@ -406,9 +623,12 @@ impl WorkflowFunctions {
         let memory = ctx.data().exports().memory;
         let channel_name =
             copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
-        let result = ctx
-            .data_mut()
-            .outbound_channel_mut(&channel_name)
+        let data = &mut ctx.data_mut().persisted;
+        let (workflow_id, channels) = Self::channels(data, workflow.as_ref())?;
+
+        let result = channels
+            .outbound
+            .get_mut(&channel_name)
             .ok_or(AccessErrorKind::Unknown)
             .and_then(OutboundChannelState::acquire);
         let result = crate::log_result!(result, "Acquired outbound channel `{}`", channel_name);
@@ -416,7 +636,7 @@ impl WorkflowFunctions {
         let channel_ref = result
             .as_ref()
             .ok()
-            .map(|()| HostResource::OutboundChannel(channel_name).into_ref());
+            .map(|()| HostResource::outbound_channel(workflow_id, channel_name).into_ref());
         Self::write_access_result(&mut ctx, result, error_ptr)?;
         Ok(channel_ref)
     }
@@ -426,15 +646,15 @@ impl WorkflowFunctions {
         channel_ref: Option<ExternRef>,
         cx: WasmContextPtr,
     ) -> Result<i32, Trap> {
-        let channel_name = HostResource::from_ref(channel_ref.as_ref())?.as_outbound_channel()?;
+        let channel_ref = HostResource::from_ref(channel_ref.as_ref())?.as_outbound_channel()?;
 
         let mut cx = WasmContext::new(cx);
         let poll_result = ctx
             .data_mut()
-            .poll_outbound_channel(channel_name, false, &mut cx);
+            .poll_outbound_channel(channel_ref, false, &mut cx);
         crate::trace!(
-            "Polled outbound channel `{}` for readiness: {:?}",
-            channel_name,
+            "Polled outbound channel {:?} for readiness: {:?}",
+            channel_ref,
             poll_result
         );
 
@@ -447,13 +667,20 @@ impl WorkflowFunctions {
         channel_ref: Option<ExternRef>,
         message_ptr: u32,
         message_len: u32,
-    ) -> Result<(), Trap> {
-        let channel_name = HostResource::from_ref(channel_ref.as_ref())?.as_outbound_channel()?;
+    ) -> Result<i32, Trap> {
+        let channel_ref = HostResource::from_ref(channel_ref.as_ref())?.as_outbound_channel()?;
         let memory = ctx.data().exports().memory;
         let message = copy_bytes_from_wasm(&ctx, &memory, message_ptr, message_len)?;
 
-        ctx.data_mut().push_outbound_message(channel_name, message);
-        Ok(())
+        let message_len = message.len();
+        let result = ctx.data_mut().push_outbound_message(channel_ref, message);
+        crate::trace!(
+            "Sent message ({} bytes) over outbound channel {:?}: {:?}",
+            message_len,
+            channel_ref,
+            result
+        );
+        result.into_wasm(&mut WasmAllocator::new(ctx))
     }
 
     pub fn poll_flush_for_sender(
@@ -461,15 +688,15 @@ impl WorkflowFunctions {
         channel_ref: Option<ExternRef>,
         poll_cx: WasmContextPtr,
     ) -> Result<i32, Trap> {
-        let channel_name = HostResource::from_ref(channel_ref.as_ref())?.as_outbound_channel()?;
+        let channel_ref = HostResource::from_ref(channel_ref.as_ref())?.as_outbound_channel()?;
 
         let mut poll_cx = WasmContext::new(poll_cx);
         let poll_result = ctx
             .data_mut()
-            .poll_outbound_channel(channel_name, true, &mut poll_cx);
+            .poll_outbound_channel(channel_ref, true, &mut poll_cx);
         crate::trace!(
-            "Polled outbound channel `{}` for flush: {:?}",
-            channel_name,
+            "Polled outbound channel {:?} for flush: {:?}",
+            channel_ref,
             poll_result
         );
 

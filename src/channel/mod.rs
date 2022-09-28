@@ -12,11 +12,10 @@
 //!
 //! [future-chan]: https://docs.rs/futures/latest/futures/channel/index.html
 
-use futures::{Sink, SinkExt, Stream};
+use futures::{Sink, Stream};
 use pin_project_lite::pin_project;
 
 use std::{
-    convert::Infallible,
     fmt,
     marker::PhantomData,
     pin::Pin,
@@ -34,7 +33,7 @@ use crate::{
 mod broadcast;
 #[cfg(target_arch = "wasm32")]
 #[path = "imp_wasm32.rs"]
-mod imp;
+pub(crate) mod imp;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "imp_mock.rs"]
 pub(crate) mod imp;
@@ -44,6 +43,7 @@ pub use self::{
     broadcast::{BroadcastError, BroadcastPublisher, BroadcastSubscriber},
     requests::{Requests, RequestsBuilder, WithId},
 };
+pub use tardigrade_shared::SendError;
 
 pin_project! {
     /// Receiver for an inbound channel provided to the workflow.
@@ -81,6 +81,20 @@ impl<T, C: Decode<T>> Receiver<T, C> {
     }
 }
 
+impl RawReceiver {
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn from_resource(resource: externref::Resource<imp::MpscReceiver>) -> Self {
+        Self::new(resource.into(), Raw)
+    }
+
+    pub(crate) fn with_codec<T, C>(self, codec: C) -> Receiver<T, C>
+    where
+        C: Decode<T>,
+    {
+        Receiver::new(self.raw, codec)
+    }
+}
+
 impl<T, C: Decode<T>> Stream for Receiver<T, C> {
     type Item = T;
 
@@ -105,8 +119,17 @@ where
     type Id = str;
     type Handle = Self;
 
+    #[cfg(target_arch = "wasm32")]
     fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, AccessError> {
         imp::MpscReceiver::take_handle(env, id).map(|raw| Self::new(raw, C::default()))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, AccessError> {
+        let raw = env
+            .take_inbound_channel(id)
+            .ok_or_else(|| AccessErrorKind::Unknown.with_location(InboundChannel(id)))?;
+        Ok(raw.with_codec(C::default()))
     }
 }
 
@@ -174,11 +197,19 @@ impl<T, C: Encode<T>> Sender<T, C> {
             _item: PhantomData,
         }
     }
+}
 
-    /// Infallible version of [`SinkExt::send()`] to make common invocation more fluent.
-    #[allow(clippy::missing_panics_doc)] // false positive
-    pub async fn send(&mut self, message: T) {
-        <Self as SinkExt<T>>::send(self, message).await.unwrap();
+impl RawSender {
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn from_resource(resource: externref::Resource<imp::MpscSender>) -> Self {
+        Self::new(resource.into(), Raw)
+    }
+
+    pub(crate) fn with_codec<T, C>(self, codec: C) -> Sender<T, C>
+    where
+        C: Encode<T>,
+    {
+        Sender::new(self.raw, codec)
     }
 }
 
@@ -189,13 +220,22 @@ where
     type Id = str;
     type Handle = Self;
 
+    #[cfg(target_arch = "wasm32")]
     fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, AccessError> {
         imp::MpscSender::take_handle(env, id).map(|raw| Self::new(raw, C::default()))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, AccessError> {
+        let raw = env
+            .take_outbound_channel(id)
+            .ok_or_else(|| AccessErrorKind::Unknown.with_location(OutboundChannel(id)))?;
+        Ok(raw.with_codec(C::default()))
     }
 }
 
 impl<T, C: Encode<T>> Sink<T> for Sender<T, C> {
-    type Error = Infallible;
+    type Error = SendError;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.project().raw.poll_ready(cx)

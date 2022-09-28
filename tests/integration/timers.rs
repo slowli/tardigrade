@@ -1,13 +1,13 @@
 //! Timer-related tests.
 
 use chrono::{DateTime, Utc};
-use futures::StreamExt;
+use futures::{SinkExt, StreamExt};
 use std::time::Duration;
 
 use tardigrade::workflow::WorkflowFn;
 use tardigrade::{
     channel::Sender,
-    test::TestWorkflow,
+    test::{Runtime, Timers},
     workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm},
     Json, Timer,
 };
@@ -27,7 +27,7 @@ impl GetInterface for TimersWorkflow {
 }
 
 #[tardigrade::handle(for = "TimersWorkflow")]
-struct TimersHandle<Env> {
+struct TestHandle<Env> {
     timestamps: Handle<Sender<DateTime<Utc>, Json>, Env>,
 }
 
@@ -37,26 +37,27 @@ impl WorkflowFn for TimersWorkflow {
 }
 
 impl SpawnWorkflow for TimersWorkflow {
-    fn spawn(_data: (), mut handle: TimersHandle<Wasm>) -> TaskHandle {
+    fn spawn(_data: (), mut handle: TestHandle<Wasm>) -> TaskHandle {
         TaskHandle::new(async move {
             let now = tardigrade::now();
             let completion_time = Timer::at(now - chrono::Duration::milliseconds(100)).await;
-            handle.timestamps.send(completion_time).await;
+            handle.timestamps.send(completion_time).await.unwrap();
             let completion_time = Timer::after(Duration::from_millis(100)).await;
-            handle.timestamps.send(completion_time).await;
+            handle.timestamps.send(completion_time).await.unwrap();
         })
     }
 }
 
 #[test]
 fn timers_basics() {
-    TimersWorkflow::test((), |mut handle| async move {
-        let now = handle.timers.now();
-        let ts = handle.api.timestamps.next().await.unwrap();
+    Runtime::default().test::<TimersWorkflow, _, _>((), |api| async {
+        let mut timestamps = api.timestamps.unwrap();
+        let now = Timers::now();
+        let ts = timestamps.next().await.unwrap();
         assert_eq!(ts, now);
 
-        handle.timers.set_now(now + chrono::Duration::seconds(1));
-        let ts = handle.api.timestamps.next().await.unwrap();
-        assert_eq!(ts, handle.timers.now());
+        Timers::set_now(now + chrono::Duration::seconds(1));
+        let ts = timestamps.next().await.unwrap();
+        assert_eq!(ts, Timers::now());
     });
 }

@@ -1,5 +1,6 @@
 //! Misc utils.
 
+use serde::{Deserialize, Serialize};
 use wasmtime::{AsContext, AsContextMut, Memory, StoreContextMut, Trap};
 
 use std::{fmt, task::Poll};
@@ -69,21 +70,53 @@ macro_rules! log_result {
     };
 }
 
-pub(crate) struct WasmAllocator<'a>(StoreContextMut<'a, WorkflowData>);
+/// Thin wrapper around `Vec<u8>`.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct Message(#[serde(with = "serde_b64")] Vec<u8>);
 
-impl fmt::Debug for WasmAllocator<'_> {
+impl fmt::Debug for Message {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Message")
+            .field("len", &self.0.len())
+            .finish()
+    }
+}
+
+impl AsRef<[u8]> for Message {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl From<Vec<u8>> for Message {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+}
+
+impl From<Message> for Vec<u8> {
+    fn from(message: Message) -> Self {
+        message.0
+    }
+}
+
+pub(crate) struct WasmAllocator<'ctx, 'a>(StoreContextMut<'ctx, WorkflowData<'a>>);
+
+impl fmt::Debug for WasmAllocator<'_, '_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.debug_tuple("WasmAllocator").field(&"_").finish()
     }
 }
 
-impl<'a> WasmAllocator<'a> {
-    pub fn new(ctx: StoreContextMut<'a, WorkflowData>) -> Self {
+impl<'ctx, 'a> WasmAllocator<'ctx, 'a> {
+    pub fn new(ctx: StoreContextMut<'ctx, WorkflowData<'a>>) -> Self {
         Self(ctx)
     }
 }
 
-impl AllocateBytes for WasmAllocator<'_> {
+impl AllocateBytes for WasmAllocator<'_, '_> {
     type Error = Trap;
 
     fn copy_to_wasm(&mut self, bytes: &[u8]) -> Result<(u32, u32), Trap> {

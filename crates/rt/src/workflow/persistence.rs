@@ -1,16 +1,24 @@
 //! Workflow persistence.
 
 use anyhow::{ensure, Context};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use wasmtime::Store;
 
 use crate::{
-    data::{PersistError, Refs, WorkflowData, WorkflowState},
-    module::{DataSection, WorkflowSpawner},
-    workflow::Workflow,
+    data::{
+        ChildWorkflowState, InboundChannelState, OutboundChannelState, PersistError,
+        PersistedWorkflowData, Refs, TaskState, TimerState, Wakers, WorkflowData,
+    },
+    module::{DataSection, Services, WorkflowSpawner},
+    receipt::WakeUpCause,
+    utils::Message,
+    workflow::{ChannelIds, Workflow},
+    ChannelId, TaskId, TimerId, WorkflowId,
 };
+use tardigrade_shared::JoinError;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Memory {
     Unstructured(#[serde(with = "serde_compress")] Vec<u8>),
@@ -76,7 +84,7 @@ impl Memory {
         }
     }
 
-    fn restore<W>(self, workflow: &mut Workflow<W>) -> anyhow::Result<()> {
+    fn restore(self, workflow: &mut Workflow) -> anyhow::Result<()> {
         match self {
             Self::Unstructured(bytes) => {
                 workflow
@@ -111,17 +119,19 @@ impl Memory {
     }
 }
 
-/// Persisted version of a [`Workflow`] containing the state of its external dependencies
+/// Persisted version of a workflow containing the state of its external dependencies
 /// (channels and timers), and its linear WASM memory.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedWorkflow {
-    state: WorkflowState,
+    state: PersistedWorkflowData,
     refs: Refs,
     memory: Memory,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    args: Option<Message>,
 }
 
 impl PersistedWorkflow {
-    pub(super) fn new<W>(workflow: &mut Workflow<W>) -> Result<Self, PersistError> {
+    pub(super) fn new(workflow: &mut Workflow) -> Result<Self, PersistError> {
         workflow.store.data().check_persistence()?;
         let state = workflow.store.data().persist();
         let refs = Refs::new(&mut workflow.store);
@@ -130,7 +140,119 @@ impl PersistedWorkflow {
             state,
             refs,
             memory,
+            args: workflow.raw_args.clone(),
         })
+    }
+
+    pub(crate) fn inbound_channels(
+        &self,
+    ) -> impl Iterator<Item = (Option<WorkflowId>, &str, &InboundChannelState)> + '_ {
+        self.state.inbound_channels()
+    }
+
+    pub(crate) fn outbound_channels(
+        &self,
+    ) -> impl Iterator<Item = (Option<WorkflowId>, &str, &OutboundChannelState)> + '_ {
+        self.state.outbound_channels()
+    }
+
+    pub(crate) fn close_inbound_channel(
+        &mut self,
+        workflow_id: Option<WorkflowId>,
+        channel_name: &str,
+    ) {
+        self.state.close_inbound_channel(workflow_id, channel_name);
+    }
+
+    pub(crate) fn close_outbound_channel(
+        &mut self,
+        workflow_id: Option<WorkflowId>,
+        channel_name: &str,
+    ) {
+        self.state.close_outbound_channel(workflow_id, channel_name);
+    }
+
+    pub(crate) fn close_outbound_channels_by_id(&mut self, channel_id: ChannelId) {
+        for channel_state in self.state.outbound_channels_mut() {
+            if channel_state.id() == channel_id {
+                channel_state.close();
+            }
+        }
+    }
+
+    /// Returns the current state of a task with the specified ID.
+    pub fn task(&self, task_id: TaskId) -> Option<&TaskState> {
+        self.state.task(task_id)
+    }
+
+    /// Returns the current state of the main task (the task that initializes the workflow),
+    /// or `None` if the workflow is not initialized.
+    pub fn main_task(&self) -> Option<&TaskState> {
+        self.state.main_task()
+    }
+
+    /// Lists all tasks in this workflow.
+    pub fn tasks(&self) -> impl Iterator<Item = (TaskId, &TaskState)> + '_ {
+        self.state.tasks()
+    }
+
+    /// Enumerates child workflows.
+    pub fn child_workflows(&self) -> impl Iterator<Item = (WorkflowId, &ChildWorkflowState)> + '_ {
+        self.state.child_workflows()
+    }
+
+    /// Returns the local state of the child workflow with the specified ID, or `None`
+    /// if a workflow with such ID was not spawned by this workflow.
+    pub fn child_workflow(&self, id: WorkflowId) -> Option<&ChildWorkflowState> {
+        self.state.child_workflow(id)
+    }
+
+    pub(crate) fn notify_on_child_completion(
+        &mut self,
+        id: WorkflowId,
+        result: Result<(), JoinError>,
+    ) {
+        self.state.notify_on_child_completion(id, result);
+    }
+
+    /// Checks whether the workflow is initialized.
+    pub fn is_initialized(&self) -> bool {
+        self.args.is_none()
+    }
+
+    /// Checks whether the workflow is finished, i.e., its main task is completed.
+    pub fn is_finished(&self) -> bool {
+        self.state
+            .main_task()
+            .map_or(false, |state| state.result().is_ready())
+    }
+
+    /// Returns the current time for the workflow.
+    pub fn current_time(&self) -> DateTime<Utc> {
+        self.state.timers.last_known_time()
+    }
+
+    pub(crate) fn set_current_time(&mut self, time: DateTime<Utc>) {
+        self.state.set_current_time(time);
+    }
+
+    /// Returns a timer with the specified `id`.
+    pub fn timer(&self, id: TimerId) -> Option<&TimerState> {
+        self.state.timers.get(id)
+    }
+
+    /// Enumerates all timers together with their states.
+    pub fn timers(&self) -> impl Iterator<Item = (TimerId, &TimerState)> + '_ {
+        self.state.timers.iter()
+    }
+
+    /// Iterates over pending [`WakeUpCause`]s.
+    pub fn pending_events(&self) -> impl Iterator<Item = &WakeUpCause> + '_ {
+        self.state.waker_queue.iter().map(Wakers::cause)
+    }
+
+    pub(crate) fn channel_ids(&self) -> ChannelIds {
+        self.state.channel_ids()
     }
 
     /// Restores a workflow from the persisted state and the `spawner` defining the workflow.
@@ -139,21 +261,19 @@ impl PersistedWorkflow {
     ///
     /// Returns an error if the workflow definition from `module` and the `persisted` state
     /// do not match (e.g., differ in defined channels).
-    pub fn restore<W>(self, spawner: &WorkflowSpawner<W>) -> anyhow::Result<Workflow<W>> {
-        let interface = spawner.interface().clone().erase();
+    pub(crate) fn restore<'a>(
+        self,
+        spawner: &WorkflowSpawner<()>,
+        services: Services<'a>,
+    ) -> anyhow::Result<Workflow<'a>> {
+        let interface = spawner.interface();
         let data = self
             .state
-            .restore(interface, spawner.services.clone())
+            .restore(interface, services)
             .context("failed restoring workflow state")?;
-        let mut workflow = Workflow::from_state(spawner, data)?;
+        let mut workflow = Workflow::from_state(spawner, data, self.args)?;
         self.memory.restore(&mut workflow)?;
         self.refs.restore(&mut workflow.store)?;
         Ok(workflow)
-    }
-
-    /// Must be called with the same `workflow` that was used when creating this struct.
-    pub(crate) fn restore_to_workflow<W>(self, workflow: &mut Workflow<W>) {
-        self.state.restore_in_place(workflow.store.data_mut());
-        self.memory.restore(workflow).unwrap();
     }
 }

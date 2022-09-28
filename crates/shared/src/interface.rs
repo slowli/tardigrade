@@ -4,13 +4,16 @@ use serde::{Deserialize, Serialize};
 
 use std::{collections::HashMap, error, fmt, marker::PhantomData, ops};
 
+use crate::abi::{FromWasmError, TryFromWasm};
+
 /// Kind of a channel in a workflow interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(i32)]
 pub enum ChannelKind {
     /// Inbound channel.
-    Inbound,
+    Inbound = 0,
     /// Outbound channel.
-    Outbound,
+    Outbound = 1,
 }
 
 impl fmt::Display for ChannelKind {
@@ -19,6 +22,22 @@ impl fmt::Display for ChannelKind {
             Self::Inbound => "inbound",
             Self::Outbound => "outbound",
         })
+    }
+}
+
+impl TryFromWasm for ChannelKind {
+    type Abi = i32;
+
+    fn into_abi_in_wasm(self) -> Self::Abi {
+        self as i32
+    }
+
+    fn try_from_wasm(abi: Self::Abi) -> Result<Self, FromWasmError> {
+        match abi {
+            0 => Ok(Self::Inbound),
+            1 => Ok(Self::Outbound),
+            _ => Err(FromWasmError::new("unexpected `ChannelKind` value")),
+        }
     }
 }
 
@@ -72,8 +91,6 @@ pub enum InterfaceLocation {
     },
     /// Arguments supplied to the workflow on creation.
     Args,
-    /// Extension with the specified name.
-    Extension(String),
 }
 
 impl fmt::Display for InterfaceLocation {
@@ -83,7 +100,6 @@ impl fmt::Display for InterfaceLocation {
                 write!(formatter, "{} channel `{}`", kind, name)
             }
             Self::Args => write!(formatter, "arguments"),
-            Self::Extension(name) => write!(formatter, "extension `{}`", name),
         }
     }
 }
@@ -382,6 +398,11 @@ impl Interface<()> {
     /// Panics if `bytes` do not represent a valid interface definition.
     pub fn from_bytes(bytes: &[u8]) -> Self {
         Self::try_from_bytes(bytes).unwrap_or_else(|err| panic!("Cannot deserialize spec: {}", err))
+    }
+
+    /// Serializes this interface.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("failed serializing `Interface`")
     }
 
     /// Tries to downcast this interface to a particular workflow.

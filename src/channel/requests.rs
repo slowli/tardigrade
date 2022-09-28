@@ -13,7 +13,9 @@ use futures::{
 };
 use serde::{Deserialize, Serialize};
 
-use std::{collections::HashMap, convert::Infallible, future::Future, marker::PhantomData};
+use std::{collections::HashMap, future::Future, marker::PhantomData};
+
+use crate::{channel::SendError, task::JoinHandle};
 
 /// Container for a value together with a numeric ID.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -34,7 +36,7 @@ struct RequestsHandle<Req, Resp> {
 impl<Req, Resp> RequestsHandle<Req, Resp> {
     async fn run(
         mut self,
-        mut requests_sx: impl Sink<WithId<Req>, Error = Infallible> + Unpin,
+        mut requests_sx: impl Sink<WithId<Req>, Error = SendError> + Unpin,
         responses_rx: impl Stream<Item = WithId<Resp>> + Unpin,
     ) {
         let mut responses_rx = responses_rx.fuse();
@@ -76,7 +78,13 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
                         };
                         pending_requests.insert(next_id, sx);
                         next_id += 1;
-                        requests_sx.send(data_to_send).await.unwrap();
+                        if requests_sx.send(data_to_send).await.is_err() {
+                            // The requests channel has been closed by the other side.
+                            // We cannot process new requests, but the outstanding ones
+                            // can still be completed.
+                            self.capacity = 0;
+                            break;
+                        }
                     }
                 }
 
@@ -143,7 +151,7 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 ///
 /// impl SpawnWorkflow for MyWorkflow {
 ///     fn spawn(_data: (), handle: MyHandle<Wasm>) -> TaskHandle {
-///         let requests = Requests::builder(handle.requests, handle.responses)
+///         let (requests, _) = Requests::builder(handle.requests, handle.responses)
 ///             .with_capacity(4)
 ///             .with_task_name("handling_requests")
 ///             .build();
@@ -168,7 +176,7 @@ impl<Req: 'static, Resp: 'static> Requests<Req, Resp> {
         responses_rx: Rx,
     ) -> RequestsBuilder<'static, Req, Sx, Rx>
     where
-        Sx: Sink<WithId<Req>, Error = Infallible> + Unpin + 'static,
+        Sx: Sink<WithId<Req>, Error = SendError> + Unpin + 'static,
         Rx: Stream<Item = WithId<Resp>> + Unpin + 'static,
     {
         RequestsBuilder {
@@ -213,7 +221,7 @@ impl<'a, Req, Resp, Sx, Rx> RequestsBuilder<'a, Req, Sx, Rx>
 where
     Req: 'static,
     Resp: 'static,
-    Sx: Sink<WithId<Req>, Error = Infallible> + Unpin + 'static,
+    Sx: Sink<WithId<Req>, Error = SendError> + Unpin + 'static,
     Rx: Stream<Item = WithId<Resp>> + Unpin + 'static,
 {
     /// Specifies the capacity (max number of concurrently processed requests).
@@ -229,7 +237,7 @@ where
         self
     }
 
-    /// Specifies a task name to use when [spawning a task](crate::spawn) to support
+    /// Specifies a task name to use when [spawning a task](crate::spawn()) to support
     /// request / response processing. The default task name is `_requests`.
     #[must_use]
     pub fn with_task_name(mut self, task_name: &'a str) -> Self {
@@ -237,21 +245,21 @@ where
         self
     }
 
-    /// Converts this builder into a [`Requests`] instance and launches the background task
-    /// to support request / response processing.
-    pub fn build(self) -> Requests<Req, Resp> {
+    /// Converts this builder into a [`Requests`] instance.
+    pub fn build(self) -> (Requests<Req, Resp>, JoinHandle<()>) {
         let (inner_sx, inner_rx) = mpsc::channel(self.capacity);
         let handle = RequestsHandle {
             requests_rx: inner_rx,
             capacity: self.capacity,
         };
-        crate::spawn(
+        let task = crate::spawn(
             self.task_name,
             handle.run(self.requests_sx, self.responses_rx),
         );
 
-        Requests {
+        let requests = Requests {
             requests_sx: inner_sx,
-        }
+        };
+        (requests, task)
     }
 }

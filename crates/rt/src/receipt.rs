@@ -8,18 +8,24 @@
 //!
 //! [`WorkflowModule`]: crate::WorkflowModule
 
+use serde::{Deserialize, Serialize};
 use wasmtime::Trap;
 
 use std::{error, fmt, ops::Range, task::Poll};
 
-use crate::{TaskId, TimerId, WakerId};
+use crate::{ChannelId, TaskId, TimerId, WakerId, WorkflowId};
+use tardigrade_shared::SendError;
 
-/// Cause of waking up a [`Workflow`](crate::Workflow) task.
-#[derive(Debug, Clone)]
+/// Cause of waking up a workflow task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum WakeUpCause {
     /// Woken up by an inbound message.
     InboundMessage {
+        /// ID of the remote workflow that the channel is attached to, or `None` if the channel
+        /// is local.
+        workflow_id: Option<WorkflowId>,
         /// Name of the inbound channel that has received a message.
         channel_name: String,
         /// 0-based message index.
@@ -27,11 +33,17 @@ pub enum WakeUpCause {
     },
     /// Woken up by an inbound channel getting closed.
     ChannelClosed {
+        /// ID of the remote workflow that the channel is attached to, or `None` if the channel
+        /// is local.
+        workflow_id: Option<WorkflowId>,
         /// Name of the inbound channel that was closed.
         channel_name: String,
     },
     /// Woken up by flushing an outbound channel.
     Flush {
+        /// ID of the remote workflow that the channel is attached to, or `None` if the channel
+        /// is local.
+        workflow_id: Option<WorkflowId>,
         /// Name of the outbound channel that was flushed.
         channel_name: String,
         /// Indexes of flushed messages.
@@ -39,10 +51,13 @@ pub enum WakeUpCause {
     },
 
     /// Initial task enqueuing after it was spawned.
-    Spawned(Box<ExecutedFunction>),
+    Spawned,
     /// Woken up by an executed function, such as another task (e.g., due to internal channels
     /// or other sync primitives).
-    Function(Box<ExecutedFunction>),
+    Function {
+        /// ID of the task if executed function is a task; `None` otherwise.
+        task_id: Option<TaskId>,
+    },
     /// Woken up by task completion.
     CompletedTask(TaskId),
     /// Woken up by a timer.
@@ -50,6 +65,8 @@ pub enum WakeUpCause {
         /// Timer ID.
         id: TimerId,
     },
+    /// Woken up by completion of a child workflow.
+    CompletedWorkflow(WorkflowId),
 }
 
 /// Executed top-level WASM function.
@@ -63,7 +80,8 @@ pub enum ExecutedFunction {
     /// Entry point of the workflow.
     #[non_exhaustive]
     Entry {
-        /// ID of the created task.
+        /// ID of the created main task.
+        // TODO: kind of awkward; ideally, this field should be removed
         task_id: TaskId,
     },
     /// Polling a task.
@@ -93,6 +111,22 @@ pub enum ExecutedFunction {
 }
 
 impl ExecutedFunction {
+    pub(crate) fn task_id(&self) -> Option<TaskId> {
+        match self {
+            Self::Entry { task_id } | Self::Task { task_id, .. } => Some(*task_id),
+            _ => None,
+        }
+    }
+
+    fn wake_up_cause(&self) -> Option<&WakeUpCause> {
+        match self {
+            Self::Task { wake_up_cause, .. } | Self::Waker { wake_up_cause, .. } => {
+                Some(wake_up_cause)
+            }
+            _ => None,
+        }
+    }
+
     fn write_summary(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Entry { .. } => formatter.write_str("spawning workflow"),
@@ -117,6 +151,8 @@ pub enum ResourceId {
     Timer(TimerId),
     /// Task ID.
     Task(TaskId),
+    /// Workflow ID.
+    Workflow(WorkflowId),
 }
 
 /// Kind of a [`ResourceEvent`].
@@ -150,10 +186,13 @@ pub enum ChannelEventKind {
         /// Result of a poll, with the message replaced with its byte length.
         result: Poll<Option<usize>>,
     },
+    /// Inbound channel closed by the workflow logic.
+    InboundChannelClosed(ChannelId),
+
     /// Outbound channel was polled for readiness.
     OutboundChannelReady {
         /// Result of a poll.
-        result: Poll<()>,
+        result: Poll<Result<(), SendError>>,
     },
     /// Message was sent via an outbound channel.
     OutboundMessageSent {
@@ -163,11 +202,13 @@ pub enum ChannelEventKind {
     /// Outbound channel was polled for flush.
     OutboundChannelFlushed {
         /// Result of a poll.
-        result: Poll<()>,
+        result: Poll<Result<(), SendError>>,
     },
+    /// Outbound channel closed by the workflow logic.
+    OutboundChannelClosed(ChannelId),
 }
 
-/// Event related to an inbound or outbound [`Workflow`](crate::Workflow) channel.
+/// Event related to an inbound or outbound workflow channel.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct ChannelEvent {
@@ -175,6 +216,9 @@ pub struct ChannelEvent {
     pub kind: ChannelEventKind,
     /// Name of the channel.
     pub channel_name: String,
+    /// ID of the remote workflow that the channel is attached to, or `None` if the channel
+    /// is local.
+    pub workflow_id: Option<WorkflowId>,
 }
 
 /// Event included into a [`Receipt`].
@@ -228,37 +272,21 @@ pub struct Execution {
     pub events: Vec<Event>,
 }
 
-/// Receipt for executing tasks in a [`Workflow`](crate::Workflow).
-///
-/// A receipt can be optionally associated with an output value, which depends on the context
-/// in which a workflow is getting executed. See [`WorkflowSpawner::spawn()`] for an example.
-///
-/// [`WorkflowSpawner::spawn()`]: crate::WorkflowSpawner::spawn()
+/// Receipt for executing tasks in a workflow.
 #[derive(Debug)]
-pub struct Receipt<T = ()> {
+pub struct Receipt {
     pub(crate) executions: Vec<Execution>,
-    output: T,
 }
 
-impl Receipt<()> {
+impl Receipt {
     pub(crate) fn new() -> Self {
         Self {
             executions: Vec::new(),
-            output: (),
         }
     }
 
     pub(crate) fn extend(&mut self, other: Self) {
         self.executions.extend(other.executions);
-    }
-}
-
-impl<T> Receipt<T> {
-    pub(crate) fn map<U>(self, map_fn: impl FnOnce(T) -> U) -> Receipt<U> {
-        Receipt {
-            executions: self.executions,
-            output: map_fn(self.output),
-        }
     }
 
     /// Returns the list of executed top-level WASM functions together with [`Event`]s that
@@ -267,38 +295,17 @@ impl<T> Receipt<T> {
         &self.executions
     }
 
-    /// Consumes this receipt and returns the enclosed output.
-    pub fn into_inner(self) -> T {
-        self.output
+    /// Iterates over events in all executions in order.
+    pub fn events(&self) -> impl Iterator<Item = &Event> + '_ {
+        self.executions
+            .iter()
+            .flat_map(|execution| &execution.events)
     }
-}
 
-impl<T> AsRef<T> for Receipt<T> {
-    fn as_ref(&self) -> &T {
-        &self.output
+    /// Returns the root cause of the workflow execution that corresponds to this receipt, if any.
+    pub fn root_cause(&self) -> Option<&WakeUpCause> {
+        self.executions.first()?.function.wake_up_cause()
     }
-}
-
-impl<T, E> Receipt<Result<T, E>> {
-    pub(crate) fn transpose(self) -> Result<Receipt<T>, E> {
-        match self.output {
-            Ok(output) => Ok(Receipt {
-                executions: self.executions,
-                output,
-            }),
-            Err(err) => Err(err),
-        }
-    }
-}
-
-/// Result of executing a transactional piece of work on the [`Workflow`](crate::Workflow).
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum ExecutionResult {
-    /// Execution completed successfully.
-    Ok(Receipt),
-    /// Execution was rolled back after an error.
-    RolledBack(ExecutionError),
 }
 
 #[derive(Debug)]
@@ -323,7 +330,7 @@ impl fmt::Display for ExtendedTrap {
     }
 }
 
-/// Error occurring during [`Workflow`](crate::Workflow) execution.
+/// Error occurring during workflow execution.
 ///
 /// An error is caused by the executed WASM code [`Trap`]ping, which can be caused by a panic
 /// in the workflow logic, or misuse of Tardigrade runtime APIs. (The latter should not happen
