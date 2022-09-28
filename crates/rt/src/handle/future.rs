@@ -207,6 +207,7 @@ impl AsyncEnv {
     ) -> Result<Termination, ExecutionError> {
         loop {
             if let Some(termination) = self.tick(manager).await? {
+                self.flush_outbound_messages(manager);
                 return Ok(termination);
             }
         }

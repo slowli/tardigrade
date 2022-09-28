@@ -50,7 +50,7 @@ tardigrade::workflow_entry!(PizzaDeliveryWithTasks);
 
 impl WorkflowHandle<Wasm> {
     fn spawn(self, args: Args) -> impl Future<Output = ()> {
-        let requests = Requests::builder(self.baking_tasks, self.baking_responses)
+        let (requests, requests_task) = Requests::builder(self.baking_tasks, self.baking_responses)
             .with_capacity(args.oven_count)
             .with_task_name("baking_requests")
             .build();
@@ -64,7 +64,13 @@ impl WorkflowHandle<Wasm> {
                     .bake_with_requests(&requests, order, counter)
                     .trace(&shared.tracer, format!("baking order {}", counter))
             });
-            order_processing.await
+            order_processing.await;
+
+            // Ensure that background processing stops before terminating the workflow.
+            // Otherwise, we might not get some responses after the `orders` channel
+            // is closed.
+            drop(requests);
+            requests_task.await.ok();
         }
     }
 }

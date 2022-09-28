@@ -67,7 +67,7 @@ impl SpawnWorkflow for TestedWorkflow {
     fn spawn(args: TestInit, handle: TestHandle<Wasm>) -> TaskHandle {
         let strings = args.strings;
         let options = args.options;
-        let requests = Requests::builder(handle.requests, handle.responses)
+        let (requests, _) = Requests::builder(handle.requests, handle.responses)
             .with_capacity(options.capacity)
             .build();
 

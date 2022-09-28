@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use std::{collections::HashMap, future::Future, marker::PhantomData};
 
-use crate::channel::SendError;
+use crate::{channel::SendError, task::JoinHandle};
 
 /// Container for a value together with a numeric ID.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -151,7 +151,7 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 ///
 /// impl SpawnWorkflow for MyWorkflow {
 ///     fn spawn(_data: (), handle: MyHandle<Wasm>) -> TaskHandle {
-///         let requests = Requests::builder(handle.requests, handle.responses)
+///         let (requests, _) = Requests::builder(handle.requests, handle.responses)
 ///             .with_capacity(4)
 ///             .with_task_name("handling_requests")
 ///             .build();
@@ -245,21 +245,21 @@ where
         self
     }
 
-    /// Converts this builder into a [`Requests`] instance and launches the background task
-    /// to support request / response processing.
-    pub fn build(self) -> Requests<Req, Resp> {
+    /// Converts this builder into a [`Requests`] instance.
+    pub fn build(self) -> (Requests<Req, Resp>, JoinHandle<()>) {
         let (inner_sx, inner_rx) = mpsc::channel(self.capacity);
         let handle = RequestsHandle {
             requests_rx: inner_rx,
             capacity: self.capacity,
         };
-        crate::spawn(
+        let task = crate::spawn(
             self.task_name,
             handle.run(self.requests_sx, self.responses_rx),
         );
 
-        Requests {
+        let requests = Requests {
             requests_sx: inner_sx,
-        }
+        };
+        (requests, task)
     }
 }
