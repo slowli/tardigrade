@@ -295,6 +295,16 @@ impl<'a> Workflow<'a> {
         )
     }
 
+    pub(crate) fn take_pending_inbound_message(
+        &mut self,
+        workflow_id: Option<WorkflowId>,
+        channel_name: &str,
+    ) -> bool {
+        self.store
+            .data_mut()
+            .take_pending_inbound_message(workflow_id, channel_name)
+    }
+
     pub(crate) fn drain_messages(&mut self) -> Vec<(ChannelId, Vec<Message>)> {
         self.store.data_mut().drain_messages()
     }

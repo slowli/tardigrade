@@ -140,7 +140,6 @@ fn spawning_child_workflow() {
 
     let receipt = manager
         .feed_message_to_workflow(traces_id, workflow_id)
-        .unwrap()
         .unwrap();
     let events = extract_channel_events(&receipt, Some(child_id), "traces");
     assert_matches!(

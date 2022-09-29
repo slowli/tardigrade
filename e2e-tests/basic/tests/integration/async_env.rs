@@ -178,10 +178,10 @@ async fn async_handle_with_concurrency() -> TestResult {
             oven_count: 1,
             deliverer_count: 2,
         },
-        /*Args { FIXME: doesn't work (some issue with scheduling wakers?)
+        Args {
             oven_count: 2,
             deliverer_count: 1,
-        },*/
+        },
         Args {
             oven_count: 2,
             deliverer_count: 2,

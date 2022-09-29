@@ -354,7 +354,7 @@ impl WorkflowManager {
         &self,
         channel_id: ChannelId,
         workflow_id: WorkflowId,
-    ) -> Result<Option<Receipt>, ExecutionError> {
+    ) -> Result<Receipt, ExecutionError> {
         let mut state = self.lock();
         let (message, is_closed) = state.take_message(channel_id).expect("no message to feed");
         let workflow = &state.workflows[&workflow_id].workflow;
@@ -365,11 +365,28 @@ impl WorkflowManager {
             .shared
             .restore_workflow(&state, workflow_id, &transaction);
         let result = Self::push_message(&mut workflow, child_id, &channel_name, message.clone());
-        if let Ok(Some(receipt)) = &result {
+        if let Ok(receipt) = &result {
+            let mut is_consumed = true;
+            if workflow.take_pending_inbound_message(child_id, &channel_name) {
+                // The message was not consumed. We still persist the workflow in order to
+                // consume wakers (otherwise, we would loop indefinitely), and place the message
+                // back to the channel.
+                crate::warn!(
+                    "Message {:?} over channel {} was not consumed by workflow with ID {}; \
+                     placing the message back",
+                    message,
+                    channel_id,
+                    workflow_id
+                );
+
+                is_consumed = false;
+                state.revert_taking_message(channel_id, message);
+            }
+
             state.drain_and_persist_workflow(workflow_id, workflow);
             state.commit(transaction, receipt);
 
-            if is_closed {
+            if is_consumed && is_closed {
                 // Signal to the workflow that the channel is closed. This can be performed
                 // on a persisted workflow, without executing it.
                 let workflow_record = state.workflows.get_mut(&workflow_id).unwrap();
@@ -379,17 +396,6 @@ impl WorkflowManager {
             }
         } else {
             // Do not commit the execution result. Instead, put the message back to the channel.
-            // Note that this happens both in the case of `ExecutionError`, and if the message
-            // was not consumed by the workflow.
-            if result.is_ok() {
-                crate::warn!(
-                    "Message {:?} over channel {} was not consumed by workflow with ID {}; \
-                     reverting workflow execution",
-                    message,
-                    channel_id,
-                    workflow_id
-                );
-            }
             state.revert_taking_message(channel_id, message);
         }
         result
@@ -402,13 +408,11 @@ impl WorkflowManager {
         child_id: Option<WorkflowId>,
         channel_name: &str,
         message: Message,
-    ) -> Result<Option<Receipt>, ExecutionError> {
-        let push_result = workflow.push_inbound_message(child_id, channel_name, message.into());
-        if push_result.is_err() {
-            Ok(None) // FIXME: panic here? (instead, return `None` if the message was not consumed)
-        } else {
-            workflow.tick().map(Some)
-        }
+    ) -> Result<Receipt, ExecutionError> {
+        workflow
+            .push_inbound_message(child_id, channel_name, message.into())
+            .unwrap();
+        workflow.tick()
     }
 
     /// Sets the current time for this manager. This may expire timers in some of the contained
@@ -483,7 +487,7 @@ impl WorkflowManager {
                         None
                     },
                 },
-                result: result.map(|receipt| receipt.unwrap_or_else(Receipt::new)),
+                result,
             });
         }
 

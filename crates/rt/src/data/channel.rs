@@ -458,6 +458,20 @@ impl WorkflowData<'_> {
             .push_inbound_message(workflow_id, channel_name, message)
     }
 
+    pub(crate) fn take_pending_inbound_message(
+        &mut self,
+        workflow_id: Option<WorkflowId>,
+        channel_name: &str,
+    ) -> bool {
+        let state = self
+            .persisted
+            .channels_mut(workflow_id)
+            .inbound
+            .get_mut(channel_name)
+            .unwrap();
+        state.pending_message.take().is_some()
+    }
+
     fn poll_inbound_channel(
         &mut self,
         channel_ref: &ChannelRef,
