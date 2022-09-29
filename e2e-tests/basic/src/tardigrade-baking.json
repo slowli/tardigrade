@@ -10,9 +10,7 @@
       "description": "Structured logs for traced futures"
     }
   },
-  "data": {
-    "inputs": {
-      "description": "Tuple of the order index and the order itself"
-    }
+  "args": {
+    "description": "Tuple of the order index and the order itself"
   }
 }

@@ -14,8 +14,7 @@ use crate::{module::WorkflowModule, TaskId, WakerId};
 const INTERFACE: &[u8] = br#"{
     "v": 0,
     "in": { "orders": {} },
-    "out": { "events": {}, "traces": { "capacity": null } },
-    "data": { "inputs": {} }
+    "out": { "events": {}, "traces": { "capacity": null } }
 }"#;
 
 pub(crate) type MockPollFn = fn(StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap>;

@@ -8,28 +8,21 @@ use tardigrade::workflow::WorkflowFn;
 use tardigrade::{
     channel::Sender,
     test::{Runtime, Timers},
-    workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm},
+    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, TaskHandle, Wasm},
     Json, Timer,
 };
-use tardigrade_shared::interface::Interface;
 
-#[derive(Debug)]
-struct TimersWorkflow;
-
-impl GetInterface for TimersWorkflow {
-    const WORKFLOW_NAME: &'static str = "TimersWorkflow";
-
-    fn interface() -> Interface<Self> {
-        Interface::from_bytes(br#"{ "v": 0, "out": { "timestamps": {} } }"#)
-            .downcast()
-            .unwrap()
-    }
-}
-
-#[tardigrade::handle(for = "TimersWorkflow")]
+#[tardigrade::handle]
 struct TestHandle<Env> {
     timestamps: Handle<Sender<DateTime<Utc>, Json>, Env>,
 }
+
+#[derive(Debug, GetInterface, TakeHandle)]
+#[tardigrade(
+    handle = "TestHandle",
+    interface = r#"{ "v": 0, "out": { "timestamps": {} } }"#
+)]
+struct TimersWorkflow;
 
 impl WorkflowFn for TimersWorkflow {
     type Args = ();

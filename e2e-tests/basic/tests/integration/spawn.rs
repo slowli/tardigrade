@@ -45,7 +45,7 @@ async fn spawning_child_workflows() -> TestResult {
     let mut workflow: WorkflowHandle<PizzaDeliveryWithSpawning> =
         manager.new_workflow("pizza", inputs)?.build()?;
 
-    let handle = workflow.handle().inner;
+    let handle = workflow.handle();
     let mut env = AsyncEnv::new(AsyncIoScheduler);
     let results = env.execution_results();
     let mut orders_sx = handle.orders.into_async(&mut env);
