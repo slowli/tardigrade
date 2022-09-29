@@ -98,22 +98,15 @@ pub use crate::{
 ///
 /// # Attributes
 ///
-/// Attributes are specified according to standard Rust conventions:
-/// `#[tardigrade::handle(attr1 = "value1", ...)]`.
-///
-/// ## `for`
-///
-/// Specifies the workflow type that the handle should be attached to.
+/// No attributes are supported.
 ///
 /// # Examples
 ///
 /// ```
-/// # use tardigrade::{channel::{Sender, Receiver}, workflow::Handle, Json};
-/// /// Workflow type.
-/// pub struct MyWorkflow;
+/// use tardigrade::{channel::{Sender, Receiver}, workflow::Handle, Json};
 ///
 /// /// Handle for the workflow.
-/// #[tardigrade::handle(for = "MyWorkflow")]
+/// #[tardigrade::handle]
 /// #[derive(Debug)]
 /// pub struct MyHandle<Env> {
 ///     pub inbound: Handle<Receiver<i64, Json>, Env>,

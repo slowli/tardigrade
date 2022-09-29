@@ -7,19 +7,22 @@
 //! # use std::error;
 //! # use tardigrade::{
 //! #     channel::{Sender, Receiver},
-//! #     workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm, WorkflowFn},
+//! #     workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, TakeHandle, Wasm, WorkflowFn},
 //! #     Json,
 //! # };
 //! // Assume we want to spawn a child workflow defined as follows:
-//! #[derive(Debug, GetInterface)]
-//! # #[tardigrade(interface = r#"{
-//! #     "v": 0,
-//! #     "in": { "commands": {} },
-//! #     "out": { "events": {} }
-//! # }"#)]
+//! #[derive(Debug, GetInterface, TakeHandle)]
+//! # #[tardigrade(
+//! #     handle = "ChildHandle",
+//! #     interface = r#"{
+//! #         "v": 0,
+//! #         "in": { "commands": {} },
+//! #         "out": { "events": {} }
+//! #     }"#
+//! # )]
 //! pub struct ChildWorkflow(());
 //!
-//! #[tardigrade::handle(for = "ChildWorkflow")]
+//! #[tardigrade::handle]
 //! #[derive(Debug)]
 //! pub struct ChildHandle<Env> {
 //!     pub commands: Handle<Receiver<String, Json>, Env>,

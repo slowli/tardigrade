@@ -11,17 +11,12 @@
 //! # use serde::{Deserialize, Serialize};
 //! use tardigrade::{
 //!     channel::{Sender, Receiver},
-//!     workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm, WorkflowFn},
+//!     workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, TakeHandle, Wasm, WorkflowFn},
 //!     Json,
 //! };
 //!
-//! /// Workflow type. Usually, this should be a unit / empty struct.
-//! #[derive(Debug, GetInterface)]
-//! # #[tardigrade(interface = r#"{"v":0}"#)]
-//! pub struct MyWorkflow(());
-//!
 //! /// Handle for the workflow. Fields are public for integration testing.
-//! #[tardigrade::handle(for = "MyWorkflow")]
+//! #[tardigrade::handle]
 //! #[derive(Debug)]
 //! pub struct MyHandle<Env> {
 //!     /// Inbound channel with commands.
@@ -62,6 +57,11 @@
 //!         }
 //!     }
 //! }
+//!
+//! /// Workflow type. Usually, this should be a unit / empty struct.
+//! #[derive(Debug, GetInterface, TakeHandle)]
+//! #[tardigrade(handle = "MyHandle", interface = r#"{"v":0}"#)]
+//! pub struct MyWorkflow(());
 //!
 //! // Workflow interface declaration.
 //! impl WorkflowFn for MyWorkflow {

@@ -13,19 +13,19 @@
 //! # use serde::{Deserialize, Serialize};
 //! # use tardigrade::{
 //! #     channel::Sender,
-//! #     workflow::{Handle, GetInterface, SpawnWorkflow, TaskHandle, Wasm, WorkflowFn},
+//! #     workflow::{Handle, GetInterface, SpawnWorkflow, TaskHandle, TakeHandle, Wasm, WorkflowFn},
 //! #     Json,
 //! # };
 //! // Assume we want to test a workflow.
-//! #[derive(Debug, GetInterface)]
-//! # #[tardigrade(interface = r#"{
-//! #     "v": 0,
-//! #     "out": { "events": {} }
-//! # }"#)]
+//! #[derive(Debug, GetInterface, TakeHandle)]
+//! # #[tardigrade(
+//! #     handle = "MyHandle",
+//! #     interface = r#"{ "v": 0, "out": { "events": {} } }"#
+//! # )]
 //! pub struct MyWorkflow(());
 //!
 //! /// Workflow handle.
-//! #[tardigrade::handle(for = "MyWorkflow")]
+//! #[tardigrade::handle]
 //! #[derive(Debug)]
 //! pub struct MyHandle<Env> {
 //!     pub events: Handle<Sender<Event, Json>, Env>,

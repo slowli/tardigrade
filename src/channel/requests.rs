@@ -118,7 +118,7 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 /// # use serde::{Deserialize, Serialize};
 /// # use tardigrade::{
 /// #     channel::{Requests, Sender, Receiver, WithId},
-/// #     workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm, WorkflowFn},
+/// #     workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, TakeHandle, Wasm, WorkflowFn},
 /// #     Json,
 /// # };
 /// #[derive(Debug, Serialize, Deserialize)]
@@ -130,15 +130,18 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 ///     // response fields...
 /// }
 ///
-/// #[derive(Debug, GetInterface)]
-/// # #[tardigrade(interface = r#"{
-/// #     "v":0,
-/// #     "in": { "responses": {} },
-/// #     "out": { "requests": {} }
-/// # }"#)]
+/// #[derive(Debug, GetInterface, TakeHandle)]
+/// # #[tardigrade(
+/// #     handle = "MyHandle",
+/// #     interface = r#"{
+/// #         "v":0,
+/// #         "in": { "responses": {} },
+/// #         "out": { "requests": {} }
+/// #     }"#
+/// # )]
 /// pub struct MyWorkflow(());
 ///
-/// #[tardigrade::handle(for = "MyWorkflow")]
+/// #[tardigrade::handle]
 /// #[derive(Debug)]
 /// pub struct MyHandle<Env> {
 ///     pub requests: Handle<Sender<WithId<Request>, Json>, Env>,
