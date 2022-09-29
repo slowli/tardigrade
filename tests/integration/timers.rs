@@ -43,14 +43,13 @@ impl SpawnWorkflow for TimersWorkflow {
 
 #[test]
 fn timers_basics() {
-    Runtime::default().test::<TimersWorkflow, _, _>((), |api| async {
-        let mut timestamps = api.timestamps.unwrap();
+    Runtime::default().test::<TimersWorkflow, _, _>((), |mut api| async move {
         let now = Timers::now();
-        let ts = timestamps.next().await.unwrap();
+        let ts = api.timestamps.next().await.unwrap();
         assert_eq!(ts, now);
 
         Timers::set_now(now + chrono::Duration::seconds(1));
-        let ts = timestamps.next().await.unwrap();
+        let ts = api.timestamps.next().await.unwrap();
         assert_eq!(ts, Timers::now());
     });
 }

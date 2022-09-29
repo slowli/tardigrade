@@ -72,7 +72,7 @@
 
 use futures::{
     stream::{Fuse, FusedStream},
-    FutureExt, StreamExt,
+    FutureExt, Sink, Stream, StreamExt,
 };
 use pin_project_lite::pin_project;
 use serde::{Deserialize, Serialize};
@@ -90,7 +90,7 @@ use std::{
 };
 
 use crate::{
-    channel::{Receiver, Sender},
+    channel::{Receiver, SendError, Sender},
     interface::{
         AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel, ValidateInterface,
     },
@@ -242,11 +242,34 @@ where
     }
 }
 
+/// Wrapper for remote components of a workflow, such as [`Sender`]s and [`Receiver`]s.
 #[derive(Debug)]
-pub(crate) enum RemoteHandle<T> {
-    None,
+pub enum Remote<T> {
+    /// The remote handle is not captured.
     NotCaptured,
+    /// The remote handle is available.
     Some(T),
+}
+
+impl<T> Remote<T> {
+    /// Unwraps and returns the contained handle.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the handle is not captured.
+    pub fn unwrap(self) -> T {
+        match self {
+            Self::Some(value) => value,
+            Self::NotCaptured => panic!("handle not captured"),
+        }
+    }
+
+    fn map<U>(self, map_fn: impl FnOnce(T) -> U) -> Remote<U> {
+        match self {
+            Self::NotCaptured => Remote::NotCaptured,
+            Self::Some(value) => Remote::Some(map_fn(value)),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -505,35 +528,76 @@ where
 
 impl<T, C: Encode<T> + Default> TakeHandle<RemoteWorkflow> for Receiver<T, C> {
     type Id = str;
-    type Handle = Option<Sender<T, C>>;
+    type Handle = Remote<Sender<T, C>>;
 
     fn take_handle(env: &mut RemoteWorkflow, id: &str) -> Result<Self::Handle, AccessError> {
-        let raw_sender = env.inner.take_inbound_channel(id);
-        match raw_sender {
-            RemoteHandle::None => Err(AccessErrorKind::Unknown.with_location(InboundChannel(id))),
-            RemoteHandle::NotCaptured => Ok(None),
-            RemoteHandle::Some(raw) => Ok(Some(raw.with_codec(C::default()))),
+        let raw_sender = env
+            .inner
+            .take_inbound_channel(id)
+            .ok_or_else(|| AccessErrorKind::Unknown.with_location(InboundChannel(id)))?;
+        Ok(raw_sender.map(|raw| raw.with_codec(C::default())))
+    }
+}
+
+impl<T, C: Decode<T>> Stream for Remote<Receiver<T, C>> {
+    type Item = T;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.get_mut() {
+            Self::NotCaptured => Poll::Ready(None),
+            Self::Some(receiver) => Pin::new(receiver).poll_next(cx),
         }
     }
 }
 
 impl<T, C: Decode<T> + Default> TakeHandle<RemoteWorkflow> for Sender<T, C> {
     type Id = str;
-    type Handle = Option<Receiver<T, C>>;
+    type Handle = Remote<Receiver<T, C>>;
 
     fn take_handle(env: &mut RemoteWorkflow, id: &str) -> Result<Self::Handle, AccessError> {
-        let raw_receiver = env.inner.take_outbound_channel(id);
-        match raw_receiver {
-            RemoteHandle::None => Err(AccessErrorKind::Unknown.with_location(OutboundChannel(id))),
-            RemoteHandle::NotCaptured => Ok(None),
-            RemoteHandle::Some(raw) => Ok(Some(raw.with_codec(C::default()))),
+        let raw_receiver = env
+            .inner
+            .take_outbound_channel(id)
+            .ok_or_else(|| AccessErrorKind::Unknown.with_location(OutboundChannel(id)))?;
+        Ok(raw_receiver.map(|raw| raw.with_codec(C::default())))
+    }
+}
+
+impl<T, C: Encode<T>> Sink<T> for Remote<Sender<T, C>> {
+    type Error = SendError;
+
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        match self.get_mut() {
+            Self::NotCaptured => Poll::Ready(Err(SendError::Closed)),
+            Self::Some(sender) => Pin::new(sender).poll_ready(cx),
+        }
+    }
+
+    fn start_send(self: Pin<&mut Self>, item: T) -> Result<(), Self::Error> {
+        match self.get_mut() {
+            Self::NotCaptured => Err(SendError::Closed),
+            Self::Some(sender) => Pin::new(sender).start_send(item),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        match self.get_mut() {
+            Self::NotCaptured => Poll::Ready(Err(SendError::Closed)),
+            Self::Some(sender) => Pin::new(sender).poll_flush(cx),
+        }
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        match self.get_mut() {
+            Self::NotCaptured => Poll::Ready(Ok(())),
+            Self::Some(sender) => Pin::new(sender).poll_close(cx),
         }
     }
 }
 
 impl<C: Decode<FutureUpdate> + Default> TakeHandle<RemoteWorkflow> for Tracer<C> {
     type Id = str;
-    type Handle = Option<TracerHandle<C>>;
+    type Handle = Remote<TracerHandle<C>>;
 
     fn take_handle(env: &mut RemoteWorkflow, id: &Self::Id) -> Result<Self::Handle, AccessError> {
         let receiver = Sender::<FutureUpdate, C>::take_handle(env, id)?;

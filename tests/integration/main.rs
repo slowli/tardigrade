@@ -43,29 +43,23 @@ impl SpawnWorkflow for TestedWorkflow {
 
 #[test]
 fn dropping_inbound_channel_handle_in_test_code() {
-    Runtime::default().test::<TestedWorkflow, _, _>((), |api| async {
-        let mut commands = api.commands.unwrap();
-        let events = api.events.unwrap();
-
+    Runtime::default().test::<TestedWorkflow, _, _>((), |mut api| async {
         let mut items = stream::iter([Ok(23), Ok(42)]);
-        commands.send_all(&mut items).await.unwrap();
-        drop(commands);
-        let echos: Vec<_> = events.collect().await;
+        api.commands.send_all(&mut items).await.unwrap();
+        drop(api.commands);
+        let echos: Vec<_> = api.events.collect().await;
         assert_eq!(echos, [23, 42]);
     });
 }
 
 #[test]
 fn dropping_outbound_channel_handle_in_test_code() {
-    Runtime::default().test::<TestedWorkflow, _, _>((), |api| async {
-        let mut commands = api.commands.unwrap();
-        let mut events = api.events.unwrap();
-
-        commands.send(23).await.unwrap();
-        let echo = events.next().await.unwrap();
+    Runtime::default().test::<TestedWorkflow, _, _>((), |mut api| async move {
+        api.commands.send(23).await.unwrap();
+        let echo = api.events.next().await.unwrap();
         assert_eq!(echo, 23);
 
-        drop(events);
-        commands.send(42).await.unwrap();
+        drop(api.events);
+        api.commands.send(42).await.unwrap();
     });
 }

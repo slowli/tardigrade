@@ -106,18 +106,15 @@ fn test_requests(init: TestInit) {
     println!("Testing with {:?}", init.options);
 
     let expected_strings = init.strings.clone();
-    Runtime::default().test::<TestedWorkflow, _, _>(init, |api| async move {
-        let mut requests = api.requests.unwrap();
-        let mut responses = api.responses.unwrap();
-
+    Runtime::default().test::<TestedWorkflow, _, _>(init, |mut api| async move {
         let mut strings = vec![];
-        while let Some(WithId { id, data }) = requests.next().await {
+        while let Some(WithId { id, data }) = api.requests.next().await {
             let response = WithId {
                 id,
                 data: data.len(),
             };
             strings.push(data);
-            responses.send(response).await.ok();
+            api.responses.send(response).await.ok();
         }
         assert_eq!(strings, expected_strings);
     });

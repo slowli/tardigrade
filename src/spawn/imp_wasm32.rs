@@ -9,7 +9,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use super::{ChannelsConfig, ManageInterfaces, ManageWorkflows, RemoteHandle, Workflows};
+use super::{ChannelsConfig, ManageInterfaces, ManageWorkflows, Remote, Workflows};
 use crate::channel::{
     imp::{mpsc_receiver_get, mpsc_sender_get, ACCESS_ERROR_PAD},
     RawReceiver, RawSender,
@@ -131,7 +131,7 @@ pub(crate) struct RemoteWorkflow {
 }
 
 impl RemoteWorkflow {
-    pub fn take_inbound_channel(&mut self, channel_name: &str) -> RemoteHandle<RawSender> {
+    pub fn take_inbound_channel(&mut self, channel_name: &str) -> Option<Remote<RawSender>> {
         let channel = unsafe {
             mpsc_sender_get(
                 Some(&self.resource),
@@ -144,15 +144,15 @@ impl RemoteWorkflow {
         if unsafe { ACCESS_ERROR_PAD } != 0 {
             // Got an error, meaning that the channel does not exist
             debug_assert!(channel.is_none());
-            RemoteHandle::None
+            None
         } else if let Some(channel) = channel {
-            RemoteHandle::Some(RawSender::from_resource(channel))
+            Some(Remote::Some(RawSender::from_resource(channel)))
         } else {
-            RemoteHandle::NotCaptured
+            Some(Remote::NotCaptured)
         }
     }
 
-    pub fn take_outbound_channel(&mut self, channel_name: &str) -> RemoteHandle<RawReceiver> {
+    pub fn take_outbound_channel(&mut self, channel_name: &str) -> Option<Remote<RawReceiver>> {
         let channel = unsafe {
             mpsc_receiver_get(
                 Some(&self.resource),
@@ -165,11 +165,11 @@ impl RemoteWorkflow {
         if unsafe { ACCESS_ERROR_PAD } != 0 {
             // Got an error, meaning that the channel does not exist
             debug_assert!(channel.is_none());
-            RemoteHandle::None
+            None
         } else if let Some(channel) = channel {
-            RemoteHandle::Some(RawReceiver::from_resource(channel))
+            Some(Remote::Some(RawReceiver::from_resource(channel)))
         } else {
-            RemoteHandle::NotCaptured
+            Some(Remote::NotCaptured)
         }
     }
 }

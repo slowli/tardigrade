@@ -13,17 +13,15 @@ use tardigrade::{
     workflow::Handle,
 };
 
-async fn test_workflow_basics(api: Handle<PizzaDelivery, RemoteWorkflow>) {
-    let mut orders = api.orders.unwrap();
-    let mut events = api.shared.events.unwrap();
+async fn test_workflow_basics(mut api: Handle<PizzaDelivery, RemoteWorkflow>) {
     let mut tracer_handle = api.shared.tracer.unwrap();
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,
         delivery_distance: 10,
     };
-    orders.send(order).await.unwrap();
+    api.orders.send(order).await.unwrap();
 
-    let event = events.next().await.unwrap();
+    let event = api.shared.events.next().await.unwrap();
     assert_eq!(event, DomainEvent::OrderTaken { index: 1, order });
     {
         tracer_handle.update();
@@ -51,7 +49,7 @@ async fn test_workflow_basics(api: Handle<PizzaDelivery, RemoteWorkflow>) {
     let timer_expiration = Timers::next_timer_expiration().unwrap();
     assert_eq!((timer_expiration - now).num_milliseconds(), 50);
     Timers::set_now(timer_expiration);
-    let event = events.next().await.unwrap();
+    let event = api.shared.events.next().await.unwrap();
     assert_eq!(event, DomainEvent::Baked { index: 1, order });
     {
         tracer_handle.update();
@@ -79,9 +77,7 @@ fn workflow_basics() {
     Runtime::default().test::<PizzaDelivery, _, _>(inputs, test_workflow_basics);
 }
 
-async fn test_concurrency_in_workflow(api: Handle<PizzaDelivery, RemoteWorkflow>) {
-    let mut orders = api.orders.unwrap();
-    let mut events = api.shared.events.unwrap();
+async fn test_concurrency_in_workflow(mut api: Handle<PizzaDelivery, RemoteWorkflow>) {
     let orders_array = [
         PizzaOrder {
             kind: PizzaKind::Pepperoni,
@@ -92,13 +88,13 @@ async fn test_concurrency_in_workflow(api: Handle<PizzaDelivery, RemoteWorkflow>
             delivery_distance: 5,
         },
     ];
-    orders
+    api.orders
         .send_all(&mut stream::iter(orders_array).map(Ok))
         .await
         .unwrap();
 
     {
-        let events: Vec<_> = events.by_ref().take(2).collect().await;
+        let events: Vec<_> = api.shared.events.by_ref().take(2).collect().await;
         assert_matches!(
             events.as_slice(),
             [
@@ -114,7 +110,7 @@ async fn test_concurrency_in_workflow(api: Handle<PizzaDelivery, RemoteWorkflow>
     Timers::set_now(next_timer);
 
     {
-        let events: Vec<_> = events.by_ref().take(2).collect().await;
+        let events: Vec<_> = api.shared.events.by_ref().take(2).collect().await;
         assert_matches!(
             events.as_slice(),
             [
@@ -123,7 +119,7 @@ async fn test_concurrency_in_workflow(api: Handle<PizzaDelivery, RemoteWorkflow>
             ]
         );
     }
-    assert!(events.next().now_or_never().is_none());
+    assert!(api.shared.events.next().now_or_never().is_none());
 
     let now = Timers::now();
     let next_timer = Timers::next_timer_expiration().unwrap();
@@ -131,7 +127,7 @@ async fn test_concurrency_in_workflow(api: Handle<PizzaDelivery, RemoteWorkflow>
     Timers::set_now(next_timer);
 
     tardigrade::yield_now().await;
-    assert!(events.next().now_or_never().is_none());
+    assert!(api.shared.events.next().now_or_never().is_none());
     // You'd think that `DomainEvent::Baked { index: 1, .. }` would be triggered,
     // but this is not the case! In reality, the 1st order will only be polled once
     // the 2nd one is delivered, due to the deliverers bottleneck.

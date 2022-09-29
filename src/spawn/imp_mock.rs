@@ -6,13 +6,14 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     future::Future,
+    mem,
     pin::Pin,
     task::{Context, Poll},
 };
 use tardigrade_shared::interface::Interface;
 
 use super::{
-    ChannelSpawnConfig, ChannelsConfig, ManageInterfaces, ManageWorkflows, RemoteHandle, Workflows,
+    ChannelSpawnConfig, ChannelsConfig, ManageInterfaces, ManageWorkflows, Remote, Workflows,
 };
 use crate::{
     channel::{imp::raw_channel, RawReceiver, RawSender},
@@ -50,6 +51,15 @@ impl ManageWorkflows<'_, ()> for Workflows {
         });
         let main_task = crate::spawn("_workflow", main_task.into_inner());
         Ok(super::RemoteWorkflow::from_parts(main_task, local_handles))
+    }
+}
+
+impl<T> Remote<T> {
+    fn from_option(option: Option<T>) -> Self {
+        match option {
+            None => Self::NotCaptured,
+            Some(value) => Self::Some(value),
+        }
     }
 }
 
@@ -91,11 +101,11 @@ impl ChannelsConfig {
 
         let inbound_channels = inbound_channel_pairs
             .into_iter()
-            .map(|(name, channel)| (name.to_owned(), channel.sx))
+            .map(|(name, channel)| (name.to_owned(), Remote::from_option(channel.sx)))
             .collect();
         let outbound_channels = outbound_channel_pairs
             .into_iter()
-            .map(|(name, channel)| (name.to_owned(), channel.rx))
+            .map(|(name, channel)| (name.to_owned(), Remote::from_option(channel.rx)))
             .collect();
         let local = UntypedHandle {
             inbound_channels,
@@ -134,24 +144,18 @@ pin_project! {
 }
 
 impl RemoteWorkflow {
-    pub fn take_inbound_channel(&mut self, channel_name: &str) -> RemoteHandle<RawSender> {
-        match self.handle.inbound_channels.get_mut(channel_name) {
-            Some(channel) => match channel.take() {
-                Some(channel) => RemoteHandle::Some(channel),
-                None => RemoteHandle::NotCaptured,
-            },
-            None => RemoteHandle::None,
-        }
+    pub fn take_inbound_channel(&mut self, channel_name: &str) -> Option<Remote<RawSender>> {
+        self.handle
+            .inbound_channels
+            .get_mut(channel_name)
+            .map(|channel| mem::replace(channel, Remote::NotCaptured))
     }
 
-    pub fn take_outbound_channel(&mut self, channel_name: &str) -> RemoteHandle<RawReceiver> {
-        match self.handle.outbound_channels.get_mut(channel_name) {
-            Some(channel) => match channel.take() {
-                Some(channel) => RemoteHandle::Some(channel),
-                None => RemoteHandle::NotCaptured,
-            },
-            None => RemoteHandle::None,
-        }
+    pub fn take_outbound_channel(&mut self, channel_name: &str) -> Option<Remote<RawReceiver>> {
+        self.handle
+            .outbound_channels
+            .get_mut(channel_name)
+            .map(|channel| mem::replace(channel, Remote::NotCaptured))
     }
 }
 
