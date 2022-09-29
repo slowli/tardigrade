@@ -5,14 +5,8 @@ use syn::{spanned::Spanned, DeriveInput};
 
 use std::{borrow::Cow, env, fs, path::Path};
 
-use crate::utils::find_meta_attrs;
+use crate::utils::{find_meta_attrs, DeriveAttrs};
 use tardigrade_shared::interface::Interface;
-
-#[derive(Debug, Default, FromMeta)]
-struct GetInterfaceAttrs {
-    #[darling(default)]
-    interface: Option<String>,
-}
 
 #[derive(Debug)]
 struct GetInterface {
@@ -76,8 +70,8 @@ impl GetInterface {
 impl FromDeriveInput for GetInterface {
     fn from_derive_input(input: &DeriveInput) -> darling::Result<Self> {
         let attrs = find_meta_attrs("tardigrade", &input.attrs).map_or_else(
-            || Ok(GetInterfaceAttrs::default()),
-            |meta| GetInterfaceAttrs::from_nested_meta(&meta),
+            || Ok(DeriveAttrs::default()),
+            |meta| DeriveAttrs::from_nested_meta(&meta),
         )?;
         let spec = attrs
             .interface

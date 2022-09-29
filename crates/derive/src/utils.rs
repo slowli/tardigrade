@@ -1,12 +1,11 @@
 //! Types / logic shared across multiple derive macros.
 
 use darling::{ast::Style, FromMeta};
-use proc_macro::TokenStream;
 use proc_macro2::{Ident, Span};
 use quote::{quote, ToTokens};
 use syn::{
-    parse::Parser, parse_quote, punctuated::Punctuated, spanned::Spanned, Attribute, Data,
-    DataStruct, DeriveInput, Generics, Meta, NestedMeta, Path, Token, Type,
+    parse_quote, punctuated::Punctuated, spanned::Spanned, Attribute, Data, DataStruct,
+    DeriveInput, Generics, Meta, NestedMeta, Path, Token, Type,
 };
 
 use std::collections::HashSet;
@@ -75,6 +74,15 @@ fn remove_nested(list: &mut Punctuated<NestedMeta, Token![,]>, idx: usize) {
     for item in popped_items {
         list.push(item);
     }
+}
+
+#[derive(Debug, Default, FromMeta)]
+pub(crate) struct DeriveAttrs {
+    // TODO: allow auto-specification based on handle
+    #[darling(default)]
+    pub interface: Option<String>,
+    #[darling(default)]
+    pub handle: Option<Path>,
 }
 
 #[derive(Debug)]
@@ -297,18 +305,6 @@ impl TargetStruct {
         };
         self.impl_std_trait(quote!(core::fmt::Debug), methods)
     }
-}
-
-#[derive(Debug, FromMeta)]
-pub(crate) struct MacroAttrs {
-    #[darling(rename = "for")]
-    pub target: Path,
-}
-
-pub(crate) fn parse_attr<T: FromMeta>(tokens: TokenStream) -> darling::Result<T> {
-    let meta = Punctuated::<NestedMeta, Token![,]>::parse_terminated.parse(tokens)?;
-    let meta: Vec<_> = meta.into_iter().collect();
-    T::from_list(&meta)
 }
 
 #[cfg(test)]

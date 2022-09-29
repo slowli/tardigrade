@@ -92,6 +92,13 @@ use std::{future::Future, mem};
 #[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
 pub use tardigrade_derive::GetInterface;
 
+/// Derives the [`TakeHandle`] trait for a workflow type.
+///
+/// [`TakeHandle`]: trait@TakeHandle
+#[cfg(feature = "derive")]
+#[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
+pub use tardigrade_derive::TakeHandle;
+
 use crate::{
     interface::{AccessError, AccessErrorKind, Interface, InterfaceLocation, ValidateInterface},
     Decode, Encode, Raw,

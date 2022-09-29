@@ -5,8 +5,6 @@
 //!
 //! [`tardigrade`]: https://docs.rs/tardigrade/
 
-// TODO: allow reusing handles for multiple workflows
-
 #![recursion_limit = "128"]
 // Documentation settings.
 #![doc(html_root_url = "https://docs.rs/tardigrade-derive/0.1.0")]
@@ -24,11 +22,16 @@ mod take_handle;
 mod utils;
 
 #[proc_macro_attribute]
-pub fn handle(attr: TokenStream, input: TokenStream) -> TokenStream {
-    take_handle::impl_take_handle(attr, input)
+pub fn handle(_attr: TokenStream, input: TokenStream) -> TokenStream {
+    take_handle::impl_handle(input)
 }
 
 #[proc_macro_derive(GetInterface, attributes(tardigrade))]
 pub fn get_interface(input: TokenStream) -> TokenStream {
     interface::impl_get_interface(input)
+}
+
+#[proc_macro_derive(TakeHandle, attributes(tardigrade))]
+pub fn take_handle(input: TokenStream) -> TokenStream {
+    take_handle::impl_take_handle(input)
 }

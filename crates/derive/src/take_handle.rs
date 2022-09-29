@@ -1,12 +1,12 @@
-//! Deriving `WithHandle` and related traits.
+//! Deriving `TakeHandle`.
 
-use darling::ast::Style;
+use darling::{ast::Style, FromMeta};
 use proc_macro::TokenStream;
 use proc_macro2::Ident;
 use quote::{quote, ToTokens};
-use syn::{parse_quote, DeriveInput, Generics, Path, Type};
+use syn::{parse_quote, DeriveInput, Generics, Type};
 
-use crate::utils::{parse_attr, take_derive, MacroAttrs, TargetField, TargetStruct};
+use crate::utils::{find_meta_attrs, take_derive, DeriveAttrs, TargetField, TargetStruct};
 
 impl TargetField {
     fn check_for_handle(&self, env_ident: &Ident) -> darling::Result<()> {
@@ -52,16 +52,15 @@ impl TargetField {
 }
 
 #[derive(Debug)]
-struct TakeHandle {
+struct Handle {
     base: TargetStruct,
     env: Ident,
-    target: Path,
     derive_clone: bool,
     derive_debug: bool,
 }
 
-impl TakeHandle {
-    fn new(input: &mut DeriveInput, attrs: MacroAttrs) -> darling::Result<Self> {
+impl Handle {
+    fn new(input: &mut DeriveInput) -> darling::Result<Self> {
         let env = Self::env_generic(&input.generics)?;
         let mut base = TargetStruct::new(input)?;
         for field in &base.fields {
@@ -88,7 +87,6 @@ impl TakeHandle {
         Ok(Self {
             base,
             env,
-            target: attrs.target,
             derive_clone,
             derive_debug,
         })
@@ -127,7 +125,6 @@ impl TakeHandle {
 
     fn impl_take_handle(&self) -> impl ToTokens {
         let handle = &self.base.ident;
-        let target = &self.target;
         let env = &self.env;
         let tr = quote!(tardigrade::workflow::TakeHandle);
         let (impl_generics, ty_generics, where_clause) = self.base.generics.split_for_impl();
@@ -140,7 +137,7 @@ impl TakeHandle {
         };
 
         quote! {
-            impl #impl_generics #tr<#env> for #target #where_clause {
+            impl #impl_generics #tr<#env> for #handle <tardigrade::workflow::Wasm> #where_clause {
                 type Id = ();
                 type Handle = #handle #ty_generics;
 
@@ -155,13 +152,13 @@ impl TakeHandle {
     }
 
     fn impl_validate_interface(&self) -> impl ToTokens {
-        let target = &self.target;
+        let handle = &self.base.ident;
         let tr = quote!(tardigrade::interface::ValidateInterface);
         let fields = self.base.fields.iter();
         let validations = fields.map(TargetField::validate_interface);
 
         quote! {
-            impl #tr for #target {
+            impl #tr for #handle <tardigrade::workflow::Wasm> {
                 type Id = ();
 
                 fn validate_interface(
@@ -176,7 +173,7 @@ impl TakeHandle {
     }
 }
 
-impl ToTokens for TakeHandle {
+impl ToTokens for Handle {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         let clone_impl = if self.derive_clone {
             Some(self.base.impl_clone())
@@ -200,19 +197,82 @@ impl ToTokens for TakeHandle {
     }
 }
 
-pub(crate) fn impl_take_handle(attr: TokenStream, input: TokenStream) -> TokenStream {
-    let attrs = match parse_attr::<MacroAttrs>(attr) {
-        Ok(attrs) => attrs,
-        Err(err) => return err.write_errors().into(),
-    };
+pub(crate) fn impl_handle(input: TokenStream) -> TokenStream {
     let mut input: DeriveInput = match syn::parse(input) {
         Ok(input) => input,
         Err(err) => return err.into_compile_error().into(),
     };
-    let take_handle = match TakeHandle::new(&mut input, attrs) {
-        Ok(take_handle) => take_handle,
+    let handle = match Handle::new(&mut input) {
+        Ok(handle) => handle,
         Err(err) => return err.write_errors().into(),
     };
-    let tokens = quote!(#input #take_handle);
-    tokens.into()
+    quote!(#input #handle).into()
+}
+
+fn derive_take_handle(input: &DeriveInput) -> darling::Result<impl ToTokens> {
+    let meta = find_meta_attrs("tardigrade", &input.attrs).ok_or_else(|| {
+        let msg = "#[tardigrade(handle = ..)] must be specified";
+        darling::Error::custom(msg).with_span(&input)
+    })?;
+    let attrs = DeriveAttrs::from_nested_meta(&meta)?;
+    let handle = attrs.handle.as_ref().ok_or_else(|| {
+        let msg = "#[tardigrade(handle = ..)] must be specified";
+        darling::Error::custom(msg).with_span(&meta)
+    })?;
+    let handle = quote!(#handle <tardigrade::workflow::Wasm>);
+
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let target = &input.ident;
+    let validate_tr = quote!(tardigrade::interface::ValidateInterface);
+
+    let validate_interface = quote! {
+        impl #impl_generics #validate_tr for #target #ty_generics #where_clause {
+            type Id = ();
+
+            fn validate_interface(
+                interface: &tardigrade::interface::Interface<()>,
+                _id: &(),
+            ) -> core::result::Result<(), tardigrade::interface::AccessError> {
+                <#handle as #validate_tr>::validate_interface(interface, &())
+            }
+        }
+    };
+
+    let tr = quote!(tardigrade::workflow::TakeHandle);
+    let mut extended_generics = input.generics.clone();
+    extended_generics.params.push(parse_quote!(Env));
+    extended_generics
+        .where_clause
+        .get_or_insert_with(|| parse_quote!(where))
+        .predicates
+        .push(parse_quote!(#handle : #tr<Env, Id = ()>));
+
+    let (impl_generics, _, where_clause) = extended_generics.split_for_impl();
+    let take_handle = quote! {
+        impl #impl_generics #tr<Env> for #target #ty_generics #where_clause {
+            type Id = ();
+            type Handle = <#handle as #tr<Env>>::Handle;
+
+            fn take_handle(
+                env: &mut Env,
+                _id: &(),
+            ) -> core::result::Result<Self::Handle, tardigrade::interface::AccessError> {
+                <#handle as #tr<Env>>::take_handle(env, &())
+            }
+        }
+    };
+
+    Ok(quote!(#validate_interface #take_handle))
+}
+
+pub(crate) fn impl_take_handle(input: TokenStream) -> TokenStream {
+    let input: DeriveInput = match syn::parse(input) {
+        Ok(input) => input,
+        Err(err) => return err.into_compile_error().into(),
+    };
+    let tokens = match derive_take_handle(&input) {
+        Ok(tokens) => tokens,
+        Err(err) => return err.write_errors().into(),
+    };
+    quote!(#tokens).into()
 }
