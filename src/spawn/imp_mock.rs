@@ -42,7 +42,7 @@ impl ManageWorkflows<'_, ()> for Workflows {
         &self,
         definition_id: &str,
         args: Vec<u8>,
-        channels: &ChannelsConfig,
+        channels: &ChannelsConfig<RawReceiver, RawSender>,
     ) -> Result<Self::Handle, Self::Error> {
         let (local_handles, remote_handles) = channels.create_handles();
         let main_task = Runtime::with(|rt| {
@@ -79,7 +79,7 @@ impl Default for ChannelPair {
     }
 }
 
-impl ChannelsConfig {
+impl ChannelsConfig<RawReceiver, RawSender> {
     fn create_handles(&self) -> (UntypedHandle<super::RemoteWorkflow>, UntypedHandle<Wasm>) {
         let mut inbound_channel_pairs: HashMap<_, _> =
             Self::map_config(&self.inbound, ChannelKind::Inbound);
@@ -114,13 +114,14 @@ impl ChannelsConfig {
         (local, remote)
     }
 
-    fn map_config(
-        config: &HashMap<String, ChannelSpawnConfig>,
+    fn map_config<T>(
+        config: &HashMap<String, ChannelSpawnConfig<T>>,
         local_channel_kind: ChannelKind,
     ) -> HashMap<&str, ChannelPair> {
         config
             .iter()
             .map(|(name, config)| {
+                // FIXME: account for copied channels
                 let mut pair = ChannelPair::default();
                 if matches!(config, ChannelSpawnConfig::Closed) {
                     match local_channel_kind {

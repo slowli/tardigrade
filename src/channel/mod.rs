@@ -197,12 +197,25 @@ impl<T, C: Encode<T>> Sender<T, C> {
             _item: PhantomData,
         }
     }
+
+    pub(crate) fn into_raw(self) -> RawSender {
+        RawSender {
+            raw: self.raw,
+            codec: Raw,
+            _item: PhantomData,
+        }
+    }
 }
 
 impl RawSender {
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn from_resource(resource: externref::Resource<imp::MpscSender>) -> Self {
         Self::new(resource.into(), Raw)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn as_resource(&self) -> &externref::Resource<imp::MpscSender> {
+        self.raw.as_resource()
     }
 
     pub(crate) fn with_codec<T, C>(self, codec: C) -> Sender<T, C>

@@ -105,6 +105,12 @@ impl From<Resource<Self>> for MpscSender {
     }
 }
 
+impl MpscSender {
+    pub(super) fn as_resource(&self) -> &Resource<Self> {
+        &self.resource
+    }
+}
+
 impl TakeHandle<Wasm> for MpscSender {
     type Id = str;
     type Handle = Self;
