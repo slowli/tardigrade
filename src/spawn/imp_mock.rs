@@ -42,7 +42,7 @@ impl ManageWorkflows<'_, ()> for Workflows {
         &self,
         definition_id: &str,
         args: Vec<u8>,
-        channels: &ChannelsConfig<RawReceiver, RawSender>,
+        channels: ChannelsConfig<RawReceiver, RawSender>,
     ) -> Result<Self::Handle, Self::Error> {
         let (local_handles, remote_handles) = channels.create_handles();
         let main_task = Runtime::with(|rt| {
@@ -69,6 +69,17 @@ struct ChannelPair {
     rx: Option<RawReceiver>,
 }
 
+impl ChannelPair {
+    fn closed(local_channel_kind: ChannelKind) -> Self {
+        let mut pair = Self::default();
+        match local_channel_kind {
+            ChannelKind::Inbound => pair.sx = None,
+            ChannelKind::Outbound => pair.rx = None,
+        }
+        pair
+    }
+}
+
 impl Default for ChannelPair {
     fn default() -> Self {
         let (sx, rx) = raw_channel();
@@ -79,20 +90,38 @@ impl Default for ChannelPair {
     }
 }
 
+impl From<RawSender> for ChannelPair {
+    fn from(sx: RawSender) -> Self {
+        Self {
+            sx: Some(sx),
+            rx: None,
+        }
+    }
+}
+
+impl From<RawReceiver> for ChannelPair {
+    fn from(rx: RawReceiver) -> Self {
+        Self {
+            sx: None,
+            rx: Some(rx),
+        }
+    }
+}
+
 impl ChannelsConfig<RawReceiver, RawSender> {
-    fn create_handles(&self) -> (UntypedHandle<super::RemoteWorkflow>, UntypedHandle<Wasm>) {
+    fn create_handles(self) -> (UntypedHandle<super::RemoteWorkflow>, UntypedHandle<Wasm>) {
         let mut inbound_channel_pairs: HashMap<_, _> =
-            Self::map_config(&self.inbound, ChannelKind::Inbound);
+            Self::map_config(self.inbound, ChannelKind::Inbound);
         let mut outbound_channel_pairs: HashMap<_, _> =
-            Self::map_config(&self.outbound, ChannelKind::Outbound);
+            Self::map_config(self.outbound, ChannelKind::Outbound);
 
         let inbound_channels = inbound_channel_pairs
             .iter_mut()
-            .map(|(&name, channel)| (name.to_owned(), channel.rx.take().unwrap()))
+            .map(|(name, channel)| (name.clone(), channel.rx.take().unwrap()))
             .collect();
         let outbound_channels = outbound_channel_pairs
             .iter_mut()
-            .map(|(&name, channel)| (name.to_owned(), channel.sx.take().unwrap()))
+            .map(|(name, channel)| (name.clone(), channel.sx.take().unwrap()))
             .collect();
         let remote = UntypedHandle {
             inbound_channels,
@@ -101,11 +130,11 @@ impl ChannelsConfig<RawReceiver, RawSender> {
 
         let inbound_channels = inbound_channel_pairs
             .into_iter()
-            .map(|(name, channel)| (name.to_owned(), Remote::from_option(channel.sx)))
+            .map(|(name, channel)| (name, Remote::from_option(channel.sx)))
             .collect();
         let outbound_channels = outbound_channel_pairs
             .into_iter()
-            .map(|(name, channel)| (name.to_owned(), Remote::from_option(channel.rx)))
+            .map(|(name, channel)| (name, Remote::from_option(channel.rx)))
             .collect();
         let local = UntypedHandle {
             inbound_channels,
@@ -114,22 +143,19 @@ impl ChannelsConfig<RawReceiver, RawSender> {
         (local, remote)
     }
 
-    fn map_config<T>(
-        config: &HashMap<String, ChannelSpawnConfig<T>>,
+    fn map_config<T: Into<ChannelPair>>(
+        config: HashMap<String, ChannelSpawnConfig<T>>,
         local_channel_kind: ChannelKind,
-    ) -> HashMap<&str, ChannelPair> {
+    ) -> HashMap<String, ChannelPair> {
         config
-            .iter()
+            .into_iter()
             .map(|(name, config)| {
-                // FIXME: account for copied channels
-                let mut pair = ChannelPair::default();
-                if matches!(config, ChannelSpawnConfig::Closed) {
-                    match local_channel_kind {
-                        ChannelKind::Inbound => pair.sx = None,
-                        ChannelKind::Outbound => pair.rx = None,
-                    }
-                }
-                (name.as_str(), pair)
+                let pair = match config {
+                    ChannelSpawnConfig::New => ChannelPair::default(),
+                    ChannelSpawnConfig::Closed => ChannelPair::closed(local_channel_kind),
+                    ChannelSpawnConfig::Copy(handle) => handle.into(),
+                };
+                (name, pair)
             })
             .collect()
     }

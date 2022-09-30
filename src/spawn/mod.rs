@@ -196,11 +196,14 @@ pub trait ManageInterfaces {
     fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface<()>>>;
 }
 
-/// FIXME
+/// Specifier of inbound and outbound channel handles when [spawning workflows](WorkflowBuilder).
+///
+/// Depending on the environment (e.g., workflow code vs host code), channel handles
+/// can be specified in different ways. This trait encapsulates this variability.
 pub trait SpecifyWorkflowChannels {
-    /// FIXME
+    /// Type of an inbound channel handle.
     type Inbound;
-    /// FIXME
+    /// Type of an outbound channel handle.
     type Outbound;
 }
 
@@ -224,7 +227,7 @@ pub trait ManageWorkflows<'a, W: WorkflowFn>: ManageInterfaces + SpecifyWorkflow
         &'a self,
         definition_id: &str,
         args: Vec<u8>,
-        channels: &ChannelsConfig<Self::Inbound, Self::Outbound>,
+        channels: ChannelsConfig<Self::Inbound, Self::Outbound>,
     ) -> Result<Self::Handle, Self::Error>;
 }
 
@@ -274,7 +277,7 @@ where
         &'a self,
         definition_id: &str,
         args: Vec<u8>,
-        channels: &ChannelsConfig<RawReceiver, RawSender>,
+        channels: ChannelsConfig<RawReceiver, RawSender>,
     ) -> Result<Self::Handle, Self::Error> {
         let mut workflow = <Self as ManageWorkflows<'a, ()>>::create_workflow(
             self,
@@ -483,7 +486,8 @@ where
 }
 
 impl<T, C: Encode<T>> SenderConfig<Workflows, T, C> {
-    /// FIXME
+    /// Copies the channel from the provided `sender`. Thus, the created workflow will send
+    /// messages over the same channel as `sender`.
     pub fn copy_from(&self, sender: Sender<T, C>) {
         self.spawner
             .inner
@@ -588,7 +592,7 @@ where
         self.manager.create_workflow(
             &spawner.definition_id,
             spawner.args,
-            &spawner.channels.into_inner(),
+            spawner.channels.into_inner(),
         )
     }
 }
