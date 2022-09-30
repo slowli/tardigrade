@@ -16,7 +16,7 @@ use crate::{
 };
 use tardigrade::{
     interface::{ChannelKind, Interface},
-    spawn::{ChannelSpawnConfig, ChannelsConfig, ManageInterfaces, ManageWorkflows},
+    spawn::{ChannelsConfig, ManageInterfaces, ManageWorkflows, SpecifyWorkflowChannels},
 };
 use tardigrade_shared::abi::TryFromWasm;
 
@@ -60,6 +60,11 @@ impl ManageInterfaces for MockWorkflowManager {
     }
 }
 
+impl SpecifyWorkflowChannels for MockWorkflowManager {
+    type Inbound = ChannelId;
+    type Outbound = ChannelId;
+}
+
 impl ManageWorkflows<'_, ()> for MockWorkflowManager {
     type Handle = WorkflowAndChannelIds;
     type Error = anyhow::Error;
@@ -68,7 +73,7 @@ impl ManageWorkflows<'_, ()> for MockWorkflowManager {
         &self,
         id: &str,
         args: Vec<u8>,
-        channels: &ChannelsConfig,
+        channels: &ChannelsConfig<ChannelId>,
     ) -> Result<Self::Handle, Self::Error> {
         assert_eq!(id, "test:latest");
         assert_eq!(channels.inbound.len(), 1);
@@ -170,7 +175,7 @@ fn configure_handles(
         ChannelKind::Inbound.into_abi_in_wasm(),
         name_ptr,
         name_len,
-        ChannelSpawnConfig::New.into_abi_in_wasm(),
+        0,
     )?;
     let (name_ptr, name_len) = WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"traces")?;
     SpawnFunctions::set_channel_handle(
@@ -179,7 +184,7 @@ fn configure_handles(
         ChannelKind::Outbound.into_abi_in_wasm(),
         name_ptr,
         name_len,
-        ChannelSpawnConfig::New.into_abi_in_wasm(),
+        0,
     )?;
     Ok(())
 }
@@ -264,7 +269,7 @@ fn spawn_child_workflow_errors(
         ChannelKind::Inbound.into_abi_in_wasm(),
         bogus_id_ptr,
         bogus_id_len,
-        ChannelSpawnConfig::New.into_abi_in_wasm(),
+        0,
     )?;
 
     let err = SpawnFunctions::spawn(

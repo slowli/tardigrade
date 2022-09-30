@@ -31,7 +31,7 @@ use crate::{
 };
 use tardigrade::{
     interface::{ChannelKind, Interface},
-    spawn::{ChannelsConfig, ManageInterfaces, ManageWorkflows},
+    spawn::{ChannelsConfig, ManageInterfaces, ManageWorkflows, SpecifyWorkflowChannels},
     workflow::WorkflowFn,
 };
 use tardigrade_shared::{ChannelId, SendError, WorkflowId};
@@ -540,6 +540,11 @@ impl ManageInterfaces for WorkflowManager {
     }
 }
 
+impl SpecifyWorkflowChannels for WorkflowManager {
+    type Inbound = ChannelId;
+    type Outbound = ChannelId;
+}
+
 impl<'a, W: WorkflowFn> ManageWorkflows<'a, W> for WorkflowManager {
     type Handle = WorkflowHandle<'a, W>;
     type Error = anyhow::Error;
@@ -548,7 +553,7 @@ impl<'a, W: WorkflowFn> ManageWorkflows<'a, W> for WorkflowManager {
         &'a self,
         definition_id: &str,
         args: Vec<u8>,
-        channels: &ChannelsConfig,
+        channels: &ChannelsConfig<ChannelId>,
     ) -> Result<Self::Handle, Self::Error> {
         let transaction = Transaction::new(&self.lock(), None, self.shared.clone());
         let services = self.shared.services(&transaction);

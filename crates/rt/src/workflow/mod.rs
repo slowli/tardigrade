@@ -28,7 +28,10 @@ pub(crate) struct ChannelIds {
 }
 
 impl ChannelIds {
-    pub fn new(channels: &ChannelsConfig, mut new_channel: impl FnMut() -> ChannelId) -> Self {
+    pub fn new(
+        channels: &ChannelsConfig<ChannelId>,
+        mut new_channel: impl FnMut() -> ChannelId,
+    ) -> Self {
         Self {
             inbound: Self::map_channels(&channels.inbound, &mut new_channel),
             outbound: Self::map_channels(&channels.outbound, new_channel),
@@ -36,14 +39,14 @@ impl ChannelIds {
     }
 
     fn map_channels(
-        config: &HashMap<String, ChannelSpawnConfig>,
+        config: &HashMap<String, ChannelSpawnConfig<ChannelId>>,
         mut new_channel: impl FnMut() -> ChannelId,
     ) -> HashMap<String, ChannelId> {
         let channel_ids = config.iter().map(|(name, config)| {
             let channel_id = match config {
                 ChannelSpawnConfig::New => new_channel(),
                 ChannelSpawnConfig::Closed => 0,
-                _ => unreachable!(),
+                ChannelSpawnConfig::Copy(id) => *id,
             };
             (name.clone(), channel_id)
         });

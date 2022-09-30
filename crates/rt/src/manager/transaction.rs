@@ -9,12 +9,12 @@ use super::{
 use crate::{
     module::{NoOpWorkflowManager, Services, WorkflowAndChannelIds},
     workflow::{ChannelIds, Workflow},
+    ChannelId, WorkflowId,
 };
 use tardigrade::{
     interface::Interface,
-    spawn::{ChannelsConfig, ManageInterfaces, ManageWorkflows},
+    spawn::{ChannelsConfig, ManageInterfaces, ManageWorkflows, SpecifyWorkflowChannels},
 };
-use tardigrade_shared::{ChannelId, WorkflowId};
 
 #[derive(Debug)]
 pub(super) struct TransactionInner {
@@ -109,6 +109,11 @@ impl ManageInterfaces for Transaction {
     }
 }
 
+impl SpecifyWorkflowChannels for Transaction {
+    type Inbound = ChannelId;
+    type Outbound = ChannelId;
+}
+
 impl ManageWorkflows<'_, ()> for Transaction {
     type Handle = WorkflowAndChannelIds;
     type Error = anyhow::Error;
@@ -117,7 +122,7 @@ impl ManageWorkflows<'_, ()> for Transaction {
         &self,
         id: &str,
         args: Vec<u8>,
-        channels: &ChannelsConfig,
+        channels: &ChannelsConfig<ChannelId>,
     ) -> Result<Self::Handle, Self::Error> {
         let spawner = self
             .shared
@@ -129,6 +134,8 @@ impl ManageWorkflows<'_, ()> for Transaction {
             let mut state = self.inner.lock().unwrap();
             ChannelIds::new(channels, || state.allocate_channel_id())
         };
+        // FIXME: (debug?) check that all channel IDs are valid
+
         let workflow = spawner.spawn(args, &channel_ids, self.services())?;
         let workflow_id = self.inner.lock().unwrap().stash_workflow(
             id.to_owned(),

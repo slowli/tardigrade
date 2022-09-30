@@ -186,6 +186,14 @@ impl ChannelStates {
 }
 
 impl PersistedWorkflowData {
+    fn channels(&self, workflow_id: Option<WorkflowId>) -> &ChannelStates {
+        if let Some(workflow_id) = workflow_id {
+            &self.child_workflows.get(&workflow_id).unwrap().channels
+        } else {
+            &self.channels
+        }
+    }
+
     fn channels_mut(&mut self, workflow_id: Option<WorkflowId>) -> &mut ChannelStates {
         if let Some(workflow_id) = workflow_id {
             &mut self.child_workflows.get_mut(&workflow_id).unwrap().channels
@@ -324,6 +332,15 @@ impl PersistedWorkflowData {
             .values_mut()
             .flat_map(|workflow| workflow.channels.inbound.values_mut());
         self.channels.inbound.values_mut().chain(workflow_channels)
+    }
+
+    pub(super) fn outbound_channel(
+        &self,
+        channel_ref: &ChannelRef,
+    ) -> Option<&OutboundChannelState> {
+        self.channels(channel_ref.workflow_id)
+            .outbound
+            .get(&channel_ref.name)
     }
 
     pub(super) fn outbound_channel_mut(

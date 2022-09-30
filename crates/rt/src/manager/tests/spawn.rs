@@ -5,7 +5,6 @@ use wasmtime::ExternRef;
 use super::*;
 use crate::receipt::{ResourceEventKind, ResourceId};
 use crate::{data::SpawnFunctions, receipt::ResourceEvent};
-use tardigrade::spawn::ChannelSpawnConfig;
 use tardigrade_shared::{abi::TryFromWasm, interface::ChannelKind};
 
 const CHILD_ID: WorkflowId = 1;
@@ -24,7 +23,7 @@ fn configure_handle(
         channel_kind.into_abi_in_wasm(),
         name_ptr,
         name_len,
-        ChannelSpawnConfig::New.into_abi_in_wasm(),
+        0,
     )
 }
 
@@ -276,3 +275,5 @@ fn child_workflow_completion() {
 fn child_workflow_channel_closure() {
     test_child_workflow_channel_management(false);
 }
+
+// FIXME: test copying outbound channel (open, closed)
