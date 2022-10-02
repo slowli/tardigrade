@@ -276,4 +276,128 @@ fn child_workflow_channel_closure() {
     test_child_workflow_channel_management(false);
 }
 
-// FIXME: test copying outbound channel (open, closed)
+fn spawn_child_with_copied_outbound_channel(
+    mut ctx: StoreContextMut<'_, WorkflowData>,
+) -> Result<Poll<()>, Trap> {
+    let (id_ptr, id_len) = WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"test:latest")?;
+    let (args_ptr, args_len) =
+        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"child_input")?;
+
+    let handles = SpawnFunctions::create_channel_handles();
+    configure_handles(ctx.as_context_mut(), handles.clone())?;
+    let events = Some(WorkflowData::outbound_channel_ref(None, "events"));
+    let (name_ptr, name_len) = WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"events")?;
+    SpawnFunctions::copy_sender_handle(
+        ctx.as_context_mut(),
+        handles.clone(),
+        name_ptr,
+        name_len,
+        events,
+    )?;
+
+    let workflow = SpawnFunctions::spawn(
+        ctx.as_context_mut(),
+        id_ptr,
+        id_len,
+        args_ptr,
+        args_len,
+        handles,
+        ERROR_PTR,
+    )?;
+    assert!(workflow.is_some());
+
+    // Block on child completion.
+    SpawnFunctions::poll_workflow_completion(ctx.as_context_mut(), workflow, POLL_CX)?;
+    Ok(Poll::Pending)
+}
+
+#[test]
+fn spawning_child_with_copied_outbound_channel() {
+    let write_event_and_complete_child: MockPollFn = |mut ctx| {
+        let events = Some(WorkflowData::outbound_channel_ref(None, "events"));
+        let (message_ptr, message_len) =
+            WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"child_event")?;
+        WorkflowFunctions::start_send(ctx.as_context_mut(), events, message_ptr, message_len)?;
+        Ok(Poll::Ready(()))
+    };
+
+    let poll_fns = Answers::from_values([
+        spawn_child_with_copied_outbound_channel,
+        write_event_and_complete_child,
+    ]);
+    let _guard = ExportsMock::prepare(poll_fns);
+    let mut manager = create_test_manager();
+    let workflow = create_test_workflow(&manager);
+    let workflow_id = workflow.id();
+    let events_id = workflow.ids().channel_ids.outbound["events"];
+    manager.tick_workflow(workflow_id).unwrap();
+
+    let state = manager.lock();
+    assert_eq!(
+        state.channels[&events_id].sender_workflow_ids,
+        HashSet::from_iter([workflow_id, CHILD_ID])
+    );
+    let child = &state.workflows[&CHILD_ID].workflow;
+    let child_events_id = child.outbound_channels().find_map(|(_, name, state)| {
+        if name == "events" {
+            Some(state.id())
+        } else {
+            None
+        }
+    });
+    assert_eq!(child_events_id, Some(events_id));
+    drop(state);
+
+    manager.tick_workflow(CHILD_ID).unwrap();
+    let state = manager.lock();
+    let channel_state = &state.channels[&events_id];
+    assert_eq!(
+        channel_state.sender_workflow_ids,
+        HashSet::from_iter([workflow_id])
+    );
+    assert_eq!(channel_state.messages.len(), 1);
+    assert_eq!(channel_state.messages[0].as_ref(), b"child_event");
+}
+
+fn test_child_with_copied_closed_outbound_channel(close_before_spawn: bool) {
+    let test_writing_event_in_child: MockPollFn = |mut ctx| {
+        let events = Some(WorkflowData::outbound_channel_ref(None, "events"));
+        let (message_ptr, message_len) =
+            WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"child_event")?;
+        let send_result =
+            WorkflowFunctions::start_send(ctx.as_context_mut(), events, message_ptr, message_len)?;
+        assert_eq!(send_result, 2); // Err(SendError::Closed)
+
+        Ok(Poll::Pending)
+    };
+
+    let poll_fns = Answers::from_values([
+        spawn_child_with_copied_outbound_channel,
+        test_writing_event_in_child,
+    ]);
+    let _guard = ExportsMock::prepare(poll_fns);
+    let mut manager = create_test_manager();
+    let workflow = create_test_workflow(&manager);
+    let workflow_id = workflow.id();
+    let events_id = workflow.ids().channel_ids.outbound["events"];
+
+    if close_before_spawn {
+        manager.close_host_receiver(events_id);
+    }
+    manager.tick_workflow(workflow_id).unwrap();
+    if !close_before_spawn {
+        manager.close_host_receiver(events_id);
+    }
+
+    manager.tick_workflow(CHILD_ID).unwrap();
+}
+
+#[test]
+fn spawning_child_with_copied_closed_outbound_channel() {
+    test_child_with_copied_closed_outbound_channel(true);
+}
+
+#[test]
+fn spawning_child_with_copied_then_closed_outbound_channel() {
+    test_child_with_copied_closed_outbound_channel(false);
+}

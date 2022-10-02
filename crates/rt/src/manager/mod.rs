@@ -553,7 +553,7 @@ impl<'a, W: WorkflowFn> ManageWorkflows<'a, W> for WorkflowManager {
         &'a self,
         definition_id: &str,
         args: Vec<u8>,
-        channels: &ChannelsConfig<ChannelId>,
+        channels: ChannelsConfig<ChannelId>,
     ) -> Result<Self::Handle, Self::Error> {
         let transaction = Transaction::new(&self.lock(), None, self.shared.clone());
         let services = self.shared.services(&transaction);

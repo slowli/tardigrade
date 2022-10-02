@@ -56,7 +56,7 @@ impl ManageWorkflows<'_, ()> for NoOpWorkflowManager {
         &self,
         _definition_id: &str,
         _args: Vec<u8>,
-        _channels: &ChannelsConfig<ChannelId>,
+        _channels: ChannelsConfig<ChannelId>,
     ) -> Result<Self::Handle, Self::Error> {
         unreachable!("No definitions, thus `create_workflow` should never be called")
     }

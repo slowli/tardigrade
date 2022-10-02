@@ -257,6 +257,8 @@ impl PersistedWorkflows {
                     .or_insert_with(|| ChannelState::new(Some(child_id), executed_workflow_id));
                 if channel_state.is_closed {
                     child_workflow.workflow.close_outbound_channel(None, name);
+                } else {
+                    channel_state.sender_workflow_ids.insert(child_id);
                 }
             }
 

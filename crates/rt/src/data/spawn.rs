@@ -163,7 +163,7 @@ impl WorkflowData<'_> {
         &mut self,
         definition_id: &str,
         args: Vec<u8>,
-        channels: &ChannelsConfig<ChannelId>,
+        channels: ChannelsConfig<ChannelId>,
     ) -> Result<WorkflowId, SpawnError> {
         let result = self
             .services
@@ -325,7 +325,7 @@ impl SpawnFunctions {
         let mut workflow_id = None;
         let result = ctx
             .data_mut()
-            .spawn_workflow(&id, args, &handles)
+            .spawn_workflow(&id, args, handles.clone())
             .map(|id| {
                 workflow_id = Some(id);
             });

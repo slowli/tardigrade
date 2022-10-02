@@ -73,7 +73,7 @@ impl ManageWorkflows<'_, ()> for MockWorkflowManager {
         &self,
         id: &str,
         args: Vec<u8>,
-        channels: &ChannelsConfig<ChannelId>,
+        channels: ChannelsConfig<ChannelId>,
     ) -> Result<Self::Handle, Self::Error> {
         assert_eq!(id, "test:latest");
         assert_eq!(channels.inbound.len(), 1);

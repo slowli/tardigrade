@@ -122,7 +122,7 @@ impl ManageWorkflows<'_, ()> for Transaction {
         &self,
         id: &str,
         args: Vec<u8>,
-        channels: &ChannelsConfig<ChannelId>,
+        channels: ChannelsConfig<ChannelId>,
     ) -> Result<Self::Handle, Self::Error> {
         let spawner = self
             .shared
