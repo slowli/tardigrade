@@ -306,7 +306,16 @@ fn spawn_child_with_copied_outbound_channel(
     )?;
     assert!(workflow.is_some());
 
-    // Block on child completion.
+    let child_events = WorkflowFunctions::get_receiver(
+        ctx.as_context_mut(),
+        workflow.clone(),
+        name_ptr,
+        name_len,
+        ERROR_PTR,
+    )?;
+    assert!(child_events.is_none()); // The handle to child events is not captured
+
+    // Block on child completion
     SpawnFunctions::poll_workflow_completion(ctx.as_context_mut(), workflow, POLL_CX)?;
     Ok(Poll::Pending)
 }
@@ -355,6 +364,7 @@ fn spawning_child_with_copied_outbound_channel() {
         channel_state.sender_workflow_ids,
         HashSet::from_iter([workflow_id])
     );
+    assert_eq!(channel_state.receiver_workflow_id, None);
     assert_eq!(channel_state.messages.len(), 1);
     assert_eq!(channel_state.messages[0].as_ref(), b"child_event");
 }

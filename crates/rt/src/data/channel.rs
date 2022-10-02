@@ -24,6 +24,10 @@ use crate::{
 use tardigrade::interface::{AccessErrorKind, ChannelKind};
 use tardigrade_shared::{abi::IntoWasm, PollMessage, SendError};
 
+/// Errors for channels that cannot be acquired by the workflow.
+#[derive(Debug)]
+struct AlreadyAcquired;
+
 /// Errors that can occur when consuming messages in a workflow.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -85,9 +89,9 @@ impl InboundChannelState {
         !self.is_closed && !self.wakes_on_next_element.is_empty()
     }
 
-    fn acquire(&mut self) -> Result<(), AccessErrorKind> {
+    fn acquire(&mut self) -> Result<(), AlreadyAcquired> {
         if mem::replace(&mut self.is_acquired, true) {
-            Err(AccessErrorKind::AlreadyAcquired)
+            Err(AlreadyAcquired)
         } else {
             Ok(())
         }
@@ -141,9 +145,9 @@ impl OutboundChannelState {
         !self.is_closed && self.capacity.map_or(true, |cap| self.messages.len() < cap)
     }
 
-    fn acquire(&mut self) -> Result<(), AccessErrorKind> {
+    fn acquire(&mut self) -> Result<(), AlreadyAcquired> {
         if mem::replace(&mut self.is_acquired, true) {
-            Err(AccessErrorKind::AlreadyAcquired)
+            Err(AlreadyAcquired)
         } else {
             Ok(())
         }
@@ -595,13 +599,14 @@ impl WorkflowFunctions {
             .inbound
             .get_mut(&channel_name)
             .ok_or(AccessErrorKind::Unknown)
-            .and_then(InboundChannelState::acquire);
+            .map(|state| state.acquire().ok());
         let result = crate::log_result!(result, "Acquired inbound channel `{}`", channel_name);
 
-        let channel_ref = result
-            .as_ref()
-            .ok()
-            .map(|()| HostResource::inbound_channel(workflow_id, channel_name).into_ref());
+        let mut channel_ref = None;
+        let result = result.map(|acquire_result| {
+            channel_ref = acquire_result
+                .map(|()| HostResource::inbound_channel(workflow_id, channel_name).into_ref());
+        });
         Self::write_access_result(&mut ctx, result, error_ptr)?;
         Ok(channel_ref)
     }
@@ -661,13 +666,14 @@ impl WorkflowFunctions {
             .outbound
             .get_mut(&channel_name)
             .ok_or(AccessErrorKind::Unknown)
-            .and_then(OutboundChannelState::acquire);
+            .map(|state| state.acquire().ok());
         let result = crate::log_result!(result, "Acquired outbound channel `{}`", channel_name);
 
-        let channel_ref = result
-            .as_ref()
-            .ok()
-            .map(|()| HostResource::outbound_channel(workflow_id, channel_name).into_ref());
+        let mut channel_ref = None;
+        let result = result.map(|acquire_result| {
+            channel_ref = acquire_result
+                .map(|()| HostResource::outbound_channel(workflow_id, channel_name).into_ref());
+        });
         Self::write_access_result(&mut ctx, result, error_ptr)?;
         Ok(channel_ref)
     }

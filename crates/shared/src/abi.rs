@@ -242,7 +242,6 @@ impl IntoWasm for Result<(), AccessErrorKind> {
         Ok(match self {
             Ok(()) => 0,
             Err(AccessErrorKind::Unknown) => -1,
-            Err(AccessErrorKind::AlreadyAcquired) => -2,
             Err(AccessErrorKind::Custom(err)) => {
                 let message = err.to_string();
                 let (ptr, len) = alloc.copy_to_wasm(message.as_bytes())?;
@@ -256,7 +255,6 @@ impl IntoWasm for Result<(), AccessErrorKind> {
         Err(match abi {
             0 => return Ok(()),
             -1 => AccessErrorKind::Unknown,
-            -2 => AccessErrorKind::AlreadyAcquired,
             _ => {
                 let ptr = (abi >> 32) as *mut u8;
                 let len = (abi & 0xffff_ffff) as usize;

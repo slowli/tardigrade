@@ -53,6 +53,21 @@ impl ChildWorkflowState {
         }
     }
 
+    fn acquire_non_captured_channels(&mut self, channels: &ChannelsConfig<ChannelId>) {
+        for (name, config) in &channels.inbound {
+            if matches!(config, ChannelSpawnConfig::Copy(_)) {
+                let state = self.channels.outbound.get_mut(name).unwrap();
+                state.is_acquired = true;
+            }
+        }
+        for (name, config) in &channels.outbound {
+            if matches!(config, ChannelSpawnConfig::Copy(_)) {
+                let state = self.channels.inbound.get_mut(name).unwrap();
+                state.is_acquired = true;
+            }
+        }
+    }
+
     /// Returns the current poll state of this workflow.
     pub fn result(&self) -> Poll<Result<(), &JoinError>> {
         match &self.completion_result {
@@ -163,17 +178,20 @@ impl WorkflowData<'_> {
         &mut self,
         definition_id: &str,
         args: Vec<u8>,
-        channels: ChannelsConfig<ChannelId>,
+        channels: &ChannelsConfig<ChannelId>,
     ) -> Result<WorkflowId, SpawnError> {
         let result = self
             .services
             .workflows
-            .create_workflow(definition_id, args, channels);
+            .create_workflow(definition_id, args, channels.clone());
         let result = result.map(|mut ids| {
             mem::swap(&mut ids.channel_ids.inbound, &mut ids.channel_ids.outbound);
+            let mut child_state = ChildWorkflowState::new(&ids.channel_ids);
+            child_state.acquire_non_captured_channels(channels);
+
             self.persisted
                 .child_workflows
-                .insert(ids.workflow_id, ChildWorkflowState::new(&ids.channel_ids));
+                .insert(ids.workflow_id, child_state);
             self.current_execution().push_resource_event(
                 ResourceId::Workflow(ids.workflow_id),
                 ResourceEventKind::Created,
@@ -325,7 +343,7 @@ impl SpawnFunctions {
         let mut workflow_id = None;
         let result = ctx
             .data_mut()
-            .spawn_workflow(&id, args, handles.clone())
+            .spawn_workflow(&id, args, &handles)
             .map(|id| {
                 workflow_id = Some(id);
             });

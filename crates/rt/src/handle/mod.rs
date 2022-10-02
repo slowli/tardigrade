@@ -27,6 +27,8 @@ use tardigrade::{
 };
 use tardigrade_shared::SendError;
 
+// FIXME: Handle cases when channel is not available to host
+
 /// Handle to a workflow in a [`WorkflowManager`].
 ///
 /// This type is used as a type param for the [`TakeHandle`] trait. The returned handles

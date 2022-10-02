@@ -47,8 +47,6 @@ impl TryFromWasm for ChannelKind {
 pub enum AccessErrorKind {
     /// Channel was not registered in the workflow interface.
     Unknown,
-    /// Channel was already acquired by the workflow.
-    AlreadyAcquired,
     /// Custom error.
     Custom(Box<dyn error::Error + Send + Sync>),
 }
@@ -57,7 +55,6 @@ impl fmt::Display for AccessErrorKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unknown => formatter.write_str("not registered in the workflow interface"),
-            Self::AlreadyAcquired => formatter.write_str("already acquired"),
             Self::Custom(err) => fmt::Display::fmt(err, formatter),
         }
     }
