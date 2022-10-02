@@ -51,6 +51,7 @@ impl ChannelState {
 
     pub(super) fn info(&self) -> ChannelInfo {
         ChannelInfo {
+            receiver_workflow_id: self.receiver_workflow_id,
             is_closed: self.is_closed,
             message_count: self.messages.len(),
             next_message_idx: self.next_message_idx,

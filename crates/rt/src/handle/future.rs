@@ -387,7 +387,11 @@ impl<T, C: Decode<T>> super::MessageReceiver<'_, T, C> {
     /// Registers this receiver in `env`, allowing to later asynchronously receive messages.
     pub fn into_async(self, env: &mut AsyncEnv) -> MessageReceiver<T, C> {
         let (sx, rx) = mpsc::unbounded();
-        env.outbound_channels.insert(self.channel_id, sx);
+        if self.can_receive_messages {
+            env.outbound_channels.insert(self.channel_id, sx);
+            // If the channel cannot receive messages, `sx` is immediately dropped,
+            // thus, we don't improperly remove messages from the channel.
+        }
         MessageReceiver {
             raw_receiver: rx,
             codec: self.codec,

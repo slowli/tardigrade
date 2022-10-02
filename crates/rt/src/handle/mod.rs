@@ -27,8 +27,6 @@ use tardigrade::{
 };
 use tardigrade_shared::SendError;
 
-// FIXME: Handle cases when channel is not available to host
-
 /// Handle to a workflow in a [`WorkflowManager`].
 ///
 /// This type is used as a type param for the [`TakeHandle`] trait. The returned handles
@@ -207,6 +205,7 @@ where
 pub struct MessageReceiver<'a, T, C> {
     manager: &'a WorkflowManager,
     channel_id: ChannelId,
+    can_receive_messages: bool,
     codec: C,
     _item: PhantomData<fn() -> T>,
 }
@@ -223,24 +222,34 @@ impl<T, C: Decode<T>> MessageReceiver<'_, T, C> {
         self.manager.channel_info(self.channel_id).unwrap()
     }
 
-    /// Takes messages from the channel and progresses the flow marking the channel as flushed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if workflow execution traps.
-    pub fn take_messages(&mut self) -> TakenMessages<'_, T, C> {
+    /// Checks whether this receiver can be used to receive messages from the channel.
+    /// This is possible if the channel receiver is not held by a workflow.
+    pub fn can_receive_messages(&self) -> bool {
+        self.can_receive_messages
+    }
+
+    /// Takes messages from the channel, or `None` if messages are not received by host
+    /// (i.e., [`Self::can_receive_messages()`] returns `false`).
+    pub fn take_messages(&mut self) -> Option<TakenMessages<'_, T, C>> {
+        if !self.can_receive_messages {
+            return None;
+        }
+
         let (start_idx, raw_messages) = self.manager.take_outbound_messages(self.channel_id);
-        TakenMessages {
+        Some(TakenMessages {
             start_idx,
             raw_messages,
             codec: &mut self.codec,
             _item: PhantomData,
-        }
+        })
     }
 
-    /// Closes this channel from the host side.
+    /// Closes this channel from the host side. If [`Self::can_receive_messages()`] returns `false`,
+    /// this is a no-op.
     pub fn close(self) {
-        self.manager.close_host_receiver(self.channel_id);
+        if self.can_receive_messages {
+            self.manager.close_host_receiver(self.channel_id);
+        }
     }
 }
 
@@ -281,9 +290,11 @@ where
 
     fn take_handle(env: &mut WorkflowHandle<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
         if let Some(channel_id) = env.ids.channel_ids.outbound.get(id).copied() {
+            let channel_info = env.manager.channel_info(channel_id).unwrap();
             Ok(MessageReceiver {
                 manager: env.manager,
                 channel_id,
+                can_receive_messages: channel_info.receiver_workflow_id().is_none(),
                 codec: C::default(),
                 _item: PhantomData,
             })
@@ -304,6 +315,11 @@ impl<'a, C> TracerHandle<'a, C>
 where
     C: Decode<FutureUpdate>,
 {
+    /// Returns current information about the underlying channel.
+    pub fn channel_info(&self) -> ChannelInfo {
+        self.receiver.channel_info()
+    }
+
     /// Returns a reference to the traced futures.
     pub fn futures(&self) -> &TracedFutures {
         &self.futures
@@ -326,12 +342,13 @@ where
     /// Returns an error if an [`ExecutionError`] occurs when flushing tracing messages, or
     /// if decoding messages fails.
     pub fn take_traces(&mut self) -> anyhow::Result<()> {
-        let messages = self.receiver.take_messages();
-        let updates = messages.decode().context("cannot decode `FutureUpdate`")?;
-        for update in updates {
-            self.futures
-                .update(update)
-                .context("incorrect `FutureUpdate` (was the tracing state persisted?)")?;
+        if let Some(messages) = self.receiver.take_messages() {
+            let updates = messages.decode().context("cannot decode `FutureUpdate`")?;
+            for update in updates {
+                self.futures
+                    .update(update)
+                    .context("incorrect `FutureUpdate` (was the tracing state persisted?)")?;
+            }
         }
         Ok(())
     }

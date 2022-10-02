@@ -147,6 +147,25 @@ fn spawning_child_workflow() {
             result: Poll::Ready(Some(5)),
         }]
     );
+
+    // Check channel handles for child workflow
+    let mut handle = manager.workflow(child_id).unwrap().handle();
+    let mut child_orders = handle.remove(InboundChannel("orders")).unwrap();
+    let child_orders_id = child_orders.channel_id();
+    child_orders.send(b"test".to_vec()).unwrap();
+    child_orders.close(); // no-op: a channel sender is not owned by the host
+
+    let mut child_events = handle.remove(OutboundChannel("events")).unwrap();
+    let child_events_id = child_events.channel_id();
+    assert!(!child_events.can_receive_messages());
+    assert!(child_events.take_messages().is_none());
+    child_events.close(); // no-op: the channel receiver is not owned by the host
+
+    {
+        let state = manager.lock();
+        assert!(!state.channels[&child_orders_id].is_closed);
+        assert!(!state.channels[&child_events_id].is_closed);
+    }
 }
 
 fn spawn_and_poll_child(mut ctx: StoreContextMut<WorkflowData>) -> Result<Poll<()>, Trap> {

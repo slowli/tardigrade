@@ -3,7 +3,7 @@
 //! See `WorkflowManager` docs for an overview and examples of usage.
 
 #![allow(clippy::missing_panics_doc)] // lots of `unwrap()`s on mutex locks
-// TODO: log major events
+                                      // TODO: log major events
 
 use chrono::{DateTime, Utc};
 
@@ -40,6 +40,7 @@ use tardigrade_shared::{ChannelId, SendError, WorkflowId};
 /// Information about a channel managed by a [`WorkflowManager`].
 #[derive(Debug)]
 pub struct ChannelInfo {
+    receiver_workflow_id: Option<WorkflowId>,
     is_closed: bool,
     message_count: usize,
     next_message_idx: usize,
@@ -59,6 +60,12 @@ impl ChannelInfo {
     /// Returns the number of messages consumed by the channel receiver.
     pub fn flushed_messages(&self) -> usize {
         self.next_message_idx - self.message_count
+    }
+
+    /// Returns the ID of a workflow that holds the receiver end of this channel, or `None`
+    /// if it is held by the host.
+    pub fn receiver_workflow_id(&self) -> Option<WorkflowId> {
+        self.receiver_workflow_id
     }
 }
 
