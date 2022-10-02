@@ -379,12 +379,10 @@ impl WorkflowManager {
                 // The message was not consumed. We still persist the workflow in order to
                 // consume wakers (otherwise, we would loop indefinitely), and place the message
                 // back to the channel.
-                crate::warn!(
+                warn!(
                     "Message {:?} over channel {} was not consumed by workflow with ID {}; \
                      placing the message back",
-                    message,
-                    channel_id,
-                    workflow_id
+                    message, channel_id, workflow_id
                 );
 
                 is_consumed = false;

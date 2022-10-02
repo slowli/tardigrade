@@ -151,7 +151,7 @@ impl PersistedWorkflowData {
         let wakers_by_timer = self.timers.set_current_time(time);
         for (id, wakers) in wakers_by_timer {
             let cause = WakeUpCause::Timer { id };
-            crate::trace!("Scheduled wakers {:?} with cause {:?}", wakers, cause);
+            trace!("Scheduled wakers {:?} with cause {:?}", wakers, cause);
             self.waker_queue.push(Wakers::new(wakers, cause));
         }
     }
@@ -207,7 +207,7 @@ impl WorkflowFunctions {
     ) -> TimerId {
         let definition = WorkflowData::timer_definition(timestamp_millis);
         let timer_id = ctx.data_mut().create_timer(definition);
-        crate::trace!(
+        trace!(
             "Created timer {} with definition {:?}",
             timer_id,
             definition
@@ -220,7 +220,7 @@ impl WorkflowFunctions {
         timer_id: TimerId,
     ) -> Result<(), Trap> {
         let result = ctx.data_mut().drop_timer(timer_id);
-        crate::log_result!(result, "Dropped timer {}", timer_id)
+        log_result!(result, "Dropped timer {}", timer_id)
     }
 
     pub fn poll_timer(
@@ -230,7 +230,7 @@ impl WorkflowFunctions {
     ) -> Result<i64, Trap> {
         let mut poll_cx = WasmContext::new(poll_cx);
         let poll_result = ctx.data_mut().poll_timer(timer_id, &mut poll_cx);
-        let poll_result = crate::log_result!(
+        let poll_result = log_result!(
             poll_result,
             "Polled timer {} with context {:?}",
             timer_id,

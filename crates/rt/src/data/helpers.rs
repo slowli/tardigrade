@@ -294,10 +294,9 @@ impl CurrentExecution {
     }
 
     pub fn set_panic(&mut self, panic_info: PanicInfo) {
-        crate::warn!(
+        warn!(
             "Execution {:?} led to a panic: {:?}",
-            self.function,
-            panic_info
+            self.function, panic_info
         );
         self.panic_info = Some(panic_info);
     }
@@ -313,7 +312,7 @@ impl CurrentExecution {
     pub fn commit(self, state: &mut WorkflowData) -> Vec<Event> {
         use self::ResourceEventKind::{Created, Dropped};
 
-        crate::trace!("Committing {:?} onto {:?}", self, state);
+        trace!("Committing {:?} onto {:?}", self, state);
 
         let cause = if let ExecutedFunction::Waker { wake_up_cause, .. } = self.function {
             // Copy the cause; we're not really interested in
@@ -345,14 +344,14 @@ impl CurrentExecution {
         for task_id in self.tasks_to_be_awoken {
             state.task_queue.insert_task(task_id, &cause);
         }
-        crate::trace!("Committed CurrentTask onto {:?}", state);
+        trace!("Committed CurrentTask onto {:?}", state);
         self.events
     }
 
     pub fn revert(self, state: &mut WorkflowData) -> (Vec<Event>, Option<PanicInfo>) {
         use self::ResourceEventKind::Created;
 
-        crate::trace!("Reverting {:?} from {:?}", self, state);
+        trace!("Reverting {:?} from {:?}", self, state);
         for event in Self::resource_events(&self.events) {
             match (event.kind, event.resource_id) {
                 (Created, ResourceId::Task(task_id)) => {
@@ -382,7 +381,7 @@ impl CurrentExecution {
             }
         }
 
-        crate::trace!("Reverted CurrentTask from {:?}", state);
+        trace!("Reverted CurrentTask from {:?}", state);
         (self.events, self.panic_info)
     }
 }
@@ -394,7 +393,7 @@ impl WorkflowData<'_> {
             execution.new_wakers.insert(waker);
         }
 
-        crate::trace!("Placing waker {} in {:?}", waker, placement);
+        trace!("Placing waker {} in {:?}", waker, placement);
         let persisted = &mut self.persisted;
         match placement {
             WakerPlacement::InboundChannel(channel_ref) => {
@@ -460,7 +459,7 @@ impl PersistedWorkflowData {
         if wakers.is_empty() {
             return; // no need to schedule anything
         }
-        crate::trace!("Scheduled wakers {:?} with cause {:?}", wakers, cause);
+        trace!("Scheduled wakers {:?} with cause {:?}", wakers, cause);
         self.waker_queue.push(Wakers::new(wakers, cause));
     }
 }

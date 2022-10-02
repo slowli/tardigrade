@@ -9,8 +9,6 @@ use crate::data::WorkflowData;
 use tardigrade_shared::abi::AllocateBytes;
 
 #[cfg(feature = "log")]
-#[macro_export]
-#[doc(hidden)] // not public
 macro_rules! trace {
     ($($arg:tt)*) => {
         log::trace!(target: "tardigrade_rt", $($arg)*);
@@ -18,8 +16,6 @@ macro_rules! trace {
 }
 
 #[cfg(not(feature = "log"))]
-#[macro_export]
-#[doc(hidden)]
 macro_rules! trace {
     ($($arg:tt)*) => {{
         let _ = format_args!($($arg)*);
@@ -27,8 +23,6 @@ macro_rules! trace {
 }
 
 #[cfg(feature = "log")]
-#[macro_export]
-#[doc(hidden)] // not public
 macro_rules! warn {
     ($($arg:tt)*) => {
         log::warn!(target: "tardigrade_rt", $($arg)*);
@@ -36,8 +30,6 @@ macro_rules! warn {
 }
 
 #[cfg(not(feature = "log"))]
-#[macro_export]
-#[doc(hidden)]
 macro_rules! warn {
     ($($arg:tt)*) => {{
         let _ = format_args!($($arg)*);
@@ -45,8 +37,6 @@ macro_rules! warn {
 }
 
 #[cfg(feature = "log")]
-#[macro_export]
-#[doc(hidden)] // not public
 macro_rules! log_result {
     ($result:ident, $($arg:tt)*) => {{
         match &$result {
@@ -62,8 +52,6 @@ macro_rules! log_result {
 }
 
 #[cfg(not(feature = "log"))]
-#[macro_export]
-#[doc(hidden)]
 macro_rules! log_result {
     ($result:tt, $($arg:tt)*) => {
         ($result, format_args!($($arg)*)).0

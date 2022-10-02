@@ -600,7 +600,7 @@ impl WorkflowFunctions {
             .get_mut(&channel_name)
             .ok_or(AccessErrorKind::Unknown)
             .map(|state| state.acquire().ok());
-        let result = crate::log_result!(result, "Acquired inbound channel `{}`", channel_name);
+        let result = log_result!(result, "Acquired inbound channel `{}`", channel_name);
 
         let mut channel_ref = None;
         let result = result.map(|acquire_result| {
@@ -638,7 +638,7 @@ impl WorkflowFunctions {
         let poll_result = ctx
             .data_mut()
             .poll_inbound_channel(channel_ref, &mut poll_cx);
-        crate::trace!(
+        trace!(
             "Polled inbound channel {:?} with context {:?}: {:?}",
             channel_ref,
             poll_cx,
@@ -667,7 +667,7 @@ impl WorkflowFunctions {
             .get_mut(&channel_name)
             .ok_or(AccessErrorKind::Unknown)
             .map(|state| state.acquire().ok());
-        let result = crate::log_result!(result, "Acquired outbound channel `{}`", channel_name);
+        let result = log_result!(result, "Acquired outbound channel `{}`", channel_name);
 
         let mut channel_ref = None;
         let result = result.map(|acquire_result| {
@@ -689,7 +689,7 @@ impl WorkflowFunctions {
         let poll_result = ctx
             .data_mut()
             .poll_outbound_channel(channel_ref, false, &mut cx);
-        crate::trace!(
+        trace!(
             "Polled outbound channel {:?} for readiness: {:?}",
             channel_ref,
             poll_result
@@ -711,7 +711,7 @@ impl WorkflowFunctions {
 
         let message_len = message.len();
         let result = ctx.data_mut().push_outbound_message(channel_ref, message);
-        crate::trace!(
+        trace!(
             "Sent message ({} bytes) over outbound channel {:?}: {:?}",
             message_len,
             channel_ref,
@@ -731,7 +731,7 @@ impl WorkflowFunctions {
         let poll_result = ctx
             .data_mut()
             .poll_outbound_channel(channel_ref, true, &mut poll_cx);
-        crate::trace!(
+        trace!(
             "Polled outbound channel {:?} for flush: {:?}",
             channel_ref,
             poll_result

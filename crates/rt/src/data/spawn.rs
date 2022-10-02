@@ -198,7 +198,7 @@ impl WorkflowData<'_> {
             );
             ids.workflow_id
         });
-        crate::log_result!(result, "Spawned workflow using `{}`", definition_id)
+        log_result!(result, "Spawned workflow using `{}`", definition_id)
             .map_err(|err| SpawnError::new(err.to_string()))
     }
 
@@ -361,7 +361,7 @@ impl SpawnFunctions {
         let poll_result = ctx
             .data_mut()
             .poll_workflow_completion(workflow_id, &mut poll_cx);
-        crate::trace!(
+        trace!(
             "Polled completion for workflow {} with context {:?}: {:?}",
             workflow_id,
             poll_cx,

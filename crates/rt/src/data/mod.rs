@@ -143,7 +143,7 @@ impl WorkflowFunctions {
         dropped: Option<ExternRef>,
     ) -> Result<(), Trap> {
         let dropped = HostResource::from_ref(dropped.as_ref())?;
-        crate::trace!("{:?} dropped by workflow code", dropped);
+        trace!("{:?} dropped by workflow code", dropped);
 
         let wakers = match dropped {
             HostResource::InboundChannel(channel_ref) => {
@@ -163,7 +163,7 @@ impl WorkflowFunctions {
         let exports = ctx.data().exports();
         for waker in wakers {
             let result = exports.drop_waker(ctx.as_context_mut(), waker);
-            let result = crate::log_result!(
+            let result = log_result!(
                 result,
                 "Dropped waker {} for {:?} dropped by the workflow",
                 waker,

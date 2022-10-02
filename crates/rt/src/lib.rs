@@ -131,13 +131,14 @@
 #![warn(clippy::all, clippy::pedantic)]
 #![allow(clippy::must_use_candidate, clippy::module_name_repetitions)]
 
+#[macro_use]
+mod utils;
 mod data;
 pub mod handle;
 pub mod manager;
 mod module;
 pub mod receipt;
 pub mod test;
-mod utils;
 mod workflow;
 
 pub use crate::{

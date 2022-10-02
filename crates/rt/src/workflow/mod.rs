@@ -164,7 +164,7 @@ impl<'a> Workflow<'a> {
                 waker_id,
                 wake_up_cause,
             } => {
-                crate::trace!(
+                trace!(
                     "Waking up waker {} with cause {:?}",
                     waker_id,
                     wake_up_cause
@@ -234,7 +234,7 @@ impl<'a> Workflow<'a> {
         wake_up_cause: WakeUpCause,
         receipt: &mut Receipt,
     ) -> Result<(), ExtendedTrap> {
-        crate::trace!("Polling task {} because of {:?}", task_id, wake_up_cause);
+        trace!("Polling task {} because of {:?}", task_id, wake_up_cause);
 
         let function = ExecutedFunction::Task {
             task_id,
@@ -242,7 +242,7 @@ impl<'a> Workflow<'a> {
             poll_result: Poll::Pending,
         };
         let poll_result = self.execute(function, None, receipt);
-        crate::log_result!(poll_result, "Finished polling task {}", task_id)
+        log_result!(poll_result, "Finished polling task {}", task_id)
     }
 
     fn wake_tasks(&mut self, receipt: &mut Receipt) -> Result<(), ExtendedTrap> {
@@ -290,7 +290,7 @@ impl<'a> Workflow<'a> {
             .store
             .data_mut()
             .push_inbound_message(workflow_id, channel_name, message);
-        crate::log_result!(
+        log_result!(
             result,
             "Consumed message ({} bytes) for channel `{}`",
             message_len,

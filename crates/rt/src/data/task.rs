@@ -119,7 +119,7 @@ impl PersistedWorkflowData {
             // Task is already completed.
             return;
         }
-        let result = crate::log_result!(result, "Completed task {}", task_id);
+        let result = log_result!(result, "Completed task {}", task_id);
         task_state.completion_result = Poll::Ready(result);
         let wakers = mem::take(&mut task_state.wakes_on_completion);
         self.schedule_wakers(wakers, WakeUpCause::CompletedTask(task_id));
@@ -251,7 +251,7 @@ impl WorkflowFunctions {
     ) -> Result<i64, Trap> {
         let mut poll_cx = WasmContext::new(poll_cx);
         let poll_result = ctx.data_mut().poll_task_completion(task_id, &mut poll_cx);
-        crate::trace!(
+        trace!(
             "Polled completion for task {} with context {:?}: {:?}",
             task_id,
             poll_cx,
@@ -270,7 +270,7 @@ impl WorkflowFunctions {
         let memory = ctx.data().exports().memory;
         let task_name = copy_string_from_wasm(&ctx, &memory, task_name_ptr, task_name_len)?;
         let result = ctx.data_mut().spawn_task(task_id, task_name.clone());
-        crate::log_result!(result, "Spawned task {} with name `{}`", task_id, task_name)
+        log_result!(result, "Spawned task {} with name `{}`", task_id, task_name)
     }
 
     pub fn wake_task(
@@ -278,7 +278,7 @@ impl WorkflowFunctions {
         task_id: TaskId,
     ) -> Result<(), Trap> {
         let result = ctx.data_mut().schedule_task_wakeup(task_id);
-        crate::log_result!(result, "Scheduled task {} wakeup", task_id)
+        log_result!(result, "Scheduled task {} wakeup", task_id)
     }
 
     pub fn schedule_task_abortion(
@@ -286,6 +286,6 @@ impl WorkflowFunctions {
         task_id: TaskId,
     ) -> Result<(), Trap> {
         let result = ctx.data_mut().schedule_task_abortion(task_id);
-        crate::log_result!(result, "Scheduled task {} to be aborted", task_id)
+        log_result!(result, "Scheduled task {} to be aborted", task_id)
     }
 }
