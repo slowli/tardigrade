@@ -22,13 +22,13 @@ impl WorkflowFn for PizzaDeliveryWithSpawning {
 impl PizzaDeliveryHandle<Wasm> {
     async fn spawn_with_child_workflows(self, args: Args) {
         let mut counter = 0;
+        let events = self.shared.events;
         self.orders
             .for_each_concurrent(args.oven_count, |order| {
                 counter += 1;
                 let builder: WorkflowBuilder<_, Baking> =
                     Workflows.new_workflow("baking", (counter, order)).unwrap();
-                // TODO: proxy events / traces.
-                builder.handle().events.close();
+                builder.handle().events.copy_from(events.clone());
                 builder.handle().tracer.close();
                 builder.build().unwrap().workflow.map(Result::unwrap)
             })

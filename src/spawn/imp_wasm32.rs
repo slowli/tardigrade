@@ -54,7 +54,7 @@ impl ManageWorkflows<'_, ()> for Workflows {
         &self,
         definition_id: &str,
         args: Vec<u8>,
-        channels: &ChannelsConfig<RawReceiver, RawSender>,
+        channels: ChannelsConfig<RawReceiver, RawSender>,
     ) -> Result<Self::Handle, Self::Error> {
         #[externref]
         #[link(wasm_import_module = "tardigrade_rt")]
@@ -76,7 +76,7 @@ impl ManageWorkflows<'_, ()> for Workflows {
                 definition_id.len(),
                 args.as_ptr(),
                 args.len(),
-                channels.to_resource(),
+                channels.into_resource(),
                 &mut SPAWN_ERROR_PAD,
             );
             Result::<(), SpawnError>::from_abi_in_wasm(SPAWN_ERROR_PAD).map(|()| RemoteWorkflow {
@@ -113,7 +113,7 @@ extern "C" {
 
 impl ChannelSpawnConfig<RawReceiver> {
     unsafe fn configure(
-        &self,
+        self,
         spawner: &Resource<ChannelsConfig<RawReceiver, RawSender>>,
         channel_name: &str,
     ) {
@@ -134,7 +134,7 @@ impl ChannelSpawnConfig<RawReceiver> {
 
 impl ChannelSpawnConfig<RawSender> {
     unsafe fn configure(
-        &self,
+        self,
         spawner: &Resource<ChannelsConfig<RawReceiver, RawSender>>,
         channel_name: &str,
     ) {
@@ -161,13 +161,13 @@ impl ChannelSpawnConfig<RawSender> {
 }
 
 impl ChannelsConfig<RawReceiver, RawSender> {
-    unsafe fn to_resource(&self) -> Resource<Self> {
+    unsafe fn into_resource(self) -> Resource<Self> {
         let resource = create_handles();
-        for (name, config) in &self.inbound {
-            config.configure(&resource, name);
+        for (name, config) in self.inbound {
+            config.configure(&resource, &name);
         }
-        for (name, config) in &self.outbound {
-            config.configure(&resource, name);
+        for (name, config) in self.outbound {
+            config.configure(&resource, &name);
         }
         resource
     }

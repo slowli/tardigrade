@@ -3,6 +3,7 @@
 //! See `WorkflowManager` docs for an overview and examples of usage.
 
 #![allow(clippy::missing_panics_doc)] // lots of `unwrap()`s on mutex locks
+// TODO: log major events
 
 use chrono::{DateTime, Utc};
 

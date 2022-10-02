@@ -2,7 +2,7 @@
 
 use assert_matches::assert_matches;
 use async_std::task;
-use futures::{stream, SinkExt, StreamExt};
+use futures::{stream, SinkExt, StreamExt, TryStreamExt};
 
 use std::{collections::HashMap, task::Poll};
 
@@ -19,7 +19,7 @@ use tardigrade_rt::{
 };
 use tardigrade_test_basic::{
     spawn::{Baking, PizzaDeliveryWithSpawning},
-    Args, PizzaKind, PizzaOrder,
+    Args, DomainEvent, PizzaKind, PizzaOrder,
 };
 
 use super::{TestResult, MODULE};
@@ -49,6 +49,7 @@ async fn spawning_child_workflows() -> TestResult {
     let mut env = AsyncEnv::new(AsyncIoScheduler);
     let results = env.execution_results();
     let mut orders_sx = handle.orders.into_async(&mut env);
+    let events_rx = handle.shared.events.into_async(&mut env);
     let join_handle = task::spawn(async move { env.run(&mut manager).await });
 
     let orders = [
@@ -68,6 +69,17 @@ async fn spawning_child_workflows() -> TestResult {
 
     let termination = join_handle.await?;
     assert_matches!(termination, Termination::Finished);
+
+    // Check domain events produced by child workflows
+    let events: Vec<_> = events_rx.try_collect().await?;
+    assert_eq!(events.len(), orders.len() * 2);
+    for i in 1..=orders.len() {
+        let order_events: Vec<_> = events.iter().filter(|event| event.index() == i).collect();
+        assert_matches!(
+            order_events.as_slice(),
+            [DomainEvent::OrderTaken { .. }, DomainEvent::Baked { .. }]
+        );
+    }
 
     let results: Vec<_> = results.collect().await;
     let receipts: Vec<_> = results
