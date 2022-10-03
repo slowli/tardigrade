@@ -87,24 +87,27 @@ use chrono::{DateTime, TimeZone, Utc};
 use futures::{
     channel::oneshot,
     executor::{LocalPool, LocalSpawner},
-    future::RemoteHandle,
+    future::{self, AbortHandle, FutureExt, RemoteHandle},
     task::LocalSpawnExt,
 };
+use pin_project_lite::pin_project;
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     cmp,
     collections::{BinaryHeap, HashMap},
     fmt,
     future::Future,
+    pin::Pin,
+    task::{Context, Poll},
 };
 
-use crate::workflow::UntypedHandle;
 use crate::{
     interface::Interface,
     spawn::{ManageWorkflowsExt, RemoteWorkflow, Spawner, WorkflowBuilder, Workflows},
-    workflow::{Handle, SpawnWorkflow, TakeHandle, TaskHandle, Wasm},
+    workflow::{Handle, SpawnWorkflow, TakeHandle, TaskHandle, UntypedHandle, Wasm},
 };
+use tardigrade_shared::WorkflowId;
 
 #[derive(Debug)]
 struct TimerEntry {
@@ -224,24 +227,41 @@ impl Timers {
     }
 }
 
-struct ErasedWorkflow {
+type SpawnFn = Box<dyn Fn(Vec<u8>, Wasm, TaskContext) -> TaskHandle>;
+
+struct ErasedWorkflowDefinition {
     interface: Interface<()>,
-    spawn_fn: Box<dyn Fn(Vec<u8>, Wasm) -> TaskHandle>,
+    spawn_fn: SpawnFn,
 }
 
-impl fmt::Debug for ErasedWorkflow {
+impl fmt::Debug for ErasedWorkflowDefinition {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("ErasedWorkflow")
+            .debug_struct("ErasedWorkflowDefinition")
             .field("interface", &self.interface)
             .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Default)]
+struct WorkflowState {
+    child_task_handles: Vec<AbortHandle>,
+}
+
+impl Drop for WorkflowState {
+    fn drop(&mut self) {
+        for handle in &self.child_task_handles {
+            handle.abort();
+        }
     }
 }
 
 /// Mock registry for workflows.
 #[derive(Debug, Default)]
 pub struct WorkflowRegistry {
-    workflows: HashMap<String, ErasedWorkflow>,
+    definitions: HashMap<String, ErasedWorkflowDefinition>,
+    instances: HashMap<WorkflowId, WorkflowState>,
+    next_workflow_id: WorkflowId,
 }
 
 impl WorkflowRegistry {
@@ -249,32 +269,71 @@ impl WorkflowRegistry {
     #[allow(clippy::missing_panics_doc)] // false positive
     pub fn insert<W: SpawnWorkflow, S: Into<String>>(&mut self, id: S) {
         let interface = W::interface().erase();
-        let spawn_fn = |args, wasm| TaskHandle::from_workflow::<W>(args, wasm).unwrap();
-        self.workflows.insert(
+        self.definitions.insert(
             id.into(),
-            ErasedWorkflow {
+            ErasedWorkflowDefinition {
                 interface,
-                spawn_fn: Box::new(spawn_fn),
+                spawn_fn: Box::new(|args, wasm, context| {
+                    Self::wrap_spawn_fn::<W>(args, wasm, context)
+                }),
             },
         );
     }
 
+    fn wrap_spawn_fn<W: SpawnWorkflow>(
+        args: Vec<u8>,
+        wasm: Wasm,
+        context: TaskContext,
+    ) -> TaskHandle {
+        let workflow_id = context.workflow_id;
+        let spawn_fn = async {
+            // We want to execute *all* initialization code asynchronously, since
+            // otherwise we could get `RefCell` borrow errors (e.g., if the init code
+            // spawns tasks). Additionally, this more closely matches execution flow
+            // of the real runtime.
+            TaskHandle::from_workflow::<W>(args, wasm)
+                .expect("failed spawning workflow")
+                .into_inner()
+                .await;
+        };
+        let spawn_fn = spawn_fn.map(move |()| {
+            Runtime::with_mut(|rt| rt.workflow_registry_mut().terminate_workflow(workflow_id));
+        });
+        TaskHandle::new(WithTaskContext::new(spawn_fn, context))
+    }
+
     pub(crate) fn interface(&self, definition_id: &str) -> Option<&Interface<()>> {
-        self.workflows
+        self.definitions
             .get(definition_id)
             .map(|workflow| &workflow.interface)
     }
 
-    pub(crate) fn create_workflow(
-        &self,
+    fn create_workflow(
+        &mut self,
         definition_id: &str,
         args: Vec<u8>,
         remote_handles: UntypedHandle<Wasm>,
     ) -> TaskHandle {
-        let workflow = self.workflows.get(definition_id).unwrap_or_else(|| {
+        let definition = self.definitions.get(definition_id).unwrap_or_else(|| {
             panic!("workflow `{}` is not defined", definition_id);
         });
-        (workflow.spawn_fn)(args, Wasm::new(remote_handles))
+        let context = TaskContext {
+            workflow_id: self.next_workflow_id,
+        };
+        self.next_workflow_id += 1;
+        (definition.spawn_fn)(args, Wasm::new(remote_handles), context)
+    }
+
+    fn register_task(&mut self, workflow_id: WorkflowId, abort_handle: AbortHandle) {
+        self.instances
+            .entry(workflow_id)
+            .or_default()
+            .child_task_handles
+            .push(abort_handle);
+    }
+
+    fn terminate_workflow(&mut self, workflow_id: WorkflowId) {
+        self.instances.remove(&workflow_id);
     }
 }
 
@@ -350,7 +409,37 @@ impl Runtime {
         &mut self.workflow_registry
     }
 
-    pub(crate) fn spawn_task<T>(&self, task: impl Future<Output = T> + 'static) -> RemoteHandle<T> {
+    pub(crate) fn create_workflow(
+        &mut self,
+        definition_id: &str,
+        args: Vec<u8>,
+        remote_handles: UntypedHandle<Wasm>,
+    ) -> RemoteHandle<()> {
+        let task = self
+            .workflow_registry
+            .create_workflow(definition_id, args, remote_handles);
+        self.do_spawn(task.into_inner())
+    }
+
+    pub(crate) fn spawn_task<T: 'static>(
+        &mut self,
+        task: impl Future<Output = T> + 'static,
+    ) -> RemoteHandle<T> {
+        let context = TaskContext::get();
+        let (task, abort_handle) = future::abortable(task);
+        self.workflow_registry
+            .register_task(context.workflow_id, abort_handle);
+        let task = task.then(|res| match res {
+            Ok(result) => future::ready(result).left_future(),
+            Err(_) => future::pending().right_future(),
+            // ^ We're ok with the tasks hanging since they shouldn't block test code
+            // (the owning workflow is already finished).
+        });
+        let task = WithTaskContext::new(task, context);
+        self.do_spawn(task)
+    }
+
+    fn do_spawn<T>(&self, task: impl Future<Output = T> + 'static) -> RemoteHandle<T> {
         self.spawner
             .spawn_local_with_handle(task)
             .expect("failed spawning task")
@@ -403,5 +492,64 @@ impl Drop for RuntimeGuard {
         RT.with(|cell| {
             *cell.borrow_mut() = None;
         });
+    }
+}
+
+/// Context of a workflow task. This context is used to properly emulate workflow completion
+/// (the workflow completes immediately after its main tasks completes, dropping all resources).
+#[derive(Debug, Clone, Copy)]
+struct TaskContext {
+    workflow_id: WorkflowId,
+}
+
+impl TaskContext {
+    fn get() -> Self {
+        TASK_CONTEXT
+            .with(Cell::get)
+            .expect("called outside task context")
+    }
+}
+
+thread_local! {
+    static TASK_CONTEXT: Cell<Option<TaskContext>> = Cell::default();
+}
+
+pin_project! {
+    /// Wrapper for a future adding task context during its executions.
+    #[derive(Debug)]
+    struct WithTaskContext<F> {
+        #[pin]
+        inner: F,
+        context: TaskContext,
+    }
+}
+
+impl<F: Future> WithTaskContext<F> {
+    fn new(inner: F, context: TaskContext) -> Self {
+        Self { inner, context }
+    }
+}
+
+impl<F: Future> Future for WithTaskContext<F> {
+    type Output = F::Output;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        /// Guard to return the old task context on drop.
+        struct Guard {
+            context: Option<TaskContext>,
+        }
+
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                let context = self.context.take();
+                TASK_CONTEXT.with(|cell| cell.set(context));
+            }
+        }
+
+        let prev_context = TASK_CONTEXT.with(|cell| cell.replace(Some(self.context)));
+        let _guard = Guard {
+            context: prev_context,
+        };
+        self.project().inner.poll(cx)
     }
 }

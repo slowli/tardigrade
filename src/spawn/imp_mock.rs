@@ -45,11 +45,9 @@ impl ManageWorkflows<'_, ()> for Workflows {
         channels: ChannelsConfig<RawReceiver, RawSender>,
     ) -> Result<Self::Handle, Self::Error> {
         let (local_handles, remote_handles) = channels.create_handles();
-        let main_task = Runtime::with(|rt| {
-            rt.workflow_registry()
-                .create_workflow(definition_id, args, remote_handles)
-        });
-        let main_task = crate::spawn("_workflow", main_task.into_inner());
+        let main_task =
+            Runtime::with_mut(|rt| rt.create_workflow(definition_id, args, remote_handles));
+        let main_task = JoinHandle::from_handle(main_task);
         Ok(super::RemoteWorkflow::from_parts(main_task, local_handles))
     }
 }

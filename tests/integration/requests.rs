@@ -59,7 +59,7 @@ impl SpawnWorkflow for TestedWorkflow {
     fn spawn(args: TestInit, handle: TestHandle<Wasm>) -> TaskHandle {
         let strings = args.strings;
         let options = args.options;
-        let (requests, _) = Requests::builder(handle.requests, handle.responses)
+        let (requests, requests_task) = Requests::builder(handle.requests, handle.responses)
             .with_capacity(options.capacity)
             .build();
 
@@ -97,7 +97,10 @@ impl SpawnWorkflow for TestedWorkflow {
                         assert_eq!(response, expected_response);
                     }
                 }
+                drop(requests);
             }
+
+            requests_task.await.ok();
         })
     }
 }

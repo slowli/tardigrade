@@ -13,9 +13,13 @@ use crate::test::Runtime;
 use tardigrade_shared::JoinError;
 
 #[derive(Debug)]
-pub struct JoinHandle<T>(Option<RemoteHandle<T>>);
+pub(super) struct JoinHandle<T>(Option<RemoteHandle<T>>);
 
 impl<T> JoinHandle<T> {
+    pub fn from_handle(handle: RemoteHandle<T>) -> Self {
+        Self(Some(handle))
+    }
+
     pub fn abort(&mut self) {
         self.0.take(); // drops the handle, thus aborting the task.
     }
@@ -48,10 +52,10 @@ impl<T: 'static> Future for JoinHandle<T> {
     }
 }
 
-pub fn spawn<T: 'static>(
+pub(super) fn spawn<T: 'static>(
     _task_name: &str,
     task: impl Future<Output = T> + 'static,
 ) -> JoinHandle<T> {
-    let handle = Runtime::with(|rt| rt.spawn_task(task));
-    JoinHandle(Some(handle))
+    let handle = Runtime::with_mut(|rt| rt.spawn_task(task));
+    JoinHandle::from_handle(handle)
 }

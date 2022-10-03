@@ -30,6 +30,13 @@ pin_project! {
 }
 
 impl<T> JoinHandle<T> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn from_handle(handle: futures::future::RemoteHandle<T>) -> Self {
+        Self {
+            inner: imp::JoinHandle::from_handle(handle),
+        }
+    }
+
     /// Aborts the task.
     pub fn abort(&mut self) {
         self.inner.abort();

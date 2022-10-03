@@ -58,7 +58,6 @@ fn workflow_terminates_on_main_task_completion() {
 }
 
 #[test]
-#[ignore] // FIXME: track and drop workflow tasks
 fn all_workflow_tasks_are_dropped_on_main_task_completion() {
     test_workflow_termination(true);
 }
