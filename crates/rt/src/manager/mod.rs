@@ -3,7 +3,6 @@
 //! See `WorkflowManager` docs for an overview and examples of usage.
 
 #![allow(clippy::missing_panics_doc)] // lots of `unwrap()`s on mutex locks
-                                      // TODO: log major events
 
 use chrono::{DateTime, Utc};
 
@@ -209,12 +208,16 @@ impl Shared {
             .workflows
             .get(&id)
             .unwrap_or_else(|| panic!("workflow with ID {} is not persisted", id));
-        let spawner = &self.spawners[&persisted.definition_id];
-        persisted
+        let definition_id = &persisted.definition_id;
+        let spawner = &self.spawners[definition_id];
+        let restored = persisted
             .workflow
             .clone()
             .restore(spawner, self.services(transaction))
-            .unwrap()
+            .unwrap();
+
+        trace!("Restored workflow {id} with {spawner:?} named `{definition_id}`");
+        restored
     }
 }
 
@@ -351,7 +354,12 @@ impl WorkflowManager {
             channel_state.receiver_workflow_id.is_none(),
             "cannot receive a message for a channel with the receiver connected to a workflow"
         );
+
         let (start_idx, messages) = channel_state.drain_messages();
+        let count = messages.len();
+        if count > 0 {
+            trace!("Taken {count} messages starting from #{start_idx} from channel {channel_id}");
+        }
         (start_idx, messages.into())
     }
 
@@ -367,11 +375,16 @@ impl WorkflowManager {
         let (message, is_closed) = state.take_message(channel_id).expect("no message to feed");
         let workflow = &state.workflows[&workflow_id].workflow;
         let (child_id, channel_name) = workflow.find_inbound_channel(channel_id);
+        trace!(
+            "Feeding {message:?} from channel {channel_id} to receiver \
+             {channel_name} @ {child_id:?} in workflow {workflow_id}"
+        );
 
         let transaction = Transaction::new(&state, Some(workflow_id), self.shared.clone());
         let mut workflow = self
             .shared
             .restore_workflow(&state, workflow_id, &transaction);
+        trace!("Starting execution of workflow {workflow_id}");
         let result = Self::push_message(&mut workflow, child_id, &channel_name, message.clone());
         if let Ok(receipt) = &result {
             let mut is_consumed = true;
@@ -380,9 +393,8 @@ impl WorkflowManager {
                 // consume wakers (otherwise, we would loop indefinitely), and place the message
                 // back to the channel.
                 warn!(
-                    "Message {:?} over channel {} was not consumed by workflow with ID {}; \
-                     placing the message back",
-                    message, channel_id, workflow_id
+                    "Message {message:?} from channel {channel_id} was not consumed \
+                     by workflow {workflow_id}; placing the message back"
                 );
 
                 is_consumed = false;
@@ -393,6 +405,7 @@ impl WorkflowManager {
             state.commit(transaction, receipt);
 
             if is_consumed && is_closed {
+                trace!("Signaling workflow {workflow_id} that channel {channel_id} is closed");
                 // Signal to the workflow that the channel is closed. This can be performed
                 // on a persisted workflow, without executing it.
                 let workflow_record = state.workflows.get_mut(&workflow_id).unwrap();
@@ -404,7 +417,12 @@ impl WorkflowManager {
             // Do not commit the execution result. Instead, put the message back to the channel.
             state.revert_taking_message(channel_id, message);
         }
-        result
+
+        log_result!(
+            result,
+            "Fed message from channel {channel_id} to receiver {channel_name} @ {child_id:?} \
+             in workflow {workflow_id}"
+        )
     }
 
     /// Returns `Ok(None)` if the message cannot be consumed right now (the workflow channel
@@ -424,6 +442,7 @@ impl WorkflowManager {
     /// Sets the current time for this manager. This may expire timers in some of the contained
     /// workflows.
     pub fn set_current_time(&self, time: DateTime<Utc>) {
+        trace!("Setting time {time} for workflow manager");
         let mut state = self.lock();
         for persisted in state.workflows.values_mut() {
             persisted.workflow.set_current_time(time);
@@ -440,6 +459,7 @@ impl WorkflowManager {
             .shared
             .restore_workflow(state, workflow_id, &transaction);
 
+        trace!("Starting execution of workflow {workflow_id}");
         let result = workflow.tick();
         if let Ok(receipt) = &result {
             state.drain_and_persist_workflow(workflow_id, workflow);
@@ -467,6 +487,7 @@ impl WorkflowManager {
         let state = self.state.get_mut().unwrap();
 
         let workflow_id = state.find_workflow_with_pending_tasks();
+        trace!("Searched for workflow with pending tasks: {workflow_id:?}");
         if let Some(workflow_id) = workflow_id {
             let result = self.tick_workflow(workflow_id);
             return Ok(TickResult {
@@ -479,6 +500,7 @@ impl WorkflowManager {
         }
 
         let ids = state.find_consumable_channel();
+        trace!("Searched for workflow with consumable message: {ids:?}");
         if let Some((channel_id, workflow_id)) = ids {
             let result = self.feed_message_to_workflow(channel_id, workflow_id);
             return Ok(TickResult {

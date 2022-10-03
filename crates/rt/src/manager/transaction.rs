@@ -124,6 +124,12 @@ impl ManageWorkflows<'_, ()> for Transaction {
         args: Vec<u8>,
         channels: ChannelsConfig<ChannelId>,
     ) -> Result<Self::Handle, Self::Error> {
+        trace!(
+            "Creating workflow from definition `{id}` with args ({args_len} bytes) \
+             and {channels:?} in transaction {self:?}",
+            args_len = args.len()
+        );
+
         let spawner = self
             .shared
             .spawners
@@ -142,9 +148,11 @@ impl ManageWorkflows<'_, ()> for Transaction {
             self.executing_workflow_id,
             workflow,
         );
-        Ok(WorkflowAndChannelIds {
+        let ids = WorkflowAndChannelIds {
             workflow_id,
             channel_ids,
-        })
+        };
+        trace!("Created workflow {ids:?} in transaction {self:?}");
+        Ok(ids)
     }
 }

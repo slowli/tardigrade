@@ -164,11 +164,7 @@ impl<'a> Workflow<'a> {
                 waker_id,
                 wake_up_cause,
             } => {
-                trace!(
-                    "Waking up waker {} with cause {:?}",
-                    waker_id,
-                    wake_up_cause
-                );
+                trace!("Waking up waker {waker_id} with cause {wake_up_cause:?}");
                 WorkflowData::wake(&mut self.store, *waker_id, wake_up_cause.clone())
             }
             ExecutedFunction::TaskDrop { task_id } => {
@@ -234,7 +230,7 @@ impl<'a> Workflow<'a> {
         wake_up_cause: WakeUpCause,
         receipt: &mut Receipt,
     ) -> Result<(), ExtendedTrap> {
-        trace!("Polling task {} because of {:?}", task_id, wake_up_cause);
+        trace!("Polling task {task_id} because of {wake_up_cause:?}");
 
         let function = ExecutedFunction::Task {
             task_id,
@@ -242,7 +238,7 @@ impl<'a> Workflow<'a> {
             poll_result: Poll::Pending,
         };
         let poll_result = self.execute(function, None, receipt);
-        log_result!(poll_result, "Finished polling task {}", task_id)
+        log_result!(poll_result, "Finished polling task {task_id}")
     }
 
     fn wake_tasks(&mut self, receipt: &mut Receipt) -> Result<(), ExtendedTrap> {
@@ -292,9 +288,7 @@ impl<'a> Workflow<'a> {
             .push_inbound_message(workflow_id, channel_name, message);
         log_result!(
             result,
-            "Consumed message ({} bytes) for channel `{}`",
-            message_len,
-            channel_name
+            "Consumed message ({message_len} bytes) for channel `{channel_name}`"
         )
     }
 

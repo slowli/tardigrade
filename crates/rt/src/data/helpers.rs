@@ -312,7 +312,7 @@ impl CurrentExecution {
     pub fn commit(self, state: &mut WorkflowData) -> Vec<Event> {
         use self::ResourceEventKind::{Created, Dropped};
 
-        trace!("Committing {:?} onto {:?}", self, state);
+        trace!("Committing {self:?} onto {state:?}");
 
         let cause = if let ExecutedFunction::Waker { wake_up_cause, .. } = self.function {
             // Copy the cause; we're not really interested in
@@ -344,14 +344,14 @@ impl CurrentExecution {
         for task_id in self.tasks_to_be_awoken {
             state.task_queue.insert_task(task_id, &cause);
         }
-        trace!("Committed CurrentTask onto {:?}", state);
+        trace!("Committed CurrentTask onto {state:?}");
         self.events
     }
 
     pub fn revert(self, state: &mut WorkflowData) -> (Vec<Event>, Option<PanicInfo>) {
         use self::ResourceEventKind::Created;
 
-        trace!("Reverting {:?} from {:?}", self, state);
+        trace!("Reverting {self:?} from {state:?}");
         for event in Self::resource_events(&self.events) {
             match (event.kind, event.resource_id) {
                 (Created, ResourceId::Task(task_id)) => {
@@ -381,7 +381,7 @@ impl CurrentExecution {
             }
         }
 
-        trace!("Reverted CurrentTask from {:?}", state);
+        trace!("Reverted CurrentTask from {state:?}");
         (self.events, self.panic_info)
     }
 }
@@ -393,7 +393,7 @@ impl WorkflowData<'_> {
             execution.new_wakers.insert(waker);
         }
 
-        trace!("Placing waker {} in {:?}", waker, placement);
+        trace!("Placing waker {waker} in {placement:?}");
         let persisted = &mut self.persisted;
         match placement {
             WakerPlacement::InboundChannel(channel_ref) => {
@@ -459,7 +459,7 @@ impl PersistedWorkflowData {
         if wakers.is_empty() {
             return; // no need to schedule anything
         }
-        trace!("Scheduled wakers {:?} with cause {:?}", wakers, cause);
+        trace!("Scheduled wakers {wakers:?} with {cause:?}");
         self.waker_queue.push(Wakers::new(wakers, cause));
     }
 }

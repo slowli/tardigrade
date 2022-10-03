@@ -600,7 +600,7 @@ impl WorkflowFunctions {
             .get_mut(&channel_name)
             .ok_or(AccessErrorKind::Unknown)
             .map(|state| state.acquire().ok());
-        let result = log_result!(result, "Acquired inbound channel `{}`", channel_name);
+        let result = log_result!(result, "Acquired inbound channel `{channel_name}`");
 
         let mut channel_ref = None;
         let result = result.map(|acquire_result| {
@@ -638,12 +638,7 @@ impl WorkflowFunctions {
         let poll_result = ctx
             .data_mut()
             .poll_inbound_channel(channel_ref, &mut poll_cx);
-        trace!(
-            "Polled inbound channel {:?} with context {:?}: {:?}",
-            channel_ref,
-            poll_cx,
-            poll_result,
-        );
+        trace!("Polled inbound channel {channel_ref:?} with context {poll_cx:?}: {poll_result:?}");
 
         poll_cx.save_waker(&mut ctx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))
@@ -667,7 +662,7 @@ impl WorkflowFunctions {
             .get_mut(&channel_name)
             .ok_or(AccessErrorKind::Unknown)
             .map(|state| state.acquire().ok());
-        let result = log_result!(result, "Acquired outbound channel `{}`", channel_name);
+        let result = log_result!(result, "Acquired outbound channel `{channel_name}`");
 
         let mut channel_ref = None;
         let result = result.map(|acquire_result| {
@@ -689,11 +684,7 @@ impl WorkflowFunctions {
         let poll_result = ctx
             .data_mut()
             .poll_outbound_channel(channel_ref, false, &mut cx);
-        trace!(
-            "Polled outbound channel {:?} for readiness: {:?}",
-            channel_ref,
-            poll_result
-        );
+        trace!("Polled outbound channel {channel_ref:?} for readiness: {poll_result:?}");
 
         cx.save_waker(&mut ctx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))
@@ -712,10 +703,7 @@ impl WorkflowFunctions {
         let message_len = message.len();
         let result = ctx.data_mut().push_outbound_message(channel_ref, message);
         trace!(
-            "Sent message ({} bytes) over outbound channel {:?}: {:?}",
-            message_len,
-            channel_ref,
-            result
+            "Sent message ({message_len} bytes) over outbound channel {channel_ref:?}: {result:?}"
         );
         result.into_wasm(&mut WasmAllocator::new(ctx))
     }
@@ -731,11 +719,7 @@ impl WorkflowFunctions {
         let poll_result = ctx
             .data_mut()
             .poll_outbound_channel(channel_ref, true, &mut poll_cx);
-        trace!(
-            "Polled outbound channel {:?} for flush: {:?}",
-            channel_ref,
-            poll_result
-        );
+        trace!("Polled outbound channel {channel_ref:?} for flush: {poll_result:?}");
 
         poll_cx.save_waker(&mut ctx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))

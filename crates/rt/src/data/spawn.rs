@@ -198,7 +198,7 @@ impl WorkflowData<'_> {
             );
             ids.workflow_id
         });
-        log_result!(result, "Spawned workflow using `{}`", definition_id)
+        log_result!(result, "Spawned workflow using `{definition_id}`")
             .map_err(|err| SpawnError::new(err.to_string()))
     }
 
@@ -362,10 +362,8 @@ impl SpawnFunctions {
             .data_mut()
             .poll_workflow_completion(workflow_id, &mut poll_cx);
         trace!(
-            "Polled completion for workflow {} with context {:?}: {:?}",
-            workflow_id,
-            poll_cx,
-            poll_result
+            "Polled completion for workflow {workflow_id} with context {poll_cx:?}: \
+             {poll_result:?}"
         );
         poll_cx.save_waker(&mut ctx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))

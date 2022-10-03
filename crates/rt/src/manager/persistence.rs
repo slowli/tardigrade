@@ -150,11 +150,18 @@ impl PersistedWorkflows {
         message: Message,
     ) -> Result<(), SendError> {
         let channel_state = self.channels.get_mut(&channel_id).unwrap();
-        channel_state.push_messages([message])
+        let message_len = message.as_ref().len();
+        let message_idx = channel_state.next_message_idx;
+        let result = channel_state.push_messages([message]);
+        log_result!(
+            result,
+            "Sent message #{message_idx} (len = {message_len} bytes) for channel {channel_id}"
+        )
     }
 
     pub(super) fn close_channel_side(&mut self, channel_id: ChannelId, side: ChannelSide) {
         let channel_state = self.channels.get_mut(&channel_id).unwrap();
+        trace!("Closing channel {channel_id} from {side:?}; current state is {channel_state:?}");
         if !channel_state.close_side(side) {
             // The channel was not closed; no further actions are necessary.
             return;
@@ -172,12 +179,17 @@ impl PersistedWorkflows {
                     .workflow;
                 let (child_id, name) = workflow.find_inbound_channel(channel_id);
                 workflow.close_inbound_channel(child_id, &name);
+                trace!(
+                    "Closed receiver end of channel {channel_id} \
+                     in workflow {receiver_workflow_id} as {name} @ {child_id:?}"
+                );
             }
         }
 
         for sender_workflow_id in &channel_state.sender_workflow_ids {
             let workflow = &mut self.workflows.get_mut(sender_workflow_id).unwrap().workflow;
             workflow.close_outbound_channels_by_id(channel_id);
+            trace!("Closed sender end of channel {channel_id} in workflow {sender_workflow_id}");
         }
     }
 
@@ -232,6 +244,8 @@ impl PersistedWorkflows {
     }
 
     pub(super) fn commit(&mut self, transaction: Transaction, receipt: &Receipt) {
+        trace!("Committing {transaction:?} onto workflow manager");
+
         let executed_workflow_id = transaction.executing_workflow_id();
         let transaction = transaction.into_inner();
         debug_assert!(self.next_workflow_id <= transaction.next_workflow_id);
@@ -242,6 +256,8 @@ impl PersistedWorkflows {
         // Create new channels and write outbound messages for them when appropriate.
         for (child_id, mut child_workflow) in transaction.new_workflows {
             let channel_ids = child_workflow.workflow.channel_ids();
+            trace!("Handling {channel_ids:?} for new workflow {child_id}");
+
             for (name, &channel_id) in &channel_ids.inbound {
                 let channel_state = self
                     .channels
@@ -250,6 +266,10 @@ impl PersistedWorkflows {
                 if channel_state.is_closed {
                     child_workflow.workflow.close_inbound_channel(None, name);
                 }
+                trace!(
+                    "Prepared inbound channel `{name}` (ID = {channel_id}) \
+                     for workflow {child_id}: {channel_state:?}"
+                );
             }
             for (name, &channel_id) in &channel_ids.outbound {
                 let channel_state = self
@@ -261,6 +281,10 @@ impl PersistedWorkflows {
                 } else {
                     channel_state.sender_workflow_ids.insert(child_id);
                 }
+                trace!(
+                    "Prepared outbound channel `{name}` (ID = {channel_id}) \
+                     for workflow {child_id}: {channel_state:?}"
+                );
             }
 
             self.workflows.insert(child_id, child_workflow);
