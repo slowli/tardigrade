@@ -179,7 +179,7 @@ impl WorkflowData<'_> {
         // Patch task ID mentions in other tasks (if any). This may be necessary
         // if any initialization code is executed before the main task is created.
         for state in self.persisted.tasks.values_mut() {
-            debug_assert_eq!(state.spawned_by, Some(0));
+            debug_assert_eq!(state.spawned_by, None);
             state.spawned_by = Some(task_id);
         }
 

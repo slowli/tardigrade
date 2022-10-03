@@ -79,11 +79,7 @@ pub enum WakeUpCause {
 pub enum ExecutedFunction {
     /// Entry point of the workflow.
     #[non_exhaustive]
-    Entry {
-        /// ID of the created main task.
-        // TODO: kind of awkward; ideally, this field should be removed
-        task_id: TaskId,
-    },
+    Entry,
     /// Polling a task.
     #[non_exhaustive]
     Task {
@@ -113,7 +109,7 @@ pub enum ExecutedFunction {
 impl ExecutedFunction {
     pub(crate) fn task_id(&self) -> Option<TaskId> {
         match self {
-            Self::Entry { task_id } | Self::Task { task_id, .. } => Some(*task_id),
+            Self::Task { task_id, .. } => Some(*task_id),
             _ => None,
         }
     }
