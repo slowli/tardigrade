@@ -233,10 +233,9 @@ fn persisting_workflow() -> TestResult {
     assert!(persisted_json.len() < 5_000, "{}", persisted_json);
     let persisted = serde_json::from_str(&persisted_json)?;
     let mut manager = WorkflowManager::builder()
-        .with_state(persisted)
         .with_clock(Arc::clone(&clock))
         .with_spawner("pizza", MODULE.for_workflow::<PizzaDelivery>()?)
-        .build();
+        .restore(persisted)?;
 
     assert!(!manager.tick()?.into_inner()?.executions().is_empty());
     let new_time = clock.now() + chrono::Duration::milliseconds(100);

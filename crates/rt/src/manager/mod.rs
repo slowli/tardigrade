@@ -4,6 +4,7 @@
 
 #![allow(clippy::missing_panics_doc)] // lots of `unwrap()`s on mutex locks
 
+use anyhow::Context;
 use chrono::{DateTime, Utc};
 
 use std::{
@@ -197,7 +198,6 @@ impl Shared {
         }
     }
 
-    // FIXME: sane error handling
     fn restore_workflow<'a>(
         &'a self,
         committed: &PersistedWorkflows,
@@ -214,9 +214,15 @@ impl Shared {
             .workflow
             .clone()
             .restore(spawner, self.services(transaction))
+            .with_context(|| {
+                format!(
+                    "failed restoring workflow {id} with {spawner:?} for definition \
+                     `{definition_id}`"
+                )
+            })
             .unwrap();
 
-        trace!("Restored workflow {id} with {spawner:?} named `{definition_id}`");
+        trace!("Restored workflow {id} with {spawner:?} for definition `{definition_id}`");
         restored
     }
 }
@@ -288,6 +294,26 @@ impl WorkflowManager {
 
     fn lock(&self) -> impl ops::DerefMut<Target = PersistedWorkflows> + '_ {
         self.state.lock().unwrap()
+    }
+
+    fn check_consistency(&self) -> anyhow::Result<()> {
+        let state = self.lock();
+        for (&id, workflow_record) in &state.workflows {
+            let definition_id = &workflow_record.definition_id;
+            let spawner = self.shared.spawners.get(definition_id).ok_or_else(|| {
+                anyhow::anyhow!("missing spawner for workflow definition `{definition_id}`")
+            })?;
+            workflow_record
+                .workflow
+                .check_on_restore(spawner)
+                .with_context(|| {
+                    format!(
+                        "mismatch between interface of workflow {id} and spawner \
+                     for workflow definition `{definition_id}`"
+                    )
+                })?;
+        }
+        Ok(())
     }
 
     /// Returns current information about the channel with the specified ID, or `None` if a channel
@@ -532,13 +558,6 @@ pub struct WorkflowManagerBuilder {
 }
 
 impl WorkflowManagerBuilder {
-    /// Sets the initial state of the workflows managed by this manager.
-    #[must_use]
-    pub fn with_state(mut self, workflows: PersistedWorkflows) -> Self {
-        *self.manager.state.get_mut().unwrap() = workflows;
-        self
-    }
-
     /// Sets the wall clock to be used in the manager.
     #[must_use]
     pub fn with_clock(mut self, clock: Arc<impl Clock>) -> Self {
@@ -557,6 +576,18 @@ impl WorkflowManagerBuilder {
     /// Finishes building the manager.
     pub fn build(self) -> WorkflowManager {
         self.manager
+    }
+
+    /// Restores the manager with the provided persisted state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the state cannot be restored (e.g., there are missing spawners,
+    /// or some of spawners do not provide expected workflow interface).
+    pub fn restore(mut self, workflows: PersistedWorkflows) -> anyhow::Result<WorkflowManager> {
+        *self.manager.state.get_mut().unwrap() = workflows;
+        self.manager.check_consistency()?;
+        Ok(self.manager)
     }
 }
 
