@@ -116,9 +116,8 @@
 //! let persisted: PersistedWorkflows = serde_json::from_str(&json)?;
 //! // The manager can then be instantiated again:
 //! let manager = WorkflowManager::builder()
-//!     .with_state(persisted)
-//!     // set other options...
-//!     .build();
+//!     // set other options, e.g. spawners...
+//!     .restore(persisted)?;
 //! # Ok(())
 //! # }
 //! ```

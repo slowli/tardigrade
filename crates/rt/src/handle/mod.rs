@@ -51,7 +51,9 @@ use tardigrade_shared::SendError;
 /// handle[InboundChannel("commands")].send(message)?;
 ///
 /// // Let's then take outbound messages from a certain channel:
-/// let messages = handle[OutboundChannel("events")].take_messages();
+/// let messages = handle[OutboundChannel("events")]
+///     .take_messages()
+///     .unwrap();
 /// let messages: Vec<Vec<u8>> = messages.decode().unwrap();
 /// // ^ `decode().unwrap()` always succeeds because the codec
 /// // for untyped workflows is just an identity.
