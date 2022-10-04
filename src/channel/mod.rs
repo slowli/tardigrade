@@ -24,10 +24,7 @@ use std::{
 
 use crate::{
     codec::{Decode, Encode, Raw},
-    interface::{
-        AccessError, AccessErrorKind, InboundChannel, InboundChannelSpec, InterfaceBuilder,
-        OutboundChannel, OutboundChannelSpec,
-    },
+    interface::{AccessError, InboundChannelSpec, InterfaceBuilder, OutboundChannelSpec},
     workflow::{TakeHandle, Wasm},
 };
 
@@ -127,6 +124,8 @@ where
 
     #[cfg(not(target_arch = "wasm32"))]
     fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, AccessError> {
+        use crate::interface::{AccessErrorKind, InboundChannel};
+
         let raw = env
             .take_inbound_channel(id)
             .ok_or_else(|| AccessErrorKind::Unknown.with_location(InboundChannel(id)))?;
@@ -239,6 +238,8 @@ where
 
     #[cfg(not(target_arch = "wasm32"))]
     fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, AccessError> {
+        use crate::interface::{AccessErrorKind, OutboundChannel};
+
         let raw = env
             .take_outbound_channel(id)
             .ok_or_else(|| AccessErrorKind::Unknown.with_location(OutboundChannel(id)))?;

@@ -46,21 +46,26 @@ impl GetInterface {
         let interface = quote!(tardigrade::interface::Interface);
         let (impl_generics, ty_generics, where_clause) = self.input.generics.split_for_impl();
 
-        let impl_fn = if self.compressed_spec.is_some() {
+        let init_closure = if self.compressed_spec.is_some() {
             quote! {
-                let interface = #interface::from_bytes(&INTERFACE_SPEC);
-                tardigrade::workflow::interface_by_handle::<Self>()
-                    .downcast(interface)
-                    .expect("workflow interface does not match declaration")
+                || {
+                    let interface = #interface::from_bytes(&INTERFACE_SPEC);
+                    tardigrade::workflow::interface_by_handle::<#name #ty_generics>()
+                        .check_compatibility(&interface)
+                        .expect("workflow interface does not match declaration");
+                    interface
+                }
             }
         } else {
-            quote!(tardigrade::workflow::interface_by_handle::<Self>())
+            quote!(tardigrade::workflow::interface_by_handle::<#name #ty_generics>)
         };
 
         quote! {
             impl #impl_generics #tr for #name #ty_generics #where_clause {
-                fn interface() -> #interface<Self> {
-                    #impl_fn
+                fn interface() -> std::borrow::Cow<'static, #interface> {
+                    static INTERFACE: tardigrade::_reexports::Lazy<#interface>
+                        = tardigrade::_reexports::Lazy::new(#init_closure);
+                    std::borrow::Cow::Borrowed(&INTERFACE)
                 }
             }
         }
@@ -81,7 +86,7 @@ impl FromDeriveInput for GetInterface {
             let contents =
                 Self::get_spec_contents(spec).map_err(|err| err.with_span(&input.ident))?;
 
-            let interface: Interface<()> = serde_json::from_slice(&contents).map_err(|err| {
+            let interface: Interface = serde_json::from_slice(&contents).map_err(|err| {
                 let message = format!("error deserializing workflow spec: {}", err);
                 darling::Error::custom(message).with_span(&input.ident)
             })?;

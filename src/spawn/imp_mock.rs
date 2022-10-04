@@ -25,7 +25,7 @@ use crate::{
 use tardigrade_shared::{JoinError, SpawnError};
 
 impl ManageInterfaces for Workflows {
-    fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface<()>>> {
+    fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
         Runtime::with(|rt| {
             rt.workflow_registry()
                 .interface(definition_id)

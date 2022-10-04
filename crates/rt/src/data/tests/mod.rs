@@ -99,7 +99,7 @@ fn consume_message(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()
     Ok(Poll::Pending)
 }
 
-fn mock_channel_ids(interface: &Interface<()>) -> ChannelIds {
+fn mock_channel_ids(interface: &Interface) -> ChannelIds {
     let inbound = interface
         .inbound_channels()
         .map(|(name, _)| (name.to_owned(), 0));

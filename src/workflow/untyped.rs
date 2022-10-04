@@ -68,13 +68,13 @@ impl<Env> TakeHandle<Env> for UntypedHandle<Env>
 where
     RawReceiver: TakeHandle<Env, Id = str>,
     RawSender: TakeHandle<Env, Id = str>,
-    Interface<()>: TakeHandle<Env, Id = (), Handle = Interface<()>>,
+    Interface: TakeHandle<Env, Id = (), Handle = Interface>,
 {
     type Id = ();
     type Handle = Self;
 
     fn take_handle(env: &mut Env, _id: &()) -> Result<Self, AccessError> {
-        let interface = Interface::<()>::take_handle(env, &())?;
+        let interface = Interface::take_handle(env, &())?;
 
         let inbound_channels = interface
             .inbound_channels()

@@ -29,7 +29,7 @@ struct NewWorkflowCall {
 
 #[derive(Debug)]
 struct MockWorkflowManager {
-    interface: Interface<()>,
+    interface: Interface,
     channel_counter: AtomicU32,
     calls: Mutex<Vec<NewWorkflowCall>>,
 }
@@ -51,7 +51,7 @@ impl MockWorkflowManager {
 }
 
 impl ManageInterfaces for MockWorkflowManager {
-    fn interface(&self, id: &str) -> Option<Cow<'_, Interface<()>>> {
+    fn interface(&self, id: &str) -> Option<Cow<'_, Interface>> {
         if id == "test:latest" {
             Some(Cow::Borrowed(&self.interface))
         } else {

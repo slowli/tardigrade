@@ -104,7 +104,7 @@ impl Transaction {
 }
 
 impl ManageInterfaces for Transaction {
-    fn interface(&self, id: &str) -> Option<Cow<'_, Interface<()>>> {
+    fn interface(&self, id: &str) -> Option<Cow<'_, Interface>> {
         Some(Cow::Borrowed(self.shared.spawners.get(id)?.interface()))
     }
 }

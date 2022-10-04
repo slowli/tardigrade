@@ -123,11 +123,18 @@ pub use tardigrade_derive::handle;
 
 pub use tardigrade_shared::interface;
 
+#[doc(hidden)] // used by the derive macros; not public
+pub mod _reexports {
+    pub use once_cell::sync::Lazy;
+}
+
 /// Creates an entry point for the specified workflow type.
 ///
 /// An entry point must be specified for a workflow type in a workflow module in order
 /// for the module to properly function (i.e., being able to spawn workflow instances).
 /// The specified type must implement [`SpawnWorkflow`](crate::workflow::SpawnWorkflow).
+///
+/// The macro will automatically implement [`NamedWorkflow`](crate::workflow::NamedWorkflow).
 ///
 /// # Examples
 ///

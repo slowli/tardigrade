@@ -62,7 +62,7 @@ impl fmt::Display for PersistError {
 impl error::Error for PersistError {}
 
 impl InboundChannelState {
-    fn check_on_restore(interface: &Interface<()>, channel_name: &str) -> anyhow::Result<()> {
+    fn check_on_restore(interface: &Interface, channel_name: &str) -> anyhow::Result<()> {
         interface.inbound_channel(channel_name).ok_or_else(|| {
             anyhow!(
                 "inbound channel `{}` is present in persisted state, but not \
@@ -75,7 +75,7 @@ impl InboundChannelState {
 }
 
 impl OutboundChannelState {
-    fn check_on_restore(interface: &Interface<()>, channel_name: &str) -> anyhow::Result<()> {
+    fn check_on_restore(interface: &Interface, channel_name: &str) -> anyhow::Result<()> {
         interface.outbound_channel(channel_name).ok_or_else(|| {
             anyhow!(
                 "outbound channel `{}` is present in persisted state, but not \
@@ -88,7 +88,7 @@ impl OutboundChannelState {
 }
 
 impl ChannelStates {
-    fn check_on_restore(&self, interface: &Interface<()>) -> anyhow::Result<()> {
+    fn check_on_restore(&self, interface: &Interface) -> anyhow::Result<()> {
         let inbound_channels_len = interface.inbound_channels().len();
         ensure!(
             inbound_channels_len == self.inbound.len(),
@@ -118,11 +118,7 @@ impl ChannelStates {
 }
 
 impl PersistedWorkflowData {
-    pub(super) fn new(
-        interface: &Interface<()>,
-        channel_ids: &ChannelIds,
-        now: DateTime<Utc>,
-    ) -> Self {
+    pub(super) fn new(interface: &Interface, channel_ids: &ChannelIds, now: DateTime<Utc>) -> Self {
         Self {
             channels: ChannelStates::new(channel_ids, |name| {
                 interface.outbound_channel(name).unwrap().capacity
@@ -134,13 +130,13 @@ impl PersistedWorkflowData {
         }
     }
 
-    pub fn check_on_restore(&self, interface: &Interface<()>) -> anyhow::Result<()> {
+    pub fn check_on_restore(&self, interface: &Interface) -> anyhow::Result<()> {
         self.channels.check_on_restore(interface)
     }
 
     pub fn restore<'a>(
         self,
-        interface: &Interface<()>,
+        interface: &Interface,
         services: Services<'a>,
     ) -> anyhow::Result<WorkflowData<'a>> {
         self.channels.check_on_restore(interface)?;

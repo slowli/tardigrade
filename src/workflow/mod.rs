@@ -83,7 +83,7 @@
 //! tardigrade::workflow_entry!(MyWorkflow);
 //! ```
 
-use std::{future::Future, mem};
+use std::{borrow::Cow, future::Future, mem};
 
 /// Derives the [`GetInterface`] trait for a workflow type.
 ///
@@ -193,11 +193,14 @@ mod imp {
 /// Allows obtaining an [`Interface`] for a workflow.
 ///
 /// This trait should be derived for workflow types using the corresponding macro.
-pub trait GetInterface: TakeHandle<InterfaceBuilder, Id = ()> + Sized {
+pub trait GetInterface: TakeHandle<InterfaceBuilder, Id = ()> + Sized + 'static {
     /// Obtains the workflow interface.
-    // TODO: allow for caching (`Cow<'static, Interface<Self>>`)
-    fn interface() -> Interface<Self> {
-        interface_by_handle::<Self>()
+    ///
+    /// The default implementation uses the [`TakeHandle`] implementation to create
+    /// an owned interface. The `GetInterface` proc derives provides a more efficient cached
+    /// implementation.
+    fn interface() -> Cow<'static, Interface> {
+        Cow::Owned(interface_by_handle::<Self>())
     }
 }
 
@@ -213,13 +216,13 @@ impl TakeHandle<InterfaceBuilder> for () {
 impl GetInterface for () {}
 
 #[doc(hidden)]
-pub fn interface_by_handle<W>() -> Interface<W>
+pub fn interface_by_handle<W>() -> Interface
 where
     W: TakeHandle<InterfaceBuilder, Id = ()>,
 {
     let mut builder = InterfaceBuilder::new(ArgsSpec::default());
     W::take_handle(&mut builder, &()).expect("failed describing workflow interface");
-    builder.build().downcast_unchecked()
+    builder.build()
 }
 
 /// Workflow that is accessible by its name from a module.

@@ -344,7 +344,7 @@ impl WorkflowManager {
         self.lock().workflows[&workflow_id].workflow.clone()
     }
 
-    pub(crate) fn interface_for_workflow(&self, workflow_id: WorkflowId) -> Option<&Interface<()>> {
+    pub(crate) fn interface_for_workflow(&self, workflow_id: WorkflowId) -> Option<&Interface> {
         let state = self.lock();
         let persisted = state.workflows.get(&workflow_id)?;
         Some(self.shared.spawners[&persisted.definition_id].interface())
@@ -592,7 +592,7 @@ impl WorkflowManagerBuilder {
 }
 
 impl ManageInterfaces for WorkflowManager {
-    fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface<()>>> {
+    fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
         Some(Cow::Borrowed(
             self.shared.spawners.get(definition_id)?.interface(),
         ))

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use std::{collections::HashMap, error, fmt, marker::PhantomData, ops};
+use std::{collections::HashMap, error, fmt, ops};
 
 use crate::abi::{FromWasmError, TryFromWasm};
 
@@ -262,7 +262,7 @@ impl From<OutboundChannel<'_>> for InterfaceLocation {
 /// #     "in": { "commands": {} },
 /// #     "out": { "events": {} }
 /// # }"#;
-/// let interface: Interface<()> = // ...
+/// let interface: Interface = // ...
 /// #     Interface::from_bytes(INTERFACE_BYTES);
 ///
 /// let spec = interface.inbound_channel("commands").unwrap();
@@ -275,8 +275,8 @@ impl From<OutboundChannel<'_>> for InterfaceLocation {
 /// let commands = &interface[InboundChannel("commands")];
 /// println!("{}", commands.description);
 /// ```
-#[derive(Serialize, Deserialize)]
-pub struct Interface<W: ?Sized> {
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Interface {
     #[serde(rename = "v")]
     version: u32,
     #[serde(rename = "in", default, skip_serializing_if = "HashMap::is_empty")]
@@ -285,47 +285,35 @@ pub struct Interface<W: ?Sized> {
     outbound_channels: HashMap<String, OutboundChannelSpec>,
     #[serde(rename = "args", default)]
     args: ArgsSpec,
-    #[serde(skip, default)]
-    _workflow: PhantomData<fn(W)>,
 }
 
-impl<W: ?Sized> fmt::Debug for Interface<W> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("Interface")
-            .field("version", &self.version)
-            .field("inbound_channels", &self.inbound_channels)
-            .field("outbound_channels", &self.outbound_channels)
-            .field("args", &self.args)
-            .finish()
+impl Interface {
+    /// Parses interface definition from `bytes`.
+    ///
+    /// Currently, this assumes that the definition is JSON-encoded, but this should be considered
+    /// an implementation detail.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `bytes` do not represent a valid interface definition.
+    pub fn try_from_bytes(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        serde_json::from_slice(bytes).map_err(Into::into)
     }
-}
 
-impl<W: ?Sized> Clone for Interface<W> {
-    fn clone(&self) -> Self {
-        Self {
-            version: self.version,
-            inbound_channels: self.inbound_channels.clone(),
-            outbound_channels: self.outbound_channels.clone(),
-            args: self.args.clone(),
-            _workflow: PhantomData,
-        }
+    /// Version of [`Self::try_from_bytes()`] that panics on error.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `bytes` do not represent a valid interface definition.
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        Self::try_from_bytes(bytes).unwrap_or_else(|err| panic!("Cannot deserialize spec: {}", err))
     }
-}
 
-impl Default for Interface<()> {
-    fn default() -> Self {
-        Self {
-            version: 0,
-            inbound_channels: HashMap::new(),
-            outbound_channels: HashMap::new(),
-            args: ArgsSpec::default(),
-            _workflow: PhantomData,
-        }
+    /// Serializes this interface.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("failed serializing `Interface`")
     }
-}
 
-impl<W> Interface<W> {
     /// Returns the version of this interface definition.
     #[doc(hidden)]
     pub fn version(&self) -> u32 {
@@ -374,7 +362,7 @@ impl<W> Interface<W> {
     /// # Errors
     ///
     /// Returns an error if the provided interface does not match expectations.
-    pub fn check_compatibility<U>(&self, provided: &Interface<U>) -> Result<(), AccessError> {
+    pub fn check_compatibility(&self, provided: &Self) -> Result<(), AccessError> {
         self.inbound_channels.keys().try_fold((), |(), name| {
             provided
                 .inbound_channels
@@ -395,31 +383,9 @@ impl<W> Interface<W> {
 
         Ok(())
     }
-
-    /// Downcasts the provided dynamic interface to this interface. The resulting interface
-    /// may be wider than this one, but not the other way around.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the provided interface does not match expectations.
-    pub fn downcast(&self, provided: Interface<()>) -> Result<Interface<W>, AccessError> {
-        self.check_compatibility(&provided)?;
-        Ok(provided.downcast_unchecked())
-    }
-
-    /// Erases the type of this interface.
-    pub fn erase(self) -> Interface<()> {
-        Interface {
-            version: self.version,
-            inbound_channels: self.inbound_channels,
-            outbound_channels: self.outbound_channels,
-            args: self.args,
-            _workflow: PhantomData,
-        }
-    }
 }
 
-impl<W> ops::Index<InboundChannel<'_>> for Interface<W> {
+impl ops::Index<InboundChannel<'_>> for Interface {
     type Output = InboundChannelSpec;
 
     fn index(&self, index: InboundChannel<'_>) -> &Self::Output {
@@ -428,7 +394,7 @@ impl<W> ops::Index<InboundChannel<'_>> for Interface<W> {
     }
 }
 
-impl<W> ops::Index<OutboundChannel<'_>> for Interface<W> {
+impl ops::Index<OutboundChannel<'_>> for Interface {
     type Output = OutboundChannelSpec;
 
     fn index(&self, index: OutboundChannel<'_>) -> &Self::Output {
@@ -437,49 +403,10 @@ impl<W> ops::Index<OutboundChannel<'_>> for Interface<W> {
     }
 }
 
-impl Interface<()> {
-    /// Parses interface definition from `bytes`.
-    ///
-    /// Currently, this assumes that the definition is JSON-encoded, but this should be considered
-    /// an implementation detail.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `bytes` do not represent a valid interface definition.
-    pub fn try_from_bytes(bytes: &[u8]) -> Result<Self, serde_json::Error> {
-        serde_json::from_slice(bytes).map_err(Into::into)
-    }
-
-    /// Version of [`Self::try_from_bytes()`] that panics on error.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `bytes` do not represent a valid interface definition.
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        Self::try_from_bytes(bytes).unwrap_or_else(|err| panic!("Cannot deserialize spec: {}", err))
-    }
-
-    /// Serializes this interface.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).expect("failed serializing `Interface`")
-    }
-
-    #[doc(hidden)]
-    pub fn downcast_unchecked<W>(self) -> Interface<W> {
-        Interface {
-            version: self.version,
-            inbound_channels: self.inbound_channels,
-            outbound_channels: self.outbound_channels,
-            args: self.args,
-            _workflow: PhantomData,
-        }
-    }
-}
-
 /// Builder of workflow [`Interface`].
 #[derive(Debug)]
 pub struct InterfaceBuilder {
-    interface: Interface<()>,
+    interface: Interface,
 }
 
 impl InterfaceBuilder {
@@ -504,7 +431,7 @@ impl InterfaceBuilder {
     }
 
     /// Builds an untyped interface from this builder.
-    pub fn build(self) -> Interface<()> {
+    pub fn build(self) -> Interface {
         self.interface
     }
 }

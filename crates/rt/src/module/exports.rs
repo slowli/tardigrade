@@ -119,7 +119,7 @@ impl fmt::Debug for ModuleExports {
 impl ModuleExports {
     pub(super) fn validate_module(
         module: &Module,
-        workflows: &HashMap<String, Interface<()>>,
+        workflows: &HashMap<String, Interface>,
     ) -> anyhow::Result<()> {
         let memory_ty = module
             .get_export("memory")

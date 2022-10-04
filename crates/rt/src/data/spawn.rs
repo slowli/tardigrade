@@ -145,7 +145,7 @@ impl WorkflowData<'_> {
     }
 
     fn extra_handles_error(
-        interface: &Interface<()>,
+        interface: &Interface,
         channels: &ChannelsConfig<ChannelId>,
         channel_kind: ChannelKind,
     ) -> Trap {

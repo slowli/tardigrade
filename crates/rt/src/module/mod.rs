@@ -4,7 +4,7 @@ use anyhow::{anyhow, bail, ensure, Context};
 use once_cell::sync::OnceCell;
 use wasmtime::{Engine, ExternType, Func, Linker, Module, Store, WasmParams, WasmResults};
 
-use std::{collections::HashMap, fmt, str, sync::Arc};
+use std::{collections::HashMap, fmt, marker::PhantomData, str, sync::Arc};
 
 use crate::data::{SpawnFunctions, WorkflowData, WorkflowFunctions};
 use tardigrade::{
@@ -138,7 +138,7 @@ impl DataSection {
 /// workflow [`Interface`].
 pub struct WorkflowModule {
     pub(crate) inner: Module,
-    interfaces: HashMap<String, Interface<()>>,
+    interfaces: HashMap<String, Interface>,
 }
 
 impl fmt::Debug for WorkflowModule {
@@ -152,7 +152,7 @@ impl fmt::Debug for WorkflowModule {
 
 impl WorkflowModule {
     #[cfg_attr(test, mimicry::mock(using = "ExportsMock"))]
-    fn interfaces_from_wasm(module_bytes: &[u8]) -> anyhow::Result<HashMap<String, Interface<()>>> {
+    fn interfaces_from_wasm(module_bytes: &[u8]) -> anyhow::Result<HashMap<String, Interface>> {
         const INTERFACE_SECTION: &str = "__tardigrade_spec";
         const CUSTOM_SECTION_TYPE: u8 = 0;
         const HEADER_LEN: usize = 8; // 4-byte magic + 4-byte version field
@@ -193,9 +193,7 @@ impl WorkflowModule {
         Ok(bytes.split_at(name_len))
     }
 
-    fn interfaces_from_section(
-        mut section: &[u8],
-    ) -> anyhow::Result<HashMap<String, Interface<()>>> {
+    fn interfaces_from_section(mut section: &[u8]) -> anyhow::Result<HashMap<String, Interface>> {
         let mut interfaces = HashMap::with_capacity(1);
         while !section.is_empty() {
             let name_len =
@@ -228,7 +226,7 @@ impl WorkflowModule {
         Ok(interfaces)
     }
 
-    fn check_internal_validity(interface: &Interface<()>) -> anyhow::Result<()> {
+    fn check_internal_validity(interface: &Interface) -> anyhow::Result<()> {
         const EXPECTED_VERSION: u32 = 0;
 
         ensure!(
@@ -243,7 +241,7 @@ impl WorkflowModule {
     #[cfg_attr(test, mimicry::mock(using = "ExportsMock"))]
     fn validate_module(
         module: &Module,
-        workflows: &HashMap<String, Interface<()>>,
+        workflows: &HashMap<String, Interface>,
     ) -> anyhow::Result<()> {
         ModuleExports::validate_module(module, workflows)?;
         ModuleImports::validate_module(module)?;
@@ -251,7 +249,7 @@ impl WorkflowModule {
     }
 
     /// Lists the interfaces of workflows defined in this module.
-    pub fn interfaces(&self) -> impl Iterator<Item = (&str, &Interface<()>)> + '_ {
+    pub fn interfaces(&self) -> impl Iterator<Item = (&str, &Interface)> + '_ {
         self.interfaces
             .iter()
             .map(|(name, interface)| (name.as_str(), interface))
@@ -298,14 +296,15 @@ impl WorkflowModule {
                 W::WORKFLOW_NAME
             )
         })?;
-        let interface = W::interface()
-            .downcast(interface.clone())
+        W::interface()
+            .check_compatibility(interface)
             .with_context(|| {
                 anyhow!("mismatch in interface for workflow `{}`", W::WORKFLOW_NAME)
             })?;
+
         Ok(WorkflowSpawner::new(
             self.inner.clone(),
-            interface,
+            interface.clone(),
             W::WORKFLOW_NAME,
         ))
     }
@@ -328,10 +327,11 @@ impl WorkflowModule {
 /// [`WorkflowModule::for_untyped_workflow`].
 pub struct WorkflowSpawner<W> {
     pub(crate) module: Module,
-    interface: Interface<W>,
+    interface: Interface,
     workflow_name: String,
     linker_extensions: Vec<Box<dyn LowLevelExtendLinker>>,
     data_section: OnceCell<Arc<DataSection>>,
+    _ty: PhantomData<W>,
 }
 
 impl<W> fmt::Debug for WorkflowSpawner<W> {
@@ -346,13 +346,14 @@ impl<W> fmt::Debug for WorkflowSpawner<W> {
 }
 
 impl<W> WorkflowSpawner<W> {
-    fn new(module: Module, interface: Interface<W>, workflow_name: &str) -> Self {
+    fn new(module: Module, interface: Interface, workflow_name: &str) -> Self {
         Self {
             module,
             interface,
             workflow_name: workflow_name.to_owned(),
             linker_extensions: vec![Box::new(WorkflowFunctions), Box::new(SpawnFunctions)],
             data_section: OnceCell::new(),
+            _ty: PhantomData,
         }
     }
 
@@ -389,7 +390,7 @@ impl<W> WorkflowSpawner<W> {
     }
 
     /// Returns the interface of the workflow spawned by this spawner.
-    pub fn interface(&self) -> &Interface<W> {
+    pub fn interface(&self) -> &Interface {
         &self.interface
     }
 
@@ -401,10 +402,11 @@ impl<W> WorkflowSpawner<W> {
     pub(crate) fn erase(self) -> WorkflowSpawner<()> {
         WorkflowSpawner {
             module: self.module,
-            interface: self.interface.erase(),
+            interface: self.interface,
             workflow_name: self.workflow_name,
             linker_extensions: self.linker_extensions,
             data_section: self.data_section,
+            _ty: PhantomData,
         }
     }
 }

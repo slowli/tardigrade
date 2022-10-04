@@ -154,7 +154,7 @@ impl<In, Out> Default for ChannelsConfig<In, Out> {
 
 impl<In, Out> ChannelsConfig<In, Out> {
     /// Creates channel configuration from the provided interface.
-    pub fn from_interface(interface: &Interface<()>) -> Self {
+    pub fn from_interface(interface: &Interface) -> Self {
         let inbound = interface
             .inbound_channels()
             .map(|(name, _)| (name.to_owned(), ChannelSpawnConfig::default()))
@@ -185,7 +185,7 @@ impl<In, Out> ChannelsConfig<In, Out> {
 /// Manager of [`Interface`]s that allows obtaining an interface by a string identifier.
 pub trait ManageInterfaces {
     /// Returns the interface spec of a workflow with the specified ID.
-    fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface<()>>>;
+    fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>>;
 }
 
 /// Specifier of inbound and outbound channel handles when [spawning workflows](WorkflowBuilder).
@@ -320,13 +320,13 @@ impl<T> Remote<T> {
 #[derive(Debug)]
 struct SpawnerInner<Ch: SpecifyWorkflowChannels> {
     definition_id: String,
-    interface: Interface<()>,
+    interface: Interface,
     args: Vec<u8>,
     channels: RefCell<ChannelsConfig<Ch::Inbound, Ch::Outbound>>,
 }
 
 impl<Ch: SpecifyWorkflowChannels> SpawnerInner<Ch> {
-    fn new(interface: Interface<()>, definition_id: &str, args: Vec<u8>) -> Self {
+    fn new(interface: Interface, definition_id: &str, args: Vec<u8>) -> Self {
         Self {
             definition_id: definition_id.to_owned(),
             channels: RefCell::new(ChannelsConfig::from_interface(&interface)),
@@ -379,7 +379,7 @@ impl<Ch: SpecifyWorkflowChannels> Clone for Spawner<Ch> {
     }
 }
 
-impl<Ch: SpecifyWorkflowChannels> TakeHandle<Spawner<Ch>> for Interface<()> {
+impl<Ch: SpecifyWorkflowChannels> TakeHandle<Spawner<Ch>> for Interface {
     type Id = ();
     type Handle = Self;
 
@@ -558,7 +558,7 @@ where
     M: ManageWorkflows<'a, W>,
     W: WorkflowFn + TakeHandle<Spawner<M>, Id = ()>,
 {
-    fn new(manager: &'a M, interface: Interface<()>, definition_id: &str, args: W::Args) -> Self {
+    fn new(manager: &'a M, interface: Interface, definition_id: &str, args: W::Args) -> Self {
         let raw_args = W::Codec::default().encode_value(args);
         let mut spawner = Spawner {
             inner: Rc::new(SpawnerInner::new(interface, definition_id, raw_args)),

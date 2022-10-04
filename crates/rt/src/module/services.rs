@@ -43,7 +43,7 @@ pub(crate) struct WorkflowAndChannelIds {
 pub(crate) struct NoOpWorkflowManager;
 
 impl ManageInterfaces for NoOpWorkflowManager {
-    fn interface(&self, _definition_id: &str) -> Option<Cow<'_, Interface<()>>> {
+    fn interface(&self, _definition_id: &str) -> Option<Cow<'_, Interface>> {
         None
     }
 }

@@ -90,6 +90,7 @@ use futures::{
 use pin_project_lite::pin_project;
 
 use std::{
+    borrow::Cow,
     cell::{Cell, RefCell},
     cmp,
     collections::{BinaryHeap, HashMap},
@@ -227,7 +228,7 @@ impl Timers {
 type SpawnFn = Box<dyn Fn(Vec<u8>, Wasm, TaskContext) -> TaskHandle>;
 
 struct ErasedWorkflowDefinition {
-    interface: Interface<()>,
+    interface: Cow<'static, Interface>,
     spawn_fn: SpawnFn,
 }
 
@@ -265,7 +266,7 @@ impl WorkflowRegistry {
     /// Inserts a new workflow into this registry.
     #[allow(clippy::missing_panics_doc)] // false positive
     pub fn insert<W: SpawnWorkflow, S: Into<String>>(&mut self, id: S) {
-        let interface = W::interface().erase();
+        let interface = W::interface();
         self.definitions.insert(
             id.into(),
             ErasedWorkflowDefinition {
@@ -299,10 +300,10 @@ impl WorkflowRegistry {
         TaskHandle::new(WithTaskContext::new(spawn_fn, context))
     }
 
-    pub(crate) fn interface(&self, definition_id: &str) -> Option<&Interface<()>> {
+    pub(crate) fn interface(&self, definition_id: &str) -> Option<&Interface> {
         self.definitions
             .get(definition_id)
-            .map(|workflow| &workflow.interface)
+            .map(|workflow| workflow.interface.as_ref())
     }
 
     fn create_workflow(

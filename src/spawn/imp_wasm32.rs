@@ -25,7 +25,7 @@ use tardigrade_shared::{
 static mut SPAWN_ERROR_PAD: i64 = 0;
 
 impl ManageInterfaces for Workflows {
-    fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface<()>>> {
+    fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
             #[link_name = "workflow::interface"]

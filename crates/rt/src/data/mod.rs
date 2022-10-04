@@ -65,7 +65,7 @@ pub struct WorkflowData<'a> {
 
 impl<'a> WorkflowData<'a> {
     pub(crate) fn new(
-        interface: &Interface<()>,
+        interface: &Interface,
         channel_ids: &ChannelIds,
         services: Services<'a>,
     ) -> Self {

@@ -365,7 +365,7 @@ where
     }
 }
 
-impl<'a> TakeHandle<WorkflowHandle<'a, ()>> for Interface<()> {
+impl<'a> TakeHandle<WorkflowHandle<'a, ()>> for Interface {
     type Id = ();
     type Handle = Self;
 
