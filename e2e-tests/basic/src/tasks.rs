@@ -44,7 +44,7 @@ impl WorkflowFn for PizzaDeliveryWithTasks {
 }
 
 impl SpawnWorkflow for PizzaDeliveryWithTasks {
-    fn spawn(args: Self::Args, handle: Self::Handle) -> TaskHandle {
+    fn spawn(args: Self::Args, handle: WorkflowHandle<Wasm>) -> TaskHandle {
         TaskHandle::new(handle.spawn(args))
     }
 }

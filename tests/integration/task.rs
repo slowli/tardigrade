@@ -2,17 +2,18 @@
 
 use futures::{future, FutureExt, SinkExt, StreamExt};
 
+use crate::TestHandle;
 use tardigrade::{
     spawn,
     spawn::{ManageWorkflowsExt, WorkflowBuilder, Workflows},
     test::Runtime,
-    workflow::{GetInterface, SpawnWorkflow, TakeHandle, TaskHandle, WorkflowFn},
+    workflow::{GetInterface, SpawnWorkflow, TakeHandle, TaskHandle, Wasm, WorkflowFn},
     Json,
 };
 
 #[derive(Debug, GetInterface, TakeHandle)]
 #[tardigrade(
-    handle = "crate::TestHandle",
+    handle = "TestHandle",
     interface = r#"{ "v": 0, "in": { "commands": {} }, "out": { "events": {} } }"#
 )]
 struct WorkflowWithSubtask;
@@ -23,7 +24,7 @@ impl WorkflowFn for WorkflowWithSubtask {
 }
 
 impl SpawnWorkflow for WorkflowWithSubtask {
-    fn spawn(move_events_to_task: bool, mut handle: Self::Handle) -> TaskHandle {
+    fn spawn(move_events_to_task: bool, mut handle: TestHandle<Wasm>) -> TaskHandle {
         TaskHandle::new(async move {
             handle.events.send(42).await.unwrap();
             if move_events_to_task {

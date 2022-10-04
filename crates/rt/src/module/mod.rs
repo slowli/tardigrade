@@ -7,7 +7,10 @@ use wasmtime::{Engine, ExternType, Func, Linker, Module, Store, WasmParams, Wasm
 use std::{collections::HashMap, fmt, str, sync::Arc};
 
 use crate::data::{SpawnFunctions, WorkflowData, WorkflowFunctions};
-use tardigrade::{interface::Interface, workflow::GetInterface};
+use tardigrade::{
+    interface::Interface,
+    workflow::{GetInterface, NamedWorkflow},
+};
 
 mod exports;
 mod imports;
@@ -287,7 +290,7 @@ impl WorkflowModule {
     /// - The workflow interface definition does not match the interface implied by type param `W`.
     pub fn for_workflow<W>(&self) -> anyhow::Result<WorkflowSpawner<W>>
     where
-        W: GetInterface,
+        W: GetInterface + NamedWorkflow,
     {
         let interface = self.interfaces.get(W::WORKFLOW_NAME).ok_or_else(|| {
             anyhow!(
@@ -295,9 +298,11 @@ impl WorkflowModule {
                 W::WORKFLOW_NAME
             )
         })?;
-        let interface = interface.clone().downcast::<W>().with_context(|| {
-            anyhow!("mismatch in interface for workflow `{}`", W::WORKFLOW_NAME)
-        })?;
+        let interface = W::interface()
+            .downcast(interface.clone())
+            .with_context(|| {
+                anyhow!("mismatch in interface for workflow `{}`", W::WORKFLOW_NAME)
+            })?;
         Ok(WorkflowSpawner::new(
             self.inner.clone(),
             interface,

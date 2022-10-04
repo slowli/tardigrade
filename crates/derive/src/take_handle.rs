@@ -40,15 +40,6 @@ impl TargetField {
         let field = self.ident(field_index);
         quote!(#field: <#unwrapped_ty as #tr>::take_handle(&mut *env, #id)?)
     }
-
-    fn validate_interface(&self) -> impl ToTokens {
-        let unwrapped_ty = &self.wrapper.as_ref().unwrap().inner_types[0];
-        let id = self.id();
-        let tr = quote!(tardigrade::interface::ValidateInterface);
-        quote! {
-            <#unwrapped_ty as #tr>::validate_interface(interface, #id)?;
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -150,27 +141,6 @@ impl Handle {
             }
         }
     }
-
-    fn impl_validate_interface(&self) -> impl ToTokens {
-        let handle = &self.base.ident;
-        let tr = quote!(tardigrade::interface::ValidateInterface);
-        let fields = self.base.fields.iter();
-        let validations = fields.map(TargetField::validate_interface);
-
-        quote! {
-            impl #tr for #handle <tardigrade::workflow::Wasm> {
-                type Id = ();
-
-                fn validate_interface(
-                    interface: &tardigrade::interface::Interface<()>,
-                    _id: &(),
-                ) -> core::result::Result<(), tardigrade::interface::AccessError> {
-                    #(#validations)*
-                    core::result::Result::Ok(())
-                }
-            }
-        }
-    }
 }
 
 impl ToTokens for Handle {
@@ -185,13 +155,11 @@ impl ToTokens for Handle {
         } else {
             None
         };
-        let validate_interface_impl = self.impl_validate_interface();
         let take_handle_impl = self.impl_take_handle();
 
         tokens.extend(quote! {
             #clone_impl
             #debug_impl
-            #validate_interface_impl
             #take_handle_impl
         });
     }
@@ -221,23 +189,8 @@ fn derive_take_handle(input: &DeriveInput) -> darling::Result<impl ToTokens> {
     })?;
     let handle = quote!(#handle <tardigrade::workflow::Wasm>);
 
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let (_, ty_generics, _) = input.generics.split_for_impl();
     let target = &input.ident;
-    let validate_tr = quote!(tardigrade::interface::ValidateInterface);
-
-    let validate_interface = quote! {
-        impl #impl_generics #validate_tr for #target #ty_generics #where_clause {
-            type Id = ();
-
-            fn validate_interface(
-                interface: &tardigrade::interface::Interface<()>,
-                _id: &(),
-            ) -> core::result::Result<(), tardigrade::interface::AccessError> {
-                <#handle as #validate_tr>::validate_interface(interface, &())
-            }
-        }
-    };
-
     let tr = quote!(tardigrade::workflow::TakeHandle);
     let mut extended_generics = input.generics.clone();
     extended_generics.params.push(parse_quote!(Env));
@@ -246,8 +199,8 @@ fn derive_take_handle(input: &DeriveInput) -> darling::Result<impl ToTokens> {
         .get_or_insert_with(|| parse_quote!(where))
         .predicates
         .push(parse_quote!(#handle : #tr<Env, Id = ()>));
-
     let (impl_generics, _, where_clause) = extended_generics.split_for_impl();
+
     let take_handle = quote! {
         impl #impl_generics #tr<Env> for #target #ty_generics #where_clause {
             type Id = ();
@@ -262,7 +215,7 @@ fn derive_take_handle(input: &DeriveInput) -> darling::Result<impl ToTokens> {
         }
     };
 
-    Ok(quote!(#validate_interface #take_handle))
+    Ok(quote!(#take_handle))
 }
 
 pub(crate) fn impl_take_handle(input: TokenStream) -> TokenStream {

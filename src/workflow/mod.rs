@@ -100,7 +100,9 @@ pub use tardigrade_derive::GetInterface;
 pub use tardigrade_derive::TakeHandle;
 
 use crate::{
-    interface::{AccessError, AccessErrorKind, Interface, InterfaceLocation, ValidateInterface},
+    interface::{
+        AccessError, AccessErrorKind, ArgsSpec, Interface, InterfaceBuilder, InterfaceLocation,
+    },
     Decode, Encode, Raw,
 };
 
@@ -191,11 +193,41 @@ mod imp {
 /// Allows obtaining an [`Interface`] for a workflow.
 ///
 /// This trait should be derived for workflow types using the corresponding macro.
-pub trait GetInterface: ValidateInterface<Id = ()> {
-    /// Name of the workflow. This name is used in workflow module definitions.
-    const WORKFLOW_NAME: &'static str;
+pub trait GetInterface: TakeHandle<InterfaceBuilder, Id = ()> + Sized {
     /// Obtains the workflow interface.
-    fn interface() -> Interface<Self>;
+    // TODO: allow for caching (`Cow<'static, Interface<Self>>`)
+    fn interface() -> Interface<Self> {
+        interface_by_handle::<Self>()
+    }
+}
+
+impl TakeHandle<InterfaceBuilder> for () {
+    type Id = ();
+    type Handle = ();
+
+    fn take_handle(_env: &mut InterfaceBuilder, _id: &Self::Id) -> Result<(), AccessError> {
+        Ok(())
+    }
+}
+
+impl GetInterface for () {}
+
+#[doc(hidden)]
+pub fn interface_by_handle<W>() -> Interface<W>
+where
+    W: TakeHandle<InterfaceBuilder, Id = ()>,
+{
+    let mut builder = InterfaceBuilder::new(ArgsSpec::default());
+    W::take_handle(&mut builder, &()).expect("failed describing workflow interface");
+    builder.build().downcast_unchecked()
+}
+
+/// Workflow that is accessible by its name from a module.
+///
+/// This trait is automatically derived using the [`workflow_entry!`] macro.
+pub trait NamedWorkflow {
+    /// Name of the workflow.
+    const WORKFLOW_NAME: &'static str;
 }
 
 /// WASM environment.
@@ -319,7 +351,7 @@ impl WorkflowFn for () {
 /// Workflow that can be spawned.
 pub trait SpawnWorkflow: GetInterface + TakeHandle<Wasm, Id = ()> + WorkflowFn {
     /// Spawns a workflow instance.
-    fn spawn(args: Self::Args, handle: Self::Handle) -> TaskHandle;
+    fn spawn(args: Self::Args, handle: <Self as TakeHandle<Wasm>>::Handle) -> TaskHandle;
 }
 
 /// Handle to a task, essentially equivalent to a boxed [`Future`].

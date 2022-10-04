@@ -3,7 +3,7 @@
 
 use futures::{FutureExt, StreamExt};
 
-use crate::{Args, PizzaDeliveryHandle, PizzaOrder};
+use crate::{Args, PizzaDeliveryHandle, PizzaOrder, SharedHandle};
 use tardigrade::{
     spawn::{ManageWorkflowsExt, WorkflowBuilder, Workflows},
     workflow::{GetInterface, SpawnWorkflow, TakeHandle, TaskHandle, Wasm, WorkflowFn},
@@ -19,7 +19,7 @@ impl WorkflowFn for PizzaDeliveryWithSpawning {
     type Codec = Json;
 }
 
-impl PizzaDeliveryHandle<Wasm> {
+impl PizzaDeliveryHandle {
     async fn spawn_with_child_workflows(self, args: Args) {
         let mut counter = 0;
         let events = self.shared.events;
@@ -37,7 +37,7 @@ impl PizzaDeliveryHandle<Wasm> {
 }
 
 impl SpawnWorkflow for PizzaDeliveryWithSpawning {
-    fn spawn(args: Args, handle: Self::Handle) -> TaskHandle {
+    fn spawn(args: Args, handle: PizzaDeliveryHandle) -> TaskHandle {
         TaskHandle::new(handle.spawn_with_child_workflows(args))
     }
 }
@@ -45,10 +45,7 @@ impl SpawnWorkflow for PizzaDeliveryWithSpawning {
 tardigrade::workflow_entry!(PizzaDeliveryWithSpawning);
 
 #[derive(Debug, GetInterface, TakeHandle)]
-#[tardigrade(
-    handle = "crate::SharedHandle",
-    interface = "file:src/tardigrade-baking.json"
-)]
+#[tardigrade(handle = "SharedHandle", interface = "file:src/tardigrade-baking.json")]
 pub struct Baking(());
 
 impl WorkflowFn for Baking {
@@ -57,7 +54,7 @@ impl WorkflowFn for Baking {
 }
 
 impl SpawnWorkflow for Baking {
-    fn spawn((idx, order): (usize, PizzaOrder), handle: Self::Handle) -> TaskHandle {
+    fn spawn((idx, order): (usize, PizzaOrder), handle: SharedHandle<Wasm>) -> TaskHandle {
         TaskHandle::new(async move {
             handle.bake(idx, order).await;
         })

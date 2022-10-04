@@ -36,10 +36,7 @@ impl GetInterface {
     fn data_section(&self) -> impl ToTokens {
         let name = &self.input.ident;
         let wasm = quote!(tardigrade::workflow::Wasm);
-        let args = quote! {
-            <#name as tardigrade::workflow::GetInterface>::WORKFLOW_NAME,
-            INTERFACE_SPEC,
-        };
+        let args = quote!(core::stringify!(#name), INTERFACE_SPEC);
         quote! {
             #[cfg_attr(target_arch = "wasm32", link_section = "__tardigrade_spec")]
             #[doc(hidden)]
@@ -55,11 +52,10 @@ impl GetInterface {
 
         quote! {
             impl #impl_generics #tr for #name #ty_generics #where_clause {
-                const WORKFLOW_NAME: &'static str = core::stringify!(#name);
-
                 fn interface() -> tardigrade::interface::Interface<Self> {
-                    tardigrade::interface::Interface::from_bytes(&INTERFACE_SPEC)
-                        .downcast::<Self>()
+                    let interface = tardigrade::interface::Interface::from_bytes(&INTERFACE_SPEC);
+                    tardigrade::workflow::interface_by_handle::<Self>()
+                        .downcast(interface)
                         .expect("workflow interface does not match declaration")
                 }
             }

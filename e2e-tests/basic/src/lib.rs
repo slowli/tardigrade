@@ -100,7 +100,7 @@ pub struct PizzaDeliveryHandle<Env = Wasm> {
 #[tardigrade(handle = "PizzaDeliveryHandle")]
 pub struct PizzaDelivery(());
 
-// Besides defining `PizzaDeliveryHandle` as a handle for `PizzaDelivery`,
+// FIXME: Besides defining `PizzaDeliveryHandle` as a handle for `PizzaDelivery`,
 // the `handle` proc macro also provides a `ValidateInterface` implementation.
 // This allows to ensure (unfortunately, in runtime) that the handle corresponds
 // to the interface declaration.
@@ -117,7 +117,7 @@ impl WorkflowFn for PizzaDelivery {
 
 /// Defines how workflow instances are spawned.
 impl SpawnWorkflow for PizzaDelivery {
-    fn spawn(args: Args, handle: Self::Handle) -> TaskHandle {
+    fn spawn(args: Args, handle: PizzaDeliveryHandle) -> TaskHandle {
         TaskHandle::new(handle.spawn(args))
     }
 }
@@ -125,7 +125,7 @@ impl SpawnWorkflow for PizzaDelivery {
 // Defines the entry point for the workflow.
 tardigrade::workflow_entry!(PizzaDelivery);
 
-impl PizzaDeliveryHandle<Wasm> {
+impl PizzaDeliveryHandle {
     /// This is where the actual workflow logic is contained. We pass incoming orders
     /// through 2 unordered buffers with the capacities defined by the workflow arguments.
     async fn spawn(self, args: Args) {

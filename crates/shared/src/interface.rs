@@ -162,7 +162,7 @@ pub struct InboundChannelSpec {
 }
 
 /// Specification of an outbound workflow channel in the workflow [`Interface`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct OutboundChannelSpec {
     /// Human-readable channel description.
@@ -174,10 +174,32 @@ pub struct OutboundChannelSpec {
     pub capacity: Option<usize>,
 }
 
+impl Default for OutboundChannelSpec {
+    fn default() -> Self {
+        Self {
+            description: String::new(),
+            capacity: Self::default_capacity(),
+        }
+    }
+}
+
 impl OutboundChannelSpec {
     #[allow(clippy::unnecessary_wraps)] // required by `serde`
     const fn default_capacity() -> Option<usize> {
         Some(1)
+    }
+
+    fn check_compatibility(&self, provided: &Self) -> Result<(), AccessErrorKind> {
+        if self.capacity == provided.capacity {
+            Ok(())
+        } else {
+            let expected = self.capacity;
+            let provided = provided.capacity;
+            let msg = format!(
+                "outbound channel capacity mismatch: expected {expected:?}, got {provided:?}"
+            );
+            Err(AccessErrorKind::custom(msg))
+        }
     }
 }
 
@@ -345,6 +367,46 @@ impl<W> Interface<W> {
         &self.args
     }
 
+    /// Checks the compatibility of this *expected* interface against the `provided` interface.
+    /// The provided interface may contain more channels than is described by the expected
+    /// interface, but not vice versa.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provided interface does not match expectations.
+    pub fn check_compatibility<U>(&self, provided: &Interface<U>) -> Result<(), AccessError> {
+        self.inbound_channels.keys().try_fold((), |(), name| {
+            provided
+                .inbound_channels
+                .get(name)
+                .map(drop)
+                .ok_or_else(|| AccessErrorKind::Unknown.with_location(InboundChannel(name)))
+        })?;
+        self.outbound_channels
+            .iter()
+            .try_fold((), |(), (name, spec)| {
+                let other_spec = provided
+                    .outbound_channels
+                    .get(name)
+                    .ok_or_else(|| AccessErrorKind::Unknown.with_location(OutboundChannel(name)))?;
+                spec.check_compatibility(other_spec)
+                    .map_err(|err| err.with_location(OutboundChannel(name)))
+            })?;
+
+        Ok(())
+    }
+
+    /// Downcasts the provided dynamic interface to this interface. The resulting interface
+    /// may be wider than this one, but not the other way around.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provided interface does not match expectations.
+    pub fn downcast(&self, provided: Interface<()>) -> Result<Interface<W>, AccessError> {
+        self.check_compatibility(&provided)?;
+        Ok(provided.downcast_unchecked())
+    }
+
     /// Erases the type of this interface.
     pub fn erase(self) -> Interface<()> {
         Interface {
@@ -402,46 +464,47 @@ impl Interface<()> {
         serde_json::to_vec(self).expect("failed serializing `Interface`")
     }
 
-    /// Tries to downcast this interface to a particular workflow.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if there is a mismatch between the interface of the workflow type
-    /// and this interface, e.g., if the workflow type relies on a channel
-    /// not present in this interface.
-    pub fn downcast<W>(self) -> Result<Interface<W>, AccessError>
-    where
-        W: ValidateInterface<Id = ()>,
-    {
-        W::validate_interface(&self, &())?;
-        Ok(Interface {
+    #[doc(hidden)]
+    pub fn downcast_unchecked<W>(self) -> Interface<W> {
+        Interface {
             version: self.version,
             inbound_channels: self.inbound_channels,
             outbound_channels: self.outbound_channels,
             args: self.args,
             _workflow: PhantomData,
-        })
+        }
     }
 }
 
-/// Validates a workflow interface.
-pub trait ValidateInterface {
-    /// ID of the type within the interface, usually a `str` (for named handles)
-    /// or `()` (for singleton handles).
-    type Id: ?Sized;
-
-    /// Performs validation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the interface is invalid.
-    fn validate_interface(interface: &Interface<()>, id: &Self::Id) -> Result<(), AccessError>;
+/// Builder of workflow [`Interface`].
+#[derive(Debug)]
+pub struct InterfaceBuilder {
+    interface: Interface<()>,
 }
 
-impl ValidateInterface for () {
-    type Id = ();
+impl InterfaceBuilder {
+    /// Creates a builder without any channels specified.
+    pub fn new(args: ArgsSpec) -> Self {
+        Self {
+            interface: Interface {
+                args,
+                ..Interface::default()
+            },
+        }
+    }
 
-    fn validate_interface(_interface: &Interface<()>, _id: &()) -> Result<(), AccessError> {
-        Ok(()) // validation always succeeds
+    /// Adds an inbound channel to this builder.
+    pub fn insert_inbound_channel(&mut self, name: impl Into<String>, spec: InboundChannelSpec) {
+        self.interface.inbound_channels.insert(name.into(), spec);
+    }
+
+    /// Adds an outbound channel to this builder.
+    pub fn insert_outbound_channel(&mut self, name: impl Into<String>, spec: OutboundChannelSpec) {
+        self.interface.outbound_channels.insert(name.into(), spec);
+    }
+
+    /// Builds an untyped interface from this builder.
+    pub fn build(self) -> Interface<()> {
+        self.interface
     }
 }

@@ -25,7 +25,8 @@ use std::{
 use crate::{
     codec::{Decode, Encode, Raw},
     interface::{
-        AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel, ValidateInterface,
+        AccessError, AccessErrorKind, InboundChannel, InboundChannelSpec, InterfaceBuilder,
+        OutboundChannel, OutboundChannelSpec,
     },
     workflow::{TakeHandle, Wasm},
 };
@@ -133,17 +134,15 @@ where
     }
 }
 
-impl<T, C> ValidateInterface for Receiver<T, C>
+impl<T, C> TakeHandle<InterfaceBuilder> for Receiver<T, C>
 where
     C: Encode<T> + Decode<T>,
 {
     type Id = str;
+    type Handle = ();
 
-    fn validate_interface(interface: &Interface<()>, id: &str) -> Result<(), AccessError> {
-        if interface.inbound_channel(id).is_none() {
-            let err = AccessErrorKind::Unknown.with_location(InboundChannel(id));
-            return Err(err);
-        }
+    fn take_handle(env: &mut InterfaceBuilder, id: &Self::Id) -> Result<(), AccessError> {
+        env.insert_inbound_channel(id, InboundChannelSpec::default());
         Ok(())
     }
 }
@@ -269,18 +268,15 @@ impl<T, C: Encode<T>> Sink<T> for Sender<T, C> {
     }
 }
 
-impl<T, C> ValidateInterface for Sender<T, C>
+impl<T, C> TakeHandle<InterfaceBuilder> for Sender<T, C>
 where
     C: Encode<T> + Decode<T>,
 {
     type Id = str;
+    type Handle = ();
 
-    fn validate_interface(interface: &Interface<()>, id: &str) -> Result<(), AccessError> {
-        if interface.outbound_channel(id).is_none() {
-            let err = AccessErrorKind::Unknown.with_location(OutboundChannel(id));
-            Err(err)
-        } else {
-            Ok(())
-        }
+    fn take_handle(env: &mut InterfaceBuilder, id: &Self::Id) -> Result<(), AccessError> {
+        env.insert_outbound_channel(id, OutboundChannelSpec::default());
+        Ok(())
     }
 }

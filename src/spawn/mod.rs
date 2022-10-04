@@ -95,10 +95,9 @@ use crate::{
     channel::{RawReceiver, RawSender, Receiver, SendError, Sender},
     interface::{
         AccessError, AccessErrorKind, ChannelKind, InboundChannel, Interface, OutboundChannel,
-        ValidateInterface,
     },
     trace::{FutureUpdate, TracedFutures, Tracer},
-    workflow::{TakeHandle, UntypedHandle, WorkflowFn},
+    workflow::{GetInterface, TakeHandle, UntypedHandle, WorkflowFn},
     Decode, Encode,
 };
 use tardigrade_shared::JoinError;
@@ -245,13 +244,18 @@ pub trait ManageWorkflowsExt<'a, W: WorkflowFn>: ManageWorkflows<'a, W> + Sized 
         args: W::Args,
     ) -> Result<WorkflowBuilder<'a, Self, W>, AccessError>
     where
-        W: ValidateInterface<Id = ()> + TakeHandle<Spawner<Self>, Id = ()>,
+        W: GetInterface + TakeHandle<Spawner<Self>, Id = ()>,
     {
-        let interface = self
+        let provided_interface = self
             .interface(definition_id)
             .ok_or(AccessErrorKind::Unknown)?;
-        W::validate_interface(&interface, &())?;
-        Ok(WorkflowBuilder::new(self, &interface, definition_id, args))
+        W::interface().check_compatibility(&provided_interface)?;
+        Ok(WorkflowBuilder::new(
+            self,
+            provided_interface.into_owned(),
+            definition_id,
+            args,
+        ))
     }
 }
 
@@ -329,12 +333,12 @@ struct SpawnerInner<Ch: SpecifyWorkflowChannels> {
 }
 
 impl<Ch: SpecifyWorkflowChannels> SpawnerInner<Ch> {
-    fn new(interface: &Interface<()>, definition_id: &str, args: Vec<u8>) -> Self {
+    fn new(interface: Interface<()>, definition_id: &str, args: Vec<u8>) -> Self {
         Self {
             definition_id: definition_id.to_owned(),
-            interface: interface.clone(),
+            channels: RefCell::new(ChannelsConfig::from_interface(&interface)),
+            interface,
             args,
-            channels: RefCell::new(ChannelsConfig::from_interface(interface)),
         }
     }
 
@@ -561,7 +565,7 @@ where
     M: ManageWorkflows<'a, W>,
     W: WorkflowFn + TakeHandle<Spawner<M>, Id = ()>,
 {
-    fn new(manager: &'a M, interface: &Interface<()>, definition_id: &str, args: W::Args) -> Self {
+    fn new(manager: &'a M, interface: Interface<()>, definition_id: &str, args: W::Args) -> Self {
         let raw_args = W::Codec::default().encode_value(args);
         let mut spawner = Spawner {
             inner: Rc::new(SpawnerInner::new(interface, definition_id, raw_args)),

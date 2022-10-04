@@ -18,11 +18,9 @@ use crate::{
 };
 use tardigrade::{
     channel::{Receiver, Sender},
-    interface::{
-        AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel, ValidateInterface,
-    },
+    interface::{AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel},
     trace::{FutureUpdate, TracedFutures, Tracer},
-    workflow::{TakeHandle, UntypedHandle},
+    workflow::{GetInterface, TakeHandle, UntypedHandle},
     Decode, Encode,
 };
 use tardigrade_shared::SendError;
@@ -101,14 +99,12 @@ impl<'a> WorkflowHandle<'a, ()> {
     ///
     /// Returns an error on workflow interface mismatch.
     #[allow(clippy::missing_panics_doc)] // false positive
-    pub fn downcast<W: ValidateInterface<Id = ()>>(
-        self,
-    ) -> Result<WorkflowHandle<'a, W>, AccessError> {
+    pub fn downcast<W: GetInterface>(self) -> Result<WorkflowHandle<'a, W>, AccessError> {
         let interface = self
             .manager
             .interface_for_workflow(self.ids.workflow_id)
             .unwrap();
-        W::validate_interface(interface, &())?;
+        W::interface().check_compatibility(interface)?;
         Ok(self.downcast_unchecked())
     }
 

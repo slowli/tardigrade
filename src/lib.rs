@@ -91,7 +91,6 @@ pub use crate::{
 /// - Add a `where` clause for the handle struct specifying that field handles exist
 ///   in an environment
 /// - Derive [`TakeHandle`] for the workflow type using the handle struct as a handle
-/// - Derive [`ValidateInterface`] for the workflow type
 /// - Optionally, derive `Clone` and/or `Debug` for the handle struct if the corresponding derives
 ///   are requested via `#[derive(..)]`. (Ordinary derivation of these traits is problematic
 ///   because of the `where` clause on the struct.)
@@ -118,7 +117,6 @@ pub use crate::{
 ///
 /// [`Handle`]: crate::workflow::Handle
 /// [`TakeHandle`]: crate::workflow::TakeHandle
-/// [`ValidateInterface`]: crate::interface::ValidateInterface
 #[cfg(feature = "derive")]
 #[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
 pub use tardigrade_derive::handle;
@@ -138,6 +136,10 @@ pub use tardigrade_shared::interface;
 macro_rules! workflow_entry {
     ($workflow:ident) => {
         const _: () = {
+            impl $crate::workflow::NamedWorkflow for $workflow {
+                const WORKFLOW_NAME: &'static str = stringify!($workflow);
+            }
+
             #[no_mangle]
             #[export_name = concat!("tardigrade_rt::spawn::", stringify!($workflow))]
             #[doc(hidden)]
