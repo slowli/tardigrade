@@ -18,10 +18,7 @@
 //! # };
 //! // Assume we want to test a workflow.
 //! #[derive(Debug, GetInterface, TakeHandle)]
-//! # #[tardigrade(
-//! #     handle = "MyHandle",
-//! #     interface = r#"{ "v": 0, "out": { "events": {} } }"#
-//! # )]
+//! # #[tardigrade(handle = "MyHandle", auto_interface)]
 //! pub struct MyWorkflow(());
 //!
 //! /// Workflow handle.

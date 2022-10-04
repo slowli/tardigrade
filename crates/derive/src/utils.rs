@@ -78,11 +78,12 @@ fn remove_nested(list: &mut Punctuated<NestedMeta, Token![,]>, idx: usize) {
 
 #[derive(Debug, Default, FromMeta)]
 pub(crate) struct DeriveAttrs {
-    // TODO: allow auto-specification based on handle
     #[darling(default)]
     pub interface: Option<String>,
     #[darling(default)]
     pub handle: Option<Path>,
+    #[darling(default)]
+    pub auto_interface: Option<()>,
 }
 
 #[derive(Debug)]

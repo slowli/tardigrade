@@ -27,10 +27,7 @@ pub struct Args {
 }
 
 #[derive(Debug, GetInterface, TakeHandle)]
-#[tardigrade(
-    handle = "WorkflowHandle",
-    interface = "file:src/tardigrade-tasks.json"
-)]
+#[tardigrade(handle = "WorkflowHandle", interface = "src/tardigrade-tasks.json")]
 pub struct PizzaDeliveryWithTasks(());
 
 #[test]

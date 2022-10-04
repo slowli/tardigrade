@@ -13,10 +13,7 @@ use tardigrade::{
 };
 
 #[derive(Debug, GetInterface, TakeHandle)]
-#[tardigrade(
-    handle = "TestHandle",
-    interface = r#"{ "v": 0, "in": { "commands": {} }, "out": { "events": {} } }"#
-)]
+#[tardigrade(handle = "TestHandle", auto_interface)]
 struct ParentWorkflow;
 
 impl WorkflowFn for ParentWorkflow {

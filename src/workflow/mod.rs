@@ -60,7 +60,7 @@
 //!
 //! /// Workflow type. Usually, this should be a unit / empty struct.
 //! #[derive(Debug, GetInterface, TakeHandle)]
-//! #[tardigrade(handle = "MyHandle", interface = r#"{"v":0}"#)]
+//! #[tardigrade(handle = "MyHandle", auto_interface)]
 //! pub struct MyWorkflow(());
 //!
 //! // Workflow interface declaration.

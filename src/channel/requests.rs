@@ -131,14 +131,7 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 /// }
 ///
 /// #[derive(Debug, GetInterface, TakeHandle)]
-/// # #[tardigrade(
-/// #     handle = "MyHandle",
-/// #     interface = r#"{
-/// #         "v":0,
-/// #         "in": { "responses": {} },
-/// #         "out": { "requests": {} }
-/// #     }"#
-/// # )]
+/// # #[tardigrade(handle = "MyHandle", auto_interface)]
 /// pub struct MyWorkflow(());
 ///
 /// #[tardigrade::handle]

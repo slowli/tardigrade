@@ -45,7 +45,7 @@ impl SpawnWorkflow for PizzaDeliveryWithSpawning {
 tardigrade::workflow_entry!(PizzaDeliveryWithSpawning);
 
 #[derive(Debug, GetInterface, TakeHandle)]
-#[tardigrade(handle = "SharedHandle", interface = "file:src/tardigrade-baking.json")]
+#[tardigrade(handle = "SharedHandle", interface = "src/tardigrade-baking.json")]
 pub struct Baking(());
 
 impl WorkflowFn for Baking {

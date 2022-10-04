@@ -100,10 +100,8 @@ pub struct PizzaDeliveryHandle<Env = Wasm> {
 #[tardigrade(handle = "PizzaDeliveryHandle")]
 pub struct PizzaDelivery(());
 
-// FIXME: Besides defining `PizzaDeliveryHandle` as a handle for `PizzaDelivery`,
-// the `handle` proc macro also provides a `ValidateInterface` implementation.
-// This allows to ensure (unfortunately, in runtime) that the handle corresponds
-// to the interface declaration.
+// The `GetInterface` implementation ensures (unfortunately, in runtime) that
+// the handle corresponds to the interface declaration.
 #[test]
 fn interface_agrees_between_declaration_and_handle() {
     PizzaDelivery::interface(); // Checks are performed internally

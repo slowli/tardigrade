@@ -22,10 +22,7 @@ struct TestHandle<Env> {
 }
 
 #[derive(Debug, GetInterface, TakeHandle)]
-#[tardigrade(
-    handle = "TestHandle",
-    interface = r#"{ "v": 0, "in": { "commands": {} }, "out": { "events": {} } }"#
-)]
+#[tardigrade(handle = "TestHandle", auto_interface)]
 struct TestedWorkflow;
 
 impl WorkflowFn for TestedWorkflow {
