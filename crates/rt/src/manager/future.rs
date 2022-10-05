@@ -115,8 +115,9 @@ pub enum Termination {
 /// use async_std::task;
 /// use futures::prelude::*;
 /// use tardigrade::interface::{InboundChannel, OutboundChannel};
-/// use tardigrade_rt::handle::{future::{AsyncEnv, AsyncIoScheduler}, WorkflowHandle};
-/// use tardigrade_rt::manager::WorkflowManager;
+/// use tardigrade_rt::manager::{
+///     future::{AsyncEnv, AsyncIoScheduler}, WorkflowHandle, WorkflowManager,
+/// };
 /// # use tardigrade_rt::WorkflowId;
 ///
 /// # async fn test_wrapper(
@@ -335,7 +336,7 @@ impl<T, C: Encode<T>> super::MessageSender<'_, T, C> {
     /// Registers this sender in `env`, allowing to later asynchronously send messages.
     pub fn into_async(self, env: &mut AsyncEnv) -> MessageSender<T, C> {
         let (sx, rx) = mpsc::channel(1);
-        env.inbound_channels.insert(self.channel_id, rx);
+        env.inbound_channels.insert(self.channel_id(), rx);
         MessageSender {
             raw_sender: sx,
             codec: self.codec,
@@ -387,7 +388,7 @@ impl<T, C: Decode<T>> super::MessageReceiver<'_, T, C> {
     pub fn into_async(self, env: &mut AsyncEnv) -> MessageReceiver<T, C> {
         let (sx, rx) = mpsc::unbounded();
         if self.can_receive_messages {
-            env.outbound_channels.insert(self.channel_id, sx);
+            env.outbound_channels.insert(self.channel_id(), sx);
             // If the channel cannot receive messages, `sx` is immediately dropped,
             // thus, we don't improperly remove messages from the channel.
         }

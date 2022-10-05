@@ -17,10 +17,12 @@ use tardigrade::{
     Decode, Encode, Json,
 };
 use tardigrade_rt::{
-    handle::future::{
-        AsyncEnv, AsyncIoScheduler, MessageReceiver, MessageSender, Termination, TracerHandle,
+    manager::{
+        future::{
+            AsyncEnv, AsyncIoScheduler, MessageReceiver, MessageSender, Termination, TracerHandle,
+        },
+        TickResult, WorkflowManager,
     },
-    manager::{TickResult, WorkflowManager},
     receipt::{Event, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
     test::MockScheduler,
     TimerId, WorkflowSpawner,
@@ -91,7 +93,7 @@ async fn test_async_handle(cancel_workflow: bool) -> TestResult {
             Either::Right(manager) => manager,
             other => panic!("expected cancelled workflow, got {:?}", other),
         };
-        assert!(!manager.is_finished());
+        assert!(!manager.is_empty());
         let workflow = manager.workflow(workflow_id).unwrap().persisted();
         assert_eq!(workflow.timers().count(), 0);
     } else {

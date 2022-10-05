@@ -1,14 +1,8 @@
 //! Handles for workflows in a [`WorkflowManager`] and their components (e.g., channels).
-//!
-//! See [`WorkflowHandle`] and [`AsyncEnv`](future::AsyncEnv) docs for examples of usage.
 
 use anyhow::Context;
 
 use std::{fmt, marker::PhantomData, ops::Range};
-
-#[cfg(feature = "async")]
-#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
-pub mod future;
 
 use crate::{
     manager::{ChannelInfo, WorkflowManager},
@@ -31,13 +25,15 @@ use tardigrade_shared::SendError;
 /// allow interacting with the workflow (e.g., [send messages](MessageSender) via inbound channels
 /// and [take messages](MessageReceiver) from outbound channels).
 ///
-/// See [`AsyncEnv`](future::AsyncEnv) for a more high-level, future-based alternative.
+/// See [`AsyncEnv`] for a more high-level, future-based alternative.
+///
+/// [`AsyncEnv`]: crate::manager::future::AsyncEnv
 ///
 /// # Examples
 ///
 /// ```
 /// use tardigrade::interface::{InboundChannel, OutboundChannel};
-/// use tardigrade_rt::handle::WorkflowHandle;
+/// use tardigrade_rt::manager::WorkflowHandle;
 ///
 /// # fn test_wrapper(workflow: WorkflowHandle<'_, ()>) -> anyhow::Result<()> {
 /// // Assume we have a dynamically typed workflow:
@@ -143,7 +139,7 @@ impl<W: TakeHandle<Self, Id = ()>> WorkflowHandle<'_, W> {
 pub struct MessageSender<'a, T, C> {
     manager: &'a WorkflowManager,
     channel_id: ChannelId,
-    codec: C,
+    pub(super) codec: C,
     _item: PhantomData<fn(T)>,
 }
 
@@ -202,8 +198,8 @@ where
 pub struct MessageReceiver<'a, T, C> {
     manager: &'a WorkflowManager,
     channel_id: ChannelId,
-    can_receive_messages: bool,
-    codec: C,
+    pub(super) can_receive_messages: bool,
+    pub(super) codec: C,
     _item: PhantomData<fn() -> T>,
 }
 
@@ -304,8 +300,8 @@ where
 /// Handle allowing to trace futures.
 #[derive(Debug)]
 pub struct TracerHandle<'a, C> {
-    receiver: MessageReceiver<'a, FutureUpdate, C>,
-    futures: TracedFutures,
+    pub(super) receiver: MessageReceiver<'a, FutureUpdate, C>,
+    pub(super) futures: TracedFutures,
 }
 
 impl<'a, C> TracerHandle<'a, C>

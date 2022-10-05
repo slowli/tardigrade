@@ -19,8 +19,8 @@
 //!
 //! [`wasmtime`]: https://docs.rs/wasmtime/latest/wasmtime/
 //! [`WorkflowManager`]: crate::manager::WorkflowManager
-//! [`WorkflowHandle`]: crate::handle::WorkflowHandle
-//! [`AsyncEnv`]: crate::handle::future::AsyncEnv
+//! [`WorkflowHandle`]: crate::manager::WorkflowHandle
+//! [`AsyncEnv`]: crate::manager::future::AsyncEnv
 //!
 //! # Crate features
 //!
@@ -28,7 +28,7 @@
 //!
 //! *(Off by default)*
 //!
-//! Exposes async handles for workflows in the [`handle::future`] module.
+//! Exposes async handles for workflows in the [`manager::future`] module.
 //!
 //! ## `async-io`
 //!
@@ -45,7 +45,7 @@
 //! [the eponymous crate][`log`]. The information is logged to the `tardigrade_rt` logger,
 //! mostly using `TRACE` level.
 //!
-//! [`Schedule`]: crate::handle::future::Schedule
+//! [`Schedule`]: crate::manager::future::Schedule
 //! [`async-io`]: https://docs.rs/async-io/
 //! [`log`]: https://docs.rs/log/
 //!
@@ -55,8 +55,7 @@
 //!
 //! ```no_run
 //! use tardigrade_rt::{
-//!     handle::WorkflowHandle,
-//!     manager::WorkflowManager,
+//!     manager::{WorkflowHandle, WorkflowManager},
 //!     WorkflowEngine, WorkflowModule,
 //! };
 //! use tardigrade::spawn::ManageWorkflowsExt;
@@ -133,7 +132,6 @@
 #[macro_use]
 mod utils;
 mod data;
-pub mod handle;
 pub mod manager;
 mod module;
 pub mod receipt;

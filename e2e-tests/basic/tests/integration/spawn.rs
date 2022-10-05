@@ -8,8 +8,10 @@ use std::{collections::HashMap, task::Poll};
 
 use tardigrade::spawn::ManageWorkflowsExt;
 use tardigrade_rt::{
-    handle::future::{AsyncEnv, AsyncIoScheduler, Termination},
-    manager::WorkflowManager,
+    manager::{
+        future::{AsyncEnv, AsyncIoScheduler, Termination},
+        WorkflowManager,
+    },
     receipt::{Event, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
     WorkflowModule,
 };

@@ -10,20 +10,26 @@ use chrono::{DateTime, Utc};
 use std::{
     borrow::Cow,
     collections::HashMap,
-    error, fmt, ops,
+    error, fmt,
     sync::{Arc, Mutex, MutexGuard},
 };
 
+#[cfg(feature = "async")]
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+pub mod future;
+mod handle;
 mod persistence;
 #[cfg(test)]
 mod tests;
 mod transaction;
 
-pub use self::persistence::PersistedWorkflows;
+pub use self::{
+    handle::{MessageReceiver, MessageSender, TakenMessages, TracerHandle, WorkflowHandle},
+    persistence::PersistedWorkflows,
+};
 
 use self::transaction::Transaction;
 use crate::{
-    handle::WorkflowHandle,
     module::{Clock, Services, WorkflowAndChannelIds},
     receipt::{ChannelEvent, ChannelEventKind, ExecutionError, Receipt},
     utils::Message,
@@ -249,12 +255,12 @@ enum ChannelSide {
 /// It is not a good choice for high-load, but is sufficiently flexible to support
 /// most basic use cases (e.g., persisting / resuming workflows).
 ///
-/// [`AsyncEnv`]: crate::handle::future::AsyncEnv
+/// [`AsyncEnv`]: crate::manager::future::AsyncEnv
 ///
 /// # Examples
 ///
 /// ```
-/// # use tardigrade_rt::{handle::WorkflowHandle, manager::WorkflowManager, WorkflowModule};
+/// # use tardigrade_rt::{manager::{WorkflowHandle, WorkflowManager}, WorkflowModule};
 /// # fn test_wrapper(module: WorkflowModule) -> anyhow::Result<()> {
 /// // A manager is instantiated using the builder pattern:
 /// let module: WorkflowModule = // ...

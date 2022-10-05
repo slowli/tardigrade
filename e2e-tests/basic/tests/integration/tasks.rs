@@ -7,9 +7,9 @@ use futures::{channel::mpsc, future, stream, SinkExt, StreamExt, TryStreamExt};
 use std::cmp;
 
 use tardigrade::{channel::WithId, spawn::ManageWorkflowsExt};
-use tardigrade_rt::{
-    handle::future::{AsyncEnv, AsyncIoScheduler, Termination},
-    manager::WorkflowManager,
+use tardigrade_rt::manager::{
+    future::{AsyncEnv, AsyncIoScheduler, Termination},
+    WorkflowManager,
 };
 use tardigrade_test_basic::{
     tasks::{Args, PizzaDeliveryWithTasks},

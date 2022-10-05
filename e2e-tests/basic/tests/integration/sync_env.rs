@@ -11,8 +11,7 @@ use tardigrade::{
     Decode, Encode, Json,
 };
 use tardigrade_rt::{
-    handle::WorkflowHandle,
-    manager::WorkflowManager,
+    manager::{WorkflowHandle, WorkflowManager},
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, ExecutionError, WakeUpCause,
     },
