@@ -12,7 +12,7 @@
 //! # };
 //! // Assume we want to spawn a child workflow defined as follows:
 //! #[derive(Debug, GetInterface, TakeHandle)]
-//! # #[tardigrade(handle = "ChildHandle", auto_interface)]
+//! #[tardigrade(handle = "ChildHandle", auto_interface)]
 //! pub struct ChildWorkflow(());
 //!
 //! #[tardigrade::handle]

@@ -200,7 +200,7 @@ fn closing_workflow_channels() {
 
     manager.tick_workflow(workflow_id).unwrap(); // initializes the workflow
     manager.close_host_receiver(events_id);
-    let channel_info = manager.channel_info(events_id).unwrap();
+    let channel_info = manager.channel(events_id).unwrap();
     assert!(channel_info.is_closed());
     {
         let persisted = manager.workflow(workflow_id).unwrap().persisted();
@@ -213,7 +213,7 @@ fn closing_workflow_channels() {
     }
 
     manager.tick_workflow(workflow_id).unwrap();
-    let channel_info = manager.channel_info(orders_id).unwrap();
+    let channel_info = manager.channel(orders_id).unwrap();
     assert!(channel_info.is_closed());
 }
 
@@ -441,7 +441,7 @@ fn error_processing_inbound_message_in_workflow() {
     let err = err.trap().display_reason().to_string();
     assert!(err.contains("oops"), "{}", err);
 
-    let channel_info = manager.channel_info(orders_id).unwrap();
+    let channel_info = manager.channel(orders_id).unwrap();
     assert!(!channel_info.is_closed());
     assert_eq!(channel_info.received_messages(), 1);
     assert_eq!(channel_info.flushed_messages(), 0);

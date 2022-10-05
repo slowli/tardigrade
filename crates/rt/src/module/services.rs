@@ -11,6 +11,11 @@ use tardigrade::{
 };
 
 /// Wall clock.
+///
+/// This trait can be used in [`WorkflowManagerBuilder`] to specify which clock the manager
+/// should expose to workflow instances.
+///
+/// [`WorkflowManagerBuilder`]: crate::manager::WorkflowManagerBuilder
 pub trait Clock: Send + Sync + 'static {
     /// Returns the current timestamp. This is used in workflows when creating new timers.
     fn now(&self) -> DateTime<Utc>;

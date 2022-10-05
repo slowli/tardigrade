@@ -34,6 +34,7 @@ pub(super) struct SharedChannelHandles {
     inner: Arc<Mutex<ChannelHandles>>,
 }
 
+/// State of child workflow as viewed by its parent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChildWorkflowState {
     pub(super) channels: ChannelStates,
@@ -76,10 +77,14 @@ impl ChildWorkflowState {
         }
     }
 
+    /// Returns the current state of a *local* inbound channel connected to the child workflow
+    /// (i.e., the child has an outbound end of the channel).
     pub fn inbound_channel(&self, name: &str) -> Option<&InboundChannelState> {
         self.channels.inbound.get(name)
     }
 
+    /// Returns the current state of a *local* outbound channel connected to the child workflow
+    /// (i.e., the child has the inbound end of the channel).
     pub fn outbound_channel(&self, name: &str) -> Option<&OutboundChannelState> {
         self.channels.outbound.get(name)
     }

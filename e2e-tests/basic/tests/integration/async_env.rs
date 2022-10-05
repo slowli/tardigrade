@@ -261,7 +261,7 @@ async fn initialize_workflow() -> TestResult<AsyncRig> {
     let mut orders_sx = handle.orders.into_async(&mut env);
     let mut events_rx = handle.shared.events.into_async(&mut env);
     let tracer = handle.shared.tracer.into_async(&mut env);
-    let results = env.execution_results();
+    let results = env.tick_results();
     task::spawn(async move { env.run(&mut manager).await });
 
     let orders = [
@@ -558,12 +558,12 @@ async fn dynamically_typed_async_handle() -> TestResult {
     );
 
     let manager = join_handle.await?;
-    let chan = manager.channel_info(orders_id).unwrap();
+    let chan = manager.channel(orders_id).unwrap();
     assert!(chan.is_closed());
     assert_eq!(chan.received_messages(), 1);
-    let chan = manager.channel_info(events_id).unwrap();
+    let chan = manager.channel(events_id).unwrap();
     assert_eq!(chan.flushed_messages(), 4);
-    let chan = manager.channel_info(traces_id).unwrap();
+    let chan = manager.channel(traces_id).unwrap();
     assert_eq!(chan.received_messages(), 22);
     Ok(())
 }
@@ -586,7 +586,7 @@ async fn rollbacks_on_trap() -> TestResult {
     env.drop_erroneous_messages();
     let orders_sx = handle.remove(InboundChannel("orders")).unwrap();
     let mut orders_sx = orders_sx.into_async(&mut env);
-    let results = env.execution_results();
+    let results = env.tick_results();
     let join_handle = task::spawn(async move { env.run(&mut manager).await });
 
     orders_sx.send(b"invalid".to_vec()).await?;

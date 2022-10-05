@@ -44,7 +44,7 @@ async fn spawning_child_workflows() -> TestResult {
 
     let handle = workflow.handle();
     let mut env = AsyncEnv::new(AsyncIoScheduler);
-    let results = env.execution_results();
+    let results = env.tick_results();
     let mut orders_sx = handle.orders.into_async(&mut env);
     let events_rx = handle.shared.events.into_async(&mut env);
     let join_handle = task::spawn(async move { env.run(&mut manager).await });

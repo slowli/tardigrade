@@ -102,7 +102,6 @@ pub enum Termination {
 /// # Error handling
 ///
 /// By default, workflow execution via [`Self::run()`] terminates immediately after a trap.
-/// Only rudimentary cleanup is performed; thus, the workflow may be in an inconsistent state.
 /// To drop incoming messages that have led to an error, call [`Self::drop_erroneous_messages()`].
 /// Rolling back receiving a message
 /// means that from the workflow perspective, the message was never received in the first place,
@@ -175,8 +174,8 @@ impl AsyncEnv {
         }
     }
 
-    /// Returns the receiver of [`ExecutionResult`]s generated during workflow execution.
-    pub fn execution_results(&mut self) -> mpsc::UnboundedReceiver<TickResult<()>> {
+    /// Returns the receiver of [`TickResult`]s generated during workflow execution.
+    pub fn tick_results(&mut self) -> mpsc::UnboundedReceiver<TickResult<()>> {
         let (sx, rx) = mpsc::unbounded();
         self.results_sx = Some(sx);
         rx
@@ -190,7 +189,7 @@ impl AsyncEnv {
 
     /// Executes the enclosed [`WorkflowManager`] until all workflows in it are terminated,
     /// or an execution error occurs. As the workflows execute, outbound messages and
-    /// [`ExecutionResult`]s will be sent using respective channels.
+    /// [`TickResult`]s will be sent using respective channels.
     ///
     /// Note that it is possible to cancel this future (e.g., by [`select`]ing between it
     /// and a cancellation signal) and continue working with the enclosed workflow manager.
@@ -217,13 +216,13 @@ impl AsyncEnv {
         &mut self,
         manager: &mut WorkflowManager,
     ) -> Result<Option<Termination>, ExecutionError> {
-        if manager.is_finished() {
+        if manager.is_empty() {
             return Ok(Some(Termination::Finished));
         }
 
         let nearest_timer_expiration = self.tick_manager(manager)?;
         self.gc(manager);
-        if manager.is_finished() {
+        if manager.is_empty() {
             return Ok(Some(Termination::Finished));
         } else if nearest_timer_expiration.is_none() && self.inbound_channels.is_empty() {
             return Ok(Some(Termination::Stalled));
@@ -303,7 +302,7 @@ impl AsyncEnv {
     /// to the consumers that the channel cannot be written to.
     fn gc(&mut self, manager: &WorkflowManager) {
         self.inbound_channels
-            .retain(|&id, _| !manager.channel_info(id).unwrap().is_closed());
+            .retain(|&id, _| !manager.channel(id).unwrap().is_closed());
     }
 }
 

@@ -156,7 +156,7 @@ impl<'a, T, C: Encode<T>> MessageSender<'a, T, C> {
     /// Returns the current state of the channel.
     #[allow(clippy::missing_panics_doc)] // false positive: channels are never removed
     pub fn channel_info(&self) -> ChannelInfo {
-        self.manager.channel_info(self.channel_id).unwrap()
+        self.manager.channel(self.channel_id).unwrap()
     }
 
     /// Sends a message over the channel.
@@ -216,7 +216,7 @@ impl<T, C: Decode<T>> MessageReceiver<'_, T, C> {
     /// Returns the current state of the channel.
     #[allow(clippy::missing_panics_doc)] // false positive: channels are never removed
     pub fn channel_info(&self) -> ChannelInfo {
-        self.manager.channel_info(self.channel_id).unwrap()
+        self.manager.channel(self.channel_id).unwrap()
     }
 
     /// Checks whether this receiver can be used to receive messages from the channel.
@@ -287,7 +287,7 @@ where
 
     fn take_handle(env: &mut WorkflowHandle<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
         if let Some(channel_id) = env.ids.channel_ids.outbound.get(id).copied() {
-            let channel_info = env.manager.channel_info(channel_id).unwrap();
+            let channel_info = env.manager.channel(channel_id).unwrap();
             Ok(MessageReceiver {
                 manager: env.manager,
                 channel_id,
@@ -336,8 +336,9 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error if an [`ExecutionError`] occurs when flushing tracing messages, or
-    /// if decoding messages fails.
+    /// Returns an error if decoding tracing messages fails, or if the updates are inconsistent
+    /// w.r.t. the current tracer state (which could happen if resuming a workflow without
+    /// calling [`Self::set_futures()`]).
     pub fn take_traces(&mut self) -> anyhow::Result<()> {
         if let Some(messages) = self.receiver.take_messages() {
             let updates = messages.decode().context("cannot decode `FutureUpdate`")?;

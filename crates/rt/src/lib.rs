@@ -141,7 +141,7 @@ pub mod test;
 mod workflow;
 
 pub use crate::{
-    data::{InboundChannelState, OutboundChannelState, TaskState, TimerState},
+    data::{ChildWorkflowState, InboundChannelState, OutboundChannelState, TaskState, TimerState},
     module::{Clock, ExtendLinker, WorkflowEngine, WorkflowModule, WorkflowSpawner},
     workflow::PersistedWorkflow,
 };

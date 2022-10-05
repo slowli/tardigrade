@@ -45,6 +45,11 @@ where
 
 /// WASM linker extension allowing to define additional functions (besides ones provided
 /// by the Tardigrade runtime) to be imported into the workflow WASM module.
+///
+/// Implementations of this trait [can be used] by [`WorkflowSpawner`] to support extended
+/// workflow functionality.
+///
+/// [can be used]: WorkflowSpawner::insert_imports()
 pub trait ExtendLinker: Send + Sync + 'static {
     /// Name of the module imported into WASM.
     const MODULE_NAME: &'static str;
@@ -263,7 +268,7 @@ impl WorkflowModule {
     ///
     /// - `module_bytes` is not a valid WASM module.
     /// - The module has bogus imports from the `tardigrade_rt` module, such as an unknown function
-    ///   or a known functions with an incorrect signature.
+    ///   or a known function with an incorrect signature.
     /// - The module does not have necessary exports.
     /// - The module does not have a custom section with the workflow interface definition(s).
     pub fn new(engine: &WorkflowEngine, module_bytes: &[u8]) -> anyhow::Result<Self> {

@@ -11,7 +11,7 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     error, fmt, ops,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 mod persistence;
@@ -118,7 +118,8 @@ impl<T> TickResult<T> {
     }
 }
 
-/// Actions
+/// Actions that can be performed on a [`WorkflowManager`]. Used within the [`TickResult`]
+/// wrapper.
 #[derive(Debug)]
 pub struct Actions<'a> {
     drop_message_action: Option<DropMessageAction<'a>>,
@@ -135,8 +136,7 @@ impl TickResult<Actions<'_>> {
     ///
     /// # Panics
     ///
-    /// Panics if [`Self::can_drop_erroneous_message()`] returns `false`, or if called more than
-    /// once on the same object.
+    /// Panics if [`Self::can_drop_erroneous_message()`] returns `false`.
     pub fn drop_erroneous_message(mut self) -> TickResult<()> {
         let action = self
             .extra
@@ -292,7 +292,7 @@ impl WorkflowManager {
         }
     }
 
-    fn lock(&self) -> impl ops::DerefMut<Target = PersistedWorkflows> + '_ {
+    fn lock(&self) -> MutexGuard<'_, PersistedWorkflows> {
         self.state.lock().unwrap()
     }
 
@@ -309,7 +309,7 @@ impl WorkflowManager {
                 .with_context(|| {
                     format!(
                         "mismatch between interface of workflow {id} and spawner \
-                     for workflow definition `{definition_id}`"
+                         for workflow definition `{definition_id}`"
                     )
                 })?;
         }
@@ -318,7 +318,7 @@ impl WorkflowManager {
 
     /// Returns current information about the channel with the specified ID, or `None` if a channel
     /// with this ID does not exist.
-    pub fn channel_info(&self, channel_id: ChannelId) -> Option<ChannelInfo> {
+    pub fn channel(&self, channel_id: ChannelId) -> Option<ChannelInfo> {
         Some(self.lock().channels.get(&channel_id)?.info())
     }
 
@@ -335,8 +335,9 @@ impl WorkflowManager {
         })
     }
 
-    /// Checks whether all workflows contained in this manager are finished.
-    pub fn is_finished(&self) -> bool {
+    /// Checks whether this manager does not contain active workflows (e.g., all workflows
+    /// spawned into the manager have finished).
+    pub fn is_empty(&self) -> bool {
         self.lock().workflows.is_empty() // finished workflows are removed
     }
 
