@@ -36,27 +36,20 @@
 //!
 //! // To spawn a workflow, we should use the following code
 //! // in the parent workflow:
-//! use tardigrade::spawn::{
-//!     ManageWorkflowsExt, Workflows, WorkflowBuilder, WorkflowHandle,
-//! };
+//! use tardigrade::spawn::{ManageWorkflowsExt, Workflows, WorkflowHandle};
 //! # use tardigrade::test::Runtime;
 //!
 //! # let mut runtime = Runtime::default();
 //! # runtime.workflow_registry_mut().insert::<ChildWorkflow, _>("child");
 //! # runtime.run(async {
-//! let builder: WorkflowBuilder<_, ChildWorkflow> =
-//!     Workflows.new_workflow("child", ())?;
+//! let builder = Workflows.new_workflow::<ChildWorkflow>("child", ())?;
 //! // It is possible to customize child workflow initialization via
 //! // `builder.handle()`, but zero config is fine as well.
-//! let child = builder.build()?;
+//! let mut child = builder.build()?;
 //! // `child` contains handles to the created channels.
-//! // These handles are optional (in some configurations, handles are
-//! // not available).
-//! let mut commands = child.api.commands.unwrap();
-//! commands.send("ping".to_owned()).await?;
-//! # drop(commands);
-//! let mut events = child.api.events.unwrap();
-//! let event: String = events.next().await.unwrap();
+//! child.api.commands.send("ping".to_owned()).await?;
+//! # drop(child.api.commands);
+//! let event: String = child.api.events.next().await.unwrap();
 //! # assert_eq!(event, "ping");
 //! child.workflow.await?;
 //! # Ok::<_, Box<dyn error::Error>>(())
@@ -112,8 +105,8 @@ pub enum ChannelSpawnConfig<T> {
     New,
     /// Close the channel immediately on workflow creation.
     Closed,
-    /// Copy the channel sender or receiver.
-    Copy(T),
+    /// Copy an existing channel sender or move an existing receiver.
+    Existing(T),
 }
 
 impl<T> Default for ChannelSpawnConfig<T> {
@@ -127,7 +120,7 @@ impl<T> ChannelSpawnConfig<T> {
         match self {
             Self::New => ChannelSpawnConfig::New,
             Self::Closed => ChannelSpawnConfig::Closed,
-            Self::Copy(value) => ChannelSpawnConfig::Copy(map_fn(value)),
+            Self::Existing(value) => ChannelSpawnConfig::Existing(map_fn(value)),
         }
     }
 }
@@ -178,7 +171,7 @@ impl<In, Out> ChannelsConfig<In, Out> {
     }
 
     fn copy_outbound_channel(&mut self, name: &str, source: Out) {
-        *self.outbound.get_mut(name).unwrap() = ChannelSpawnConfig::Copy(source);
+        *self.outbound.get_mut(name).unwrap() = ChannelSpawnConfig::Existing(source);
     }
 }
 
@@ -224,20 +217,21 @@ pub trait ManageWorkflows<'a, W: WorkflowFn>: ManageInterfaces + SpecifyWorkflow
 }
 
 /// Extension trait for [workflow managers](ManageWorkflows).
-pub trait ManageWorkflowsExt<'a, W: WorkflowFn>: ManageWorkflows<'a, W> + Sized {
+pub trait ManageWorkflowsExt<'a>: ManageWorkflows<'a, ()> + Sized {
     /// Returns a workflow builder for the specified definition and args.
     ///
     /// # Errors
     ///
     /// Returns an error if the definition is unknown, or does not conform to the interface
     /// specified via the type param of this trait.
-    fn new_workflow(
+    fn new_workflow<W>(
         &'a self,
         definition_id: &'a str,
         args: W::Args,
     ) -> Result<WorkflowBuilder<'a, Self, W>, AccessError>
     where
-        W: GetInterface + TakeHandle<Spawner<Self>, Id = ()>,
+        W: WorkflowFn + GetInterface + TakeHandle<Spawner<Self>, Id = ()>,
+        Self: ManageWorkflows<'a, W>,
     {
         let provided_interface = self
             .interface(definition_id)
@@ -252,7 +246,7 @@ pub trait ManageWorkflowsExt<'a, W: WorkflowFn>: ManageWorkflows<'a, W> + Sized 
     }
 }
 
-impl<'a, W: WorkflowFn, M: ManageWorkflows<'a, W>> ManageWorkflowsExt<'a, W> for M {}
+impl<'a, M: ManageWorkflows<'a, ()>> ManageWorkflowsExt<'a> for M {}
 
 /// Client-side connection to a [workflow manager][`ManageWorkflows`].
 #[derive(Debug)]
@@ -289,6 +283,7 @@ where
 
 /// Wrapper for remote components of a workflow, such as [`Sender`]s and [`Receiver`]s.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Remote<T> {
     /// The remote handle is not captured.
     NotCaptured,

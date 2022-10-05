@@ -9,11 +9,7 @@
 //! ```
 //! # use futures::{SinkExt, StreamExt};
 //! # use serde::{Deserialize, Serialize};
-//! use tardigrade::{
-//!     channel::{Sender, Receiver},
-//!     workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, TakeHandle, Wasm, WorkflowFn},
-//!     Json,
-//! };
+//! use tardigrade::{channel::{Sender, Receiver}, workflow::*, Json};
 //!
 //! /// Handle for the workflow. Fields are public for integration testing.
 //! #[tardigrade::handle]
@@ -46,7 +42,11 @@
 //! }
 //!
 //! impl MyHandle<Wasm> {
-//!     async fn process_command(&mut self, command: &Command, counter: &mut u32) {
+//!     async fn process_command(
+//!         &mut self,
+//!         command: &Command,
+//!         counter: &mut u32,
+//!     ) {
 //!         match command {
 //!             Command::Ping(ping) => {
 //!                 let pong = format!("{}, counter={}", ping, *counter);
@@ -74,7 +74,9 @@
 //!     fn spawn(mut args: Args, mut handle: MyHandle<Wasm>) -> TaskHandle {
 //!         TaskHandle::new(async move {
 //!             while let Some(command) = handle.commands.next().await {
-//!                 handle.process_command(&command, &mut args.start_counter).await;
+//!                 handle
+//!                     .process_command(&command, &mut args.start_counter)
+//!                     .await;
 //!             }
 //!         })
 //!     }
@@ -197,7 +199,7 @@ pub trait GetInterface: TakeHandle<InterfaceBuilder, Id = ()> + Sized + 'static 
     /// Obtains the workflow interface.
     ///
     /// The default implementation uses the [`TakeHandle`] implementation to create
-    /// an owned interface. The `GetInterface` proc derives provides a more efficient cached
+    /// an owned interface. The `GetInterface` derive macro provides a more efficient cached
     /// implementation.
     fn interface() -> Cow<'static, Interface> {
         Cow::Owned(interface_by_handle::<Self>())
@@ -227,7 +229,7 @@ where
 
 /// Workflow that is accessible by its name from a module.
 ///
-/// This trait is automatically derived using the [`workflow_entry!`] macro.
+/// This trait is automatically derived using the [`workflow_entry!`](crate::workflow_entry) macro.
 pub trait NamedWorkflow {
     /// Name of the workflow.
     const WORKFLOW_NAME: &'static str;

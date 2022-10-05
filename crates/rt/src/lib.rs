@@ -79,8 +79,8 @@
 //! let mut manager = WorkflowManager::builder()
 //!     .with_spawner("test", spawner)
 //!     .build();
-//! let new_workflow: WorkflowHandle<()> =
-//!     manager.new_workflow("test", b"data".to_vec())?.build()?;
+//! let new_workflow =
+//!     manager.new_workflow::<()>("test", b"data".to_vec())?.build()?;
 //!
 //! // Let's initialize the workflow.
 //! let receipt = manager.tick()?.into_inner()?;

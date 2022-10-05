@@ -5,7 +5,7 @@ use futures::{future, FutureExt, SinkExt, StreamExt};
 use crate::TestHandle;
 use tardigrade::{
     spawn,
-    spawn::{ManageWorkflowsExt, WorkflowBuilder, Workflows},
+    spawn::{ManageWorkflowsExt, Workflows},
     test::Runtime,
     workflow::{GetInterface, SpawnWorkflow, TakeHandle, TaskHandle, Wasm, WorkflowFn},
     Json,
@@ -40,8 +40,9 @@ fn test_workflow_termination(move_events_to_task: bool) {
         .workflow_registry_mut()
         .insert::<WorkflowWithSubtask, _>("test");
     runtime.run(async {
-        let builder: WorkflowBuilder<_, WorkflowWithSubtask> =
-            Workflows.new_workflow("test", move_events_to_task).unwrap();
+        let builder = Workflows
+            .new_workflow::<WorkflowWithSubtask>("test", move_events_to_task)
+            .unwrap();
         let handle = builder.build().unwrap();
         handle.workflow.await.unwrap();
 

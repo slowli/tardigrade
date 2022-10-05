@@ -6,7 +6,7 @@ use std::collections::HashSet;
 
 use crate::{TestHandle, TestedWorkflow};
 use tardigrade::{
-    spawn::{ManageWorkflowsExt, WorkflowBuilder, Workflows},
+    spawn::{ManageWorkflowsExt, Workflows},
     test::Runtime,
     workflow::{GetInterface, SpawnWorkflow, TakeHandle, TaskHandle, Wasm, WorkflowFn},
     Json,
@@ -29,8 +29,9 @@ impl SpawnWorkflow for ParentWorkflow {
             .for_each_concurrent(concurrency, move |command| {
                 let events = handle.events.clone();
                 async move {
-                    let builder: WorkflowBuilder<_, TestedWorkflow> =
-                        Workflows.new_workflow("child", ()).unwrap();
+                    let builder = Workflows
+                        .new_workflow::<TestedWorkflow>("child", ())
+                        .unwrap();
                     builder.handle().events.copy_from(events);
                     let mut child = builder.build().unwrap();
                     child.api.commands.send(command).await.unwrap();

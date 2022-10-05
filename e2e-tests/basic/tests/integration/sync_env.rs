@@ -47,7 +47,9 @@ fn basic_workflow() -> TestResult {
         oven_count: 1,
         deliverer_count: 1,
     };
-    let workflow: WorkflowHandle<PizzaDelivery> = manager.new_workflow("pizza", inputs)?.build()?;
+    let workflow = manager
+        .new_workflow::<PizzaDelivery>("pizza", inputs)?
+        .build()?;
     let workflow_id = workflow.id();
     let receipt = manager.tick()?.into_inner()?;
 
@@ -155,7 +157,9 @@ fn workflow_with_concurrency() -> TestResult {
         oven_count: 2,
         deliverer_count: 1,
     };
-    let workflow: WorkflowHandle<PizzaDelivery> = manager.new_workflow("pizza", inputs)?.build()?;
+    let workflow = manager
+        .new_workflow::<PizzaDelivery>("pizza", inputs)?
+        .build()?;
     let workflow_id = workflow.id();
     manager.tick()?.into_inner()?;
 
@@ -208,7 +212,9 @@ fn persisting_workflow() -> TestResult {
         oven_count: 1,
         deliverer_count: 1,
     };
-    let workflow: WorkflowHandle<PizzaDelivery> = manager.new_workflow("pizza", inputs)?.build()?;
+    let workflow = manager
+        .new_workflow::<PizzaDelivery>("pizza", inputs)?
+        .build()?;
     let workflow_id = workflow.id();
     manager.tick()?.into_inner()?;
 
@@ -284,7 +290,7 @@ fn untyped_workflow() -> TestResult {
         oven_count: 1,
         deliverer_count: 1,
     });
-    let workflow: WorkflowHandle<()> = manager.new_workflow("pizza", data)?.build()?;
+    let workflow = manager.new_workflow::<()>("pizza", data)?.build()?;
     let workflow_id = workflow.id();
     let receipt = manager.tick()?.into_inner()?;
     assert_eq!(receipt.executions().len(), 2);
@@ -331,7 +337,7 @@ fn workflow_recovery_after_trap() -> TestResult {
         oven_count: SAMPLES,
         deliverer_count: 1,
     });
-    let workflow: WorkflowHandle<()> = manager.new_workflow("pizza", data)?.build()?;
+    let workflow = manager.new_workflow::<()>("pizza", data)?.build()?;
     let workflow_id = workflow.id();
     manager.tick()?.into_inner()?;
 

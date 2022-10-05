@@ -8,10 +8,7 @@ use std::cmp;
 
 use tardigrade::{channel::WithId, spawn::ManageWorkflowsExt};
 use tardigrade_rt::{
-    handle::{
-        future::{AsyncEnv, AsyncIoScheduler, Termination},
-        WorkflowHandle,
-    },
+    handle::future::{AsyncEnv, AsyncIoScheduler, Termination},
     manager::WorkflowManager,
 };
 use tardigrade_test_basic::{
@@ -32,8 +29,8 @@ async fn test_external_tasks(
         .with_spawner("pizza", spawner)
         .build();
 
-    let mut workflow: WorkflowHandle<PizzaDeliveryWithTasks> = manager
-        .new_workflow("pizza", Args { oven_count })?
+    let mut workflow = manager
+        .new_workflow::<PizzaDeliveryWithTasks>("pizza", Args { oven_count })?
         .build()?;
     let handle = workflow.handle();
     let mut env = AsyncEnv::new(AsyncIoScheduler);
@@ -155,8 +152,8 @@ async fn closing_task_responses_on_host() -> TestResult {
         .with_spawner("pizza", spawner)
         .build();
 
-    let mut workflow: WorkflowHandle<PizzaDeliveryWithTasks> = manager
-        .new_workflow("pizza", Args { oven_count: 2 })?
+    let mut workflow = manager
+        .new_workflow::<PizzaDeliveryWithTasks>("pizza", Args { oven_count: 2 })?
         .build()?;
 
     let mut env = AsyncEnv::new(AsyncIoScheduler);

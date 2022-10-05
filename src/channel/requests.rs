@@ -241,7 +241,10 @@ where
         self
     }
 
-    /// Converts this builder into a [`Requests`] instance.
+    /// Converts this builder into a [`Requests`] instance. A handle for the created background
+    /// task is returned as well; it can be used to guarantee expected requests termination.
+    /// Note that to avoid a deadlock, it usually makes sense to drop the `Requests` instance
+    /// before `await`ing the task handle.
     pub fn build(self) -> (Requests<Req, Resp>, JoinHandle<()>) {
         let (inner_sx, inner_rx) = mpsc::channel(self.capacity);
         let handle = RequestsHandle {

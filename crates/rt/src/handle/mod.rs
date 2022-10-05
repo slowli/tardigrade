@@ -163,8 +163,7 @@ impl<'a, T, C: Encode<T>> MessageSender<'a, T, C> {
     ///
     /// # Errors
     ///
-    /// Returns an error if the workflow is currently not waiting for messages
-    /// on the associated channel, or if the channel is closed.
+    /// Returns an error if the channel is full or closed.
     pub fn send(&mut self, message: T) -> Result<(), SendError> {
         let raw_message = self.codec.encode_value(message);
         self.manager.send_message(self.channel_id, raw_message)

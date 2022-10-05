@@ -420,17 +420,17 @@ impl InterfaceBuilder {
         }
     }
 
-    /// Adds an inbound channel to this builder.
+    /// Adds an inbound channel spec to this builder.
     pub fn insert_inbound_channel(&mut self, name: impl Into<String>, spec: InboundChannelSpec) {
         self.interface.inbound_channels.insert(name.into(), spec);
     }
 
-    /// Adds an outbound channel to this builder.
+    /// Adds an outbound channel spec to this builder.
     pub fn insert_outbound_channel(&mut self, name: impl Into<String>, spec: OutboundChannelSpec) {
         self.interface.outbound_channels.insert(name.into(), spec);
     }
 
-    /// Builds an untyped interface from this builder.
+    /// Builds an interface from this builder.
     pub fn build(self) -> Interface {
         self.interface
     }

@@ -18,7 +18,7 @@ use crate::{
 };
 use tardigrade::{
     interface::{InboundChannel, OutboundChannel},
-    spawn::{ManageWorkflowsExt, WorkflowBuilder},
+    spawn::ManageWorkflowsExt,
 };
 use tardigrade_shared::abi::AllocateBytes;
 
@@ -133,8 +133,8 @@ fn initializing_workflow_with_closed_channels() {
 
     let _guard = ExportsMock::prepare(Answers::from_value(test_channels));
     let mut manager = create_test_manager();
-    let builder: WorkflowBuilder<_, ()> = manager
-        .new_workflow("test:latest", b"test_input".to_vec())
+    let builder = manager
+        .new_workflow::<()>("test:latest", b"test_input".to_vec())
         .unwrap();
     builder.handle()[InboundChannel("orders")].close();
     builder.handle()[OutboundChannel("traces")].close();

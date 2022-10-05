@@ -51,7 +51,7 @@ impl ChannelIds {
             let channel_id = match config {
                 ChannelSpawnConfig::New => new_channel(),
                 ChannelSpawnConfig::Closed => 0,
-                ChannelSpawnConfig::Copy(id) => id,
+                ChannelSpawnConfig::Existing(id) => id,
             };
             (name, channel_id)
         });

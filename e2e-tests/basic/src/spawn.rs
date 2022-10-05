@@ -5,7 +5,7 @@ use futures::{FutureExt, StreamExt};
 
 use crate::{Args, PizzaDeliveryHandle, PizzaOrder, SharedHandle};
 use tardigrade::{
-    spawn::{ManageWorkflowsExt, WorkflowBuilder, Workflows},
+    spawn::{ManageWorkflowsExt, Workflows},
     workflow::{GetInterface, SpawnWorkflow, TakeHandle, TaskHandle, Wasm, WorkflowFn},
     Json,
 };
@@ -26,8 +26,9 @@ impl PizzaDeliveryHandle {
         self.orders
             .for_each_concurrent(args.oven_count, |order| {
                 counter += 1;
-                let builder: WorkflowBuilder<_, Baking> =
-                    Workflows.new_workflow("baking", (counter, order)).unwrap();
+                let builder = Workflows
+                    .new_workflow::<Baking>("baking", (counter, order))
+                    .unwrap();
                 builder.handle().events.copy_from(events.clone());
                 builder.handle().tracer.close();
                 builder.build().unwrap().workflow.map(Result::unwrap)

@@ -55,13 +55,13 @@ impl ChildWorkflowState {
 
     fn acquire_non_captured_channels(&mut self, channels: &ChannelsConfig<ChannelId>) {
         for (name, config) in &channels.inbound {
-            if matches!(config, ChannelSpawnConfig::Copy(_)) {
+            if matches!(config, ChannelSpawnConfig::Existing(_)) {
                 let state = self.channels.outbound.get_mut(name).unwrap();
                 state.is_acquired = true;
             }
         }
         for (name, config) in &channels.outbound {
-            if matches!(config, ChannelSpawnConfig::Copy(_)) {
+            if matches!(config, ChannelSpawnConfig::Existing(_)) {
                 let state = self.channels.inbound.get_mut(name).unwrap();
                 state.is_acquired = true;
             }
@@ -320,7 +320,7 @@ impl SpawnFunctions {
         let mut handles = handles.inner.lock().unwrap();
         handles
             .outbound
-            .insert(name, ChannelSpawnConfig::Copy(channel_id));
+            .insert(name, ChannelSpawnConfig::Existing(channel_id));
         Ok(())
     }
 

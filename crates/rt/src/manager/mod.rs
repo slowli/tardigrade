@@ -268,8 +268,8 @@ enum ChannelSide {
 /// // trait from the `tardigrade` crate:
 /// use tardigrade::spawn::ManageWorkflowsExt;
 /// let args = b"test_args".to_vec();
-/// let workflow: WorkflowHandle<()> =
-///     manager.new_workflow("test", args)?.build()?;
+/// let workflow =
+///     manager.new_workflow::<()>("test", args)?.build()?;
 /// // Do something with `workflow`, e.g., write something to its channels...
 ///
 /// // Initialize the workflow:

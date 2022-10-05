@@ -18,7 +18,7 @@
 //! # };
 //! // Assume we want to test a workflow.
 //! #[derive(Debug, GetInterface, TakeHandle)]
-//! # #[tardigrade(handle = "MyHandle", auto_interface)]
+//! #[tardigrade(handle = "MyHandle", auto_interface)]
 //! pub struct MyWorkflow(());
 //!
 //! /// Workflow handle.
@@ -102,7 +102,7 @@ use std::{
 
 use crate::{
     interface::Interface,
-    spawn::{ManageWorkflowsExt, RemoteWorkflow, Spawner, WorkflowBuilder, Workflows},
+    spawn::{ManageWorkflowsExt, RemoteWorkflow, Spawner, Workflows},
     workflow::{Handle, SpawnWorkflow, TakeHandle, TaskHandle, UntypedHandle, Wasm},
 };
 use tardigrade_shared::WorkflowId;
@@ -472,9 +472,11 @@ impl Runtime {
 
         self.workflow_registry.insert::<W, _>(DEFINITION_ID);
         self.run(async {
-            let builder: WorkflowBuilder<_, W> =
-                Workflows.new_workflow(DEFINITION_ID, args).unwrap();
-            let workflow = builder.build().unwrap();
+            let workflow = Workflows
+                .new_workflow::<W>(DEFINITION_ID, args)
+                .unwrap()
+                .build()
+                .expect("failed spawning workflow");
             crate::yield_now().await; // allow the workflow to initialize
             test_fn(workflow.api).await;
         });

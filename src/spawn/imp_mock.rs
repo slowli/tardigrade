@@ -151,7 +151,7 @@ impl ChannelsConfig<RawReceiver, RawSender> {
                 let pair = match config {
                     ChannelSpawnConfig::New => ChannelPair::default(),
                     ChannelSpawnConfig::Closed => ChannelPair::closed(local_channel_kind),
-                    ChannelSpawnConfig::Copy(handle) => handle.into(),
+                    ChannelSpawnConfig::Existing(handle) => handle.into(),
                 };
                 (name, pair)
             })

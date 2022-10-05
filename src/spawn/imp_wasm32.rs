@@ -127,7 +127,7 @@ impl ChannelSpawnConfig<RawReceiver> {
                     matches!(self, Self::Closed),
                 );
             }
-            Self::Copy(_) => todo!(),
+            Self::Existing(_) => todo!(),
         }
     }
 }
@@ -148,7 +148,7 @@ impl ChannelSpawnConfig<RawSender> {
                     matches!(self, Self::Closed),
                 );
             }
-            Self::Copy(sender) => {
+            Self::Existing(sender) => {
                 copy_sender_handle(
                     spawner,
                     channel_name.as_ptr(),

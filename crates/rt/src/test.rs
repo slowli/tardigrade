@@ -230,8 +230,8 @@ impl ModuleCompiler {
 ///     .build();
 /// let inputs: Vec<u8> = // ...
 /// #   vec![];
-/// let mut workflow: WorkflowHandle<()> =
-///     manager.new_workflow("test", inputs)?.build()?;
+/// let mut workflow =
+///     manager.new_workflow::<()>("test", inputs)?.build()?;
 ///
 /// // Spin up the environment to execute the `workflow`.
 /// let mut env = AsyncEnv::new(scheduler.clone());

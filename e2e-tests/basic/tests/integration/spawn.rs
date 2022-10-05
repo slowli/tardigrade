@@ -8,10 +8,7 @@ use std::{collections::HashMap, task::Poll};
 
 use tardigrade::spawn::ManageWorkflowsExt;
 use tardigrade_rt::{
-    handle::{
-        future::{AsyncEnv, AsyncIoScheduler, Termination},
-        WorkflowHandle,
-    },
+    handle::future::{AsyncEnv, AsyncIoScheduler, Termination},
     manager::WorkflowManager,
     receipt::{Event, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
     WorkflowModule,
@@ -41,8 +38,9 @@ async fn spawning_child_workflows() -> TestResult {
         oven_count: 2,
         deliverer_count: 1,
     };
-    let mut workflow: WorkflowHandle<PizzaDeliveryWithSpawning> =
-        manager.new_workflow("pizza", inputs)?.build()?;
+    let mut workflow = manager
+        .new_workflow::<PizzaDeliveryWithSpawning>("pizza", inputs)?
+        .build()?;
 
     let handle = workflow.handle();
     let mut env = AsyncEnv::new(AsyncIoScheduler);
@@ -121,8 +119,9 @@ async fn accessing_handles_in_child_workflows() -> TestResult {
         oven_count: 2,
         deliverer_count: 1,
     };
-    let mut workflow: WorkflowHandle<PizzaDeliveryWithSpawning> =
-        manager.new_workflow("pizza", inputs)?.build()?;
+    let mut workflow = manager
+        .new_workflow::<PizzaDeliveryWithSpawning>("pizza", inputs)?
+        .build()?;
     let mut handle = workflow.handle();
 
     let orders = [
