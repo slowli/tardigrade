@@ -445,6 +445,7 @@ impl WorkflowData<'_> {
                 ChannelKind::Inbound,
                 channel_ref,
                 channel_id,
+                0, // inbound channels cannot be aliased
             );
         }
         wakers
@@ -460,10 +461,17 @@ impl WorkflowData<'_> {
         if !channel_state.is_closed {
             channel_state.is_closed = true;
             let channel_id = channel_state.channel_id;
+            let remaining_alias_count = self
+                .persisted
+                .outbound_channels()
+                .filter(|(_, _, state)| state.id() == channel_id && !state.is_closed)
+                .count();
+
             self.current_execution().push_channel_closure(
                 ChannelKind::Outbound,
                 channel_ref,
                 channel_id,
+                remaining_alias_count,
             );
         }
         wakers

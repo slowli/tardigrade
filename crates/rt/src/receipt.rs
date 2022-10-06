@@ -201,7 +201,12 @@ pub enum ChannelEventKind {
         result: Poll<Result<(), SendError>>,
     },
     /// Outbound channel closed by the workflow logic.
-    OutboundChannelClosed(ChannelId),
+    OutboundChannelClosed {
+        /// Channel ID.
+        channel_id: ChannelId,
+        /// Number of remaining outbound workflow channels with the same ID.
+        remaining_alias_count: usize,
+    },
 }
 
 /// Event related to an inbound or outbound workflow channel.

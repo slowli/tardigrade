@@ -248,11 +248,15 @@ impl CurrentExecution {
         kind: ChannelKind,
         channel_ref: &ChannelRef,
         channel_id: ChannelId,
+        remaining_alias_count: usize,
     ) {
         self.push_event(ChannelEvent {
             kind: match kind {
                 ChannelKind::Inbound => ChannelEventKind::InboundChannelClosed(channel_id),
-                ChannelKind::Outbound => ChannelEventKind::OutboundChannelClosed(channel_id),
+                ChannelKind::Outbound => ChannelEventKind::OutboundChannelClosed {
+                    channel_id,
+                    remaining_alias_count,
+                },
             },
             channel_name: channel_ref.name.clone(),
             workflow_id: channel_ref.workflow_id,

@@ -1,5 +1,7 @@
 //! Types related to workflow interface definition.
 
+// TODO: Consider unifying terms: inbound / outbound vs receiver / sender
+
 use serde::{Deserialize, Serialize};
 
 use std::{collections::HashMap, error, fmt, ops};

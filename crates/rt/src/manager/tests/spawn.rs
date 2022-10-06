@@ -297,6 +297,7 @@ fn child_workflow_channel_closure() {
 
 fn spawn_child_with_copied_outbound_channel(
     mut ctx: StoreContextMut<'_, WorkflowData>,
+    copy_traces: bool,
 ) -> Result<Poll<()>, Trap> {
     let (id_ptr, id_len) = WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"test:latest")?;
     let (args_ptr, args_len) =
@@ -311,8 +312,19 @@ fn spawn_child_with_copied_outbound_channel(
         handles.clone(),
         name_ptr,
         name_len,
-        events,
+        events.clone(),
     )?;
+    if copy_traces {
+        let (name_ptr, name_len) =
+            WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"traces")?;
+        SpawnFunctions::copy_sender_handle(
+            ctx.as_context_mut(),
+            handles.clone(),
+            name_ptr,
+            name_len,
+            events,
+        )?;
+    }
 
     let workflow = SpawnFunctions::spawn(
         ctx.as_context_mut(),
@@ -341,6 +353,7 @@ fn spawn_child_with_copied_outbound_channel(
 
 #[test]
 fn spawning_child_with_copied_outbound_channel() {
+    let init: MockPollFn = |ctx| spawn_child_with_copied_outbound_channel(ctx, false);
     let write_event_and_complete_child: MockPollFn = |mut ctx| {
         let events = Some(WorkflowData::outbound_channel_ref(None, "events"));
         let (message_ptr, message_len) =
@@ -349,10 +362,7 @@ fn spawning_child_with_copied_outbound_channel() {
         Ok(Poll::Ready(()))
     };
 
-    let poll_fns = Answers::from_values([
-        spawn_child_with_copied_outbound_channel,
-        write_event_and_complete_child,
-    ]);
+    let poll_fns = Answers::from_values([init, write_event_and_complete_child]);
     let _guard = ExportsMock::prepare(poll_fns);
     let mut manager = create_test_manager();
     let workflow = create_test_workflow(&manager);
@@ -389,6 +399,7 @@ fn spawning_child_with_copied_outbound_channel() {
 }
 
 fn test_child_with_copied_closed_outbound_channel(close_before_spawn: bool) {
+    let init: MockPollFn = |ctx| spawn_child_with_copied_outbound_channel(ctx, false);
     let test_writing_event_in_child: MockPollFn = |mut ctx| {
         let events = Some(WorkflowData::outbound_channel_ref(None, "events"));
         let (message_ptr, message_len) =
@@ -400,10 +411,7 @@ fn test_child_with_copied_closed_outbound_channel(close_before_spawn: bool) {
         Ok(Poll::Pending)
     };
 
-    let poll_fns = Answers::from_values([
-        spawn_child_with_copied_outbound_channel,
-        test_writing_event_in_child,
-    ]);
+    let poll_fns = Answers::from_values([init, test_writing_event_in_child]);
     let _guard = ExportsMock::prepare(poll_fns);
     let mut manager = create_test_manager();
     let workflow = create_test_workflow(&manager);
@@ -429,4 +437,100 @@ fn spawning_child_with_copied_closed_outbound_channel() {
 #[test]
 fn spawning_child_with_copied_then_closed_outbound_channel() {
     test_child_with_copied_closed_outbound_channel(false);
+}
+
+fn test_child_with_aliased_outbound_channel(complete_child: bool) {
+    let init: MockPollFn = |ctx| spawn_child_with_copied_outbound_channel(ctx, true);
+    let write_event_and_drop_events: MockPollFn = |mut ctx| {
+        let events = Some(WorkflowData::outbound_channel_ref(None, "events"));
+        let (message_ptr, message_len) =
+            WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"child_event")?;
+        WorkflowFunctions::start_send(
+            ctx.as_context_mut(),
+            events.clone(),
+            message_ptr,
+            message_len,
+        )?;
+        WorkflowFunctions::drop_ref(ctx.as_context_mut(), events)?;
+
+        let traces = Some(WorkflowData::outbound_channel_ref(None, "traces"));
+        let (message_ptr, message_len) =
+            WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"child_trace")?;
+        WorkflowFunctions::start_send(
+            ctx.as_context_mut(),
+            traces.clone(),
+            message_ptr,
+            message_len,
+        )?;
+        let poll_result =
+            WorkflowFunctions::poll_flush_for_sender(ctx.as_context_mut(), traces, POLL_CX)?;
+        assert_eq!(poll_result, -1); // Poll::Pending
+        Ok(Poll::Pending)
+    };
+    let complete_child_or_drop_traces: MockPollFn = if complete_child {
+        |_| Ok(Poll::Ready(()))
+    } else {
+        |ctx| {
+            let traces = Some(WorkflowData::outbound_channel_ref(None, "traces"));
+            WorkflowFunctions::drop_ref(ctx, traces)?;
+            Ok(Poll::Pending)
+        }
+    };
+
+    let poll_fns = Answers::from_values([
+        init,
+        write_event_and_drop_events,
+        complete_child_or_drop_traces,
+    ]);
+    let _guard = ExportsMock::prepare(poll_fns);
+    let mut manager = create_test_manager();
+    let workflow = create_test_workflow(&manager);
+    let workflow_id = workflow.id();
+    let events_id = workflow.ids().channel_ids.outbound["events"];
+    manager.tick_workflow(workflow_id).unwrap();
+
+    let state = manager.lock();
+    assert_eq!(
+        state.channels[&events_id].sender_workflow_ids,
+        HashSet::from_iter([workflow_id, CHILD_ID])
+    );
+    let child_channel_ids = state.channel_ids(CHILD_ID).unwrap();
+    assert_eq!(child_channel_ids.outbound["events"], events_id);
+    assert_eq!(child_channel_ids.outbound["traces"], events_id);
+    drop(state);
+
+    manager.tick_workflow(CHILD_ID).unwrap();
+    let state = manager.lock();
+    let channel_state = &state.channels[&events_id];
+    assert_eq!(
+        channel_state.sender_workflow_ids,
+        HashSet::from_iter([workflow_id, CHILD_ID])
+    );
+    assert_eq!(
+        channel_state
+            .messages
+            .iter()
+            .map(Message::as_ref)
+            .collect::<HashSet<_>>(),
+        HashSet::from_iter([b"child_event" as &[u8], b"child_trace"])
+    );
+    drop(state);
+
+    manager.tick_workflow(CHILD_ID).unwrap();
+    let state = manager.lock();
+    let channel_state = &state.channels[&events_id];
+    assert_eq!(
+        channel_state.sender_workflow_ids,
+        HashSet::from_iter([workflow_id])
+    );
+}
+
+#[test]
+fn spawning_child_with_aliased_outbound_channel() {
+    test_child_with_aliased_outbound_channel(false);
+}
+
+#[test]
+fn spawning_and_completing_child_with_aliased_outbound_channel() {
+    test_child_with_aliased_outbound_channel(true);
 }
