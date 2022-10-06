@@ -19,8 +19,8 @@
 //!
 //! [`wasmtime`]: https://docs.rs/wasmtime/latest/wasmtime/
 //! [`WorkflowManager`]: crate::manager::WorkflowManager
-//! [`WorkflowHandle`]: crate::handle::WorkflowHandle
-//! [`AsyncEnv`]: crate::handle::future::AsyncEnv
+//! [`WorkflowHandle`]: crate::manager::WorkflowHandle
+//! [`AsyncEnv`]: crate::manager::future::AsyncEnv
 //!
 //! # Crate features
 //!
@@ -28,7 +28,7 @@
 //!
 //! *(Off by default)*
 //!
-//! Exposes async handles for workflows in the [`handle::future`] module.
+//! Exposes async handles for workflows in the [`manager::future`] module.
 //!
 //! ## `async-io`
 //!
@@ -45,7 +45,7 @@
 //! [the eponymous crate][`log`]. The information is logged to the `tardigrade_rt` logger,
 //! mostly using `TRACE` level.
 //!
-//! [`Schedule`]: crate::handle::future::Schedule
+//! [`Schedule`]: crate::manager::future::Schedule
 //! [`async-io`]: https://docs.rs/async-io/
 //! [`log`]: https://docs.rs/log/
 //!
@@ -55,8 +55,7 @@
 //!
 //! ```no_run
 //! use tardigrade_rt::{
-//!     handle::WorkflowHandle,
-//!     manager::WorkflowManager,
+//!     manager::{WorkflowHandle, WorkflowManager},
 //!     WorkflowEngine, WorkflowModule,
 //! };
 //! use tardigrade::spawn::ManageWorkflowsExt;
@@ -79,8 +78,8 @@
 //! let mut manager = WorkflowManager::builder()
 //!     .with_spawner("test", spawner)
 //!     .build();
-//! let new_workflow: WorkflowHandle<()> =
-//!     manager.new_workflow("test", b"data".to_vec())?.build()?;
+//! let new_workflow =
+//!     manager.new_workflow::<()>("test", b"data".to_vec())?.build()?;
 //!
 //! // Let's initialize the workflow.
 //! let receipt = manager.tick()?.into_inner()?;
@@ -116,9 +115,8 @@
 //! let persisted: PersistedWorkflows = serde_json::from_str(&json)?;
 //! // The manager can then be instantiated again:
 //! let manager = WorkflowManager::builder()
-//!     .with_state(persisted)
-//!     // set other options...
-//!     .build();
+//!     // set other options, e.g. spawners...
+//!     .restore(persisted)?;
 //! # Ok(())
 //! # }
 //! ```
@@ -131,17 +129,17 @@
 #![warn(clippy::all, clippy::pedantic)]
 #![allow(clippy::must_use_candidate, clippy::module_name_repetitions)]
 
+#[macro_use]
+mod utils;
 mod data;
-pub mod handle;
 pub mod manager;
 mod module;
 pub mod receipt;
 pub mod test;
-mod utils;
 mod workflow;
 
 pub use crate::{
-    data::{InboundChannelState, OutboundChannelState, TaskState, TimerState},
+    data::{ChildWorkflowState, InboundChannelState, OutboundChannelState, TaskState, TimerState},
     module::{Clock, ExtendLinker, WorkflowEngine, WorkflowModule, WorkflowSpawner},
     workflow::PersistedWorkflow,
 };

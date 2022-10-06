@@ -11,8 +11,7 @@ use tardigrade::{
     Decode, Encode, Json,
 };
 use tardigrade_rt::{
-    handle::WorkflowHandle,
-    manager::WorkflowManager,
+    manager::{WorkflowHandle, WorkflowManager},
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, ExecutionError, WakeUpCause,
     },
@@ -47,7 +46,9 @@ fn basic_workflow() -> TestResult {
         oven_count: 1,
         deliverer_count: 1,
     };
-    let workflow: WorkflowHandle<PizzaDelivery> = manager.new_workflow("pizza", inputs)?.build()?;
+    let workflow = manager
+        .new_workflow::<PizzaDelivery>("pizza", inputs)?
+        .build()?;
     let workflow_id = workflow.id();
     let receipt = manager.tick()?.into_inner()?;
 
@@ -97,7 +98,7 @@ fn basic_workflow() -> TestResult {
 
     let mut workflow = get_workflow(&manager, workflow_id);
     let mut handle = workflow.handle();
-    let events = handle.shared.events.take_messages();
+    let events = handle.shared.events.take_messages().unwrap();
     assert_eq!(events.message_indices(), 0..1);
     assert_eq!(
         events.decode()?,
@@ -130,7 +131,7 @@ fn basic_workflow() -> TestResult {
     let receipt = manager.tick()?.into_inner()?;
     dbg!(&receipt); // TODO: assert on receipt
     let mut handle = get_workflow(&manager, workflow_id).handle();
-    let events = handle.shared.events.take_messages();
+    let events = handle.shared.events.take_messages().unwrap();
     assert_eq!(events.decode()?, [DomainEvent::Baked { index: 1, order }]);
 
     let tracer_handle = &mut handle.shared.tracer;
@@ -155,7 +156,9 @@ fn workflow_with_concurrency() -> TestResult {
         oven_count: 2,
         deliverer_count: 1,
     };
-    let workflow: WorkflowHandle<PizzaDelivery> = manager.new_workflow("pizza", inputs)?.build()?;
+    let workflow = manager
+        .new_workflow::<PizzaDelivery>("pizza", inputs)?
+        .build()?;
     let workflow_id = workflow.id();
     manager.tick()?.into_inner()?;
 
@@ -181,7 +184,7 @@ fn workflow_with_concurrency() -> TestResult {
     assert_eq!(message_indices, [0, 1]);
 
     let mut handle = get_workflow(&manager, workflow_id).handle();
-    let events = handle.shared.events.take_messages();
+    let events = handle.shared.events.take_messages().unwrap();
     assert_eq!(
         events.decode()?,
         [
@@ -208,7 +211,9 @@ fn persisting_workflow() -> TestResult {
         oven_count: 1,
         deliverer_count: 1,
     };
-    let workflow: WorkflowHandle<PizzaDelivery> = manager.new_workflow("pizza", inputs)?.build()?;
+    let workflow = manager
+        .new_workflow::<PizzaDelivery>("pizza", inputs)?
+        .build()?;
     let workflow_id = workflow.id();
     manager.tick()?.into_inner()?;
 
@@ -221,7 +226,7 @@ fn persisting_workflow() -> TestResult {
     manager.tick().unwrap().into_inner()?;
 
     let mut handle = get_workflow(&manager, workflow_id).handle();
-    let events = handle.shared.events.take_messages();
+    let events = handle.shared.events.take_messages().unwrap();
     assert_eq!(
         events.decode()?,
         [DomainEvent::OrderTaken { index: 1, order }]
@@ -233,10 +238,9 @@ fn persisting_workflow() -> TestResult {
     assert!(persisted_json.len() < 5_000, "{}", persisted_json);
     let persisted = serde_json::from_str(&persisted_json)?;
     let mut manager = WorkflowManager::builder()
-        .with_state(persisted)
         .with_clock(Arc::clone(&clock))
         .with_spawner("pizza", MODULE.for_workflow::<PizzaDelivery>()?)
-        .build();
+        .restore(persisted)?;
 
     assert!(!manager.tick()?.into_inner()?.executions().is_empty());
     let new_time = clock.now() + chrono::Duration::milliseconds(100);
@@ -246,13 +250,13 @@ fn persisting_workflow() -> TestResult {
 
     // Check that the pizza is ready now.
     let mut handle = get_workflow(&manager, workflow_id).handle();
-    let events = handle.shared.events.take_messages();
+    let events = handle.shared.events.take_messages().unwrap();
     assert_eq!(events.decode()?, [DomainEvent::Baked { index: 1, order }]);
 
     // We need to flush a second time to get the "started delivering" event.
     manager.tick()?.into_inner()?;
     let mut handle = get_workflow(&manager, workflow_id).handle();
-    let events = handle.shared.events.take_messages();
+    let events = handle.shared.events.take_messages().unwrap();
     assert_eq!(
         events.decode()?,
         [DomainEvent::StartedDelivering { index: 1, order }]
@@ -285,7 +289,7 @@ fn untyped_workflow() -> TestResult {
         oven_count: 1,
         deliverer_count: 1,
     });
-    let workflow: WorkflowHandle<()> = manager.new_workflow("pizza", data)?.build()?;
+    let workflow = manager.new_workflow::<()>("pizza", data)?.build()?;
     let workflow_id = workflow.id();
     let receipt = manager.tick()?.into_inner()?;
     assert_eq!(receipt.executions().len(), 2);
@@ -300,7 +304,7 @@ fn untyped_workflow() -> TestResult {
     dbg!(&receipt);
 
     let mut handle = manager.workflow(workflow_id).unwrap().handle();
-    let events = handle[OutboundChannel("events")].take_messages();
+    let events = handle[OutboundChannel("events")].take_messages().unwrap();
     assert_eq!(events.message_indices(), 0..1);
     let events: Vec<DomainEvent> = events
         .decode()?
@@ -332,7 +336,7 @@ fn workflow_recovery_after_trap() -> TestResult {
         oven_count: SAMPLES,
         deliverer_count: 1,
     });
-    let workflow: WorkflowHandle<()> = manager.new_workflow("pizza", data)?.build()?;
+    let workflow = manager.new_workflow::<()>("pizza", data)?.build()?;
     let workflow_id = workflow.id();
     manager.tick()?.into_inner()?;
 
@@ -387,7 +391,7 @@ fn workflow_recovery_after_trap() -> TestResult {
             result.into_inner()?;
 
             let mut handle = manager.workflow(workflow_id).unwrap().handle();
-            let events = handle[OutboundChannel("events")].take_messages();
+            let events = handle[OutboundChannel("events")].take_messages().unwrap();
             assert_eq!(events.message_indices(), (i / 2)..(i / 2 + 1));
         }
     }

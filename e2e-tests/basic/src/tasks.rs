@@ -4,23 +4,19 @@
 use futures::{Future, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 
-use crate::{DomainEvent, PizzaOrder, Shared, SharedHandle};
+use crate::{DomainEvent, PizzaOrder, SharedHandle};
 use tardigrade::{
     channel::{Receiver, Requests, Sender, WithId},
-    workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm, WorkflowFn},
+    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, TaskHandle, Wasm, WorkflowFn},
     FutureExt as _, Json,
 };
 
-#[derive(Debug, GetInterface)]
-#[tardigrade(interface = "file:src/tardigrade-tasks.json")]
-pub struct PizzaDeliveryWithTasks(());
-
-#[tardigrade::handle(for = "PizzaDeliveryWithTasks")]
+#[tardigrade::handle]
 #[derive(Debug)]
 pub struct WorkflowHandle<Env> {
     pub orders: Handle<Receiver<PizzaOrder, Json>, Env>,
     #[tardigrade(flatten)]
-    pub shared: Handle<Shared, Env>,
+    pub shared: Handle<SharedHandle<Wasm>, Env>,
     pub baking_tasks: Handle<Sender<WithId<PizzaOrder>, Json>, Env>,
     pub baking_responses: Handle<Receiver<WithId<()>, Json>, Env>,
 }
@@ -29,6 +25,10 @@ pub struct WorkflowHandle<Env> {
 pub struct Args {
     pub oven_count: usize,
 }
+
+#[derive(Debug, GetInterface, TakeHandle)]
+#[tardigrade(handle = "WorkflowHandle", interface = "src/tardigrade-tasks.json")]
+pub struct PizzaDeliveryWithTasks(());
 
 #[test]
 fn interface_agrees_between_declaration_and_handle() {
@@ -41,7 +41,7 @@ impl WorkflowFn for PizzaDeliveryWithTasks {
 }
 
 impl SpawnWorkflow for PizzaDeliveryWithTasks {
-    fn spawn(args: Self::Args, handle: Self::Handle) -> TaskHandle {
+    fn spawn(args: Self::Args, handle: WorkflowHandle<Wasm>) -> TaskHandle {
         TaskHandle::new(handle.spawn(args))
     }
 }

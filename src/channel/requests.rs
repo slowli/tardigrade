@@ -118,7 +118,7 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 /// # use serde::{Deserialize, Serialize};
 /// # use tardigrade::{
 /// #     channel::{Requests, Sender, Receiver, WithId},
-/// #     workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm, WorkflowFn},
+/// #     workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, TakeHandle, Wasm, WorkflowFn},
 /// #     Json,
 /// # };
 /// #[derive(Debug, Serialize, Deserialize)]
@@ -130,15 +130,11 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 ///     // response fields...
 /// }
 ///
-/// #[derive(Debug, GetInterface)]
-/// # #[tardigrade(interface = r#"{
-/// #     "v":0,
-/// #     "in": { "responses": {} },
-/// #     "out": { "requests": {} }
-/// # }"#)]
+/// #[derive(Debug, GetInterface, TakeHandle)]
+/// # #[tardigrade(handle = "MyHandle", auto_interface)]
 /// pub struct MyWorkflow(());
 ///
-/// #[tardigrade::handle(for = "MyWorkflow")]
+/// #[tardigrade::handle]
 /// #[derive(Debug)]
 /// pub struct MyHandle<Env> {
 ///     pub requests: Handle<Sender<WithId<Request>, Json>, Env>,
@@ -245,7 +241,10 @@ where
         self
     }
 
-    /// Converts this builder into a [`Requests`] instance.
+    /// Converts this builder into a [`Requests`] instance. A handle for the created background
+    /// task is returned as well; it can be used to guarantee expected requests termination.
+    /// Note that to avoid a deadlock, it usually makes sense to drop the `Requests` instance
+    /// before `await`ing the task handle.
     pub fn build(self) -> (Requests<Req, Resp>, JoinHandle<()>) {
         let (inner_sx, inner_rx) = mpsc::channel(self.capacity);
         let handle = RequestsHandle {

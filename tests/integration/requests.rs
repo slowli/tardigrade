@@ -3,12 +3,10 @@
 use futures::{future, stream, FutureExt, SinkExt, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 
-use tardigrade::workflow::WorkflowFn;
 use tardigrade::{
     channel::{Receiver, Requests, Sender, WithId},
-    interface::Interface,
     test::Runtime,
-    workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm},
+    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, TaskHandle, Wasm, WorkflowFn},
     Json,
 };
 
@@ -29,34 +27,21 @@ impl Default for Options {
     }
 }
 
-#[derive(Debug)]
-struct TestedWorkflow;
-
-impl GetInterface for TestedWorkflow {
-    const WORKFLOW_NAME: &'static str = "TestedWorkflow";
-
-    fn interface() -> Interface<Self> {
-        const SPEC: &[u8] = br#"{
-            "v": 0,
-            "data": { "strings": {}, "options": {} },
-            "in": { "responses": {} },
-            "out": { "requests": {} }
-        }"#;
-        Interface::from_bytes(SPEC).downcast().unwrap()
-    }
-}
-
-#[tardigrade::handle(for = "TestedWorkflow")]
-struct TestHandle<Env> {
-    requests: Handle<Sender<WithId<String>, Json>, Env>,
-    responses: Handle<Receiver<WithId<usize>, Json>, Env>,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 struct TestInit {
     strings: Vec<String>,
     options: Options,
 }
+
+#[tardigrade::handle]
+struct TestHandle<Env> {
+    requests: Handle<Sender<WithId<String>, Json>, Env>,
+    responses: Handle<Receiver<WithId<usize>, Json>, Env>,
+}
+
+#[derive(Debug, GetInterface, TakeHandle)]
+#[tardigrade(handle = "TestHandle", auto_interface)]
+struct TestedWorkflow;
 
 impl WorkflowFn for TestedWorkflow {
     type Args = TestInit;
@@ -67,7 +52,7 @@ impl SpawnWorkflow for TestedWorkflow {
     fn spawn(args: TestInit, handle: TestHandle<Wasm>) -> TaskHandle {
         let strings = args.strings;
         let options = args.options;
-        let (requests, _) = Requests::builder(handle.requests, handle.responses)
+        let (requests, requests_task) = Requests::builder(handle.requests, handle.responses)
             .with_capacity(options.capacity)
             .build();
 
@@ -105,7 +90,10 @@ impl SpawnWorkflow for TestedWorkflow {
                         assert_eq!(response, expected_response);
                     }
                 }
+                drop(requests);
             }
+
+            requests_task.await.ok();
         })
     }
 }
@@ -114,18 +102,15 @@ fn test_requests(init: TestInit) {
     println!("Testing with {:?}", init.options);
 
     let expected_strings = init.strings.clone();
-    Runtime::default().test::<TestedWorkflow, _, _>(init, |api| async move {
-        let mut requests = api.requests.unwrap();
-        let mut responses = api.responses.unwrap();
-
+    Runtime::default().test::<TestedWorkflow, _, _>(init, |mut api| async move {
         let mut strings = vec![];
-        while let Some(WithId { id, data }) = requests.next().await {
+        while let Some(WithId { id, data }) = api.requests.next().await {
             let response = WithId {
                 id,
                 data: data.len(),
             };
             strings.push(data);
-            responses.send(response).await.ok();
+            api.responses.send(response).await.ok();
         }
         assert_eq!(strings, expected_strings);
     });

@@ -173,7 +173,7 @@ impl PersistedWorkflow {
     }
 
     pub(crate) fn close_outbound_channels_by_id(&mut self, channel_id: ChannelId) {
-        for channel_state in self.state.outbound_channels_mut() {
+        for (_, _, channel_state) in self.state.outbound_channels_mut() {
             if channel_state.id() == channel_id {
                 channel_state.close();
             }
@@ -255,6 +255,10 @@ impl PersistedWorkflow {
         self.state.channel_ids()
     }
 
+    pub(crate) fn check_on_restore(&self, spawner: &WorkflowSpawner<()>) -> anyhow::Result<()> {
+        self.state.check_on_restore(spawner.interface())
+    }
+
     /// Restores a workflow from the persisted state and the `spawner` defining the workflow.
     ///
     /// # Errors
@@ -272,8 +276,12 @@ impl PersistedWorkflow {
             .restore(interface, services)
             .context("failed restoring workflow state")?;
         let mut workflow = Workflow::from_state(spawner, data, self.args)?;
-        self.memory.restore(&mut workflow)?;
-        self.refs.restore(&mut workflow.store)?;
+        self.memory
+            .restore(&mut workflow)
+            .context("failed restoring workflow memory")?;
+        self.refs
+            .restore(&mut workflow.store)
+            .context("failed restoring workflow externrefs")?;
         Ok(workflow)
     }
 }

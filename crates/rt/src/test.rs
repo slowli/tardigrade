@@ -34,7 +34,7 @@ use std::{
 };
 
 #[cfg(feature = "async")]
-use crate::handle::future::{Schedule, TimerFuture};
+use crate::manager::future::{Schedule, TimerFuture};
 use crate::module::Clock;
 use tardigrade::test::MockScheduler as SchedulerBase;
 
@@ -211,15 +211,15 @@ impl ModuleCompiler {
 ///
 /// A primary use case is to use the scheduler with [`AsyncEnv`] for integration testing:
 ///
-/// [`AsyncEnv`]: crate::handle::future::AsyncEnv
+/// [`AsyncEnv`]: crate::manager::future::AsyncEnv
 ///
 /// ```
 /// # use async_std::task;
 /// # use futures::TryStreamExt;
 /// # use std::sync::Arc;
 /// use tardigrade::{interface::OutboundChannel, spawn::ManageWorkflowsExt};
-/// use tardigrade_rt::{test::MockScheduler, manager::WorkflowManager, WorkflowModule};
-/// use tardigrade_rt::handle::{future::AsyncEnv, WorkflowHandle};
+/// use tardigrade_rt::{test::MockScheduler, WorkflowModule};
+/// use tardigrade_rt::manager::{future::AsyncEnv, WorkflowHandle, WorkflowManager};
 ///
 /// # async fn test_wrapper(module: WorkflowModule) -> anyhow::Result<()> {
 /// let scheduler = Arc::new(MockScheduler::default());
@@ -230,8 +230,8 @@ impl ModuleCompiler {
 ///     .build();
 /// let inputs: Vec<u8> = // ...
 /// #   vec![];
-/// let mut workflow: WorkflowHandle<()> =
-///     manager.new_workflow("test", inputs)?.build()?;
+/// let mut workflow =
+///     manager.new_workflow::<()>("test", inputs)?.build()?;
 ///
 /// // Spin up the environment to execute the `workflow`.
 /// let mut env = AsyncEnv::new(scheduler.clone());

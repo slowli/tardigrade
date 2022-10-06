@@ -21,6 +21,11 @@ use crate::{
 };
 use tardigrade::spawn::{ChannelSpawnConfig, ChannelsConfig};
 
+#[derive(Debug, Default)]
+struct ExecutionOutput {
+    main_task_id: Option<TaskId>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ChannelIds {
     pub inbound: HashMap<String, ChannelId>,
@@ -28,24 +33,27 @@ pub(crate) struct ChannelIds {
 }
 
 impl ChannelIds {
-    pub fn new(channels: &ChannelsConfig, mut new_channel: impl FnMut() -> ChannelId) -> Self {
+    pub fn new(
+        channels: ChannelsConfig<ChannelId>,
+        mut new_channel: impl FnMut() -> ChannelId,
+    ) -> Self {
         Self {
-            inbound: Self::map_channels(&channels.inbound, &mut new_channel),
-            outbound: Self::map_channels(&channels.outbound, new_channel),
+            inbound: Self::map_channels(channels.inbound, &mut new_channel),
+            outbound: Self::map_channels(channels.outbound, new_channel),
         }
     }
 
     fn map_channels(
-        config: &HashMap<String, ChannelSpawnConfig>,
+        config: HashMap<String, ChannelSpawnConfig<ChannelId>>,
         mut new_channel: impl FnMut() -> ChannelId,
     ) -> HashMap<String, ChannelId> {
-        let channel_ids = config.iter().map(|(name, config)| {
+        let channel_ids = config.into_iter().map(|(name, config)| {
             let channel_id = match config {
                 ChannelSpawnConfig::New => new_channel(),
                 ChannelSpawnConfig::Closed => 0,
-                _ => unreachable!(),
+                ChannelSpawnConfig::Existing(id) => id,
             };
-            (name.clone(), channel_id)
+            (name, channel_id)
         });
         channel_ids.collect()
     }
@@ -122,15 +130,11 @@ impl<'a> Workflow<'a> {
     }
 
     fn spawn_main_task(&mut self, raw_data: &[u8]) -> Result<Receipt, ExecutionError> {
-        let function = ExecutedFunction::Entry { task_id: 0 };
+        let function = ExecutedFunction::Entry;
         let mut receipt = Receipt::new();
-        if let Err(err) = self.execute(function, Some(raw_data), &mut receipt) {
-            return Err(ExecutionError::new(err, receipt));
-        }
-
-        let task_id = match &receipt.executions[0].function {
-            ExecutedFunction::Entry { task_id } => *task_id,
-            _ => unreachable!(),
+        let task_id = match self.execute(function, Some(raw_data), &mut receipt) {
+            Ok(output) => output.main_task_id.expect("main task ID not set"),
+            Err(err) => return Err(ExecutionError::new(err, receipt)),
         };
         self.store.data_mut().spawn_main_task(task_id);
         Ok(receipt)
@@ -140,7 +144,8 @@ impl<'a> Workflow<'a> {
         &mut self,
         function: &mut ExecutedFunction,
         data: Option<&[u8]>,
-    ) -> Result<(), Trap> {
+    ) -> Result<ExecutionOutput, Trap> {
+        let mut output = ExecutionOutput::default();
         match function {
             ExecutedFunction::Task {
                 task_id,
@@ -154,33 +159,27 @@ impl<'a> Workflow<'a> {
                 }
                 exec_result.map(|poll| {
                     *poll_result = poll;
-                })
+                })?;
             }
 
             ExecutedFunction::Waker {
                 waker_id,
                 wake_up_cause,
             } => {
-                crate::trace!(
-                    "Waking up waker {} with cause {:?}",
-                    waker_id,
-                    wake_up_cause
-                );
-                WorkflowData::wake(&mut self.store, *waker_id, wake_up_cause.clone())
+                trace!("Waking up waker {waker_id} with cause {wake_up_cause:?}");
+                WorkflowData::wake(&mut self.store, *waker_id, wake_up_cause.clone())?;
             }
             ExecutedFunction::TaskDrop { task_id } => {
                 let exports = self.store.data().exports();
-                exports.drop_task(self.store.as_context_mut(), *task_id)
+                exports.drop_task(self.store.as_context_mut(), *task_id)?;
             }
-            ExecutedFunction::Entry { task_id } => {
+            ExecutedFunction::Entry => {
                 let exports = self.store.data().exports();
-                exports
-                    .create_main_task(self.store.as_context_mut(), data.unwrap())
-                    .map(|new_task_id| {
-                        *task_id = new_task_id;
-                    })
+                output.main_task_id =
+                    Some(exports.create_main_task(self.store.as_context_mut(), data.unwrap())?);
             }
         }
+        Ok(output)
     }
 
     fn execute(
@@ -188,7 +187,7 @@ impl<'a> Workflow<'a> {
         mut function: ExecutedFunction,
         data: Option<&[u8]>,
         receipt: &mut Receipt,
-    ) -> Result<(), ExtendedTrap> {
+    ) -> Result<ExecutionOutput, ExtendedTrap> {
         self.store
             .data_mut()
             .set_current_execution(function.clone());
@@ -202,13 +201,13 @@ impl<'a> Workflow<'a> {
         receipt.executions.push(Execution { function, events });
 
         // On error, we don't drop tasks mentioned in `resource_events`.
-        output.map_err(|trap| ExtendedTrap::new(trap, panic_info))?;
+        let output = output.map_err(|trap| ExtendedTrap::new(trap, panic_info))?;
 
         for task_id in dropped_tasks {
             let function = ExecutedFunction::TaskDrop { task_id };
             self.execute(function, None, receipt)?;
         }
-        Ok(())
+        Ok(output)
     }
 
     fn dropped_tasks(events: &[Event]) -> Vec<TaskId> {
@@ -231,15 +230,15 @@ impl<'a> Workflow<'a> {
         wake_up_cause: WakeUpCause,
         receipt: &mut Receipt,
     ) -> Result<(), ExtendedTrap> {
-        crate::trace!("Polling task {} because of {:?}", task_id, wake_up_cause);
+        trace!("Polling task {task_id} because of {wake_up_cause:?}");
 
         let function = ExecutedFunction::Task {
             task_id,
             wake_up_cause,
             poll_result: Poll::Pending,
         };
-        let poll_result = self.execute(function, None, receipt);
-        crate::log_result!(poll_result, "Finished polling task {}", task_id)
+        let poll_result = self.execute(function, None, receipt).map(drop);
+        log_result!(poll_result, "Finished polling task {task_id}")
     }
 
     fn wake_tasks(&mut self, receipt: &mut Receipt) -> Result<(), ExtendedTrap> {
@@ -287,15 +286,23 @@ impl<'a> Workflow<'a> {
             .store
             .data_mut()
             .push_inbound_message(workflow_id, channel_name, message);
-        crate::log_result!(
+        log_result!(
             result,
-            "Consumed message ({} bytes) for channel `{}`",
-            message_len,
-            channel_name
+            "Consumed message ({message_len} bytes) for channel `{channel_name}`"
         )
     }
 
-    pub(crate) fn drain_messages(&mut self) -> Vec<(ChannelId, Vec<Message>)> {
+    pub(crate) fn take_pending_inbound_message(
+        &mut self,
+        workflow_id: Option<WorkflowId>,
+        channel_name: &str,
+    ) -> bool {
+        self.store
+            .data_mut()
+            .take_pending_inbound_message(workflow_id, channel_name)
+    }
+
+    pub(crate) fn drain_messages(&mut self) -> HashMap<ChannelId, Vec<Message>> {
         self.store.data_mut().drain_messages()
     }
 

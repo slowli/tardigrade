@@ -4,25 +4,32 @@
 
 #![allow(clippy::missing_panics_doc)] // lots of `unwrap()`s on mutex locks
 
+use anyhow::Context;
 use chrono::{DateTime, Utc};
 
 use std::{
     borrow::Cow,
     collections::HashMap,
-    error, fmt, ops,
-    sync::{Arc, Mutex},
+    error, fmt,
+    sync::{Arc, Mutex, MutexGuard},
 };
 
+#[cfg(feature = "async")]
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+pub mod future;
+mod handle;
 mod persistence;
 #[cfg(test)]
 mod tests;
 mod transaction;
 
-pub use self::persistence::PersistedWorkflows;
+pub use self::{
+    handle::{MessageReceiver, MessageSender, TakenMessages, TracerHandle, WorkflowHandle},
+    persistence::PersistedWorkflows,
+};
 
 use self::transaction::Transaction;
 use crate::{
-    handle::WorkflowHandle,
     module::{Clock, Services, WorkflowAndChannelIds},
     receipt::{ChannelEvent, ChannelEventKind, ExecutionError, Receipt},
     utils::Message,
@@ -31,7 +38,7 @@ use crate::{
 };
 use tardigrade::{
     interface::{ChannelKind, Interface},
-    spawn::{ChannelsConfig, ManageInterfaces, ManageWorkflows},
+    spawn::{ChannelsConfig, ManageInterfaces, ManageWorkflows, SpecifyWorkflowChannels},
     workflow::WorkflowFn,
 };
 use tardigrade_shared::{ChannelId, SendError, WorkflowId};
@@ -39,6 +46,7 @@ use tardigrade_shared::{ChannelId, SendError, WorkflowId};
 /// Information about a channel managed by a [`WorkflowManager`].
 #[derive(Debug)]
 pub struct ChannelInfo {
+    receiver_workflow_id: Option<WorkflowId>,
     is_closed: bool,
     message_count: usize,
     next_message_idx: usize,
@@ -58,6 +66,12 @@ impl ChannelInfo {
     /// Returns the number of messages consumed by the channel receiver.
     pub fn flushed_messages(&self) -> usize {
         self.next_message_idx - self.message_count
+    }
+
+    /// Returns the ID of a workflow that holds the receiver end of this channel, or `None`
+    /// if it is held by the host.
+    pub fn receiver_workflow_id(&self) -> Option<WorkflowId> {
+        self.receiver_workflow_id
     }
 }
 
@@ -110,7 +124,8 @@ impl<T> TickResult<T> {
     }
 }
 
-/// Actions
+/// Actions that can be performed on a [`WorkflowManager`]. Used within the [`TickResult`]
+/// wrapper.
 #[derive(Debug)]
 pub struct Actions<'a> {
     drop_message_action: Option<DropMessageAction<'a>>,
@@ -127,8 +142,7 @@ impl TickResult<Actions<'_>> {
     ///
     /// # Panics
     ///
-    /// Panics if [`Self::can_drop_erroneous_message()`] returns `false`, or if called more than
-    /// once on the same object.
+    /// Panics if [`Self::can_drop_erroneous_message()`] returns `false`.
     pub fn drop_erroneous_message(mut self) -> TickResult<()> {
         let action = self
             .extra
@@ -190,7 +204,6 @@ impl Shared {
         }
     }
 
-    // FIXME: sane error handling
     fn restore_workflow<'a>(
         &'a self,
         committed: &PersistedWorkflows,
@@ -201,12 +214,22 @@ impl Shared {
             .workflows
             .get(&id)
             .unwrap_or_else(|| panic!("workflow with ID {} is not persisted", id));
-        let spawner = &self.spawners[&persisted.definition_id];
-        persisted
+        let definition_id = &persisted.definition_id;
+        let spawner = &self.spawners[definition_id];
+        let restored = persisted
             .workflow
             .clone()
             .restore(spawner, self.services(transaction))
-            .unwrap()
+            .with_context(|| {
+                format!(
+                    "failed restoring workflow {id} with {spawner:?} for definition \
+                     `{definition_id}`"
+                )
+            })
+            .unwrap();
+
+        trace!("Restored workflow {id} with {spawner:?} for definition `{definition_id}`");
+        restored
     }
 }
 
@@ -232,12 +255,12 @@ enum ChannelSide {
 /// It is not a good choice for high-load, but is sufficiently flexible to support
 /// most basic use cases (e.g., persisting / resuming workflows).
 ///
-/// [`AsyncEnv`]: crate::handle::future::AsyncEnv
+/// [`AsyncEnv`]: crate::manager::future::AsyncEnv
 ///
 /// # Examples
 ///
 /// ```
-/// # use tardigrade_rt::{handle::WorkflowHandle, manager::WorkflowManager, WorkflowModule};
+/// # use tardigrade_rt::{manager::{WorkflowHandle, WorkflowManager}, WorkflowModule};
 /// # fn test_wrapper(module: WorkflowModule) -> anyhow::Result<()> {
 /// // A manager is instantiated using the builder pattern:
 /// let module: WorkflowModule = // ...
@@ -251,8 +274,8 @@ enum ChannelSide {
 /// // trait from the `tardigrade` crate:
 /// use tardigrade::spawn::ManageWorkflowsExt;
 /// let args = b"test_args".to_vec();
-/// let workflow: WorkflowHandle<()> =
-///     manager.new_workflow("test", args)?.build()?;
+/// let workflow =
+///     manager.new_workflow::<()>("test", args)?.build()?;
 /// // Do something with `workflow`, e.g., write something to its channels...
 ///
 /// // Initialize the workflow:
@@ -275,13 +298,33 @@ impl WorkflowManager {
         }
     }
 
-    fn lock(&self) -> impl ops::DerefMut<Target = PersistedWorkflows> + '_ {
+    fn lock(&self) -> MutexGuard<'_, PersistedWorkflows> {
         self.state.lock().unwrap()
+    }
+
+    fn check_consistency(&self) -> anyhow::Result<()> {
+        let state = self.lock();
+        for (&id, workflow_record) in &state.workflows {
+            let definition_id = &workflow_record.definition_id;
+            let spawner = self.shared.spawners.get(definition_id).ok_or_else(|| {
+                anyhow::anyhow!("missing spawner for workflow definition `{definition_id}`")
+            })?;
+            workflow_record
+                .workflow
+                .check_on_restore(spawner)
+                .with_context(|| {
+                    format!(
+                        "mismatch between interface of workflow {id} and spawner \
+                         for workflow definition `{definition_id}`"
+                    )
+                })?;
+        }
+        Ok(())
     }
 
     /// Returns current information about the channel with the specified ID, or `None` if a channel
     /// with this ID does not exist.
-    pub fn channel_info(&self, channel_id: ChannelId) -> Option<ChannelInfo> {
+    pub fn channel(&self, channel_id: ChannelId) -> Option<ChannelInfo> {
         Some(self.lock().channels.get(&channel_id)?.info())
     }
 
@@ -298,8 +341,9 @@ impl WorkflowManager {
         })
     }
 
-    /// Checks whether all workflows contained in this manager are finished.
-    pub fn is_finished(&self) -> bool {
+    /// Checks whether this manager does not contain active workflows (e.g., all workflows
+    /// spawned into the manager have finished).
+    pub fn is_empty(&self) -> bool {
         self.lock().workflows.is_empty() // finished workflows are removed
     }
 
@@ -307,7 +351,7 @@ impl WorkflowManager {
         self.lock().workflows[&workflow_id].workflow.clone()
     }
 
-    pub(crate) fn interface_for_workflow(&self, workflow_id: WorkflowId) -> Option<&Interface<()>> {
+    pub(crate) fn interface_for_workflow(&self, workflow_id: WorkflowId) -> Option<&Interface> {
         let state = self.lock();
         let persisted = state.workflows.get(&workflow_id)?;
         Some(self.shared.spawners[&persisted.definition_id].interface())
@@ -343,7 +387,12 @@ impl WorkflowManager {
             channel_state.receiver_workflow_id.is_none(),
             "cannot receive a message for a channel with the receiver connected to a workflow"
         );
+
         let (start_idx, messages) = channel_state.drain_messages();
+        let count = messages.len();
+        if count > 0 {
+            trace!("Taken {count} messages starting from #{start_idx} from channel {channel_id}");
+        }
         (start_idx, messages.into())
     }
 
@@ -354,22 +403,44 @@ impl WorkflowManager {
         &self,
         channel_id: ChannelId,
         workflow_id: WorkflowId,
-    ) -> Result<Option<Receipt>, ExecutionError> {
+    ) -> Result<Receipt, ExecutionError> {
         let mut state = self.lock();
         let (message, is_closed) = state.take_message(channel_id).expect("no message to feed");
         let workflow = &state.workflows[&workflow_id].workflow;
         let (child_id, channel_name) = workflow.find_inbound_channel(channel_id);
+        trace!(
+            "Feeding {message:?} from channel {channel_id} to receiver \
+             {channel_name} @ {child_id:?} in workflow {workflow_id}"
+        );
 
         let transaction = Transaction::new(&state, Some(workflow_id), self.shared.clone());
         let mut workflow = self
             .shared
             .restore_workflow(&state, workflow_id, &transaction);
+        trace!("Starting execution of workflow {workflow_id}");
         let result = Self::push_message(&mut workflow, child_id, &channel_name, message.clone());
-        if let Ok(Some(receipt)) = &result {
-            state.drain_and_persist_workflow(workflow_id, workflow);
-            state.commit(transaction, receipt);
+        if let Ok(receipt) = &result {
+            let mut is_consumed = true;
+            if workflow.take_pending_inbound_message(child_id, &channel_name) {
+                // The message was not consumed. We still persist the workflow in order to
+                // consume wakers (otherwise, we would loop indefinitely), and place the message
+                // back to the channel.
+                warn!(
+                    "Message {message:?} from channel {channel_id} was not consumed \
+                     by workflow {workflow_id}; placing the message back"
+                );
 
-            if is_closed {
+                is_consumed = false;
+                state.revert_taking_message(channel_id, message);
+            }
+
+            let messages = workflow.drain_messages();
+            state.persist_workflow(workflow_id, workflow);
+            state.commit(transaction, receipt);
+            state.push_messages(messages);
+
+            if is_consumed && is_closed {
+                trace!("Signaling workflow {workflow_id} that channel {channel_id} is closed");
                 // Signal to the workflow that the channel is closed. This can be performed
                 // on a persisted workflow, without executing it.
                 let workflow_record = state.workflows.get_mut(&workflow_id).unwrap();
@@ -379,20 +450,14 @@ impl WorkflowManager {
             }
         } else {
             // Do not commit the execution result. Instead, put the message back to the channel.
-            // Note that this happens both in the case of `ExecutionError`, and if the message
-            // was not consumed by the workflow.
-            if result.is_ok() {
-                crate::warn!(
-                    "Message {:?} over channel {} was not consumed by workflow with ID {}; \
-                     reverting workflow execution",
-                    message,
-                    channel_id,
-                    workflow_id
-                );
-            }
             state.revert_taking_message(channel_id, message);
         }
-        result
+
+        log_result!(
+            result,
+            "Fed message from channel {channel_id} to receiver {channel_name} @ {child_id:?} \
+             in workflow {workflow_id}"
+        )
     }
 
     /// Returns `Ok(None)` if the message cannot be consumed right now (the workflow channel
@@ -402,18 +467,17 @@ impl WorkflowManager {
         child_id: Option<WorkflowId>,
         channel_name: &str,
         message: Message,
-    ) -> Result<Option<Receipt>, ExecutionError> {
-        let push_result = workflow.push_inbound_message(child_id, channel_name, message.into());
-        if push_result.is_err() {
-            Ok(None) // FIXME: panic here? (instead, return `None` if the message was not consumed)
-        } else {
-            workflow.tick().map(Some)
-        }
+    ) -> Result<Receipt, ExecutionError> {
+        workflow
+            .push_inbound_message(child_id, channel_name, message.into())
+            .unwrap();
+        workflow.tick()
     }
 
     /// Sets the current time for this manager. This may expire timers in some of the contained
     /// workflows.
     pub fn set_current_time(&self, time: DateTime<Utc>) {
+        trace!("Setting time {time} for workflow manager");
         let mut state = self.lock();
         for persisted in state.workflows.values_mut() {
             persisted.workflow.set_current_time(time);
@@ -430,10 +494,13 @@ impl WorkflowManager {
             .shared
             .restore_workflow(state, workflow_id, &transaction);
 
+        trace!("Starting execution of workflow {workflow_id}");
         let result = workflow.tick();
         if let Ok(receipt) = &result {
-            state.drain_and_persist_workflow(workflow_id, workflow);
+            let messages = workflow.drain_messages();
+            state.persist_workflow(workflow_id, workflow);
             state.commit(transaction, receipt);
+            state.push_messages(messages);
         }
         result
     }
@@ -457,6 +524,7 @@ impl WorkflowManager {
         let state = self.state.get_mut().unwrap();
 
         let workflow_id = state.find_workflow_with_pending_tasks();
+        trace!("Searched for workflow with pending tasks: {workflow_id:?}");
         if let Some(workflow_id) = workflow_id {
             let result = self.tick_workflow(workflow_id);
             return Ok(TickResult {
@@ -469,6 +537,7 @@ impl WorkflowManager {
         }
 
         let ids = state.find_consumable_channel();
+        trace!("Searched for workflow with consumable message: {ids:?}");
         if let Some((channel_id, workflow_id)) = ids {
             let result = self.feed_message_to_workflow(channel_id, workflow_id);
             return Ok(TickResult {
@@ -483,7 +552,7 @@ impl WorkflowManager {
                         None
                     },
                 },
-                result: result.map(|receipt| receipt.unwrap_or_else(Receipt::new)),
+                result,
             });
         }
 
@@ -500,13 +569,6 @@ pub struct WorkflowManagerBuilder {
 }
 
 impl WorkflowManagerBuilder {
-    /// Sets the initial state of the workflows managed by this manager.
-    #[must_use]
-    pub fn with_state(mut self, workflows: PersistedWorkflows) -> Self {
-        *self.manager.state.get_mut().unwrap() = workflows;
-        self
-    }
-
     /// Sets the wall clock to be used in the manager.
     #[must_use]
     pub fn with_clock(mut self, clock: Arc<impl Clock>) -> Self {
@@ -526,14 +588,31 @@ impl WorkflowManagerBuilder {
     pub fn build(self) -> WorkflowManager {
         self.manager
     }
+
+    /// Restores the manager with the provided persisted state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the state cannot be restored (e.g., there are missing spawners,
+    /// or some of spawners do not provide expected workflow interface).
+    pub fn restore(mut self, workflows: PersistedWorkflows) -> anyhow::Result<WorkflowManager> {
+        *self.manager.state.get_mut().unwrap() = workflows;
+        self.manager.check_consistency()?;
+        Ok(self.manager)
+    }
 }
 
 impl ManageInterfaces for WorkflowManager {
-    fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface<()>>> {
+    fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
         Some(Cow::Borrowed(
             self.shared.spawners.get(definition_id)?.interface(),
         ))
     }
+}
+
+impl SpecifyWorkflowChannels for WorkflowManager {
+    type Inbound = ChannelId;
+    type Outbound = ChannelId;
 }
 
 impl<'a, W: WorkflowFn> ManageWorkflows<'a, W> for WorkflowManager {
@@ -544,7 +623,7 @@ impl<'a, W: WorkflowFn> ManageWorkflows<'a, W> for WorkflowManager {
         &'a self,
         definition_id: &str,
         args: Vec<u8>,
-        channels: &ChannelsConfig,
+        channels: ChannelsConfig<ChannelId>,
     ) -> Result<Self::Handle, Self::Error> {
         let transaction = Transaction::new(&self.lock(), None, self.shared.clone());
         let services = self.shared.services(&transaction);
@@ -566,9 +645,10 @@ impl Receipt {
                     ChannelEventKind::InboundChannelClosed(channel_id) => {
                         Some((ChannelKind::Inbound, *channel_id))
                     }
-                    ChannelEventKind::OutboundChannelClosed(channel_id) => {
-                        Some((ChannelKind::Outbound, *channel_id))
-                    }
+                    ChannelEventKind::OutboundChannelClosed {
+                        channel_id,
+                        remaining_alias_count: 0,
+                    } => Some((ChannelKind::Outbound, *channel_id)),
                     _ => None,
                 };
             }

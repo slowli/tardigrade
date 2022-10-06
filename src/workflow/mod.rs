@@ -9,19 +9,10 @@
 //! ```
 //! # use futures::{SinkExt, StreamExt};
 //! # use serde::{Deserialize, Serialize};
-//! use tardigrade::{
-//!     channel::{Sender, Receiver},
-//!     workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm, WorkflowFn},
-//!     Json,
-//! };
-//!
-//! /// Workflow type. Usually, this should be a unit / empty struct.
-//! #[derive(Debug, GetInterface)]
-//! # #[tardigrade(interface = r#"{"v":0}"#)]
-//! pub struct MyWorkflow(());
+//! use tardigrade::{channel::{Sender, Receiver}, workflow::*, Json};
 //!
 //! /// Handle for the workflow. Fields are public for integration testing.
-//! #[tardigrade::handle(for = "MyWorkflow")]
+//! #[tardigrade::handle]
 //! #[derive(Debug)]
 //! pub struct MyHandle<Env> {
 //!     /// Inbound channel with commands.
@@ -51,7 +42,11 @@
 //! }
 //!
 //! impl MyHandle<Wasm> {
-//!     async fn process_command(&mut self, command: &Command, counter: &mut u32) {
+//!     async fn process_command(
+//!         &mut self,
+//!         command: &Command,
+//!         counter: &mut u32,
+//!     ) {
 //!         match command {
 //!             Command::Ping(ping) => {
 //!                 let pong = format!("{}, counter={}", ping, *counter);
@@ -62,6 +57,11 @@
 //!         }
 //!     }
 //! }
+//!
+//! /// Workflow type. Usually, this should be a unit / empty struct.
+//! #[derive(Debug, GetInterface, TakeHandle)]
+//! #[tardigrade(handle = "MyHandle", auto_interface)]
+//! pub struct MyWorkflow(());
 //!
 //! // Workflow interface declaration.
 //! impl WorkflowFn for MyWorkflow {
@@ -74,7 +74,9 @@
 //!     fn spawn(mut args: Args, mut handle: MyHandle<Wasm>) -> TaskHandle {
 //!         TaskHandle::new(async move {
 //!             while let Some(command) = handle.commands.next().await {
-//!                 handle.process_command(&command, &mut args.start_counter).await;
+//!                 handle
+//!                     .process_command(&command, &mut args.start_counter)
+//!                     .await;
 //!             }
 //!         })
 //!     }
@@ -83,7 +85,7 @@
 //! tardigrade::workflow_entry!(MyWorkflow);
 //! ```
 
-use std::{future::Future, mem};
+use std::{borrow::Cow, future::Future, mem};
 
 /// Derives the [`GetInterface`] trait for a workflow type.
 ///
@@ -92,8 +94,17 @@ use std::{future::Future, mem};
 #[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
 pub use tardigrade_derive::GetInterface;
 
+/// Derives the [`TakeHandle`] trait for a workflow type.
+///
+/// [`TakeHandle`]: trait@TakeHandle
+#[cfg(feature = "derive")]
+#[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
+pub use tardigrade_derive::TakeHandle;
+
 use crate::{
-    interface::{AccessError, AccessErrorKind, Interface, InterfaceLocation, ValidateInterface},
+    interface::{
+        AccessError, AccessErrorKind, ArgsSpec, Interface, InterfaceBuilder, InterfaceLocation,
+    },
     Decode, Encode, Raw,
 };
 
@@ -184,11 +195,44 @@ mod imp {
 /// Allows obtaining an [`Interface`] for a workflow.
 ///
 /// This trait should be derived for workflow types using the corresponding macro.
-pub trait GetInterface: ValidateInterface<Id = ()> {
-    /// Name of the workflow. This name is used in workflow module definitions.
-    const WORKFLOW_NAME: &'static str;
+pub trait GetInterface: TakeHandle<InterfaceBuilder, Id = ()> + Sized + 'static {
     /// Obtains the workflow interface.
-    fn interface() -> Interface<Self>;
+    ///
+    /// The default implementation uses the [`TakeHandle`] implementation to create
+    /// an owned interface. The `GetInterface` derive macro provides a more efficient cached
+    /// implementation.
+    fn interface() -> Cow<'static, Interface> {
+        Cow::Owned(interface_by_handle::<Self>())
+    }
+}
+
+impl TakeHandle<InterfaceBuilder> for () {
+    type Id = ();
+    type Handle = ();
+
+    fn take_handle(_env: &mut InterfaceBuilder, _id: &Self::Id) -> Result<(), AccessError> {
+        Ok(())
+    }
+}
+
+impl GetInterface for () {}
+
+#[doc(hidden)]
+pub fn interface_by_handle<W>() -> Interface
+where
+    W: TakeHandle<InterfaceBuilder, Id = ()>,
+{
+    let mut builder = InterfaceBuilder::new(ArgsSpec::default());
+    W::take_handle(&mut builder, &()).expect("failed describing workflow interface");
+    builder.build()
+}
+
+/// Workflow that is accessible by its name from a module.
+///
+/// This trait is automatically derived using the [`workflow_entry!`](crate::workflow_entry) macro.
+pub trait NamedWorkflow {
+    /// Name of the workflow.
+    const WORKFLOW_NAME: &'static str;
 }
 
 /// WASM environment.
@@ -312,7 +356,7 @@ impl WorkflowFn for () {
 /// Workflow that can be spawned.
 pub trait SpawnWorkflow: GetInterface + TakeHandle<Wasm, Id = ()> + WorkflowFn {
     /// Spawns a workflow instance.
-    fn spawn(args: Self::Args, handle: Self::Handle) -> TaskHandle;
+    fn spawn(args: Self::Args, handle: <Self as TakeHandle<Wasm>>::Handle) -> TaskHandle;
 }
 
 /// Handle to a task, essentially equivalent to a boxed [`Future`].

@@ -24,9 +24,7 @@ use std::{
 
 use crate::{
     codec::{Decode, Encode, Raw},
-    interface::{
-        AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel, ValidateInterface,
-    },
+    interface::{AccessError, InboundChannelSpec, InterfaceBuilder, OutboundChannelSpec},
     workflow::{TakeHandle, Wasm},
 };
 
@@ -126,6 +124,8 @@ where
 
     #[cfg(not(target_arch = "wasm32"))]
     fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, AccessError> {
+        use crate::interface::{AccessErrorKind, InboundChannel};
+
         let raw = env
             .take_inbound_channel(id)
             .ok_or_else(|| AccessErrorKind::Unknown.with_location(InboundChannel(id)))?;
@@ -133,17 +133,15 @@ where
     }
 }
 
-impl<T, C> ValidateInterface for Receiver<T, C>
+impl<T, C> TakeHandle<InterfaceBuilder> for Receiver<T, C>
 where
     C: Encode<T> + Decode<T>,
 {
     type Id = str;
+    type Handle = ();
 
-    fn validate_interface(interface: &Interface<()>, id: &str) -> Result<(), AccessError> {
-        if interface.inbound_channel(id).is_none() {
-            let err = AccessErrorKind::Unknown.with_location(InboundChannel(id));
-            return Err(err);
-        }
+    fn take_handle(env: &mut InterfaceBuilder, id: &Self::Id) -> Result<(), AccessError> {
+        env.insert_inbound_channel(id, InboundChannelSpec::default());
         Ok(())
     }
 }
@@ -197,12 +195,25 @@ impl<T, C: Encode<T>> Sender<T, C> {
             _item: PhantomData,
         }
     }
+
+    pub(crate) fn into_raw(self) -> RawSender {
+        RawSender {
+            raw: self.raw,
+            codec: Raw,
+            _item: PhantomData,
+        }
+    }
 }
 
 impl RawSender {
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn from_resource(resource: externref::Resource<imp::MpscSender>) -> Self {
         Self::new(resource.into(), Raw)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn as_resource(&self) -> &externref::Resource<imp::MpscSender> {
+        self.raw.as_resource()
     }
 
     pub(crate) fn with_codec<T, C>(self, codec: C) -> Sender<T, C>
@@ -227,6 +238,8 @@ where
 
     #[cfg(not(target_arch = "wasm32"))]
     fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, AccessError> {
+        use crate::interface::{AccessErrorKind, OutboundChannel};
+
         let raw = env
             .take_outbound_channel(id)
             .ok_or_else(|| AccessErrorKind::Unknown.with_location(OutboundChannel(id)))?;
@@ -256,18 +269,15 @@ impl<T, C: Encode<T>> Sink<T> for Sender<T, C> {
     }
 }
 
-impl<T, C> ValidateInterface for Sender<T, C>
+impl<T, C> TakeHandle<InterfaceBuilder> for Sender<T, C>
 where
     C: Encode<T> + Decode<T>,
 {
     type Id = str;
+    type Handle = ();
 
-    fn validate_interface(interface: &Interface<()>, id: &str) -> Result<(), AccessError> {
-        if interface.outbound_channel(id).is_none() {
-            let err = AccessErrorKind::Unknown.with_location(OutboundChannel(id));
-            Err(err)
-        } else {
-            Ok(())
-        }
+    fn take_handle(env: &mut InterfaceBuilder, id: &Self::Id) -> Result<(), AccessError> {
+        env.insert_outbound_channel(id, OutboundChannelSpec::default());
+        Ok(())
     }
 }

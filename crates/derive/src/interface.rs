@@ -3,49 +3,35 @@ use proc_macro::TokenStream;
 use quote::{quote, ToTokens};
 use syn::{spanned::Spanned, DeriveInput};
 
-use std::{borrow::Cow, env, fs, path::Path};
+use std::{env, fs, path::Path};
 
-use crate::utils::find_meta_attrs;
+use crate::utils::{find_meta_attrs, DeriveAttrs};
 use tardigrade_shared::interface::Interface;
-
-#[derive(Debug, Default, FromMeta)]
-struct GetInterfaceAttrs {
-    #[darling(default)]
-    interface: Option<String>,
-}
 
 #[derive(Debug)]
 struct GetInterface {
     input: DeriveInput,
-    compressed_spec: Vec<u8>,
+    compressed_spec: Option<Vec<u8>>,
 }
 
 impl GetInterface {
-    fn get_spec_contents(spec: &str) -> darling::Result<Cow<'_, [u8]>> {
-        if let Some(spec_path) = spec.strip_prefix("file:") {
-            let manifest_path = env::var_os("CARGO_MANIFEST_DIR").ok_or_else(|| {
-                let message = "`CARGO_MANIFEST_DIR` env var not set; please use cargo";
-                darling::Error::custom(message)
-            })?;
-            let full_spec_path = Path::new(&manifest_path).join(spec_path);
+    fn get_spec_contents(spec_path: &str) -> darling::Result<Vec<u8>> {
+        let manifest_path = env::var_os("CARGO_MANIFEST_DIR").ok_or_else(|| {
+            let message = "`CARGO_MANIFEST_DIR` env var not set; please use cargo";
+            darling::Error::custom(message)
+        })?;
+        let full_spec_path = Path::new(&manifest_path).join(spec_path);
 
-            let contents = fs::read(&full_spec_path).map_err(|err| {
-                let message = format!("cannot read workflow spec at `{}`: {}", spec_path, err);
-                darling::Error::custom(message)
-            })?;
-            Ok(Cow::Owned(contents))
-        } else {
-            Ok(Cow::Borrowed(spec.as_bytes()))
-        }
+        fs::read(&full_spec_path).map_err(|err| {
+            let message = format!("cannot read workflow spec at `{}`: {}", spec_path, err);
+            darling::Error::custom(message)
+        })
     }
 
     fn data_section(&self) -> impl ToTokens {
         let name = &self.input.ident;
         let wasm = quote!(tardigrade::workflow::Wasm);
-        let args = quote! {
-            <#name as tardigrade::workflow::GetInterface>::WORKFLOW_NAME,
-            INTERFACE_SPEC,
-        };
+        let args = quote!(core::stringify!(#name), INTERFACE_SPEC);
         quote! {
             #[cfg_attr(target_arch = "wasm32", link_section = "__tardigrade_spec")]
             #[doc(hidden)]
@@ -57,16 +43,29 @@ impl GetInterface {
     fn impl_get_interface(&self) -> impl ToTokens {
         let name = &self.input.ident;
         let tr = quote!(tardigrade::workflow::GetInterface);
+        let interface = quote!(tardigrade::interface::Interface);
         let (impl_generics, ty_generics, where_clause) = self.input.generics.split_for_impl();
+
+        let init_closure = if self.compressed_spec.is_some() {
+            quote! {
+                || {
+                    let interface = #interface::from_bytes(&INTERFACE_SPEC);
+                    tardigrade::workflow::interface_by_handle::<#name #ty_generics>()
+                        .check_compatibility(&interface)
+                        .expect("workflow interface does not match declaration");
+                    interface
+                }
+            }
+        } else {
+            quote!(tardigrade::workflow::interface_by_handle::<#name #ty_generics>)
+        };
 
         quote! {
             impl #impl_generics #tr for #name #ty_generics #where_clause {
-                const WORKFLOW_NAME: &'static str = core::stringify!(#name);
-
-                fn interface() -> tardigrade::interface::Interface<Self> {
-                    tardigrade::interface::Interface::from_bytes(&INTERFACE_SPEC)
-                        .downcast::<Self>()
-                        .expect("workflow interface does not match declaration")
+                fn interface() -> std::borrow::Cow<'static, #interface> {
+                    static INTERFACE: tardigrade::_reexports::Lazy<#interface>
+                        = tardigrade::_reexports::Lazy::new(#init_closure);
+                    std::borrow::Cow::Borrowed(&INTERFACE)
                 }
             }
         }
@@ -76,23 +75,27 @@ impl GetInterface {
 impl FromDeriveInput for GetInterface {
     fn from_derive_input(input: &DeriveInput) -> darling::Result<Self> {
         let attrs = find_meta_attrs("tardigrade", &input.attrs).map_or_else(
-            || Ok(GetInterfaceAttrs::default()),
-            |meta| GetInterfaceAttrs::from_nested_meta(&meta),
+            || Ok(DeriveAttrs::default()),
+            |meta| DeriveAttrs::from_nested_meta(&meta),
         )?;
-        let spec = attrs
-            .interface
-            .as_deref()
-            .unwrap_or("file:src/tardigrade.json");
-        let contents = Self::get_spec_contents(spec).map_err(|err| err.with_span(&input.ident))?;
 
-        let interface: Interface<()> = serde_json::from_slice(&contents).map_err(|err| {
-            let message = format!("error deserializing workflow spec: {}", err);
-            darling::Error::custom(message).with_span(&input.ident)
-        })?;
-        let compressed_spec = serde_json::to_vec(&interface).map_err(|err| {
-            let message = format!("error serializing workflow spec: {}", err);
-            darling::Error::custom(message).with_span(&input.ident)
-        })?;
+        let compressed_spec = if attrs.auto_interface.is_some() {
+            None
+        } else {
+            let spec = attrs.interface.as_deref().unwrap_or("src/tardigrade.json");
+            let contents =
+                Self::get_spec_contents(spec).map_err(|err| err.with_span(&input.ident))?;
+
+            let interface: Interface = serde_json::from_slice(&contents).map_err(|err| {
+                let message = format!("error deserializing workflow spec: {}", err);
+                darling::Error::custom(message).with_span(&input.ident)
+            })?;
+            let spec = serde_json::to_vec(&interface).map_err(|err| {
+                let message = format!("error serializing workflow spec: {}", err);
+                darling::Error::custom(message).with_span(&input.ident)
+            })?;
+            Some(spec)
+        };
 
         Ok(Self {
             input: input.clone(),
@@ -103,12 +106,18 @@ impl FromDeriveInput for GetInterface {
 
 impl ToTokens for GetInterface {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        let data_section = self.data_section();
+        let data_section = self.compressed_spec.as_ref().map(|spec| {
+            let spec = syn::LitByteStr::new(spec, self.input.span());
+            let data_section = self.data_section();
+            quote! {
+                const INTERFACE_SPEC: &[u8] = #spec;
+                #data_section
+            }
+        });
         let get_interface_impl = self.impl_get_interface();
-        let spec = syn::LitByteStr::new(&self.compressed_spec, self.input.span());
+
         tokens.extend(quote! {
             const _: () = {
-                const INTERFACE_SPEC: &[u8] = #spec;
                 #data_section
                 #get_interface_impl
             };

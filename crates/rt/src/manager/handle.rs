@@ -1,14 +1,8 @@
 //! Handles for workflows in a [`WorkflowManager`] and their components (e.g., channels).
-//!
-//! See [`WorkflowHandle`] and [`AsyncEnv`](future::AsyncEnv) docs for examples of usage.
 
 use anyhow::Context;
 
 use std::{fmt, marker::PhantomData, ops::Range};
-
-#[cfg(feature = "async")]
-#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
-pub mod future;
 
 use crate::{
     manager::{ChannelInfo, WorkflowManager},
@@ -18,11 +12,9 @@ use crate::{
 };
 use tardigrade::{
     channel::{Receiver, Sender},
-    interface::{
-        AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel, ValidateInterface,
-    },
+    interface::{AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel},
     trace::{FutureUpdate, TracedFutures, Tracer},
-    workflow::{TakeHandle, UntypedHandle},
+    workflow::{GetInterface, TakeHandle, UntypedHandle},
     Decode, Encode,
 };
 use tardigrade_shared::SendError;
@@ -33,13 +25,15 @@ use tardigrade_shared::SendError;
 /// allow interacting with the workflow (e.g., [send messages](MessageSender) via inbound channels
 /// and [take messages](MessageReceiver) from outbound channels).
 ///
-/// See [`AsyncEnv`](future::AsyncEnv) for a more high-level, future-based alternative.
+/// See [`AsyncEnv`] for a more high-level, future-based alternative.
+///
+/// [`AsyncEnv`]: crate::manager::future::AsyncEnv
 ///
 /// # Examples
 ///
 /// ```
 /// use tardigrade::interface::{InboundChannel, OutboundChannel};
-/// use tardigrade_rt::handle::WorkflowHandle;
+/// use tardigrade_rt::manager::WorkflowHandle;
 ///
 /// # fn test_wrapper(workflow: WorkflowHandle<'_, ()>) -> anyhow::Result<()> {
 /// // Assume we have a dynamically typed workflow:
@@ -53,7 +47,9 @@ use tardigrade_shared::SendError;
 /// handle[InboundChannel("commands")].send(message)?;
 ///
 /// // Let's then take outbound messages from a certain channel:
-/// let messages = handle[OutboundChannel("events")].take_messages();
+/// let messages = handle[OutboundChannel("events")]
+///     .take_messages()
+///     .unwrap();
 /// let messages: Vec<Vec<u8>> = messages.decode().unwrap();
 /// // ^ `decode().unwrap()` always succeeds because the codec
 /// // for untyped workflows is just an identity.
@@ -101,14 +97,12 @@ impl<'a> WorkflowHandle<'a, ()> {
     ///
     /// Returns an error on workflow interface mismatch.
     #[allow(clippy::missing_panics_doc)] // false positive
-    pub fn downcast<W: ValidateInterface<Id = ()>>(
-        self,
-    ) -> Result<WorkflowHandle<'a, W>, AccessError> {
+    pub fn downcast<W: GetInterface>(self) -> Result<WorkflowHandle<'a, W>, AccessError> {
         let interface = self
             .manager
             .interface_for_workflow(self.ids.workflow_id)
             .unwrap();
-        W::validate_interface(interface, &())?;
+        W::interface().check_compatibility(interface)?;
         Ok(self.downcast_unchecked())
     }
 
@@ -145,7 +139,7 @@ impl<W: TakeHandle<Self, Id = ()>> WorkflowHandle<'_, W> {
 pub struct MessageSender<'a, T, C> {
     manager: &'a WorkflowManager,
     channel_id: ChannelId,
-    codec: C,
+    pub(super) codec: C,
     _item: PhantomData<fn(T)>,
 }
 
@@ -158,15 +152,14 @@ impl<'a, T, C: Encode<T>> MessageSender<'a, T, C> {
     /// Returns the current state of the channel.
     #[allow(clippy::missing_panics_doc)] // false positive: channels are never removed
     pub fn channel_info(&self) -> ChannelInfo {
-        self.manager.channel_info(self.channel_id).unwrap()
+        self.manager.channel(self.channel_id).unwrap()
     }
 
     /// Sends a message over the channel.
     ///
     /// # Errors
     ///
-    /// Returns an error if the workflow is currently not waiting for messages
-    /// on the associated channel, or if the channel is closed.
+    /// Returns an error if the channel is full or closed.
     pub fn send(&mut self, message: T) -> Result<(), SendError> {
         let raw_message = self.codec.encode_value(message);
         self.manager.send_message(self.channel_id, raw_message)
@@ -205,7 +198,8 @@ where
 pub struct MessageReceiver<'a, T, C> {
     manager: &'a WorkflowManager,
     channel_id: ChannelId,
-    codec: C,
+    pub(super) can_receive_messages: bool,
+    pub(super) codec: C,
     _item: PhantomData<fn() -> T>,
 }
 
@@ -218,27 +212,37 @@ impl<T, C: Decode<T>> MessageReceiver<'_, T, C> {
     /// Returns the current state of the channel.
     #[allow(clippy::missing_panics_doc)] // false positive: channels are never removed
     pub fn channel_info(&self) -> ChannelInfo {
-        self.manager.channel_info(self.channel_id).unwrap()
+        self.manager.channel(self.channel_id).unwrap()
     }
 
-    /// Takes messages from the channel and progresses the flow marking the channel as flushed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if workflow execution traps.
-    pub fn take_messages(&mut self) -> TakenMessages<'_, T, C> {
+    /// Checks whether this receiver can be used to receive messages from the channel.
+    /// This is possible if the channel receiver is not held by a workflow.
+    pub fn can_receive_messages(&self) -> bool {
+        self.can_receive_messages
+    }
+
+    /// Takes messages from the channel, or `None` if messages are not received by host
+    /// (i.e., [`Self::can_receive_messages()`] returns `false`).
+    pub fn take_messages(&mut self) -> Option<TakenMessages<'_, T, C>> {
+        if !self.can_receive_messages {
+            return None;
+        }
+
         let (start_idx, raw_messages) = self.manager.take_outbound_messages(self.channel_id);
-        TakenMessages {
+        Some(TakenMessages {
             start_idx,
             raw_messages,
             codec: &mut self.codec,
             _item: PhantomData,
-        }
+        })
     }
 
-    /// Closes this channel from the host side.
+    /// Closes this channel from the host side. If [`Self::can_receive_messages()`] returns `false`,
+    /// this is a no-op.
     pub fn close(self) {
-        self.manager.close_host_receiver(self.channel_id);
+        if self.can_receive_messages {
+            self.manager.close_host_receiver(self.channel_id);
+        }
     }
 }
 
@@ -279,9 +283,11 @@ where
 
     fn take_handle(env: &mut WorkflowHandle<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
         if let Some(channel_id) = env.ids.channel_ids.outbound.get(id).copied() {
+            let channel_info = env.manager.channel(channel_id).unwrap();
             Ok(MessageReceiver {
                 manager: env.manager,
                 channel_id,
+                can_receive_messages: channel_info.receiver_workflow_id().is_none(),
                 codec: C::default(),
                 _item: PhantomData,
             })
@@ -294,14 +300,19 @@ where
 /// Handle allowing to trace futures.
 #[derive(Debug)]
 pub struct TracerHandle<'a, C> {
-    receiver: MessageReceiver<'a, FutureUpdate, C>,
-    futures: TracedFutures,
+    pub(super) receiver: MessageReceiver<'a, FutureUpdate, C>,
+    pub(super) futures: TracedFutures,
 }
 
 impl<'a, C> TracerHandle<'a, C>
 where
     C: Decode<FutureUpdate>,
 {
+    /// Returns current information about the underlying channel.
+    pub fn channel_info(&self) -> ChannelInfo {
+        self.receiver.channel_info()
+    }
+
     /// Returns a reference to the traced futures.
     pub fn futures(&self) -> &TracedFutures {
         &self.futures
@@ -321,15 +332,17 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error if an [`ExecutionError`] occurs when flushing tracing messages, or
-    /// if decoding messages fails.
+    /// Returns an error if decoding tracing messages fails, or if the updates are inconsistent
+    /// w.r.t. the current tracer state (which could happen if resuming a workflow without
+    /// calling [`Self::set_futures()`]).
     pub fn take_traces(&mut self) -> anyhow::Result<()> {
-        let messages = self.receiver.take_messages();
-        let updates = messages.decode().context("cannot decode `FutureUpdate`")?;
-        for update in updates {
-            self.futures
-                .update(update)
-                .context("incorrect `FutureUpdate` (was the tracing state persisted?)")?;
+        if let Some(messages) = self.receiver.take_messages() {
+            let updates = messages.decode().context("cannot decode `FutureUpdate`")?;
+            for update in updates {
+                self.futures
+                    .update(update)
+                    .context("incorrect `FutureUpdate` (was the tracing state persisted?)")?;
+            }
         }
         Ok(())
     }
@@ -350,7 +363,7 @@ where
     }
 }
 
-impl<'a> TakeHandle<WorkflowHandle<'a, ()>> for Interface<()> {
+impl<'a> TakeHandle<WorkflowHandle<'a, ()>> for Interface {
     type Id = ();
     type Handle = Self;
 

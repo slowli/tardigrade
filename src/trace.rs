@@ -16,7 +16,7 @@ pub use tardigrade_shared::trace::{
 
 use crate::{
     channel::Sender,
-    interface::{AccessError, AccessErrorKind, Interface, OutboundChannel, ValidateInterface},
+    interface::{AccessError, InterfaceBuilder, OutboundChannelSpec},
     workflow::{TakeHandle, Wasm},
     Encode,
 };
@@ -58,26 +58,15 @@ where
     }
 }
 
-impl<C> ValidateInterface for Tracer<C>
-where
-    C: Encode<FutureUpdate> + Default,
-{
+impl<C: Encode<FutureUpdate>> TakeHandle<InterfaceBuilder> for Tracer<C> {
     type Id = str;
+    type Handle = ();
 
-    fn validate_interface(interface: &Interface<()>, id: &str) -> Result<(), AccessError> {
-        if let Some(spec) = interface.outbound_channel(id) {
-            if spec.capacity != None {
-                let err = format!(
-                    "unexpected channel capacity: {:?}, expected infinite capacity (`None`)",
-                    spec.capacity
-                );
-                return Err(AccessErrorKind::custom(err).with_location(OutboundChannel(id)));
-            }
-            Ok(())
-        } else {
-            let err = AccessErrorKind::Unknown.with_location(OutboundChannel(id));
-            Err(err)
-        }
+    fn take_handle(env: &mut InterfaceBuilder, id: &Self::Id) -> Result<(), AccessError> {
+        let mut spec = OutboundChannelSpec::default();
+        spec.capacity = None;
+        env.insert_outbound_channel(id, spec);
+        Ok(())
     }
 }
 

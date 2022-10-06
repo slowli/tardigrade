@@ -7,19 +7,15 @@
 //! # use std::error;
 //! # use tardigrade::{
 //! #     channel::{Sender, Receiver},
-//! #     workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm, WorkflowFn},
+//! #     workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, TakeHandle, Wasm, WorkflowFn},
 //! #     Json,
 //! # };
 //! // Assume we want to spawn a child workflow defined as follows:
-//! #[derive(Debug, GetInterface)]
-//! # #[tardigrade(interface = r#"{
-//! #     "v": 0,
-//! #     "in": { "commands": {} },
-//! #     "out": { "events": {} }
-//! # }"#)]
+//! #[derive(Debug, GetInterface, TakeHandle)]
+//! #[tardigrade(handle = "ChildHandle", auto_interface)]
 //! pub struct ChildWorkflow(());
 //!
-//! #[tardigrade::handle(for = "ChildWorkflow")]
+//! #[tardigrade::handle]
 //! #[derive(Debug)]
 //! pub struct ChildHandle<Env> {
 //!     pub commands: Handle<Receiver<String, Json>, Env>,
@@ -40,27 +36,20 @@
 //!
 //! // To spawn a workflow, we should use the following code
 //! // in the parent workflow:
-//! use tardigrade::spawn::{
-//!     ManageWorkflowsExt, Workflows, WorkflowBuilder, WorkflowHandle,
-//! };
+//! use tardigrade::spawn::{ManageWorkflowsExt, Workflows, WorkflowHandle};
 //! # use tardigrade::test::Runtime;
 //!
 //! # let mut runtime = Runtime::default();
 //! # runtime.workflow_registry_mut().insert::<ChildWorkflow, _>("child");
 //! # runtime.run(async {
-//! let builder: WorkflowBuilder<_, ChildWorkflow> =
-//!     Workflows.new_workflow("child", ())?;
+//! let builder = Workflows.new_workflow::<ChildWorkflow>("child", ())?;
 //! // It is possible to customize child workflow initialization via
 //! // `builder.handle()`, but zero config is fine as well.
-//! let child = builder.build()?;
+//! let mut child = builder.build()?;
 //! // `child` contains handles to the created channels.
-//! // These handles are optional (in some configurations, handles are
-//! // not available).
-//! let mut commands = child.api.commands.unwrap();
-//! commands.send("ping".to_owned()).await?;
-//! # drop(commands);
-//! let mut events = child.api.events.unwrap();
-//! let event: String = events.next().await.unwrap();
+//! child.api.commands.send("ping".to_owned()).await?;
+//! # drop(child.api.commands);
+//! let event: String = child.api.events.next().await.unwrap();
 //! # assert_eq!(event, "ping");
 //! child.workflow.await?;
 //! # Ok::<_, Box<dyn error::Error>>(())
@@ -69,7 +58,7 @@
 
 use futures::{
     stream::{Fuse, FusedStream},
-    FutureExt, StreamExt,
+    FutureExt, Sink, Stream, StreamExt,
 };
 use pin_project_lite::pin_project;
 use serde::{Deserialize, Serialize};
@@ -86,20 +75,18 @@ use std::{
     task::{Context, Poll},
 };
 
+pub use tardigrade_shared::SpawnError;
+
 use crate::{
-    channel::{Receiver, Sender},
+    channel::{RawReceiver, RawSender, Receiver, SendError, Sender},
     interface::{
-        AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel, ValidateInterface,
+        AccessError, AccessErrorKind, ChannelKind, InboundChannel, Interface, OutboundChannel,
     },
     trace::{FutureUpdate, TracedFutures, Tracer},
-    workflow::{TakeHandle, UntypedHandle, WorkflowFn},
+    workflow::{GetInterface, TakeHandle, UntypedHandle, WorkflowFn},
     Decode, Encode,
 };
-pub use tardigrade_shared::SpawnError;
-use tardigrade_shared::{
-    abi::{FromWasmError, TryFromWasm},
-    JoinError,
-};
+use tardigrade_shared::JoinError;
 
 #[cfg(target_arch = "wasm32")]
 #[path = "imp_wasm32.rs"]
@@ -111,60 +98,104 @@ mod imp;
 /// Configuration for a single workflow channel during workflow instantiation.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[non_exhaustive]
 #[doc(hidden)] // used only in low-level `ManageWorkflows` API
-pub enum ChannelSpawnConfig {
+#[allow(clippy::unsafe_derive_deserialize)] // unsafe methods do not concern type data
+pub enum ChannelSpawnConfig<T> {
     /// Create a new channel.
     New,
     /// Close the channel immediately on workflow creation.
     Closed,
+    /// Copy an existing channel sender or move an existing receiver.
+    Existing(T),
 }
 
-impl Default for ChannelSpawnConfig {
+impl<T> Default for ChannelSpawnConfig<T> {
     fn default() -> Self {
         Self::New
     }
 }
 
-impl TryFromWasm for ChannelSpawnConfig {
-    type Abi = i32;
-
-    fn into_abi_in_wasm(self) -> Self::Abi {
+impl<T> ChannelSpawnConfig<T> {
+    pub fn map_ref<U>(&self, map_fn: impl FnOnce(&T) -> U) -> ChannelSpawnConfig<U> {
         match self {
-            Self::New => 0,
-            Self::Closed => 1,
-        }
-    }
-
-    fn try_from_wasm(abi: Self::Abi) -> Result<Self, FromWasmError> {
-        match abi {
-            0 => Ok(Self::New),
-            1 => Ok(Self::Closed),
-            _ => Err(FromWasmError::new("Invalid `ChannelSpawnConfig` value")),
+            Self::New => ChannelSpawnConfig::New,
+            Self::Closed => ChannelSpawnConfig::Closed,
+            Self::Existing(value) => ChannelSpawnConfig::Existing(map_fn(value)),
         }
     }
 }
 
 /// Configuration of the spawned workflow channels.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[doc(hidden)] // used only in low-level `ManageWorkflows` API
-pub struct ChannelsConfig {
+#[allow(clippy::unsafe_derive_deserialize)] // unsafe methods do not concern type data
+pub struct ChannelsConfig<In, Out = In> {
     /// Configurations of inbound channels.
-    pub inbound: HashMap<String, ChannelSpawnConfig>,
+    pub inbound: HashMap<String, ChannelSpawnConfig<In>>,
     /// Configurations of outbound channels.
-    pub outbound: HashMap<String, ChannelSpawnConfig>,
+    pub outbound: HashMap<String, ChannelSpawnConfig<Out>>,
+}
+
+impl<In, Out> Default for ChannelsConfig<In, Out> {
+    fn default() -> Self {
+        Self {
+            inbound: HashMap::new(),
+            outbound: HashMap::new(),
+        }
+    }
+}
+
+impl<In, Out> ChannelsConfig<In, Out> {
+    /// Creates channel configuration from the provided interface.
+    pub fn from_interface(interface: &Interface) -> Self {
+        let inbound = interface
+            .inbound_channels()
+            .map(|(name, _)| (name.to_owned(), ChannelSpawnConfig::default()))
+            .collect();
+        let outbound = interface
+            .outbound_channels()
+            .map(|(name, _)| (name.to_owned(), ChannelSpawnConfig::default()))
+            .collect();
+        Self { inbound, outbound }
+    }
+
+    fn close_channel(&mut self, kind: ChannelKind, name: &str) {
+        match kind {
+            ChannelKind::Inbound => {
+                *self.inbound.get_mut(name).unwrap() = ChannelSpawnConfig::Closed;
+            }
+            ChannelKind::Outbound => {
+                *self.outbound.get_mut(name).unwrap() = ChannelSpawnConfig::Closed;
+            }
+        }
+    }
+
+    fn copy_outbound_channel(&mut self, name: &str, source: Out) {
+        *self.outbound.get_mut(name).unwrap() = ChannelSpawnConfig::Existing(source);
+    }
 }
 
 /// Manager of [`Interface`]s that allows obtaining an interface by a string identifier.
 pub trait ManageInterfaces {
     /// Returns the interface spec of a workflow with the specified ID.
-    fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface<()>>>;
+    fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>>;
+}
+
+/// Specifier of inbound and outbound channel handles when [spawning workflows](WorkflowBuilder).
+///
+/// Depending on the environment (e.g., workflow code vs host code), channel handles
+/// can be specified in different ways. This trait encapsulates this variability.
+pub trait SpecifyWorkflowChannels {
+    /// Type of an inbound channel handle.
+    type Inbound;
+    /// Type of an outbound channel handle.
+    type Outbound;
 }
 
 /// Manager of workflows that allows spawning workflows of a certain type.
 ///
 /// This trait is low-level; use [`ManageWorkflowsExt`] for a high-level alternative.
-pub trait ManageWorkflows<'a, W: WorkflowFn>: ManageInterfaces {
+pub trait ManageWorkflows<'a, W: WorkflowFn>: ManageInterfaces + SpecifyWorkflowChannels {
     /// Handle to an instantiated workflow.
     type Handle;
     /// Error spawning a workflow.
@@ -181,39 +212,50 @@ pub trait ManageWorkflows<'a, W: WorkflowFn>: ManageInterfaces {
         &'a self,
         definition_id: &str,
         args: Vec<u8>,
-        channels: &ChannelsConfig,
+        channels: ChannelsConfig<Self::Inbound, Self::Outbound>,
     ) -> Result<Self::Handle, Self::Error>;
 }
 
 /// Extension trait for [workflow managers](ManageWorkflows).
-pub trait ManageWorkflowsExt<'a, W: WorkflowFn>: ManageWorkflows<'a, W> {
+pub trait ManageWorkflowsExt<'a>: ManageWorkflows<'a, ()> + Sized {
     /// Returns a workflow builder for the specified definition and args.
     ///
     /// # Errors
     ///
     /// Returns an error if the definition is unknown, or does not conform to the interface
     /// specified via the type param of this trait.
-    fn new_workflow(
+    fn new_workflow<W>(
         &'a self,
         definition_id: &'a str,
         args: W::Args,
     ) -> Result<WorkflowBuilder<'a, Self, W>, AccessError>
     where
-        W: ValidateInterface<Id = ()> + TakeHandle<Spawner, Id = ()>,
+        W: WorkflowFn + GetInterface + TakeHandle<Spawner<Self>, Id = ()>,
+        Self: ManageWorkflows<'a, W>,
     {
-        let interface = self
+        let provided_interface = self
             .interface(definition_id)
             .ok_or(AccessErrorKind::Unknown)?;
-        W::validate_interface(&interface, &())?;
-        Ok(WorkflowBuilder::new(self, &interface, definition_id, args))
+        W::interface().check_compatibility(&provided_interface)?;
+        Ok(WorkflowBuilder::new(
+            self,
+            provided_interface.into_owned(),
+            definition_id,
+            args,
+        ))
     }
 }
 
-impl<'a, W: WorkflowFn, M: ManageWorkflows<'a, W>> ManageWorkflowsExt<'a, W> for M {}
+impl<'a, M: ManageWorkflows<'a, ()>> ManageWorkflowsExt<'a> for M {}
 
 /// Client-side connection to a [workflow manager][`ManageWorkflows`].
 #[derive(Debug)]
 pub struct Workflows;
+
+impl SpecifyWorkflowChannels for Workflows {
+    type Inbound = RawReceiver;
+    type Outbound = RawSender;
+}
 
 impl<'a, W> ManageWorkflows<'a, W> for Workflows
 where
@@ -226,7 +268,7 @@ where
         &'a self,
         definition_id: &str,
         args: Vec<u8>,
-        channels: &ChannelsConfig,
+        channels: ChannelsConfig<RawReceiver, RawSender>,
     ) -> Result<Self::Handle, Self::Error> {
         let mut workflow = <Self as ManageWorkflows<'a, ()>>::create_workflow(
             self,
@@ -239,107 +281,159 @@ where
     }
 }
 
+/// Wrapper for remote components of a workflow, such as [`Sender`]s and [`Receiver`]s.
 #[derive(Debug)]
-pub(crate) enum RemoteHandle<T> {
-    None,
+#[non_exhaustive]
+pub enum Remote<T> {
+    /// The remote handle is not captured.
     NotCaptured,
+    /// The remote handle is available.
     Some(T),
 }
 
-#[derive(Debug)]
-struct SpawnerInner {
-    definition_id: String,
-    interface: Interface<()>,
-    args: Vec<u8>,
-    channels: RefCell<ChannelsConfig>,
+impl<T> Remote<T> {
+    /// Unwraps and returns the contained handle.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the handle is not captured.
+    pub fn unwrap(self) -> T {
+        match self {
+            Self::Some(value) => value,
+            Self::NotCaptured => panic!("handle not captured"),
+        }
+    }
+
+    fn map<U>(self, map_fn: impl FnOnce(T) -> U) -> Remote<U> {
+        match self {
+            Self::NotCaptured => Remote::NotCaptured,
+            Self::Some(value) => Remote::Some(map_fn(value)),
+        }
+    }
 }
 
-impl SpawnerInner {
-    fn new<W>(interface: &Interface<W>, definition_id: &str, args: Vec<u8>) -> Self {
-        let inbound = interface
-            .inbound_channels()
-            .map(|(name, _)| (name.to_owned(), ChannelSpawnConfig::default()))
-            .collect();
-        let outbound = interface
-            .outbound_channels()
-            .map(|(name, _)| (name.to_owned(), ChannelSpawnConfig::default()))
-            .collect();
+#[derive(Debug)]
+struct SpawnerInner<Ch: SpecifyWorkflowChannels> {
+    definition_id: String,
+    interface: Interface,
+    args: Vec<u8>,
+    channels: RefCell<ChannelsConfig<Ch::Inbound, Ch::Outbound>>,
+}
+
+impl<Ch: SpecifyWorkflowChannels> SpawnerInner<Ch> {
+    fn new(interface: Interface, definition_id: &str, args: Vec<u8>) -> Self {
         Self {
             definition_id: definition_id.to_owned(),
-            interface: interface.clone().erase(),
+            channels: RefCell::new(ChannelsConfig::from_interface(&interface)),
+            interface,
             args,
-            channels: RefCell::new(ChannelsConfig { inbound, outbound }),
         }
     }
 
     fn close_inbound_channel(&self, channel_name: &str) {
         let mut borrow = self.channels.borrow_mut();
-        let channel = borrow.inbound.get_mut(channel_name).unwrap_or_else(|| {
-            panic!(
-                "attempted closing non-existing inbound channel `{}`",
-                channel_name
-            );
-        });
-        *channel = ChannelSpawnConfig::Closed;
+        borrow.close_channel(ChannelKind::Inbound, channel_name);
     }
 
     fn close_outbound_channel(&self, channel_name: &str) {
         let mut borrow = self.channels.borrow_mut();
-        let channel = borrow.outbound.get_mut(channel_name).unwrap_or_else(|| {
-            panic!(
-                "attempted closing non-existing outbound channel `{}`",
-                channel_name
-            );
-        });
-        *channel = ChannelSpawnConfig::Closed;
+        borrow.close_channel(ChannelKind::Outbound, channel_name);
+    }
+
+    fn copy_outbound_channel(&self, channel_name: &str, sender: Ch::Outbound) {
+        let mut borrow = self.channels.borrow_mut();
+        borrow.copy_outbound_channel(channel_name, sender);
     }
 }
 
 /// Spawn [environment](TakeHandle) that can be used to configure channels before spawning
 /// a workflow.
-#[derive(Debug, Clone)]
-pub struct Spawner {
-    inner: Rc<SpawnerInner>,
+pub struct Spawner<Ch: SpecifyWorkflowChannels = Workflows> {
+    inner: Rc<SpawnerInner<Ch>>,
 }
 
-impl TakeHandle<Spawner> for Interface<()> {
+impl<Ch> fmt::Debug for Spawner<Ch>
+where
+    Ch: SpecifyWorkflowChannels + fmt::Debug,
+    Ch::Inbound: fmt::Debug,
+    Ch::Outbound: fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Spawner")
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
+impl<Ch: SpecifyWorkflowChannels> Clone for Spawner<Ch> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Rc::clone(&self.inner),
+        }
+    }
+}
+
+impl<Ch: SpecifyWorkflowChannels> TakeHandle<Spawner<Ch>> for Interface {
     type Id = ();
     type Handle = Self;
 
-    fn take_handle(env: &mut Spawner, _id: &Self::Id) -> Result<Self::Handle, AccessError> {
+    fn take_handle(env: &mut Spawner<Ch>, _id: &Self::Id) -> Result<Self::Handle, AccessError> {
         Ok(env.inner.interface.clone())
     }
 }
 
-impl TakeHandle<Spawner> for () {
+impl<Ch: SpecifyWorkflowChannels> TakeHandle<Spawner<Ch>> for () {
     type Id = ();
-    type Handle = UntypedHandle<Spawner>;
+    type Handle = UntypedHandle<Spawner<Ch>>;
 
-    fn take_handle(env: &mut Spawner, _id: &Self::Id) -> Result<Self::Handle, AccessError> {
+    fn take_handle(env: &mut Spawner<Ch>, _id: &Self::Id) -> Result<Self::Handle, AccessError> {
         UntypedHandle::take_handle(env, &())
     }
 }
 
 /// Configurator of an [inbound workflow channel](Receiver).
-#[derive(Debug)]
-pub struct ReceiverConfig<T, C> {
-    spawner: Spawner,
+pub struct ReceiverConfig<Ch: SpecifyWorkflowChannels, T, C> {
+    spawner: Spawner<Ch>,
     channel_name: String,
     _ty: PhantomData<fn(C) -> T>,
 }
 
-impl<T, C: Encode<T>> ReceiverConfig<T, C> {
+impl<Ch, T, C> fmt::Debug for ReceiverConfig<Ch, T, C>
+where
+    Ch: SpecifyWorkflowChannels + fmt::Debug,
+    Ch::Inbound: fmt::Debug,
+    Ch::Outbound: fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ReceiverConfig")
+            .field("spawner", &self.spawner)
+            .field("channel_name", &self.channel_name)
+            .finish()
+    }
+}
+
+impl<Ch, T, C> ReceiverConfig<Ch, T, C>
+where
+    Ch: SpecifyWorkflowChannels,
+    C: Encode<T>,
+{
     /// Closes the channel immediately on workflow instantiation.
     pub fn close(&self) {
         self.spawner.inner.close_inbound_channel(&self.channel_name);
     }
 }
 
-impl<T, C: Encode<T>> TakeHandle<Spawner> for Receiver<T, C> {
+impl<Ch, T, C> TakeHandle<Spawner<Ch>> for Receiver<T, C>
+where
+    Ch: SpecifyWorkflowChannels,
+    C: Encode<T>,
+{
     type Id = str;
-    type Handle = ReceiverConfig<T, C>;
+    type Handle = ReceiverConfig<Ch, T, C>;
 
-    fn take_handle(env: &mut Spawner, id: &Self::Id) -> Result<Self::Handle, AccessError> {
+    fn take_handle(env: &mut Spawner<Ch>, id: &Self::Id) -> Result<Self::Handle, AccessError> {
         Ok(ReceiverConfig {
             spawner: env.clone(),
             channel_name: id.to_owned(),
@@ -349,14 +443,32 @@ impl<T, C: Encode<T>> TakeHandle<Spawner> for Receiver<T, C> {
 }
 
 /// Configurator of an [outbound workflow channel](Sender).
-#[derive(Debug)]
-pub struct SenderConfig<T, C> {
-    spawner: Spawner,
+pub struct SenderConfig<Ch: SpecifyWorkflowChannels, T, C> {
+    spawner: Spawner<Ch>,
     channel_name: String,
     _ty: PhantomData<fn(C) -> T>,
 }
 
-impl<T, C: Encode<T>> SenderConfig<T, C> {
+impl<Ch, T, C> fmt::Debug for SenderConfig<Ch, T, C>
+where
+    Ch: SpecifyWorkflowChannels + fmt::Debug,
+    Ch::Inbound: fmt::Debug,
+    Ch::Outbound: fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SenderConfig")
+            .field("spawner", &self.spawner)
+            .field("channel_name", &self.channel_name)
+            .finish()
+    }
+}
+
+impl<Ch, T, C> SenderConfig<Ch, T, C>
+where
+    Ch: SpecifyWorkflowChannels,
+    C: Encode<T>,
+{
     /// Closes the channel immediately on workflow instantiation.
     pub fn close(&self) {
         self.spawner
@@ -365,11 +477,25 @@ impl<T, C: Encode<T>> SenderConfig<T, C> {
     }
 }
 
-impl<T, C: Encode<T>> TakeHandle<Spawner> for Sender<T, C> {
-    type Id = str;
-    type Handle = SenderConfig<T, C>;
+impl<T, C: Encode<T>> SenderConfig<Workflows, T, C> {
+    /// Copies the channel from the provided `sender`. Thus, the created workflow will send
+    /// messages over the same channel as `sender`.
+    pub fn copy_from(&self, sender: Sender<T, C>) {
+        self.spawner
+            .inner
+            .copy_outbound_channel(&self.channel_name, sender.into_raw());
+    }
+}
 
-    fn take_handle(env: &mut Spawner, id: &Self::Id) -> Result<Self::Handle, AccessError> {
+impl<Ch, T, C> TakeHandle<Spawner<Ch>> for Sender<T, C>
+where
+    Ch: SpecifyWorkflowChannels,
+    C: Encode<T>,
+{
+    type Id = str;
+    type Handle = SenderConfig<Ch, T, C>;
+
+    fn take_handle(env: &mut Spawner<Ch>, id: &Self::Id) -> Result<Self::Handle, AccessError> {
         Ok(SenderConfig {
             spawner: env.clone(),
             channel_name: id.to_owned(),
@@ -378,11 +504,15 @@ impl<T, C: Encode<T>> TakeHandle<Spawner> for Sender<T, C> {
     }
 }
 
-impl<C: Encode<FutureUpdate>> TakeHandle<Spawner> for Tracer<C> {
+impl<Ch, C> TakeHandle<Spawner<Ch>> for Tracer<C>
+where
+    Ch: SpecifyWorkflowChannels,
+    C: Encode<FutureUpdate>,
+{
     type Id = str;
-    type Handle = SenderConfig<FutureUpdate, C>;
+    type Handle = SenderConfig<Ch, FutureUpdate, C>;
 
-    fn take_handle(env: &mut Spawner, id: &Self::Id) -> Result<Self::Handle, AccessError> {
+    fn take_handle(env: &mut Spawner<Ch>, id: &Self::Id) -> Result<Self::Handle, AccessError> {
         Ok(SenderConfig {
             spawner: env.clone(),
             channel_name: id.to_owned(),
@@ -392,16 +522,22 @@ impl<C: Encode<FutureUpdate>> TakeHandle<Spawner> for Tracer<C> {
 }
 
 /// Builder allowing to configure workflow aspects, such as channels, before instantiation.
-pub struct WorkflowBuilder<'a, M: ?Sized, W: TakeHandle<Spawner>> {
-    spawner: Spawner,
-    handle: <W as TakeHandle<Spawner>>::Handle,
+pub struct WorkflowBuilder<'a, M, W>
+where
+    M: SpecifyWorkflowChannels,
+    W: TakeHandle<Spawner<M>>,
+{
+    spawner: Spawner<M>,
+    handle: <W as TakeHandle<Spawner<M>>>::Handle,
     manager: &'a M,
 }
 
-impl<M: ?Sized, W> fmt::Debug for WorkflowBuilder<'_, M, W>
+impl<M, W> fmt::Debug for WorkflowBuilder<'_, M, W>
 where
-    W: TakeHandle<Spawner>,
-    <W as TakeHandle<Spawner>>::Handle: fmt::Debug,
+    M: SpecifyWorkflowChannels,
+    Spawner<M>: fmt::Debug,
+    W: TakeHandle<Spawner<M>>,
+    <W as TakeHandle<Spawner<M>>>::Handle: fmt::Debug,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -414,10 +550,10 @@ where
 
 impl<'a, M, W> WorkflowBuilder<'a, M, W>
 where
-    M: ManageWorkflows<'a, W> + ?Sized,
-    W: WorkflowFn + TakeHandle<Spawner, Id = ()>,
+    M: ManageWorkflows<'a, W>,
+    W: WorkflowFn + TakeHandle<Spawner<M>, Id = ()>,
 {
-    fn new(manager: &'a M, interface: &Interface<()>, definition_id: &str, args: W::Args) -> Self {
+    fn new(manager: &'a M, interface: Interface, definition_id: &str, args: W::Args) -> Self {
         let raw_args = W::Codec::default().encode_value(args);
         let mut spawner = Spawner {
             inner: Rc::new(SpawnerInner::new(interface, definition_id, raw_args)),
@@ -431,7 +567,7 @@ where
     }
 
     /// Returns a [handle](TakeHandle) that can be used to configure created workflow channels.
-    pub fn handle(&self) -> &<W as TakeHandle<Spawner>>::Handle {
+    pub fn handle(&self) -> &<W as TakeHandle<Spawner<M>>>::Handle {
         &self.handle
     }
 
@@ -444,11 +580,11 @@ where
     #[allow(clippy::missing_panics_doc)] // false positive
     pub fn build(self) -> Result<M::Handle, M::Error> {
         drop(self.handle);
-        let spawner = Rc::try_unwrap(self.spawner.inner).unwrap();
+        let spawner = Rc::try_unwrap(self.spawner.inner).map_err(drop).unwrap();
         self.manager.create_workflow(
             &spawner.definition_id,
             spawner.args,
-            &spawner.channels.into_inner(),
+            spawner.channels.into_inner(),
         )
     }
 }
@@ -502,35 +638,76 @@ where
 
 impl<T, C: Encode<T> + Default> TakeHandle<RemoteWorkflow> for Receiver<T, C> {
     type Id = str;
-    type Handle = Option<Sender<T, C>>;
+    type Handle = Remote<Sender<T, C>>;
 
     fn take_handle(env: &mut RemoteWorkflow, id: &str) -> Result<Self::Handle, AccessError> {
-        let raw_sender = env.inner.take_inbound_channel(id);
-        match raw_sender {
-            RemoteHandle::None => Err(AccessErrorKind::Unknown.with_location(InboundChannel(id))),
-            RemoteHandle::NotCaptured => Ok(None),
-            RemoteHandle::Some(raw) => Ok(Some(raw.with_codec(C::default()))),
+        let raw_sender = env
+            .inner
+            .take_inbound_channel(id)
+            .ok_or_else(|| AccessErrorKind::Unknown.with_location(InboundChannel(id)))?;
+        Ok(raw_sender.map(|raw| raw.with_codec(C::default())))
+    }
+}
+
+impl<T, C: Decode<T>> Stream for Remote<Receiver<T, C>> {
+    type Item = T;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.get_mut() {
+            Self::NotCaptured => Poll::Ready(None),
+            Self::Some(receiver) => Pin::new(receiver).poll_next(cx),
         }
     }
 }
 
 impl<T, C: Decode<T> + Default> TakeHandle<RemoteWorkflow> for Sender<T, C> {
     type Id = str;
-    type Handle = Option<Receiver<T, C>>;
+    type Handle = Remote<Receiver<T, C>>;
 
     fn take_handle(env: &mut RemoteWorkflow, id: &str) -> Result<Self::Handle, AccessError> {
-        let raw_receiver = env.inner.take_outbound_channel(id);
-        match raw_receiver {
-            RemoteHandle::None => Err(AccessErrorKind::Unknown.with_location(OutboundChannel(id))),
-            RemoteHandle::NotCaptured => Ok(None),
-            RemoteHandle::Some(raw) => Ok(Some(raw.with_codec(C::default()))),
+        let raw_receiver = env
+            .inner
+            .take_outbound_channel(id)
+            .ok_or_else(|| AccessErrorKind::Unknown.with_location(OutboundChannel(id)))?;
+        Ok(raw_receiver.map(|raw| raw.with_codec(C::default())))
+    }
+}
+
+impl<T, C: Encode<T>> Sink<T> for Remote<Sender<T, C>> {
+    type Error = SendError;
+
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        match self.get_mut() {
+            Self::NotCaptured => Poll::Ready(Err(SendError::Closed)),
+            Self::Some(sender) => Pin::new(sender).poll_ready(cx),
+        }
+    }
+
+    fn start_send(self: Pin<&mut Self>, item: T) -> Result<(), Self::Error> {
+        match self.get_mut() {
+            Self::NotCaptured => Err(SendError::Closed),
+            Self::Some(sender) => Pin::new(sender).start_send(item),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        match self.get_mut() {
+            Self::NotCaptured => Poll::Ready(Err(SendError::Closed)),
+            Self::Some(sender) => Pin::new(sender).poll_flush(cx),
+        }
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        match self.get_mut() {
+            Self::NotCaptured => Poll::Ready(Ok(())),
+            Self::Some(sender) => Pin::new(sender).poll_close(cx),
         }
     }
 }
 
 impl<C: Decode<FutureUpdate> + Default> TakeHandle<RemoteWorkflow> for Tracer<C> {
     type Id = str;
-    type Handle = Option<TracerHandle<C>>;
+    type Handle = Remote<TracerHandle<C>>;
 
     fn take_handle(env: &mut RemoteWorkflow, id: &Self::Id) -> Result<Self::Handle, AccessError> {
         let receiver = Sender::<FutureUpdate, C>::take_handle(env, id)?;

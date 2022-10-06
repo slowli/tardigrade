@@ -91,29 +91,21 @@ pub use crate::{
 /// - Add a `where` clause for the handle struct specifying that field handles exist
 ///   in an environment
 /// - Derive [`TakeHandle`] for the workflow type using the handle struct as a handle
-/// - Derive [`ValidateInterface`] for the workflow type
 /// - Optionally, derive `Clone` and/or `Debug` for the handle struct if the corresponding derives
 ///   are requested via `#[derive(..)]`. (Ordinary derivation of these traits is problematic
 ///   because of the `where` clause on the struct.)
 ///
 /// # Attributes
 ///
-/// Attributes are specified according to standard Rust conventions:
-/// `#[tardigrade::handle(attr1 = "value1", ...)]`.
-///
-/// ## `for`
-///
-/// Specifies the workflow type that the handle should be attached to.
+/// No attributes are supported.
 ///
 /// # Examples
 ///
 /// ```
-/// # use tardigrade::{channel::{Sender, Receiver}, workflow::Handle, Json};
-/// /// Workflow type.
-/// pub struct MyWorkflow;
+/// use tardigrade::{channel::{Sender, Receiver}, workflow::Handle, Json};
 ///
 /// /// Handle for the workflow.
-/// #[tardigrade::handle(for = "MyWorkflow")]
+/// #[tardigrade::handle]
 /// #[derive(Debug)]
 /// pub struct MyHandle<Env> {
 ///     pub inbound: Handle<Receiver<i64, Json>, Env>,
@@ -125,18 +117,24 @@ pub use crate::{
 ///
 /// [`Handle`]: crate::workflow::Handle
 /// [`TakeHandle`]: crate::workflow::TakeHandle
-/// [`ValidateInterface`]: crate::interface::ValidateInterface
 #[cfg(feature = "derive")]
 #[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
 pub use tardigrade_derive::handle;
 
 pub use tardigrade_shared::interface;
 
+#[doc(hidden)] // used by the derive macros; not public
+pub mod _reexports {
+    pub use once_cell::sync::Lazy;
+}
+
 /// Creates an entry point for the specified workflow type.
 ///
 /// An entry point must be specified for a workflow type in a workflow module in order
 /// for the module to properly function (i.e., being able to spawn workflow instances).
 /// The specified type must implement [`SpawnWorkflow`](crate::workflow::SpawnWorkflow).
+///
+/// The macro will automatically implement [`NamedWorkflow`](crate::workflow::NamedWorkflow).
 ///
 /// # Examples
 ///
@@ -145,6 +143,10 @@ pub use tardigrade_shared::interface;
 macro_rules! workflow_entry {
     ($workflow:ident) => {
         const _: () = {
+            impl $crate::workflow::NamedWorkflow for $workflow {
+                const WORKFLOW_NAME: &'static str = stringify!($workflow);
+            }
+
             #[no_mangle]
             #[export_name = concat!("tardigrade_rt::spawn::", stringify!($workflow))]
             #[doc(hidden)]

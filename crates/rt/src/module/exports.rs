@@ -46,7 +46,7 @@ impl ModuleExports {
                 Trap::new(message)
             })?;
         let result = self.create_main_task.call(ctx, (data_ptr, data_len));
-        crate::log_result!(result, "Created main task")
+        log_result!(result, "Created main task")
     }
 
     pub fn poll_task(
@@ -58,7 +58,7 @@ impl ModuleExports {
             .poll_task
             .call(ctx, task_id)
             .and_then(|res| <Poll<()>>::try_from_wasm(res).map_err(Trap::new));
-        crate::log_result!(result, "Polled task {}", task_id)
+        log_result!(result, "Polled task {task_id}")
     }
 
     pub fn drop_task(
@@ -67,7 +67,7 @@ impl ModuleExports {
         task_id: TaskId,
     ) -> Result<(), Trap> {
         let result = self.drop_task.call(ctx, task_id);
-        crate::log_result!(result, "Dropped task {}", task_id)
+        log_result!(result, "Dropped task {task_id}")
     }
 
     pub fn alloc_bytes(
@@ -76,7 +76,7 @@ impl ModuleExports {
         capacity: u32,
     ) -> Result<u32, Trap> {
         let result = self.alloc_bytes.call(ctx, capacity);
-        crate::log_result!(result, "Allocated {} bytes", capacity)
+        log_result!(result, "Allocated {capacity} bytes")
     }
 
     pub fn create_waker(
@@ -85,7 +85,7 @@ impl ModuleExports {
         cx_ptr: WasmContextPtr,
     ) -> Result<WakerId, Trap> {
         let result = self.create_waker.call(ctx, cx_ptr);
-        crate::log_result!(result, "Created waker from context {}", cx_ptr)
+        log_result!(result, "Created waker from context {cx_ptr}")
     }
 
     pub fn wake_waker(
@@ -94,7 +94,7 @@ impl ModuleExports {
         waker_id: WakerId,
     ) -> Result<(), Trap> {
         let result = self.wake_waker.call(ctx, waker_id);
-        crate::log_result!(result, "Waked waker {}", waker_id)
+        log_result!(result, "Waked waker {waker_id}")
     }
 
     pub fn drop_waker(
@@ -103,7 +103,7 @@ impl ModuleExports {
         waker_id: WakerId,
     ) -> Result<(), Trap> {
         let result = self.drop_waker.call(ctx, waker_id);
-        crate::log_result!(result, "Dropped waker {}", waker_id)
+        log_result!(result, "Dropped waker {waker_id}")
     }
 }
 
@@ -119,7 +119,7 @@ impl fmt::Debug for ModuleExports {
 impl ModuleExports {
     pub(super) fn validate_module(
         module: &Module,
-        workflows: &HashMap<String, Interface<()>>,
+        workflows: &HashMap<String, Interface>,
     ) -> anyhow::Result<()> {
         let memory_ty = module
             .get_export("memory")

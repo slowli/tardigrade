@@ -4,35 +4,26 @@ use futures::{stream, SinkExt, StreamExt};
 
 mod channel;
 mod requests;
+mod spawn;
+mod task;
 mod timers;
-// TODO: test child workflows
 
 use tardigrade::{
     channel::{Receiver, Sender},
     test::Runtime,
-    workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm, WorkflowFn},
+    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, TaskHandle, Wasm, WorkflowFn},
     Json,
 };
-use tardigrade_shared::interface::Interface;
 
-#[derive(Debug)]
-struct TestedWorkflow;
-
-impl GetInterface for TestedWorkflow {
-    const WORKFLOW_NAME: &'static str = "TestedWorkflow";
-
-    fn interface() -> Interface<Self> {
-        Interface::from_bytes(br#"{ "v": 0, "in": { "commands": {} }, "out": { "events": {} } }"#)
-            .downcast()
-            .unwrap()
-    }
-}
-
-#[tardigrade::handle(for = "TestedWorkflow")]
+#[tardigrade::handle]
 struct TestHandle<Env> {
     commands: Handle<Receiver<i32, Json>, Env>,
     events: Handle<Sender<i32, Json>, Env>,
 }
+
+#[derive(Debug, GetInterface, TakeHandle)]
+#[tardigrade(handle = "TestHandle", auto_interface)]
+struct TestedWorkflow;
 
 impl WorkflowFn for TestedWorkflow {
     type Args = ();
@@ -50,29 +41,23 @@ impl SpawnWorkflow for TestedWorkflow {
 
 #[test]
 fn dropping_inbound_channel_handle_in_test_code() {
-    Runtime::default().test::<TestedWorkflow, _, _>((), |api| async {
-        let mut commands = api.commands.unwrap();
-        let events = api.events.unwrap();
-
+    Runtime::default().test::<TestedWorkflow, _, _>((), |mut api| async {
         let mut items = stream::iter([Ok(23), Ok(42)]);
-        commands.send_all(&mut items).await.unwrap();
-        drop(commands);
-        let echos: Vec<_> = events.collect().await;
+        api.commands.send_all(&mut items).await.unwrap();
+        drop(api.commands);
+        let echos: Vec<_> = api.events.collect().await;
         assert_eq!(echos, [23, 42]);
     });
 }
 
 #[test]
 fn dropping_outbound_channel_handle_in_test_code() {
-    Runtime::default().test::<TestedWorkflow, _, _>((), |api| async {
-        let mut commands = api.commands.unwrap();
-        let mut events = api.events.unwrap();
-
-        commands.send(23).await.unwrap();
-        let echo = events.next().await.unwrap();
+    Runtime::default().test::<TestedWorkflow, _, _>((), |mut api| async move {
+        api.commands.send(23).await.unwrap();
+        let echo = api.events.next().await.unwrap();
         assert_eq!(echo, 23);
 
-        drop(events);
-        commands.send(42).await.unwrap();
+        drop(api.events);
+        api.commands.send(42).await.unwrap();
     });
 }

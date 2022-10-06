@@ -9,12 +9,12 @@ use super::{
 use crate::{
     module::{NoOpWorkflowManager, Services, WorkflowAndChannelIds},
     workflow::{ChannelIds, Workflow},
+    ChannelId, WorkflowId,
 };
 use tardigrade::{
     interface::Interface,
-    spawn::{ChannelsConfig, ManageInterfaces, ManageWorkflows},
+    spawn::{ChannelsConfig, ManageInterfaces, ManageWorkflows, SpecifyWorkflowChannels},
 };
-use tardigrade_shared::{ChannelId, WorkflowId};
 
 #[derive(Debug)]
 pub(super) struct TransactionInner {
@@ -104,9 +104,14 @@ impl Transaction {
 }
 
 impl ManageInterfaces for Transaction {
-    fn interface(&self, id: &str) -> Option<Cow<'_, Interface<()>>> {
+    fn interface(&self, id: &str) -> Option<Cow<'_, Interface>> {
         Some(Cow::Borrowed(self.shared.spawners.get(id)?.interface()))
     }
+}
+
+impl SpecifyWorkflowChannels for Transaction {
+    type Inbound = ChannelId;
+    type Outbound = ChannelId;
 }
 
 impl ManageWorkflows<'_, ()> for Transaction {
@@ -117,8 +122,14 @@ impl ManageWorkflows<'_, ()> for Transaction {
         &self,
         id: &str,
         args: Vec<u8>,
-        channels: &ChannelsConfig,
+        channels: ChannelsConfig<ChannelId>,
     ) -> Result<Self::Handle, Self::Error> {
+        trace!(
+            "Creating workflow from definition `{id}` with args ({args_len} bytes) \
+             and {channels:?} in transaction {self:?}",
+            args_len = args.len()
+        );
+
         let spawner = self
             .shared
             .spawners
@@ -129,15 +140,19 @@ impl ManageWorkflows<'_, ()> for Transaction {
             let mut state = self.inner.lock().unwrap();
             ChannelIds::new(channels, || state.allocate_channel_id())
         };
+        // FIXME: (debug?) check that all channel IDs are valid
+
         let workflow = spawner.spawn(args, &channel_ids, self.services())?;
         let workflow_id = self.inner.lock().unwrap().stash_workflow(
             id.to_owned(),
             self.executing_workflow_id,
             workflow,
         );
-        Ok(WorkflowAndChannelIds {
+        let ids = WorkflowAndChannelIds {
             workflow_id,
             channel_ids,
-        })
+        };
+        trace!("Created workflow {ids:?} in transaction {self:?}");
+        Ok(ids)
     }
 }

@@ -126,7 +126,12 @@ impl SpawnFunctions {
         match fn_name {
             "workflow::interface" => ensure_func_ty::<(u32, u32), i64>(ty, fn_name),
             "workflow::create_handles" => ensure_func_ty::<(), Ref>(ty, fn_name),
-            "workflow::set_handle" => ensure_func_ty::<(Ref, i32, u32, u32, i32), ()>(ty, fn_name),
+            "workflow::insert_handle" => {
+                ensure_func_ty::<(Ref, i32, u32, u32, i32), ()>(ty, fn_name)
+            }
+            "workflow::copy_sender_handle" => {
+                ensure_func_ty::<(Ref, i32, i32, Ref), ()>(ty, fn_name)
+            }
             "workflow::spawn" => ensure_func_ty::<(u32, u32, u32, u32, Ref, u32), Ref>(ty, fn_name),
             "workflow::poll_completion" => {
                 ensure_func_ty::<(Ref, WasmContextPtr), i64>(ty, fn_name)
@@ -157,8 +162,12 @@ impl ExtendLinker for SpawnFunctions {
                 Func::wrap(&mut *store, Self::create_channel_handles),
             ),
             (
-                "workflow::set_handle",
+                "workflow::insert_handle",
                 wrap5(&mut *store, Self::set_channel_handle),
+            ),
+            (
+                "workflow::copy_sender_handle",
+                wrap4(&mut *store, Self::copy_sender_handle),
             ),
             ("workflow::spawn", wrap6(&mut *store, Self::spawn)),
             (

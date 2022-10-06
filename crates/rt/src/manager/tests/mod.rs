@@ -18,7 +18,7 @@ use crate::{
 };
 use tardigrade::{
     interface::{InboundChannel, OutboundChannel},
-    spawn::{ManageWorkflowsExt, WorkflowBuilder},
+    spawn::ManageWorkflowsExt,
 };
 use tardigrade_shared::abi::AllocateBytes;
 
@@ -133,8 +133,8 @@ fn initializing_workflow_with_closed_channels() {
 
     let _guard = ExportsMock::prepare(Answers::from_value(test_channels));
     let mut manager = create_test_manager();
-    let builder: WorkflowBuilder<_, ()> = manager
-        .new_workflow("test:latest", b"test_input".to_vec())
+    let builder = manager
+        .new_workflow::<()>("test:latest", b"test_input".to_vec())
         .unwrap();
     builder.handle()[InboundChannel("orders")].close();
     builder.handle()[OutboundChannel("traces")].close();
@@ -200,7 +200,7 @@ fn closing_workflow_channels() {
 
     manager.tick_workflow(workflow_id).unwrap(); // initializes the workflow
     manager.close_host_receiver(events_id);
-    let channel_info = manager.channel_info(events_id).unwrap();
+    let channel_info = manager.channel(events_id).unwrap();
     assert!(channel_info.is_closed());
     {
         let persisted = manager.workflow(workflow_id).unwrap().persisted();
@@ -213,7 +213,7 @@ fn closing_workflow_channels() {
     }
 
     manager.tick_workflow(workflow_id).unwrap();
-    let channel_info = manager.channel_info(orders_id).unwrap();
+    let channel_info = manager.channel(orders_id).unwrap();
     assert!(channel_info.is_closed());
 }
 
@@ -289,7 +289,6 @@ fn test_closing_inbound_channel_from_host_side(with_message: bool) {
 
         let receipt = manager
             .feed_message_to_workflow(orders_id, workflow_id)
-            .unwrap()
             .unwrap();
         let order_events = extract_channel_events(&receipt, None, "orders");
         assert_matches!(
@@ -398,7 +397,6 @@ fn sending_message_to_workflow() {
 
     let receipt = manager
         .feed_message_to_workflow(orders_id, workflow_id)
-        .unwrap()
         .unwrap();
     assert_eq!(receipt.executions().len(), 2); // waker + task
     let waker_execution = &receipt.executions()[1];
@@ -443,8 +441,38 @@ fn error_processing_inbound_message_in_workflow() {
     let err = err.trap().display_reason().to_string();
     assert!(err.contains("oops"), "{}", err);
 
-    let channel_info = manager.channel_info(orders_id).unwrap();
+    let channel_info = manager.channel(orders_id).unwrap();
     assert!(!channel_info.is_closed());
     assert_eq!(channel_info.received_messages(), 1);
     assert_eq!(channel_info.flushed_messages(), 0);
+}
+
+#[test]
+fn workflow_not_consuming_inbound_message() {
+    let not_consume_message: MockPollFn = |_| Ok(Poll::Pending);
+    let poll_fns = Answers::from_values([poll_receiver as MockPollFn, not_consume_message]);
+    let _guard = ExportsMock::prepare(poll_fns);
+    let mut manager = create_test_manager();
+    let workflow = create_test_workflow(&manager);
+    let workflow_id = workflow.id();
+    let orders_id = workflow.ids().channel_ids.inbound["orders"];
+
+    manager.tick_workflow(workflow_id).unwrap();
+    manager
+        .send_message(orders_id, b"order #1".to_vec())
+        .unwrap();
+    manager
+        .feed_message_to_workflow(orders_id, workflow_id)
+        .unwrap();
+
+    let state = manager.state.lock().unwrap();
+    let orders = &state.channels[&orders_id].messages;
+    assert_eq!(orders.len(), 1);
+
+    // Workflow wakers should be consumed to not trigger the infinite loop.
+    let events: Vec<_> = state.workflows[&workflow_id]
+        .workflow
+        .pending_events()
+        .collect();
+    assert!(events.is_empty(), "{:?}", events);
 }

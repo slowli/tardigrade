@@ -1,8 +1,10 @@
 //! Types related to workflow interface definition.
 
+// TODO: Consider unifying terms: inbound / outbound vs receiver / sender
+
 use serde::{Deserialize, Serialize};
 
-use std::{collections::HashMap, error, fmt, marker::PhantomData, ops};
+use std::{collections::HashMap, error, fmt, ops};
 
 use crate::abi::{FromWasmError, TryFromWasm};
 
@@ -47,8 +49,6 @@ impl TryFromWasm for ChannelKind {
 pub enum AccessErrorKind {
     /// Channel was not registered in the workflow interface.
     Unknown,
-    /// Channel was already acquired by the workflow.
-    AlreadyAcquired,
     /// Custom error.
     Custom(Box<dyn error::Error + Send + Sync>),
 }
@@ -57,7 +57,6 @@ impl fmt::Display for AccessErrorKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unknown => formatter.write_str("not registered in the workflow interface"),
-            Self::AlreadyAcquired => formatter.write_str("already acquired"),
             Self::Custom(err) => fmt::Display::fmt(err, formatter),
         }
     }
@@ -165,7 +164,7 @@ pub struct InboundChannelSpec {
 }
 
 /// Specification of an outbound workflow channel in the workflow [`Interface`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct OutboundChannelSpec {
     /// Human-readable channel description.
@@ -177,10 +176,32 @@ pub struct OutboundChannelSpec {
     pub capacity: Option<usize>,
 }
 
+impl Default for OutboundChannelSpec {
+    fn default() -> Self {
+        Self {
+            description: String::new(),
+            capacity: Self::default_capacity(),
+        }
+    }
+}
+
 impl OutboundChannelSpec {
     #[allow(clippy::unnecessary_wraps)] // required by `serde`
     const fn default_capacity() -> Option<usize> {
         Some(1)
+    }
+
+    fn check_compatibility(&self, provided: &Self) -> Result<(), AccessErrorKind> {
+        if self.capacity == provided.capacity {
+            Ok(())
+        } else {
+            let expected = self.capacity;
+            let provided = provided.capacity;
+            let msg = format!(
+                "outbound channel capacity mismatch: expected {expected:?}, got {provided:?}"
+            );
+            Err(AccessErrorKind::custom(msg))
+        }
     }
 }
 
@@ -243,7 +264,7 @@ impl From<OutboundChannel<'_>> for InterfaceLocation {
 /// #     "in": { "commands": {} },
 /// #     "out": { "events": {} }
 /// # }"#;
-/// let interface: Interface<()> = // ...
+/// let interface: Interface = // ...
 /// #     Interface::from_bytes(INTERFACE_BYTES);
 ///
 /// let spec = interface.inbound_channel("commands").unwrap();
@@ -256,8 +277,8 @@ impl From<OutboundChannel<'_>> for InterfaceLocation {
 /// let commands = &interface[InboundChannel("commands")];
 /// println!("{}", commands.description);
 /// ```
-#[derive(Serialize, Deserialize)]
-pub struct Interface<W: ?Sized> {
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Interface {
     #[serde(rename = "v")]
     version: u32,
     #[serde(rename = "in", default, skip_serializing_if = "HashMap::is_empty")]
@@ -266,47 +287,35 @@ pub struct Interface<W: ?Sized> {
     outbound_channels: HashMap<String, OutboundChannelSpec>,
     #[serde(rename = "args", default)]
     args: ArgsSpec,
-    #[serde(skip, default)]
-    _workflow: PhantomData<fn(W)>,
 }
 
-impl<W: ?Sized> fmt::Debug for Interface<W> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("Interface")
-            .field("version", &self.version)
-            .field("inbound_channels", &self.inbound_channels)
-            .field("outbound_channels", &self.outbound_channels)
-            .field("args", &self.args)
-            .finish()
+impl Interface {
+    /// Parses interface definition from `bytes`.
+    ///
+    /// Currently, this assumes that the definition is JSON-encoded, but this should be considered
+    /// an implementation detail.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `bytes` do not represent a valid interface definition.
+    pub fn try_from_bytes(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        serde_json::from_slice(bytes).map_err(Into::into)
     }
-}
 
-impl<W: ?Sized> Clone for Interface<W> {
-    fn clone(&self) -> Self {
-        Self {
-            version: self.version,
-            inbound_channels: self.inbound_channels.clone(),
-            outbound_channels: self.outbound_channels.clone(),
-            args: self.args.clone(),
-            _workflow: PhantomData,
-        }
+    /// Version of [`Self::try_from_bytes()`] that panics on error.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `bytes` do not represent a valid interface definition.
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        Self::try_from_bytes(bytes).unwrap_or_else(|err| panic!("Cannot deserialize spec: {}", err))
     }
-}
 
-impl Default for Interface<()> {
-    fn default() -> Self {
-        Self {
-            version: 0,
-            inbound_channels: HashMap::new(),
-            outbound_channels: HashMap::new(),
-            args: ArgsSpec::default(),
-            _workflow: PhantomData,
-        }
+    /// Serializes this interface.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("failed serializing `Interface`")
     }
-}
 
-impl<W> Interface<W> {
     /// Returns the version of this interface definition.
     #[doc(hidden)]
     pub fn version(&self) -> u32 {
@@ -348,19 +357,37 @@ impl<W> Interface<W> {
         &self.args
     }
 
-    /// Erases the type of this interface.
-    pub fn erase(self) -> Interface<()> {
-        Interface {
-            version: self.version,
-            inbound_channels: self.inbound_channels,
-            outbound_channels: self.outbound_channels,
-            args: self.args,
-            _workflow: PhantomData,
-        }
+    /// Checks the compatibility of this *expected* interface against the `provided` interface.
+    /// The provided interface may contain more channels than is described by the expected
+    /// interface, but not vice versa.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provided interface does not match expectations.
+    pub fn check_compatibility(&self, provided: &Self) -> Result<(), AccessError> {
+        self.inbound_channels.keys().try_fold((), |(), name| {
+            provided
+                .inbound_channels
+                .get(name)
+                .map(drop)
+                .ok_or_else(|| AccessErrorKind::Unknown.with_location(InboundChannel(name)))
+        })?;
+        self.outbound_channels
+            .iter()
+            .try_fold((), |(), (name, spec)| {
+                let other_spec = provided
+                    .outbound_channels
+                    .get(name)
+                    .ok_or_else(|| AccessErrorKind::Unknown.with_location(OutboundChannel(name)))?;
+                spec.check_compatibility(other_spec)
+                    .map_err(|err| err.with_location(OutboundChannel(name)))
+            })?;
+
+        Ok(())
     }
 }
 
-impl<W> ops::Index<InboundChannel<'_>> for Interface<W> {
+impl ops::Index<InboundChannel<'_>> for Interface {
     type Output = InboundChannelSpec;
 
     fn index(&self, index: InboundChannel<'_>) -> &Self::Output {
@@ -369,7 +396,7 @@ impl<W> ops::Index<InboundChannel<'_>> for Interface<W> {
     }
 }
 
-impl<W> ops::Index<OutboundChannel<'_>> for Interface<W> {
+impl ops::Index<OutboundChannel<'_>> for Interface {
     type Output = OutboundChannelSpec;
 
     fn index(&self, index: OutboundChannel<'_>) -> &Self::Output {
@@ -378,73 +405,35 @@ impl<W> ops::Index<OutboundChannel<'_>> for Interface<W> {
     }
 }
 
-impl Interface<()> {
-    /// Parses interface definition from `bytes`.
-    ///
-    /// Currently, this assumes that the definition is JSON-encoded, but this should be considered
-    /// an implementation detail.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `bytes` do not represent a valid interface definition.
-    pub fn try_from_bytes(bytes: &[u8]) -> Result<Self, serde_json::Error> {
-        serde_json::from_slice(bytes).map_err(Into::into)
-    }
-
-    /// Version of [`Self::try_from_bytes()`] that panics on error.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `bytes` do not represent a valid interface definition.
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        Self::try_from_bytes(bytes).unwrap_or_else(|err| panic!("Cannot deserialize spec: {}", err))
-    }
-
-    /// Serializes this interface.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).expect("failed serializing `Interface`")
-    }
-
-    /// Tries to downcast this interface to a particular workflow.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if there is a mismatch between the interface of the workflow type
-    /// and this interface, e.g., if the workflow type relies on a channel
-    /// not present in this interface.
-    pub fn downcast<W>(self) -> Result<Interface<W>, AccessError>
-    where
-        W: ValidateInterface<Id = ()>,
-    {
-        W::validate_interface(&self, &())?;
-        Ok(Interface {
-            version: self.version,
-            inbound_channels: self.inbound_channels,
-            outbound_channels: self.outbound_channels,
-            args: self.args,
-            _workflow: PhantomData,
-        })
-    }
+/// Builder of workflow [`Interface`].
+#[derive(Debug)]
+pub struct InterfaceBuilder {
+    interface: Interface,
 }
 
-/// Validates a workflow interface.
-pub trait ValidateInterface {
-    /// ID of the type within the interface, usually a `str` (for named handles)
-    /// or `()` (for singleton handles).
-    type Id: ?Sized;
+impl InterfaceBuilder {
+    /// Creates a builder without any channels specified.
+    pub fn new(args: ArgsSpec) -> Self {
+        Self {
+            interface: Interface {
+                args,
+                ..Interface::default()
+            },
+        }
+    }
 
-    /// Performs validation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the interface is invalid.
-    fn validate_interface(interface: &Interface<()>, id: &Self::Id) -> Result<(), AccessError>;
-}
+    /// Adds an inbound channel spec to this builder.
+    pub fn insert_inbound_channel(&mut self, name: impl Into<String>, spec: InboundChannelSpec) {
+        self.interface.inbound_channels.insert(name.into(), spec);
+    }
 
-impl ValidateInterface for () {
-    type Id = ();
+    /// Adds an outbound channel spec to this builder.
+    pub fn insert_outbound_channel(&mut self, name: impl Into<String>, spec: OutboundChannelSpec) {
+        self.interface.outbound_channels.insert(name.into(), spec);
+    }
 
-    fn validate_interface(_interface: &Interface<()>, _id: &()) -> Result<(), AccessError> {
-        Ok(()) // validation always succeeds
+    /// Builds an interface from this builder.
+    pub fn build(self) -> Interface {
+        self.interface
     }
 }

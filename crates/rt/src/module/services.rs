@@ -4,13 +4,18 @@ use chrono::{DateTime, Utc};
 
 use std::{borrow::Cow, fmt};
 
-use crate::{workflow::ChannelIds, WorkflowId};
+use crate::{workflow::ChannelIds, ChannelId, WorkflowId};
 use tardigrade::{
     interface::Interface,
-    spawn::{ChannelsConfig, ManageInterfaces, ManageWorkflows},
+    spawn::{ChannelsConfig, ManageInterfaces, ManageWorkflows, SpecifyWorkflowChannels},
 };
 
 /// Wall clock.
+///
+/// This trait can be used in [`WorkflowManagerBuilder`] to specify which clock the manager
+/// should expose to workflow instances.
+///
+/// [`WorkflowManagerBuilder`]: crate::manager::WorkflowManagerBuilder
 pub trait Clock: Send + Sync + 'static {
     /// Returns the current timestamp. This is used in workflows when creating new timers.
     fn now(&self) -> DateTime<Utc>;
@@ -43,7 +48,7 @@ pub(crate) struct WorkflowAndChannelIds {
 pub(crate) struct NoOpWorkflowManager;
 
 impl ManageInterfaces for NoOpWorkflowManager {
-    fn interface(&self, _definition_id: &str) -> Option<Cow<'_, Interface<()>>> {
+    fn interface(&self, _definition_id: &str) -> Option<Cow<'_, Interface>> {
         None
     }
 }
@@ -56,14 +61,25 @@ impl ManageWorkflows<'_, ()> for NoOpWorkflowManager {
         &self,
         _definition_id: &str,
         _args: Vec<u8>,
-        _channels: &ChannelsConfig,
+        _channels: ChannelsConfig<ChannelId>,
     ) -> Result<Self::Handle, Self::Error> {
         unreachable!("No definitions, thus `create_workflow` should never be called")
     }
 }
 
-type DynManager =
-    dyn for<'a> ManageWorkflows<'a, (), Handle = WorkflowAndChannelIds, Error = anyhow::Error>;
+impl SpecifyWorkflowChannels for NoOpWorkflowManager {
+    type Inbound = ChannelId;
+    type Outbound = ChannelId;
+}
+
+type DynManager = dyn for<'a> ManageWorkflows<
+    'a,
+    (),
+    Inbound = ChannelId,
+    Outbound = ChannelId,
+    Handle = WorkflowAndChannelIds,
+    Error = anyhow::Error,
+>;
 
 /// Dynamically dispatched services available to workflows.
 #[derive(Clone, Copy)]

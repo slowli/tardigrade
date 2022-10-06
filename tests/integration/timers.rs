@@ -8,28 +8,18 @@ use tardigrade::workflow::WorkflowFn;
 use tardigrade::{
     channel::Sender,
     test::{Runtime, Timers},
-    workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm},
+    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, TaskHandle, Wasm},
     Json, Timer,
 };
-use tardigrade_shared::interface::Interface;
 
-#[derive(Debug)]
-struct TimersWorkflow;
-
-impl GetInterface for TimersWorkflow {
-    const WORKFLOW_NAME: &'static str = "TimersWorkflow";
-
-    fn interface() -> Interface<Self> {
-        Interface::from_bytes(br#"{ "v": 0, "out": { "timestamps": {} } }"#)
-            .downcast()
-            .unwrap()
-    }
-}
-
-#[tardigrade::handle(for = "TimersWorkflow")]
+#[tardigrade::handle]
 struct TestHandle<Env> {
     timestamps: Handle<Sender<DateTime<Utc>, Json>, Env>,
 }
+
+#[derive(Debug, GetInterface, TakeHandle)]
+#[tardigrade(handle = "TestHandle", auto_interface)]
+struct TimersWorkflow;
 
 impl WorkflowFn for TimersWorkflow {
     type Args = ();
@@ -50,14 +40,13 @@ impl SpawnWorkflow for TimersWorkflow {
 
 #[test]
 fn timers_basics() {
-    Runtime::default().test::<TimersWorkflow, _, _>((), |api| async {
-        let mut timestamps = api.timestamps.unwrap();
+    Runtime::default().test::<TimersWorkflow, _, _>((), |mut api| async move {
         let now = Timers::now();
-        let ts = timestamps.next().await.unwrap();
+        let ts = api.timestamps.next().await.unwrap();
         assert_eq!(ts, now);
 
         Timers::set_now(now + chrono::Duration::seconds(1));
-        let ts = timestamps.next().await.unwrap();
+        let ts = api.timestamps.next().await.unwrap();
         assert_eq!(ts, Timers::now());
     });
 }

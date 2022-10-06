@@ -9,13 +9,15 @@ use std::{
     task::{Context, Poll},
 };
 
-use super::{ChannelsConfig, ManageInterfaces, ManageWorkflows, RemoteHandle, Workflows};
+use super::{
+    ChannelSpawnConfig, ChannelsConfig, ManageInterfaces, ManageWorkflows, Remote, Workflows,
+};
 use crate::channel::{
-    imp::{mpsc_receiver_get, mpsc_sender_get, ACCESS_ERROR_PAD},
+    imp::{mpsc_receiver_get, mpsc_sender_get, MpscSender, ACCESS_ERROR_PAD},
     RawReceiver, RawSender,
 };
 use tardigrade_shared::{
-    abi::{IntoWasm, TryFromWasm},
+    abi::IntoWasm,
     interface::{ChannelKind, Interface},
     JoinError, SpawnError,
 };
@@ -23,7 +25,7 @@ use tardigrade_shared::{
 static mut SPAWN_ERROR_PAD: i64 = 0;
 
 impl ManageInterfaces for Workflows {
-    fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface<()>>> {
+    fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
             #[link_name = "workflow::interface"]
@@ -52,7 +54,7 @@ impl ManageWorkflows<'_, ()> for Workflows {
         &self,
         definition_id: &str,
         args: Vec<u8>,
-        channels: &ChannelsConfig,
+        channels: ChannelsConfig<RawReceiver, RawSender>,
     ) -> Result<Self::Handle, Self::Error> {
         #[externref]
         #[link(wasm_import_module = "tardigrade_rt")]
@@ -63,7 +65,7 @@ impl ManageWorkflows<'_, ()> for Workflows {
                 id_len: usize,
                 args_ptr: *const u8,
                 args_len: usize,
-                handles: Resource<ChannelsConfig>,
+                handles: Resource<ChannelsConfig<RawReceiver, RawSender>>,
                 error_ptr: *mut i64,
             ) -> Option<Resource<RemoteWorkflow>>;
         }
@@ -74,7 +76,7 @@ impl ManageWorkflows<'_, ()> for Workflows {
                 definition_id.len(),
                 args.as_ptr(),
                 args.len(),
-                transform_channels(channels),
+                channels.into_resource(),
                 &mut SPAWN_ERROR_PAD,
             );
             Result::<(), SpawnError>::from_abi_in_wasm(SPAWN_ERROR_PAD).map(|()| RemoteWorkflow {
@@ -85,44 +87,90 @@ impl ManageWorkflows<'_, ()> for Workflows {
     }
 }
 
-unsafe fn transform_channels(channels: &ChannelsConfig) -> Resource<ChannelsConfig> {
-    #[externref]
-    #[link(wasm_import_module = "tardigrade_rt")]
-    extern "C" {
-        #[link_name = "workflow::create_handles"]
-        fn create_handles() -> Resource<ChannelsConfig>;
+#[externref]
+#[link(wasm_import_module = "tardigrade_rt")]
+extern "C" {
+    #[link_name = "workflow::create_handles"]
+    fn create_handles() -> Resource<ChannelsConfig<RawReceiver, RawSender>>;
 
-        // FIXME: also support forwarding
-        #[link_name = "workflow::set_handle"]
-        fn set_handle(
-            spawner: &Resource<ChannelsConfig>,
-            channel_kind: ChannelKind,
-            name_ptr: *const u8,
-            name_len: usize,
-            config: i32,
-        );
-    }
+    #[link_name = "workflow::insert_handle"]
+    fn insert_handle(
+        spawner: &Resource<ChannelsConfig<RawReceiver, RawSender>>,
+        channel_kind: ChannelKind,
+        name_ptr: *const u8,
+        name_len: usize,
+        is_closed: bool,
+    );
 
-    let resource = create_handles();
-    for (name, config) in &channels.inbound {
-        set_handle(
-            &resource,
-            ChannelKind::Inbound,
-            name.as_ptr(),
-            name.len(),
-            config.into_abi_in_wasm(),
-        );
+    #[link_name = "workflow::copy_sender_handle"]
+    fn copy_sender_handle(
+        spawner: &Resource<ChannelsConfig<RawReceiver, RawSender>>,
+        name_ptr: *const u8,
+        name_len: usize,
+        sender: &Resource<MpscSender>,
+    );
+}
+
+impl ChannelSpawnConfig<RawReceiver> {
+    unsafe fn configure(
+        self,
+        spawner: &Resource<ChannelsConfig<RawReceiver, RawSender>>,
+        channel_name: &str,
+    ) {
+        match self {
+            Self::New | Self::Closed => {
+                insert_handle(
+                    spawner,
+                    ChannelKind::Inbound,
+                    channel_name.as_ptr(),
+                    channel_name.len(),
+                    matches!(self, Self::Closed),
+                );
+            }
+            Self::Existing(_) => todo!(),
+        }
     }
-    for (name, config) in &channels.outbound {
-        set_handle(
-            &resource,
-            ChannelKind::Outbound,
-            name.as_ptr(),
-            name.len(),
-            config.into_abi_in_wasm(),
-        );
+}
+
+impl ChannelSpawnConfig<RawSender> {
+    unsafe fn configure(
+        self,
+        spawner: &Resource<ChannelsConfig<RawReceiver, RawSender>>,
+        channel_name: &str,
+    ) {
+        match self {
+            Self::New | Self::Closed => {
+                insert_handle(
+                    spawner,
+                    ChannelKind::Outbound,
+                    channel_name.as_ptr(),
+                    channel_name.len(),
+                    matches!(self, Self::Closed),
+                );
+            }
+            Self::Existing(sender) => {
+                copy_sender_handle(
+                    spawner,
+                    channel_name.as_ptr(),
+                    channel_name.len(),
+                    sender.as_resource(),
+                );
+            }
+        }
     }
-    resource
+}
+
+impl ChannelsConfig<RawReceiver, RawSender> {
+    unsafe fn into_resource(self) -> Resource<Self> {
+        let resource = create_handles();
+        for (name, config) in self.inbound {
+            config.configure(&resource, &name);
+        }
+        for (name, config) in self.outbound {
+            config.configure(&resource, &name);
+        }
+        resource
+    }
 }
 
 #[derive(Debug)]
@@ -131,7 +179,7 @@ pub(crate) struct RemoteWorkflow {
 }
 
 impl RemoteWorkflow {
-    pub fn take_inbound_channel(&mut self, channel_name: &str) -> RemoteHandle<RawSender> {
+    pub fn take_inbound_channel(&mut self, channel_name: &str) -> Option<Remote<RawSender>> {
         let channel = unsafe {
             mpsc_sender_get(
                 Some(&self.resource),
@@ -144,15 +192,15 @@ impl RemoteWorkflow {
         if unsafe { ACCESS_ERROR_PAD } != 0 {
             // Got an error, meaning that the channel does not exist
             debug_assert!(channel.is_none());
-            RemoteHandle::None
+            None
         } else if let Some(channel) = channel {
-            RemoteHandle::Some(RawSender::from_resource(channel))
+            Some(Remote::Some(RawSender::from_resource(channel)))
         } else {
-            RemoteHandle::NotCaptured
+            Some(Remote::NotCaptured)
         }
     }
 
-    pub fn take_outbound_channel(&mut self, channel_name: &str) -> RemoteHandle<RawReceiver> {
+    pub fn take_outbound_channel(&mut self, channel_name: &str) -> Option<Remote<RawReceiver>> {
         let channel = unsafe {
             mpsc_receiver_get(
                 Some(&self.resource),
@@ -165,11 +213,11 @@ impl RemoteWorkflow {
         if unsafe { ACCESS_ERROR_PAD } != 0 {
             // Got an error, meaning that the channel does not exist
             debug_assert!(channel.is_none());
-            RemoteHandle::None
+            None
         } else if let Some(channel) = channel {
-            RemoteHandle::Some(RawReceiver::from_resource(channel))
+            Some(Remote::Some(RawReceiver::from_resource(channel)))
         } else {
-            RemoteHandle::NotCaptured
+            Some(Remote::NotCaptured)
         }
     }
 }

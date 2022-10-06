@@ -14,8 +14,7 @@ use crate::{module::WorkflowModule, TaskId, WakerId};
 const INTERFACE: &[u8] = br#"{
     "v": 0,
     "in": { "orders": {} },
-    "out": { "events": {}, "traces": { "capacity": null } },
-    "data": { "inputs": {} }
+    "out": { "events": {}, "traces": { "capacity": null } }
 }"#;
 
 pub(crate) type MockPollFn = fn(StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap>;
@@ -46,7 +45,7 @@ impl ExportsMock {
     pub(super) fn interfaces_from_wasm(
         this: &Mut<Self>,
         bytes: &[u8],
-    ) -> anyhow::Result<HashMap<String, Interface<()>>> {
+    ) -> anyhow::Result<HashMap<String, Interface>> {
         if bytes == Self::MOCK_MODULE_BYTES {
             let mut map = HashMap::with_capacity(1);
             map.insert("TestWorkflow".to_owned(), Interface::from_bytes(INTERFACE));
@@ -59,7 +58,7 @@ impl ExportsMock {
     pub(super) fn validate_module(
         _: &Mut<Self>,
         _: &Module,
-        _: &HashMap<String, Interface<()>>,
+        _: &HashMap<String, Interface>,
     ) -> anyhow::Result<()> {
         Ok(())
     }

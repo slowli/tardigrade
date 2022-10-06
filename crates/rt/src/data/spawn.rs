@@ -24,14 +24,17 @@ use tardigrade::spawn::{ChannelSpawnConfig, ChannelsConfig};
 use tardigrade_shared::{
     abi::{IntoWasm, TryFromWasm},
     interface::{ChannelKind, Interface},
-    JoinError, SpawnError, WakerId, WorkflowId,
+    ChannelId, JoinError, SpawnError, WakerId, WorkflowId,
 };
+
+type ChannelHandles = ChannelsConfig<ChannelId>;
 
 #[derive(Debug, Clone)]
 pub(super) struct SharedChannelHandles {
-    inner: Arc<Mutex<ChannelsConfig>>,
+    inner: Arc<Mutex<ChannelHandles>>,
 }
 
+/// State of child workflow as viewed by its parent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChildWorkflowState {
     pub(super) channels: ChannelStates,
@@ -51,6 +54,21 @@ impl ChildWorkflowState {
         }
     }
 
+    fn acquire_non_captured_channels(&mut self, channels: &ChannelsConfig<ChannelId>) {
+        for (name, config) in &channels.inbound {
+            if matches!(config, ChannelSpawnConfig::Existing(_)) {
+                let state = self.channels.outbound.get_mut(name).unwrap();
+                state.is_acquired = true;
+            }
+        }
+        for (name, config) in &channels.outbound {
+            if matches!(config, ChannelSpawnConfig::Existing(_)) {
+                let state = self.channels.inbound.get_mut(name).unwrap();
+                state.is_acquired = true;
+            }
+        }
+    }
+
     /// Returns the current poll state of this workflow.
     pub fn result(&self) -> Poll<Result<(), &JoinError>> {
         match &self.completion_result {
@@ -59,10 +77,14 @@ impl ChildWorkflowState {
         }
     }
 
+    /// Returns the current state of a *local* inbound channel connected to the child workflow
+    /// (i.e., the child has an outbound end of the channel).
     pub fn inbound_channel(&self, name: &str) -> Option<&InboundChannelState> {
         self.channels.inbound.get(name)
     }
 
+    /// Returns the current state of a *local* outbound channel connected to the child workflow
+    /// (i.e., the child has the inbound end of the channel).
     pub fn outbound_channel(&self, name: &str) -> Option<&OutboundChannelState> {
         self.channels.outbound.get(name)
     }
@@ -91,7 +113,11 @@ impl PersistedWorkflowData {
 }
 
 impl WorkflowData<'_> {
-    fn validate_handles(&self, definition_id: &str, channels: &ChannelsConfig) -> Result<(), Trap> {
+    fn validate_handles(
+        &self,
+        definition_id: &str,
+        channels: &ChannelsConfig<ChannelId>,
+    ) -> Result<(), Trap> {
         if let Some(interface) = self.services.workflows.interface(definition_id) {
             for (name, _) in interface.inbound_channels() {
                 if !channels.inbound.contains_key(name) {
@@ -124,8 +150,8 @@ impl WorkflowData<'_> {
     }
 
     fn extra_handles_error(
-        interface: &Interface<()>,
-        channels: &ChannelsConfig,
+        interface: &Interface,
+        channels: &ChannelsConfig<ChannelId>,
         channel_kind: ChannelKind,
     ) -> Trap {
         use std::fmt::Write as _;
@@ -157,24 +183,27 @@ impl WorkflowData<'_> {
         &mut self,
         definition_id: &str,
         args: Vec<u8>,
-        channels: &ChannelsConfig,
+        channels: &ChannelsConfig<ChannelId>,
     ) -> Result<WorkflowId, SpawnError> {
         let result = self
             .services
             .workflows
-            .create_workflow(definition_id, args, channels);
+            .create_workflow(definition_id, args, channels.clone());
         let result = result.map(|mut ids| {
             mem::swap(&mut ids.channel_ids.inbound, &mut ids.channel_ids.outbound);
+            let mut child_state = ChildWorkflowState::new(&ids.channel_ids);
+            child_state.acquire_non_captured_channels(channels);
+
             self.persisted
                 .child_workflows
-                .insert(ids.workflow_id, ChildWorkflowState::new(&ids.channel_ids));
+                .insert(ids.workflow_id, child_state);
             self.current_execution().push_resource_event(
                 ResourceId::Workflow(ids.workflow_id),
                 ResourceEventKind::Created,
             );
             ids.workflow_id
         });
-        crate::log_result!(result, "Spawned workflow using `{}`", definition_id)
+        log_result!(result, "Spawned workflow using `{definition_id}`")
             .map_err(|err| SpawnError::new(err.to_string()))
     }
 
@@ -255,10 +284,14 @@ impl SpawnFunctions {
         channel_kind: i32,
         name_ptr: u32,
         name_len: u32,
-        spawn_config: i32,
+        is_closed: i32,
     ) -> Result<(), Trap> {
         let channel_kind = ChannelKind::try_from_wasm(channel_kind).map_err(Trap::new)?;
-        let channel_config = ChannelSpawnConfig::try_from_wasm(spawn_config).map_err(Trap::new)?;
+        let channel_config = match is_closed {
+            0 => ChannelSpawnConfig::New,
+            1 => ChannelSpawnConfig::Closed,
+            _ => return Err(Trap::new("invalid `is_closed` value; expected 0 or 1")),
+        };
         let memory = ctx.data().exports().memory;
         let name = copy_string_from_wasm(&ctx, &memory, name_ptr, name_len)?;
 
@@ -272,6 +305,27 @@ impl SpawnFunctions {
                 handles.outbound.insert(name, channel_config);
             }
         }
+        Ok(())
+    }
+
+    pub fn copy_sender_handle(
+        ctx: StoreContextMut<'_, WorkflowData>,
+        handles: Option<ExternRef>,
+        name_ptr: u32,
+        name_len: u32,
+        sender: Option<ExternRef>,
+    ) -> Result<(), Trap> {
+        let channel_ref = HostResource::from_ref(sender.as_ref())?.as_outbound_channel()?;
+        let channel_state = ctx.data().persisted.outbound_channel(channel_ref);
+        let channel_id = channel_state.unwrap().id();
+        let memory = ctx.data().exports().memory;
+        let name = copy_string_from_wasm(&ctx, &memory, name_ptr, name_len)?;
+        let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
+
+        let mut handles = handles.inner.lock().unwrap();
+        handles
+            .outbound
+            .insert(name, ChannelSpawnConfig::Existing(channel_id));
         Ok(())
     }
 
@@ -312,11 +366,9 @@ impl SpawnFunctions {
         let poll_result = ctx
             .data_mut()
             .poll_workflow_completion(workflow_id, &mut poll_cx);
-        crate::trace!(
-            "Polled completion for workflow {} with context {:?}: {:?}",
-            workflow_id,
-            poll_cx,
-            poll_result
+        trace!(
+            "Polled completion for workflow {workflow_id} with context {poll_cx:?}: \
+             {poll_result:?}"
         );
         poll_cx.save_waker(&mut ctx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))

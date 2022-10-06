@@ -10,7 +10,7 @@ use tardigrade::{
     channel::{Receiver, Sender},
     sleep,
     trace::Tracer,
-    workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, Wasm, WorkflowFn},
+    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, TaskHandle, Wasm, WorkflowFn},
     FutureExt as _, Json,
 };
 
@@ -70,13 +70,9 @@ pub struct Args {
     pub deliverer_count: usize,
 }
 
-/// Marker for the cloneable part of the workflow.
-#[derive(Debug)]
-pub struct Shared(());
-
 /// Cloneable part of the workflow handle consisting of its outbound channels.
-#[tardigrade::handle(for = "Shared")]
-// ^ Proc macro that ties `SharedHandle` to the marker type.
+#[tardigrade::handle]
+// ^ Proc macro that derives some helper traits for the handle.
 #[derive(Debug, Clone)]
 pub struct SharedHandle<Env> {
     // For the proc macro to work, fields need to be defined as `Handle<T, Env>`, where
@@ -87,26 +83,25 @@ pub struct SharedHandle<Env> {
     pub tracer: Handle<Tracer<Json>, Env>,
 }
 
-/// Marker workflow type.
-// `GetInterface` derive macro picks up the workflow interface definition at `tardigrade.json`
-// and implements the corresponding trait based on it. It also exposes the interface definition
-// in a custom WASM section, so that it is available to the workflow runtime.
-#[derive(Debug, GetInterface)]
-pub struct PizzaDelivery(());
-
 /// Handle for the workflow.
-#[tardigrade::handle(for = "PizzaDelivery")]
+#[tardigrade::handle]
 #[derive(Debug)]
 pub struct PizzaDeliveryHandle<Env = Wasm> {
     pub orders: Handle<Receiver<PizzaOrder, Json>, Env>,
     #[tardigrade(flatten)]
-    pub shared: Handle<Shared, Env>,
+    pub shared: Handle<SharedHandle<Wasm>, Env>,
 }
 
-// Besides defining `PizzaDeliveryHandle` as a handle for `PizzaDelivery`,
-// the `handle` proc macro also provides a `ValidateInterface` implementation.
-// This allows to ensure (unfortunately, in runtime) that the handle corresponds
-// to the interface declaration.
+/// Marker workflow type.
+// `GetInterface` derive macro picks up the workflow interface definition at `tardigrade.json`
+// and implements the corresponding trait based on it. It also exposes the interface definition
+// in a custom WASM section, so that it is available to the workflow runtime.
+#[derive(Debug, GetInterface, TakeHandle)]
+#[tardigrade(handle = "PizzaDeliveryHandle")]
+pub struct PizzaDelivery(());
+
+// The `GetInterface` implementation ensures (unfortunately, in runtime) that
+// the handle corresponds to the interface declaration.
 #[test]
 fn interface_agrees_between_declaration_and_handle() {
     PizzaDelivery::interface(); // Checks are performed internally
@@ -120,7 +115,7 @@ impl WorkflowFn for PizzaDelivery {
 
 /// Defines how workflow instances are spawned.
 impl SpawnWorkflow for PizzaDelivery {
-    fn spawn(args: Args, handle: Self::Handle) -> TaskHandle {
+    fn spawn(args: Args, handle: PizzaDeliveryHandle) -> TaskHandle {
         TaskHandle::new(handle.spawn(args))
     }
 }
@@ -128,7 +123,7 @@ impl SpawnWorkflow for PizzaDelivery {
 // Defines the entry point for the workflow.
 tardigrade::workflow_entry!(PizzaDelivery);
 
-impl PizzaDeliveryHandle<Wasm> {
+impl PizzaDeliveryHandle {
     /// This is where the actual workflow logic is contained. We pass incoming orders
     /// through 2 unordered buffers with the capacities defined by the workflow arguments.
     async fn spawn(self, args: Args) {

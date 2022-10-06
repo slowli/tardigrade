@@ -16,7 +16,7 @@ use crate::{
 };
 use tardigrade::{
     interface::{ChannelKind, Interface},
-    spawn::{ChannelSpawnConfig, ChannelsConfig, ManageInterfaces, ManageWorkflows},
+    spawn::{ChannelsConfig, ManageInterfaces, ManageWorkflows, SpecifyWorkflowChannels},
 };
 use tardigrade_shared::abi::TryFromWasm;
 
@@ -29,7 +29,7 @@ struct NewWorkflowCall {
 
 #[derive(Debug)]
 struct MockWorkflowManager {
-    interface: Interface<()>,
+    interface: Interface,
     channel_counter: AtomicU32,
     calls: Mutex<Vec<NewWorkflowCall>>,
 }
@@ -51,13 +51,18 @@ impl MockWorkflowManager {
 }
 
 impl ManageInterfaces for MockWorkflowManager {
-    fn interface(&self, id: &str) -> Option<Cow<'_, Interface<()>>> {
+    fn interface(&self, id: &str) -> Option<Cow<'_, Interface>> {
         if id == "test:latest" {
             Some(Cow::Borrowed(&self.interface))
         } else {
             None
         }
     }
+}
+
+impl SpecifyWorkflowChannels for MockWorkflowManager {
+    type Inbound = ChannelId;
+    type Outbound = ChannelId;
 }
 
 impl ManageWorkflows<'_, ()> for MockWorkflowManager {
@@ -68,7 +73,7 @@ impl ManageWorkflows<'_, ()> for MockWorkflowManager {
         &self,
         id: &str,
         args: Vec<u8>,
-        channels: &ChannelsConfig,
+        channels: ChannelsConfig<ChannelId>,
     ) -> Result<Self::Handle, Self::Error> {
         assert_eq!(id, "test:latest");
         assert_eq!(channels.inbound.len(), 1);
@@ -170,7 +175,7 @@ fn configure_handles(
         ChannelKind::Inbound.into_abi_in_wasm(),
         name_ptr,
         name_len,
-        ChannelSpawnConfig::New.into_abi_in_wasm(),
+        0,
     )?;
     let (name_ptr, name_len) = WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"traces")?;
     SpawnFunctions::set_channel_handle(
@@ -179,7 +184,7 @@ fn configure_handles(
         ChannelKind::Outbound.into_abi_in_wasm(),
         name_ptr,
         name_len,
-        ChannelSpawnConfig::New.into_abi_in_wasm(),
+        0,
     )?;
     Ok(())
 }
@@ -264,7 +269,7 @@ fn spawn_child_workflow_errors(
         ChannelKind::Inbound.into_abi_in_wasm(),
         bogus_id_ptr,
         bogus_id_len,
-        ChannelSpawnConfig::New.into_abi_in_wasm(),
+        0,
     )?;
 
     let err = SpawnFunctions::spawn(
@@ -355,14 +360,12 @@ fn consuming_message_from_child_workflow() {
 
     assert_child_inbound_message_receipt(&receipt);
 
-    let (start_idx, commands) = workflow
-        .data_mut()
-        .persisted
-        .take_outbound_messages(Some(1), "commands");
-    assert_eq!(start_idx, 0);
-    assert_eq!(commands.len(), 1);
-    assert_eq!(commands[0].as_ref(), b"command #1");
+    let messages = workflow.data_mut().drain_messages();
     let child = workflow.data().persisted.child_workflow(1).unwrap();
+    let child_commands_id = child.outbound_channel("commands").unwrap().id();
+    assert_eq!(messages[&child_commands_id].len(), 1);
+    assert_eq!(messages[&child_commands_id][0].as_ref(), b"command #1");
+
     assert_eq!(
         child.inbound_channel("traces").unwrap().received_messages,
         1
