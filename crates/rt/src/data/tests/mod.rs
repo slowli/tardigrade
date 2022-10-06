@@ -22,6 +22,7 @@ use crate::{
     utils::{copy_string_from_wasm, WasmAllocator},
     workflow::{PersistedWorkflow, Workflow},
 };
+use tardigrade::spawn::ChannelsConfig;
 use tardigrade_shared::{abi::AllocateBytes, interface::Interface, JoinError};
 
 const POLL_CX: WasmContextPtr = 1_234;
@@ -100,16 +101,11 @@ fn consume_message(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()
 }
 
 fn mock_channel_ids(interface: &Interface) -> ChannelIds {
-    let inbound = interface
-        .inbound_channels()
-        .map(|(name, _)| (name.to_owned(), 0));
-    let outbound = interface
-        .outbound_channels()
-        .map(|(name, _)| (name.to_owned(), 0));
-    ChannelIds {
-        inbound: inbound.collect(),
-        outbound: outbound.collect(),
-    }
+    let mut channel_count = 0;
+    ChannelIds::new(ChannelsConfig::from_interface(interface), || {
+        channel_count += 1;
+        channel_count
+    })
 }
 
 fn create_workflow(services: Services<'_>) -> (Receipt, Workflow<'_>) {
@@ -192,18 +188,14 @@ fn receiving_inbound_message() {
 
     assert_inbound_message_receipt(&receipt);
 
-    let (_, traces) = workflow
-        .data_mut()
-        .persisted
-        .take_outbound_messages(None, "traces");
-    assert_eq!(traces.len(), 1);
-    assert_eq!(traces[0].as_ref(), b"trace #1");
-    let (_, events) = workflow
-        .data_mut()
-        .persisted
-        .take_outbound_messages(None, "events");
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].as_ref(), b"event #1");
+    let messages = workflow.data_mut().drain_messages();
+    let channel_ids = workflow.data().persisted.channel_ids();
+    let traces_id = channel_ids.outbound["traces"];
+    assert_eq!(messages[&traces_id].len(), 1);
+    assert_eq!(messages[&traces_id][0].as_ref(), b"trace #1");
+    let events_id = channel_ids.outbound["events"];
+    assert_eq!(messages[&events_id].len(), 1);
+    assert_eq!(messages[&events_id][0].as_ref(), b"event #1");
 
     let (waker_ids, causes): (HashSet<_>, Vec<_>) = workflow.data_mut().take_wakers().unzip();
     assert_eq!(waker_ids.len(), 2);
@@ -498,10 +490,7 @@ fn rolling_back_emitting_messages_on_trap() {
         .unwrap();
     workflow.tick().unwrap_err();
 
-    let (_, messages) = workflow
-        .data_mut()
-        .persisted
-        .take_outbound_messages(None, "traces");
+    let messages = workflow.data_mut().drain_messages();
     assert!(messages.is_empty());
 }
 

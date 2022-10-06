@@ -11,7 +11,8 @@ use std::{
 
 use super::{
     helpers::{
-        ChannelRef, HostResource, WakeIfPending, WakerPlacement, WasmContext, WasmContextPtr,
+        ChannelRef, HostResource, WakeIfPending, WakerPlacement, Wakers, WasmContext,
+        WasmContextPtr,
     },
     PersistedWorkflowData, WorkflowData, WorkflowFunctions,
 };
@@ -151,6 +152,32 @@ impl OutboundChannelState {
         } else {
             Ok(())
         }
+    }
+
+    fn take_messages(
+        &mut self,
+        workflow_id: Option<WorkflowId>,
+        channel_name: &str,
+    ) -> (Vec<Message>, Option<Wakers>) {
+        let start_message_idx = self.flushed_messages;
+        let messages = mem::take(&mut self.messages);
+        self.flushed_messages += messages.len();
+
+        let mut waker_set = None;
+        if !messages.is_empty() {
+            let wakers = mem::take(&mut self.wakes_on_flush);
+            if !wakers.is_empty() {
+                waker_set = Some(Wakers::new(
+                    wakers,
+                    WakeUpCause::Flush {
+                        workflow_id,
+                        channel_name: channel_name.to_owned(),
+                        message_indexes: start_message_idx..(start_message_idx + messages.len()),
+                    },
+                ));
+            }
+        }
+        (messages, waker_set)
     }
 
     pub(crate) fn close(&mut self) {
@@ -373,60 +400,37 @@ impl PersistedWorkflowData {
 
     pub(crate) fn outbound_channels_mut(
         &mut self,
-    ) -> impl Iterator<Item = &mut OutboundChannelState> + '_ {
-        let workflow_channels = self
-            .child_workflows
-            .values_mut()
-            .flat_map(|workflow| workflow.channels.outbound.values_mut());
-        self.channels.outbound.values_mut().chain(workflow_channels)
+    ) -> impl Iterator<Item = (Option<WorkflowId>, &str, &mut OutboundChannelState)> + '_ {
+        let local_channels = self.channels.outbound.iter_mut();
+        let local_channels = local_channels.map(|(name, state)| (None, name.as_str(), state));
+        let workflow_channels =
+            self.child_workflows
+                .iter_mut()
+                .flat_map(|(&workflow_id, workflow)| {
+                    let channels = workflow.channels.outbound.iter_mut();
+                    channels.map(move |(name, state)| (Some(workflow_id), name.as_str(), state))
+                });
+        local_channels.chain(workflow_channels)
     }
 
-    // Increased visibility for tests
-    pub(super) fn take_outbound_messages(
-        &mut self,
-        workflow_id: Option<WorkflowId>,
-        channel_name: &str,
-    ) -> (usize, Vec<Message>) {
-        let channel_state = self
-            .channels_mut(workflow_id)
-            .outbound
-            .get_mut(channel_name)
-            .unwrap();
-        let start_message_idx = channel_state.flushed_messages;
-        let messages = mem::take(&mut channel_state.messages);
-        channel_state.flushed_messages += messages.len();
-
-        if !messages.is_empty() {
-            let wakers = mem::take(&mut channel_state.wakes_on_flush);
-            self.schedule_wakers(
-                wakers,
-                WakeUpCause::Flush {
-                    workflow_id,
-                    channel_name: channel_name.to_owned(),
-                    message_indexes: start_message_idx..(start_message_idx + messages.len()),
-                },
-            );
-        }
-        let messages = messages.into_iter().collect();
-        (start_message_idx, messages)
-    }
-
-    #[allow(clippy::needless_collect)] // false positive
-    fn drain_messages(&mut self) -> Vec<(ChannelId, Vec<Message>)> {
-        let channels = self.channels.outbound.iter();
-        let channel_ids: Vec<_> = channels
-            .map(|(name, state)| (name.clone(), state.channel_id))
-            .collect();
-
-        let messages = channel_ids.into_iter().filter_map(|(name, channel_id)| {
-            let (_, messages) = self.take_outbound_messages(None, &name);
-            if messages.is_empty() {
-                None
-            } else {
-                Some((channel_id, messages))
-            }
-        });
-        messages.collect()
+    fn drain_messages(&mut self) -> HashMap<ChannelId, Vec<Message>> {
+        let mut new_wakers = vec![];
+        let messages_by_channel = self.outbound_channels_mut().fold(
+            HashMap::<_, Vec<Message>>::new(),
+            |mut acc, (child_id, name, state)| {
+                let (messages, maybe_wakers) = state.take_messages(child_id, name);
+                if let Some(wakers) = maybe_wakers {
+                    new_wakers.push(wakers);
+                }
+                if !messages.is_empty() {
+                    // FIXME: order messages here
+                    acc.entry(state.id()).or_default().extend(messages);
+                }
+                acc
+            },
+        );
+        self.waker_queue.extend(new_wakers);
+        messages_by_channel
     }
 }
 
@@ -570,7 +574,7 @@ impl WorkflowData<'_> {
         Ok(())
     }
 
-    pub(crate) fn drain_messages(&mut self) -> Vec<(ChannelId, Vec<Message>)> {
+    pub(crate) fn drain_messages(&mut self) -> HashMap<ChannelId, Vec<Message>> {
         self.persisted.drain_messages()
     }
 }

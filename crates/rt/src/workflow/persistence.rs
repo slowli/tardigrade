@@ -173,7 +173,7 @@ impl PersistedWorkflow {
     }
 
     pub(crate) fn close_outbound_channels_by_id(&mut self, channel_id: ChannelId) {
-        for channel_state in self.state.outbound_channels_mut() {
+        for (_, _, channel_state) in self.state.outbound_channels_mut() {
             if channel_state.id() == channel_id {
                 channel_state.close();
             }

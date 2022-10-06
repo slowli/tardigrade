@@ -430,7 +430,7 @@ impl WorkflowData<'_> {
                 .wakes_on_next_element
                 .retain(|waker_id| !wakers.contains(waker_id));
         }
-        for state in self.persisted.outbound_channels_mut() {
+        for (_, _, state) in self.persisted.outbound_channels_mut() {
             state
                 .wakes_on_flush
                 .retain(|waker_id| !wakers.contains(waker_id));

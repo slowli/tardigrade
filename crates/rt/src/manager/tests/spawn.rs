@@ -168,15 +168,75 @@ fn spawning_child_workflow() {
     }
 }
 
-fn spawn_and_poll_child(mut ctx: StoreContextMut<WorkflowData>) -> Result<Poll<()>, Trap> {
-    let _ = spawn_child(ctx.as_context_mut())?;
+#[test]
+fn sending_message_to_child() {
+    let spawn_child_and_send_message: MockPollFn = |mut ctx| {
+        let _ = spawn_child(ctx.as_context_mut())?;
+        let child_orders = Some(WorkflowData::outbound_channel_ref(Some(CHILD_ID), "orders"));
+        let poll_result = WorkflowFunctions::poll_ready_for_sender(
+            ctx.as_context_mut(),
+            child_orders.clone(),
+            POLL_CX,
+        )?;
+        assert_eq!(poll_result, 0); // Poll::Ready(Ok(())
 
-    let child = Some(WorkflowData::child_ref(CHILD_ID));
-    let poll_result =
-        SpawnFunctions::poll_workflow_completion(ctx.as_context_mut(), child, POLL_CX)?;
-    assert_eq!(poll_result, -1); // Poll::Pending
+        let (message_ptr, message_len) =
+            WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"child_order")?;
+        let send_result = WorkflowFunctions::start_send(
+            ctx.as_context_mut(),
+            child_orders.clone(),
+            message_ptr,
+            message_len,
+        )?;
+        assert_eq!(send_result, 0); // Ok(())
 
-    Ok(Poll::Pending)
+        let poll_result =
+            WorkflowFunctions::poll_flush_for_sender(ctx.as_context_mut(), child_orders, POLL_CX)?;
+        assert_eq!(poll_result, -1); // Poll::Pending
+
+        Ok(Poll::Pending)
+    };
+    let init_child: MockPollFn = |mut ctx| {
+        let orders = Some(WorkflowData::inbound_channel_ref(None, "orders"));
+        let poll_result =
+            WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
+        assert_eq!(poll_result, -1); // Poll::Pending
+        Ok(Poll::Pending)
+    };
+    let poll_orders_in_child: MockPollFn = |mut ctx| {
+        let orders = Some(WorkflowData::inbound_channel_ref(None, "orders"));
+        let poll_result =
+            WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
+        assert_ne!(poll_result, -1); // Poll::Ready(Some(_))
+        Ok(Poll::Pending)
+    };
+
+    let poll_fns = Answers::from_values([
+        spawn_child_and_send_message,
+        init_child,
+        poll_orders_in_child,
+    ]);
+    let _guard = ExportsMock::prepare(poll_fns);
+    let mut manager = create_test_manager();
+    let workflow_id = create_test_workflow(&manager).id();
+    manager.tick_workflow(workflow_id).unwrap();
+
+    let state = manager.lock();
+    let child_channel_ids = state.channel_ids(CHILD_ID).unwrap();
+    let child_orders_id = child_channel_ids.inbound["orders"];
+    let child_orders = &state.channels[&child_orders_id].messages;
+    assert_eq!(child_orders.len(), 1);
+    assert_eq!(child_orders[0].as_ref(), b"child_order");
+    drop(state);
+
+    manager.tick_workflow(CHILD_ID).unwrap();
+    assert_eq!(
+        manager.lock().find_consumable_channel(),
+        Some((child_orders_id, CHILD_ID))
+    );
+    manager
+        .feed_message_to_workflow(child_orders_id, CHILD_ID)
+        .unwrap();
 }
 
 fn test_child_channels_after_closure(
@@ -196,6 +256,15 @@ fn test_child_channels_after_closure(
 }
 
 fn test_child_workflow_channel_management(complete_child: bool) {
+    let spawn_and_poll_child: MockPollFn = |mut ctx| {
+        let _ = spawn_child(ctx.as_context_mut())?;
+        let child = Some(WorkflowData::child_ref(CHILD_ID));
+        let poll_result =
+            SpawnFunctions::poll_workflow_completion(ctx.as_context_mut(), child, POLL_CX)?;
+        assert_eq!(poll_result, -1); // Poll::Pending
+
+        Ok(Poll::Pending)
+    };
     let poll_child_workflow: MockPollFn = if complete_child {
         |_| Ok(Poll::Ready(()))
     } else {
@@ -208,11 +277,9 @@ fn test_child_workflow_channel_management(complete_child: bool) {
             Ok(Poll::Pending)
         }
     };
-
     let test_child_resources: MockPollFn = if complete_child {
         |mut ctx| {
             let _ = test_child_channels_after_closure(ctx.as_context_mut())?;
-
             let child = Some(WorkflowData::child_ref(CHILD_ID));
             let poll_result =
                 SpawnFunctions::poll_workflow_completion(ctx.as_context_mut(), child, POLL_CX)?;
@@ -225,7 +292,7 @@ fn test_child_workflow_channel_management(complete_child: bool) {
     };
 
     let poll_fns = Answers::from_values([
-        spawn_and_poll_child as MockPollFn,
+        spawn_and_poll_child,
         poll_child_workflow,
         test_child_resources,
     ]);
@@ -506,6 +573,7 @@ fn test_child_with_aliased_outbound_channel(complete_child: bool) {
         channel_state.sender_workflow_ids,
         HashSet::from_iter([workflow_id, CHILD_ID])
     );
+    // FIXME: HashSet -> Vec
     assert_eq!(
         channel_state
             .messages

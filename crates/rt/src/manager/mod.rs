@@ -434,8 +434,10 @@ impl WorkflowManager {
                 state.revert_taking_message(channel_id, message);
             }
 
-            state.drain_and_persist_workflow(workflow_id, workflow);
+            let messages = workflow.drain_messages();
+            state.persist_workflow(workflow_id, workflow);
             state.commit(transaction, receipt);
+            state.push_messages(messages);
 
             if is_consumed && is_closed {
                 trace!("Signaling workflow {workflow_id} that channel {channel_id} is closed");
@@ -495,8 +497,10 @@ impl WorkflowManager {
         trace!("Starting execution of workflow {workflow_id}");
         let result = workflow.tick();
         if let Ok(receipt) = &result {
-            state.drain_and_persist_workflow(workflow_id, workflow);
+            let messages = workflow.drain_messages();
+            state.persist_workflow(workflow_id, workflow);
             state.commit(transaction, receipt);
+            state.push_messages(messages);
         }
         result
     }

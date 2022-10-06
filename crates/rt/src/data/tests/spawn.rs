@@ -360,14 +360,12 @@ fn consuming_message_from_child_workflow() {
 
     assert_child_inbound_message_receipt(&receipt);
 
-    let (start_idx, commands) = workflow
-        .data_mut()
-        .persisted
-        .take_outbound_messages(Some(1), "commands");
-    assert_eq!(start_idx, 0);
-    assert_eq!(commands.len(), 1);
-    assert_eq!(commands[0].as_ref(), b"command #1");
+    let messages = workflow.data_mut().drain_messages();
     let child = workflow.data().persisted.child_workflow(1).unwrap();
+    let child_commands_id = child.outbound_channel("commands").unwrap().id();
+    assert_eq!(messages[&child_commands_id].len(), 1);
+    assert_eq!(messages[&child_commands_id][0].as_ref(), b"command #1");
+
     assert_eq!(
         child.inbound_channel("traces").unwrap().received_messages,
         1

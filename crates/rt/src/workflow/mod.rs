@@ -302,7 +302,7 @@ impl<'a> Workflow<'a> {
             .take_pending_inbound_message(workflow_id, channel_name)
     }
 
-    pub(crate) fn drain_messages(&mut self) -> Vec<(ChannelId, Vec<Message>)> {
+    pub(crate) fn drain_messages(&mut self) -> HashMap<ChannelId, Vec<Message>> {
         self.store.data_mut().drain_messages()
     }
 
