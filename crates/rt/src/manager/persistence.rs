@@ -307,7 +307,6 @@ impl PersistedWorkflows {
         }
     }
 
-    // TODO: ensure proper outbound message order
     pub(super) fn persist_workflow(&mut self, id: WorkflowId, mut workflow: Workflow) {
         // Since all outbound messages are drained, persisting the workflow is safe.
         let workflow = workflow.persist().unwrap();

@@ -48,13 +48,30 @@ pub(crate) struct PersistedWorkflowData {
     pub waker_queue: Vec<Wakers>,
 }
 
+/// Non-persisted counters associated with the workflow.
+#[derive(Debug, Default)]
+struct WorkflowCounters {
+    next_outbound_message_index: usize,
+}
+
+impl WorkflowCounters {
+    fn new_outbound_message_index(&mut self) -> usize {
+        let index = self.next_outbound_message_index;
+        self.next_outbound_message_index += 1;
+        index
+    }
+}
+
 #[derive(Debug)]
 pub struct WorkflowData<'a> {
     /// Functions exported by the `Instance`. Instantiated immediately after instance.
     exports: Option<ModuleExports>,
     /// Services available to the workflow.
     services: Services<'a>,
+    /// Persisted workflow data.
     persisted: PersistedWorkflowData,
+    /// Non-persisted counters associated with the workflow.
+    counters: WorkflowCounters,
     /// Data related to the currently executing WASM call.
     current_execution: Option<CurrentExecution>,
     /// Tasks that should be polled after `current_task`.
@@ -96,6 +113,7 @@ impl<'a> WorkflowData<'a> {
             persisted: PersistedWorkflowData::new(interface, channel_ids, services.clock.now()),
             exports: None,
             services,
+            counters: WorkflowCounters::default(),
             current_execution: None,
             task_queue: TaskQueue::default(),
             current_wakeup_cause: None,

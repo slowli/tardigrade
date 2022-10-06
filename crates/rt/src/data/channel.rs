@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use wasmtime::{AsContextMut, ExternRef, StoreContextMut, Trap};
 
 use std::{
+    cmp,
     collections::{HashMap, HashSet},
     error, fmt, mem,
     task::Poll,
@@ -18,12 +19,56 @@ use super::{
 };
 use crate::{
     receipt::WakeUpCause,
-    utils::{copy_bytes_from_wasm, copy_string_from_wasm, Message, WasmAllocator},
+    utils::{copy_bytes_from_wasm, copy_string_from_wasm, merge_vec, Message, WasmAllocator},
     workflow::ChannelIds,
     ChannelId, WakerId, WorkflowId,
 };
 use tardigrade::interface::{AccessErrorKind, ChannelKind};
 use tardigrade_shared::{abi::IntoWasm, PollMessage, SendError};
+
+/// Wrapper around `Message` that contains message index within all messages emitted
+/// by the workflow during its execution. This allows correct ordering of messages
+/// for aliased channels.
+#[derive(Debug, Clone)]
+pub(super) struct OrderedMessage {
+    inner: Message,
+    index: usize,
+}
+
+impl PartialEq for OrderedMessage {
+    fn eq(&self, other: &Self) -> bool {
+        self.index == other.index
+    }
+}
+
+impl Eq for OrderedMessage {}
+
+impl PartialOrd for OrderedMessage {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for OrderedMessage {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
+        self.index.cmp(&other.index)
+    }
+}
+
+impl From<OrderedMessage> for Message {
+    fn from(message: OrderedMessage) -> Self {
+        message.inner
+    }
+}
+
+impl OrderedMessage {
+    fn new(message: Vec<u8>, index: usize) -> Self {
+        Self {
+            inner: message.into(),
+            index,
+        }
+    }
+}
 
 /// Errors for channels that cannot be acquired by the workflow.
 #[derive(Debug)]
@@ -118,7 +163,7 @@ pub struct OutboundChannelState {
     pub(super) is_closed: bool,
     pub(super) flushed_messages: usize,
     #[serde(default, skip)]
-    pub(super) messages: Vec<Message>,
+    pub(super) messages: Vec<OrderedMessage>,
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     pub(super) wakes_on_flush: HashSet<WakerId>,
 }
@@ -158,7 +203,7 @@ impl OutboundChannelState {
         &mut self,
         workflow_id: Option<WorkflowId>,
         channel_name: &str,
-    ) -> (Vec<Message>, Option<Wakers>) {
+    ) -> (Vec<OrderedMessage>, Option<Wakers>) {
         let start_message_idx = self.flushed_messages;
         let messages = mem::take(&mut self.messages);
         self.flushed_messages += messages.len();
@@ -416,21 +461,24 @@ impl PersistedWorkflowData {
     fn drain_messages(&mut self) -> HashMap<ChannelId, Vec<Message>> {
         let mut new_wakers = vec![];
         let messages_by_channel = self.outbound_channels_mut().fold(
-            HashMap::<_, Vec<Message>>::new(),
+            HashMap::<_, Vec<OrderedMessage>>::new(),
             |mut acc, (child_id, name, state)| {
                 let (messages, maybe_wakers) = state.take_messages(child_id, name);
                 if let Some(wakers) = maybe_wakers {
                     new_wakers.push(wakers);
                 }
                 if !messages.is_empty() {
-                    // FIXME: order messages here
-                    acc.entry(state.id()).or_default().extend(messages);
+                    merge_vec(acc.entry(state.id()).or_default(), messages);
                 }
                 acc
             },
         );
+
         self.waker_queue.extend(new_wakers);
         messages_by_channel
+            .into_iter()
+            .map(|(id, messages)| (id, messages.into_iter().map(Message::from).collect()))
+            .collect()
     }
 }
 
@@ -568,7 +616,10 @@ impl WorkflowData<'_> {
         }
 
         let message_len = message.len();
-        channel_state.messages.push(message.into());
+        let index = self.counters.new_outbound_message_index();
+        channel_state
+            .messages
+            .push(OrderedMessage::new(message, index));
         self.current_execution()
             .push_outbound_message_event(channel_ref, message_len);
         Ok(())

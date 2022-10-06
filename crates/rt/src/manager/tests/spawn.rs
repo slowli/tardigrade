@@ -573,15 +573,8 @@ fn test_child_with_aliased_outbound_channel(complete_child: bool) {
         channel_state.sender_workflow_ids,
         HashSet::from_iter([workflow_id, CHILD_ID])
     );
-    // FIXME: HashSet -> Vec
-    assert_eq!(
-        channel_state
-            .messages
-            .iter()
-            .map(Message::as_ref)
-            .collect::<HashSet<_>>(),
-        HashSet::from_iter([b"child_event" as &[u8], b"child_trace"])
-    );
+    let outbound_messages: Vec<_> = channel_state.messages.iter().map(Message::as_ref).collect();
+    assert_eq!(outbound_messages, [b"child_event" as &[u8], b"child_trace"]);
     drop(state);
 
     manager.tick_workflow(CHILD_ID).unwrap();

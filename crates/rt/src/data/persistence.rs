@@ -12,7 +12,7 @@ use super::{
     helpers::HostResource,
     task::TaskQueue,
     time::Timers,
-    PersistedWorkflowData, WorkflowData,
+    PersistedWorkflowData, WorkflowCounters, WorkflowData,
 };
 use crate::{module::Services, workflow::ChannelIds, WorkflowId};
 use tardigrade::interface::{ChannelKind, Interface};
@@ -144,6 +144,7 @@ impl PersistedWorkflowData {
             exports: None,
             persisted: self,
             services,
+            counters: WorkflowCounters::default(),
             current_execution: None,
             task_queue: TaskQueue::default(),
             current_wakeup_cause: None,
