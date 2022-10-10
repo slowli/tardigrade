@@ -3,7 +3,7 @@
 use anyhow::Context;
 use wasmtime::{AsContextMut, Linker, Store, Trap};
 
-use std::{collections::HashMap, sync::Arc, task::Poll};
+use std::{collections::HashMap, mem, sync::Arc, task::Poll};
 
 mod persistence;
 
@@ -13,8 +13,8 @@ use crate::{
     data::{ConsumeError, PersistError, WorkflowData},
     module::{DataSection, ModuleExports, Services, WorkflowSpawner},
     receipt::{
-        Event, ExecutedFunction, Execution, ExecutionError, ExtendedTrap, Receipt,
-        ResourceEventKind, ResourceId, WakeUpCause,
+        Event, ExecutedFunction, Execution, ExecutionError, Receipt, ResourceEventKind, ResourceId,
+        WakeUpCause,
     },
     utils::Message,
     ChannelId, TaskId, WorkflowId,
@@ -131,11 +131,11 @@ impl<'a> Workflow<'a> {
 
     fn spawn_main_task(&mut self, raw_data: &[u8]) -> Result<Receipt, ExecutionError> {
         let function = ExecutedFunction::Entry;
-        let mut receipt = Receipt::new();
-        let task_id = match self.execute(function, Some(raw_data), &mut receipt) {
-            Ok(output) => output.main_task_id.expect("main task ID not set"),
-            Err(err) => return Err(ExecutionError::new(err, receipt)),
-        };
+        let mut receipt = Receipt::default();
+        let task_id = self
+            .execute(function, Some(raw_data), &mut receipt)?
+            .main_task_id
+            .expect("main task ID not set");
         self.store.data_mut().spawn_main_task(task_id);
         Ok(receipt)
     }
@@ -187,7 +187,7 @@ impl<'a> Workflow<'a> {
         mut function: ExecutedFunction,
         data: Option<&[u8]>,
         receipt: &mut Receipt,
-    ) -> Result<ExecutionOutput, ExtendedTrap> {
+    ) -> Result<ExecutionOutput, ExecutionError> {
         self.store
             .data_mut()
             .set_current_execution(function.clone());
@@ -201,7 +201,8 @@ impl<'a> Workflow<'a> {
         receipt.executions.push(Execution { function, events });
 
         // On error, we don't drop tasks mentioned in `resource_events`.
-        let output = output.map_err(|trap| ExtendedTrap::new(trap, panic_info))?;
+        let output =
+            output.map_err(|trap| ExecutionError::new(trap, panic_info, mem::take(receipt)))?;
 
         for task_id in dropped_tasks {
             let function = ExecutedFunction::TaskDrop { task_id };
@@ -229,7 +230,7 @@ impl<'a> Workflow<'a> {
         task_id: TaskId,
         wake_up_cause: WakeUpCause,
         receipt: &mut Receipt,
-    ) -> Result<(), ExtendedTrap> {
+    ) -> Result<(), ExecutionError> {
         trace!("Polling task {task_id} because of {wake_up_cause:?}");
 
         let function = ExecutedFunction::Task {
@@ -241,7 +242,7 @@ impl<'a> Workflow<'a> {
         log_result!(poll_result, "Finished polling task {task_id}")
     }
 
-    fn wake_tasks(&mut self, receipt: &mut Receipt) -> Result<(), ExtendedTrap> {
+    fn wake_tasks(&mut self, receipt: &mut Receipt) -> Result<(), ExecutionError> {
         let wakers = self.store.data_mut().take_wakers();
         for (waker_id, wake_up_cause) in wakers {
             let function = ExecutedFunction::Waker {
@@ -258,14 +259,11 @@ impl<'a> Workflow<'a> {
             return self.initialize();
         }
 
-        let mut receipt = Receipt::new();
-        match self.do_tick(&mut receipt) {
-            Ok(()) => Ok(receipt),
-            Err(trap) => Err(ExecutionError::new(trap, receipt)),
-        }
+        let mut receipt = Receipt::default();
+        self.do_tick(&mut receipt).map(|()| receipt)
     }
 
-    fn do_tick(&mut self, receipt: &mut Receipt) -> Result<(), ExtendedTrap> {
+    fn do_tick(&mut self, receipt: &mut Receipt) -> Result<(), ExecutionError> {
         self.wake_tasks(receipt)?;
 
         while let Some((task_id, wake_up_cause)) = self.store.data_mut().take_next_task() {

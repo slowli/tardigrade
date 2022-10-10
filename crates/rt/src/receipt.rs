@@ -274,18 +274,12 @@ pub struct Execution {
 }
 
 /// Receipt for executing tasks in a workflow.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Receipt {
     pub(crate) executions: Vec<Execution>,
 }
 
 impl Receipt {
-    pub(crate) fn new() -> Self {
-        Self {
-            executions: Vec::new(),
-        }
-    }
-
     pub(crate) fn extend(&mut self, other: Self) {
         self.executions.extend(other.executions);
     }
@@ -309,28 +303,6 @@ impl Receipt {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct ExtendedTrap {
-    trap: Trap,
-    panic_info: Option<PanicInfo>,
-}
-
-impl ExtendedTrap {
-    pub fn new(trap: Trap, panic_info: Option<PanicInfo>) -> Self {
-        Self { trap, panic_info }
-    }
-}
-
-impl fmt::Display for ExtendedTrap {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(panic_info) = &self.panic_info {
-            write!(formatter, "{}; trap info: {}", panic_info, self.trap)
-        } else {
-            fmt::Display::fmt(&self.trap, formatter)
-        }
-    }
-}
-
 /// Error occurring during workflow execution.
 ///
 /// An error is caused by the executed WASM code [`Trap`]ping, which can be caused by a panic
@@ -344,10 +316,10 @@ pub struct ExecutionError {
 }
 
 impl ExecutionError {
-    pub(crate) fn new(trap: ExtendedTrap, receipt: Receipt) -> Self {
+    pub(crate) fn new(trap: Trap, panic_info: Option<PanicInfo>, receipt: Receipt) -> Self {
         Self {
-            trap: trap.trap,
-            panic_info: trap.panic_info,
+            trap,
+            panic_info,
             receipt,
         }
     }

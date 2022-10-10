@@ -632,7 +632,7 @@ impl<'a, W: WorkflowFn> ManageWorkflows<'a, W> for WorkflowManager {
             .create_workflow(definition_id, args, channels)?;
 
         let workflow_id = transaction.single_new_workflow_id().unwrap();
-        self.lock().commit(transaction, &Receipt::new());
+        self.lock().commit(transaction, &Receipt::default());
         Ok(self.workflow(workflow_id).unwrap().downcast_unchecked())
     }
 }
