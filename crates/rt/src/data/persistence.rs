@@ -181,8 +181,8 @@ impl WorkflowData<'_> {
     }
 
     // Must be preceded with `Self::check_persistence()`.
-    pub(crate) fn persist(&self) -> PersistedWorkflowData {
-        self.persisted.clone()
+    pub(crate) fn persist(self) -> PersistedWorkflowData {
+        self.persisted
     }
 }
 

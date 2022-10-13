@@ -6,7 +6,7 @@ use wasmtime::{AsContext, AsContextMut, Memory, StoreContextMut, Trap};
 use std::{cmp::Ordering, fmt, mem, task::Poll};
 
 use crate::data::WorkflowData;
-use tardigrade_shared::abi::AllocateBytes;
+use tardigrade_shared::{abi::AllocateBytes, JoinError};
 
 #[cfg(feature = "log")]
 macro_rules! trace {
@@ -210,6 +210,19 @@ fn merging_vectors() {
 
     merge_vec(&mut target, vec![5]);
     assert_eq!(target, [1, 2, 3, 3, 3, 4, 5, 7, 8, 9, 13, 20]);
+}
+
+pub(crate) fn clone_completion_result(
+    result: &Poll<Result<(), JoinError>>,
+) -> Poll<Result<(), JoinError>> {
+    match result {
+        Poll::Pending => Poll::Pending,
+        Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
+        Poll::Ready(Err(JoinError::Aborted)) => Poll::Ready(Err(JoinError::Aborted)),
+        Poll::Ready(Err(JoinError::Err(err))) => {
+            Poll::Ready(Err(JoinError::Err(err.clone_boxed())))
+        }
+    }
 }
 
 pub(crate) mod serde_b64 {

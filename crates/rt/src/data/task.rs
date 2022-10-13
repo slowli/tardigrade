@@ -15,10 +15,10 @@ use super::{
 };
 use crate::{
     receipt::{Event, ExecutedFunction, PanicInfo, ResourceEventKind, ResourceId, WakeUpCause},
-    utils::{copy_string_from_wasm, drop_value, serde_poll, WasmAllocator},
+    utils::{self, WasmAllocator},
     TaskId, WakerId,
 };
-use tardigrade_shared::{abi::IntoWasm, JoinError};
+use tardigrade_shared::{abi::IntoWasm, JoinError, PollTask};
 
 /// Priority queue for tasks.
 #[derive(Debug, Default)]
@@ -46,15 +46,26 @@ impl TaskQueue {
     }
 }
 
-/// State of task within a workflow.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// State of a task within a workflow.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TaskState {
     name: String,
-    #[serde(with = "serde_poll")]
+    #[serde(with = "utils::serde_poll")]
     completion_result: Poll<Result<(), JoinError>>,
     spawned_by: Option<TaskId>,
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     wakes_on_completion: HashSet<WakerId>,
+}
+
+impl Clone for TaskState {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            completion_result: utils::clone_completion_result(&self.completion_result),
+            spawned_by: self.spawned_by,
+            wakes_on_completion: self.wakes_on_completion.clone(),
+        }
+    }
 }
 
 impl TaskState {
@@ -188,15 +199,11 @@ impl WorkflowData<'_> {
         self.task_queue.insert_task(task_id, &WakeUpCause::Spawned);
     }
 
-    fn poll_task_completion(
-        &mut self,
-        task_id: TaskId,
-        cx: &mut WasmContext,
-    ) -> Poll<Result<(), JoinError>> {
+    fn poll_task_completion(&mut self, task_id: TaskId, cx: &mut WasmContext) -> PollTask {
         let poll_result = self.persisted.tasks[&task_id]
             .result()
-            .map_err(JoinError::clone);
-        let empty_result = drop_value(&poll_result);
+            .map(JoinError::task_poll_result);
+        let empty_result = utils::drop_value(&poll_result);
         self.current_execution().push_resource_event(
             ResourceId::Task(task_id),
             ResourceEventKind::Polled(empty_result),
@@ -263,7 +270,7 @@ impl WorkflowFunctions {
         task_id: TaskId,
     ) -> Result<(), Trap> {
         let memory = ctx.data().exports().memory;
-        let task_name = copy_string_from_wasm(&ctx, &memory, task_name_ptr, task_name_len)?;
+        let task_name = utils::copy_string_from_wasm(&ctx, &memory, task_name_ptr, task_name_len)?;
         let result = ctx.data_mut().spawn_task(task_id, task_name.clone());
         log_result!(result, "Spawned task {task_id} with name `{task_name}`")
     }

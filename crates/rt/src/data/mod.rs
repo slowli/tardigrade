@@ -31,12 +31,12 @@ use self::{channel::ChannelStates, helpers::CurrentExecution, task::TaskQueue, t
 use crate::{
     data::helpers::HostResource,
     module::{ModuleExports, Services},
-    receipt::{PanicInfo, PanicLocation, WakeUpCause},
+    receipt::{PanicInfo, WakeUpCause},
     utils::copy_string_from_wasm,
     workflow::ChannelIds,
     TaskId, WorkflowId,
 };
-use tardigrade::interface::Interface;
+use tardigrade_shared::{interface::Interface, ErrorLocation};
 
 /// `Workflow` state that can be persisted between workflow invocations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -223,8 +223,8 @@ impl WorkflowFunctions {
 
         ctx.data_mut().current_execution().set_panic(PanicInfo {
             message,
-            location: filename.map(|filename| PanicLocation {
-                filename,
+            location: filename.map(|filename| ErrorLocation {
+                filename: filename.into(),
                 line,
                 column,
             }),

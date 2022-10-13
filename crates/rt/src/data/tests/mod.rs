@@ -1,5 +1,7 @@
 //! Mid-level tests for instantiating and managing workflows.
 
+// FIXME: test for task errors
+
 use assert_matches::assert_matches;
 use mimicry::Answers;
 use wasmtime::StoreContextMut;
@@ -136,7 +138,7 @@ fn starting_workflow() {
     let poll_fns = Answers::from_value(initialize_task as MockPollFn);
     let exports_guard = ExportsMock::prepare(poll_fns);
     let clock = MockScheduler::default();
-    let (receipt, mut workflow) = create_workflow(Services {
+    let (receipt, workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
     });

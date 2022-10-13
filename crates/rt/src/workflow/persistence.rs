@@ -131,11 +131,12 @@ pub struct PersistedWorkflow {
 }
 
 impl PersistedWorkflow {
-    pub(super) fn new(workflow: &mut Workflow) -> Result<Self, PersistError> {
+    pub(super) fn new(mut workflow: Workflow) -> Result<Self, PersistError> {
         workflow.store.data().check_persistence()?;
-        let state = workflow.store.data().persist();
         let refs = Refs::new(&mut workflow.store);
         let memory = Memory::new(&workflow.store, workflow.data_section.as_deref());
+        let state = workflow.store.into_data().persist();
+
         Ok(Self {
             state,
             refs,

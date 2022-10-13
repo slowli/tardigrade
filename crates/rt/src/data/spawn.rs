@@ -17,14 +17,14 @@ use crate::{
         PersistedWorkflowData, WorkflowData,
     },
     receipt::{ResourceEventKind, ResourceId, WakeUpCause},
-    utils::{copy_bytes_from_wasm, copy_string_from_wasm, drop_value, serde_poll, WasmAllocator},
+    utils::{self, WasmAllocator},
     workflow::ChannelIds,
 };
 use tardigrade::spawn::{ChannelSpawnConfig, ChannelsConfig};
 use tardigrade_shared::{
     abi::{IntoWasm, TryFromWasm},
     interface::{ChannelKind, Interface},
-    ChannelId, JoinError, SpawnError, WakerId, WorkflowId,
+    ChannelId, JoinError, PollTask, SpawnError, WakerId, WorkflowId,
 };
 
 type ChannelHandles = ChannelsConfig<ChannelId>;
@@ -35,13 +35,23 @@ pub(super) struct SharedChannelHandles {
 }
 
 /// State of child workflow as viewed by its parent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ChildWorkflowState {
     pub(super) channels: ChannelStates,
-    #[serde(with = "serde_poll")]
+    #[serde(with = "utils::serde_poll")]
     completion_result: Poll<Result<(), JoinError>>,
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     wakes_on_completion: HashSet<WakerId>,
+}
+
+impl Clone for ChildWorkflowState {
+    fn clone(&self) -> Self {
+        Self {
+            channels: self.channels.clone(),
+            completion_result: utils::clone_completion_result(&self.completion_result),
+            wakes_on_completion: self.wakes_on_completion.clone(),
+        }
+    }
 }
 
 impl ChildWorkflowState {
@@ -211,13 +221,13 @@ impl WorkflowData<'_> {
         &mut self,
         workflow_id: WorkflowId,
         cx: &mut WasmContext,
-    ) -> Poll<Result<(), JoinError>> {
+    ) -> PollTask {
         let poll_result = self.persisted.child_workflows[&workflow_id]
-            .completion_result
-            .clone();
+            .result()
+            .map(JoinError::task_poll_result);
         self.current_execution().push_resource_event(
             ResourceId::Workflow(workflow_id),
-            ResourceEventKind::Polled(drop_value(&poll_result)),
+            ResourceEventKind::Polled(utils::drop_value(&poll_result)),
         );
         poll_result.wake_if_pending(cx, || WakerPlacement::WorkflowCompletion(workflow_id))
     }
@@ -261,7 +271,7 @@ impl SpawnFunctions {
         id_len: u32,
     ) -> Result<i64, Trap> {
         let memory = ctx.data().exports().memory;
-        let id = copy_string_from_wasm(&ctx, &memory, id_ptr, id_len)?;
+        let id = utils::copy_string_from_wasm(&ctx, &memory, id_ptr, id_len)?;
 
         let workflows = &ctx.data().services.workflows;
         let interface = workflows
@@ -293,7 +303,7 @@ impl SpawnFunctions {
             _ => return Err(Trap::new("invalid `is_closed` value; expected 0 or 1")),
         };
         let memory = ctx.data().exports().memory;
-        let name = copy_string_from_wasm(&ctx, &memory, name_ptr, name_len)?;
+        let name = utils::copy_string_from_wasm(&ctx, &memory, name_ptr, name_len)?;
 
         let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
         let mut handles = handles.inner.lock().unwrap();
@@ -319,7 +329,7 @@ impl SpawnFunctions {
         let channel_state = ctx.data().persisted.outbound_channel(channel_ref);
         let channel_id = channel_state.unwrap().id();
         let memory = ctx.data().exports().memory;
-        let name = copy_string_from_wasm(&ctx, &memory, name_ptr, name_len)?;
+        let name = utils::copy_string_from_wasm(&ctx, &memory, name_ptr, name_len)?;
         let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
 
         let mut handles = handles.inner.lock().unwrap();
@@ -339,8 +349,8 @@ impl SpawnFunctions {
         error_ptr: u32,
     ) -> Result<Option<ExternRef>, Trap> {
         let memory = ctx.data().exports().memory;
-        let id = copy_string_from_wasm(&ctx, &memory, id_ptr, id_len)?;
-        let args = copy_bytes_from_wasm(&ctx, &memory, args_ptr, args_len)?;
+        let id = utils::copy_string_from_wasm(&ctx, &memory, id_ptr, id_len)?;
+        let args = utils::copy_bytes_from_wasm(&ctx, &memory, args_ptr, args_len)?;
         let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
         let handles = handles.inner.lock().unwrap();
         ctx.data().validate_handles(&id, &handles)?;

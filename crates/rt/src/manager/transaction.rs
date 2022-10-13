@@ -34,7 +34,7 @@ impl TransactionInner {
         &mut self,
         definition_id: String,
         parent_id: Option<WorkflowId>,
-        mut workflow: Workflow,
+        workflow: Workflow,
     ) -> WorkflowId {
         debug_assert!(!workflow.is_initialized());
 

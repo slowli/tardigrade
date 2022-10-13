@@ -307,7 +307,7 @@ impl PersistedWorkflows {
         }
     }
 
-    pub(super) fn persist_workflow(&mut self, id: WorkflowId, mut workflow: Workflow) {
+    pub(super) fn persist_workflow(&mut self, id: WorkflowId, workflow: Workflow) {
         // Since all outbound messages are drained, persisting the workflow is safe.
         let workflow = workflow.persist().unwrap();
         let mut completion_notification_receiver = None;

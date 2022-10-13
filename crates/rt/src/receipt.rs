@@ -14,7 +14,7 @@ use wasmtime::Trap;
 use std::{error, fmt, ops::Range, task::Poll};
 
 use crate::{ChannelId, TaskId, TimerId, WakerId, WorkflowId};
-use tardigrade_shared::SendError;
+use tardigrade_shared::{ErrorLocation, SendError};
 
 /// Cause of waking up a workflow task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -368,7 +368,7 @@ pub struct PanicInfo {
     /// Human-readable panic message.
     pub message: Option<String>,
     /// Location where the panic has occurred.
-    pub location: Option<PanicLocation>,
+    pub location: Option<ErrorLocation>,
 }
 
 impl fmt::Display for PanicInfo {
@@ -381,23 +381,5 @@ impl fmt::Display for PanicInfo {
             (None, Some(location)) => write!(formatter, "panic at {}", location),
             (None, None) => formatter.write_str("panic at unknown location"),
         }
-    }
-}
-
-/// Location of a panic in the workflow code.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct PanicLocation {
-    /// Name of the file where a panic has occurred.
-    pub filename: String,
-    /// Line number in the file.
-    pub line: u32,
-    /// Column number on the line.
-    pub column: u32,
-}
-
-impl fmt::Display for PanicLocation {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}:{}:{}", self.filename, self.line, self.column)
     }
 }

@@ -310,7 +310,7 @@ impl<'a> Workflow<'a> {
     ///
     /// Returns an error if the workflow is in such a state that it cannot be persisted
     /// right now.
-    pub(crate) fn persist(&mut self) -> Result<PersistedWorkflow, PersistError> {
+    pub(crate) fn persist(self) -> Result<PersistedWorkflow, PersistError> {
         PersistedWorkflow::new(self)
     }
 
