@@ -8,11 +8,15 @@
 #![allow(clippy::must_use_candidate, clippy::module_name_repetitions)]
 
 pub mod abi;
+mod error;
 pub mod interface;
 pub mod trace;
 mod types;
 
-pub use crate::types::{
-    ChannelId, FutureId, JoinError, PollMessage, PollTask, SendError, SpawnError, TaskId,
-    TimerDefinition, TimerId, WakerId, WorkflowId,
+pub use crate::{
+    error::{ErrorLocation, JoinError, SendError, SpawnError, TaskError, TaskResult},
+    types::{
+        ChannelId, FutureId, PollMessage, PollTask, TaskId, TimerDefinition, TimerId, WakerId,
+        WorkflowId,
+    },
 };
