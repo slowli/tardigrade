@@ -34,7 +34,8 @@ impl SpawnWorkflow for TestedWorkflow {
     fn spawn(_data: (), handle: TestHandle<Wasm>) -> TaskHandle {
         TaskHandle::new(async move {
             let commands = handle.commands.map(Ok);
-            commands.forward(handle.events).await.unwrap();
+            commands.forward(handle.events).await?;
+            Ok(())
         })
     }
 }

@@ -15,7 +15,10 @@ use serde::{Deserialize, Serialize};
 
 use std::{collections::HashMap, future::Future, marker::PhantomData};
 
-use crate::{channel::SendError, task::JoinHandle};
+use crate::{
+    channel::SendError,
+    task::{self, JoinHandle},
+};
 
 /// Container for a value together with a numeric ID.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -245,13 +248,13 @@ where
     /// task is returned as well; it can be used to guarantee expected requests termination.
     /// Note that to avoid a deadlock, it usually makes sense to drop the `Requests` instance
     /// before `await`ing the task handle.
-    pub fn build(self) -> (Requests<Req, Resp>, JoinHandle<()>) {
+    pub fn build(self) -> (Requests<Req, Resp>, JoinHandle) {
         let (inner_sx, inner_rx) = mpsc::channel(self.capacity);
         let handle = RequestsHandle {
             requests_rx: inner_rx,
             capacity: self.capacity,
         };
-        let task = crate::spawn(
+        let task = task::spawn(
             self.task_name,
             handle.run(self.requests_sx, self.responses_rx),
         );

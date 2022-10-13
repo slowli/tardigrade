@@ -103,6 +103,7 @@ use std::{
 use crate::{
     interface::Interface,
     spawn::{ManageWorkflowsExt, RemoteWorkflow, Spawner, Workflows},
+    task::{self, TaskResult},
     workflow::{Handle, SpawnWorkflow, TakeHandle, TaskHandle, UntypedHandle, Wasm},
 };
 use tardigrade_shared::WorkflowId;
@@ -292,10 +293,11 @@ impl WorkflowRegistry {
             TaskHandle::from_workflow::<W>(args, wasm)
                 .expect("failed spawning workflow")
                 .into_inner()
-                .await;
+                .await
         };
-        let spawn_fn = spawn_fn.map(move |()| {
+        let spawn_fn = spawn_fn.map(move |result| {
             Runtime::with_mut(|rt| rt.workflow_registry_mut().terminate_workflow(workflow_id));
+            result
         });
         TaskHandle::new(WithTaskContext::new(spawn_fn, context))
     }
@@ -412,17 +414,17 @@ impl Runtime {
         definition_id: &str,
         args: Vec<u8>,
         remote_handles: UntypedHandle<Wasm>,
-    ) -> RemoteHandle<()> {
+    ) -> RemoteHandle<TaskResult> {
         let task = self
             .workflow_registry
             .create_workflow(definition_id, args, remote_handles);
         self.do_spawn(task.into_inner())
     }
 
-    pub(crate) fn spawn_task<T: 'static>(
+    pub(crate) fn spawn_task(
         &mut self,
-        task: impl Future<Output = T> + 'static,
-    ) -> RemoteHandle<T> {
+        task: impl Future<Output = TaskResult> + 'static,
+    ) -> RemoteHandle<TaskResult> {
         let context = TaskContext::get();
         let (task, abort_handle) = future::abortable(task);
         self.workflow_registry
@@ -477,7 +479,7 @@ impl Runtime {
                 .unwrap()
                 .build()
                 .expect("failed spawning workflow");
-            crate::yield_now().await; // allow the workflow to initialize
+            task::yield_now().await; // allow the workflow to initialize
             test_fn(workflow.api).await;
         });
     }

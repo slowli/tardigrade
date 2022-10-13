@@ -82,11 +82,11 @@ use crate::{
     interface::{
         AccessError, AccessErrorKind, ChannelKind, InboundChannel, Interface, OutboundChannel,
     },
+    task::JoinError,
     trace::{FutureUpdate, TracedFutures, Tracer},
     workflow::{GetInterface, TakeHandle, UntypedHandle, WorkflowFn},
     Decode, Encode,
 };
-use tardigrade_shared::JoinError;
 
 #[cfg(target_arch = "wasm32")]
 #[path = "imp_wasm32.rs"]

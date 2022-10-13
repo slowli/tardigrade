@@ -31,9 +31,10 @@ impl SpawnWorkflow for TimersWorkflow {
         TaskHandle::new(async move {
             let now = tardigrade::now();
             let completion_time = Timer::at(now - chrono::Duration::milliseconds(100)).await;
-            handle.timestamps.send(completion_time).await.unwrap();
+            handle.timestamps.send(completion_time).await?;
             let completion_time = Timer::after(Duration::from_millis(100)).await;
-            handle.timestamps.send(completion_time).await.unwrap();
+            handle.timestamps.send(completion_time).await?;
+            Ok(())
         })
     }
 }

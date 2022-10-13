@@ -1,6 +1,6 @@
 //! WASM implementation of task APIs.
 
-use futures::future::{FutureExt, RemoteHandle};
+use futures::future::{Aborted, FutureExt, RemoteHandle, TryFutureExt};
 use once_cell::unsync::Lazy;
 use slab::Slab;
 
@@ -13,7 +13,7 @@ use std::{
 
 use tardigrade_shared::{
     abi::{IntoWasm, TryFromWasm},
-    JoinError, TaskId, WakerId,
+    JoinError, PollTask, TaskError, TaskId, TaskResult, WakerId,
 };
 
 /// Container similar to `Slab`, but with guarantee that returned item keys are never reused.
@@ -81,15 +81,52 @@ impl Wake for HostContext {
     }
 }
 
+#[cold]
+fn report_task_error(err: &TaskError) {
+    #[link(wasm_import_module = "tardigrade_rt")]
+    extern "C" {
+        #[link_name = "task::report_error"]
+        fn report_error(
+            message_ptr: *const u8,
+            message_len: usize,
+            filename_ptr: *const u8,
+            filename_len: usize,
+            line: u32,
+            column: u32,
+        );
+    }
+
+    let message = err.to_string();
+    unsafe {
+        report_error(
+            message.as_ptr(),
+            message.len(),
+            err.location().filename.as_ptr(),
+            err.location().filename.len(),
+            err.location().line,
+            err.location().column,
+        );
+    }
+}
+
 /// Handle to a spawned task / `PinnedFuture`.
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct RawTaskHandle(TaskId);
 
 impl RawTaskHandle {
-    pub fn new(future: impl Future<Output = ()> + 'static) -> Self {
+    fn new(future: impl Future<Output = ()> + 'static) -> Self {
         let task_id = unsafe { TASKS.insert(Some(Box::pin(future))) };
         Self(task_id)
+    }
+
+    pub(crate) fn for_main_task(task: impl Future<Output = TaskResult> + 'static) -> Self {
+        let task = task.map(|res| {
+            if let Err(err) = res {
+                report_task_error(&err);
+            }
+        });
+        Self::new(task)
     }
 
     fn deref_and_poll(self, cx: &mut Context<'_>) -> Poll<()> {
@@ -111,7 +148,7 @@ impl RawTaskHandle {
         }
     }
 
-    fn abort(&self) {
+    pub fn abort(&mut self) {
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
             #[link_name = "task::abort"]
@@ -123,7 +160,7 @@ impl RawTaskHandle {
 }
 
 impl Future for RawTaskHandle {
-    type Output = Result<(), JoinError>;
+    type Output = Result<(), Aborted>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         #[link(wasm_import_module = "tardigrade_rt")]
@@ -135,7 +172,7 @@ impl Future for RawTaskHandle {
 
         unsafe {
             let poll_result = task_poll_completion(self.0, cx);
-            IntoWasm::from_abi_in_wasm(poll_result)
+            PollTask::from_abi_in_wasm(poll_result)
         }
     }
 }
@@ -153,14 +190,14 @@ fn spawn_raw(task_name: &str, task: impl Future<Output = ()> + 'static) -> RawTa
 }
 
 #[derive(Debug)]
-pub(super) struct JoinHandle<T> {
+pub(super) struct JoinHandle {
     raw: Option<RawTaskHandle>,
-    handle: Option<RemoteHandle<T>>,
+    handle: Option<RemoteHandle<TaskResult>>,
 }
 
-impl<T> JoinHandle<T> {
+impl JoinHandle {
     pub fn abort(&mut self) {
-        if let Some(raw) = &self.raw {
+        if let Some(raw) = &mut self.raw {
             raw.abort();
         }
     }
@@ -172,14 +209,14 @@ impl<T> JoinHandle<T> {
         unsafe { &mut self.get_unchecked_mut().raw }
     }
 
-    fn project_handle(self: Pin<&mut Self>) -> Pin<&mut RemoteHandle<T>> {
+    fn project_handle(self: Pin<&mut Self>) -> Pin<&mut RemoteHandle<TaskResult>> {
         // SAFETY: map function is simple field access with always succeeding `unwrap()`,
         // which satisfies the `map_unchecked_mut` contract
         unsafe { self.map_unchecked_mut(|this| this.handle.as_mut().unwrap()) }
     }
 }
 
-impl<T> Drop for JoinHandle<T> {
+impl Drop for JoinHandle {
     fn drop(&mut self) {
         if let Some(handle) = self.handle.take() {
             handle.forget(); // Prevent the task to be aborted
@@ -187,28 +224,28 @@ impl<T> Drop for JoinHandle<T> {
     }
 }
 
-impl<T: 'static> Future for JoinHandle<T> {
-    type Output = Result<T, JoinError>;
+impl Future for JoinHandle {
+    type Output = Result<(), JoinError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if let Some(raw) = self.as_mut().project_raw() {
             match raw.poll_unpin(cx) {
                 Poll::Pending => return Poll::Pending,
-                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                Poll::Ready(Err(_)) => return Poll::Ready(Err(JoinError::Aborted)),
                 Poll::Ready(Ok(())) => {
                     self.as_mut().project_raw().take();
                 }
             }
         }
-        self.project_handle().poll(cx).map(Ok)
+        self.project_handle().poll(cx).map_err(JoinError::Err)
     }
 }
 
-pub(super) fn spawn<T: 'static>(
+pub(super) fn spawn(
     task_name: &str,
-    task: impl Future<Output = T> + 'static,
-) -> JoinHandle<T> {
-    let (remote, handle) = task.remote_handle();
+    task: impl Future<Output = TaskResult> + 'static,
+) -> JoinHandle {
+    let (remote, handle) = task.inspect_err(report_task_error).remote_handle();
     JoinHandle {
         raw: Some(spawn_raw(task_name, remote)),
         handle: Some(handle),

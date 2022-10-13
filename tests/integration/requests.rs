@@ -73,10 +73,9 @@ impl SpawnWorkflow for TestedWorkflow {
                         .buffer_unordered(len)
                         .take(len / 2)
                         .try_for_each(|_| future::ready(Ok(())))
-                        .await
-                        .unwrap();
+                        .await?;
                 } else {
-                    let responses = future::try_join_all(req_futures).await.unwrap();
+                    let responses = future::try_join_all(req_futures).await?;
                     assert_eq!(responses, expected_responses);
                 }
             } else {
@@ -86,14 +85,15 @@ impl SpawnWorkflow for TestedWorkflow {
                     if options.ignore_some_responses && i % 2 == 0 {
                         assert!(response_fut.now_or_never().is_none()); // drops the response
                     } else {
-                        let response = response_fut.await.unwrap();
+                        let response = response_fut.await?;
                         assert_eq!(response, expected_response);
                     }
                 }
                 drop(requests);
             }
 
-            requests_task.await.ok();
+            requests_task.await?;
+            Ok(())
         })
     }
 }

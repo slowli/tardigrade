@@ -19,7 +19,7 @@ use crate::channel::{
 use tardigrade_shared::{
     abi::IntoWasm,
     interface::{ChannelKind, Interface},
-    JoinError, SpawnError,
+    JoinError, PollTask, SpawnError, TaskError,
 };
 
 static mut SPAWN_ERROR_PAD: i64 = 0;
@@ -235,11 +235,25 @@ impl Future for RemoteWorkflow {
                 workflow: &Resource<RemoteWorkflow>,
                 cx: *mut Context<'_>,
             ) -> i64;
+
+            #[link_name = "workflow::completion_error"]
+            fn workflow_completion_error(workflow: &Resource<RemoteWorkflow>) -> i64;
         }
 
         unsafe {
             let poll_result = workflow_poll_completion(&self.resource, cx);
-            IntoWasm::from_abi_in_wasm(poll_result)
+            let poll_result = PollTask::from_abi_in_wasm(poll_result);
+            poll_result.map(|res| {
+                res.map_err(|_| JoinError::Aborted).and_then(|()| {
+                    let maybe_err = workflow_completion_error(&self.resource);
+                    if maybe_err == 0 {
+                        Ok(())
+                    } else {
+                        let err = TaskError::from_abi_in_wasm(maybe_err);
+                        Err(JoinError::Err(err))
+                    }
+                })
+            })
         }
     }
 }

@@ -11,7 +11,7 @@ use rand::{thread_rng, Rng};
 
 use std::{future::Future, time::Duration};
 
-use tardigrade::{channel::BroadcastPublisher, yield_now};
+use tardigrade::{channel::BroadcastPublisher, task::yield_now};
 
 async fn test_broadcast_without_delays(spawner: LocalSpawner) {
     let broadcast = BroadcastPublisher::<u32>::new(1);

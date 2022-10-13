@@ -18,11 +18,12 @@ use super::{
 use crate::{
     channel::{imp::raw_channel, RawReceiver, RawSender},
     interface::ChannelKind,
+    task::{JoinError, JoinHandle},
     test::Runtime,
     workflow::{UntypedHandle, Wasm},
-    JoinHandle, Raw,
+    Raw,
 };
-use tardigrade_shared::{JoinError, SpawnError};
+use tardigrade_shared::SpawnError;
 
 impl ManageInterfaces for Workflows {
     fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
@@ -163,7 +164,7 @@ pin_project! {
     #[derive(Debug)]
     pub(super) struct RemoteWorkflow {
         #[pin]
-        main_task: JoinHandle<()>,
+        main_task: JoinHandle,
         handle: UntypedHandle<super::RemoteWorkflow>,
     }
 }
@@ -185,7 +186,7 @@ impl RemoteWorkflow {
 }
 
 impl super::RemoteWorkflow {
-    fn from_parts(main_task: JoinHandle<()>, handle: UntypedHandle<super::RemoteWorkflow>) -> Self {
+    fn from_parts(main_task: JoinHandle, handle: UntypedHandle<super::RemoteWorkflow>) -> Self {
         Self {
             inner: RemoteWorkflow { main_task, handle },
         }

@@ -105,6 +105,7 @@ use crate::{
     interface::{
         AccessError, AccessErrorKind, ArgsSpec, Interface, InterfaceBuilder, InterfaceLocation,
     },
+    task::TaskResult,
     Decode, Encode, Raw,
 };
 
@@ -176,8 +177,10 @@ mod imp {
 mod imp {
     use std::{fmt, future::Future, pin::Pin};
 
+    use crate::task::TaskResult;
+
     #[repr(transparent)]
-    pub(super) struct TaskHandle(pub Pin<Box<dyn Future<Output = ()>>>);
+    pub(super) struct TaskHandle(pub Pin<Box<dyn Future<Output = TaskResult>>>);
 
     impl fmt::Debug for TaskHandle {
         fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -186,7 +189,7 @@ mod imp {
     }
 
     impl TaskHandle {
-        pub fn new(future: impl Future<Output = ()> + 'static) -> Self {
+        pub fn for_main_task(future: impl Future<Output = TaskResult> + 'static) -> Self {
             Self(Box::pin(future))
         }
     }
@@ -366,8 +369,8 @@ pub struct TaskHandle(imp::TaskHandle);
 
 impl TaskHandle {
     /// Creates a handle.
-    pub fn new(future: impl Future<Output = ()> + 'static) -> Self {
-        Self(imp::TaskHandle::new(future))
+    pub fn new(future: impl Future<Output = TaskResult> + 'static) -> Self {
+        Self(imp::TaskHandle::for_main_task(future))
     }
 
     #[doc(hidden)] // only used in the `workflow_entry` macro
@@ -385,7 +388,7 @@ impl TaskHandle {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn into_inner(self) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+    pub(crate) fn into_inner(self) -> std::pin::Pin<Box<dyn Future<Output = TaskResult>>> {
         self.0 .0
     }
 }

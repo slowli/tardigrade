@@ -1,11 +1,13 @@
 //! Tests for managing tasks in a workflow.
 
+// FIXME: test error propagation
+
 use futures::{future, FutureExt, SinkExt, StreamExt};
 
 use crate::TestHandle;
 use tardigrade::{
-    spawn,
     spawn::{ManageWorkflowsExt, Workflows},
+    task,
     test::Runtime,
     workflow::{GetInterface, SpawnWorkflow, TakeHandle, TaskHandle, Wasm, WorkflowFn},
     Json,
@@ -23,13 +25,14 @@ impl WorkflowFn for WorkflowWithSubtask {
 impl SpawnWorkflow for WorkflowWithSubtask {
     fn spawn(move_events_to_task: bool, mut handle: TestHandle<Wasm>) -> TaskHandle {
         TaskHandle::new(async move {
-            handle.events.send(42).await.unwrap();
+            handle.events.send(42).await?;
             if move_events_to_task {
                 let task = future::pending::<()>().map(|()| drop(handle.events));
-                spawn("test", task);
+                task::spawn("test", task);
             } else {
-                spawn("test", future::pending::<()>());
+                task::spawn("test", future::pending::<()>());
             }
+            Ok(())
         })
     }
 }

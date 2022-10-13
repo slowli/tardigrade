@@ -64,7 +64,7 @@ pub mod channel;
 mod codec;
 mod ext;
 pub mod spawn;
-mod task;
+pub mod task;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod test;
 mod time;
@@ -76,7 +76,6 @@ pub use crate::codec::Json;
 pub use crate::{
     codec::{Decode, Encode, Raw},
     ext::FutureExt,
-    task::{spawn, yield_now, JoinHandle},
     time::{now, sleep, Timer},
 };
 
