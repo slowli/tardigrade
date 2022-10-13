@@ -2,14 +2,15 @@
 
 // FIXME: test error propagation
 
+use async_trait::async_trait;
 use futures::{future, FutureExt, SinkExt, StreamExt};
 
 use crate::TestHandle;
 use tardigrade::{
     spawn::{ManageWorkflowsExt, Workflows},
-    task,
+    task::{self, TaskResult},
     test::Runtime,
-    workflow::{GetInterface, SpawnWorkflow, TakeHandle, TaskHandle, Wasm, WorkflowFn},
+    workflow::{GetInterface, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
     Json,
 };
 
@@ -22,18 +23,17 @@ impl WorkflowFn for WorkflowWithSubtask {
     type Codec = Json;
 }
 
+#[async_trait(?Send)]
 impl SpawnWorkflow for WorkflowWithSubtask {
-    fn spawn(move_events_to_task: bool, mut handle: TestHandle<Wasm>) -> TaskHandle {
-        TaskHandle::new(async move {
-            handle.events.send(42).await?;
-            if move_events_to_task {
-                let task = future::pending::<()>().map(|()| drop(handle.events));
-                task::spawn("test", task);
-            } else {
-                task::spawn("test", future::pending::<()>());
-            }
-            Ok(())
-        })
+    async fn spawn(move_events_to_task: bool, mut handle: TestHandle<Wasm>) -> TaskResult {
+        handle.events.send(42).await?;
+        if move_events_to_task {
+            let task = future::pending::<()>().map(|()| drop(handle.events));
+            task::spawn("test", task);
+        } else {
+            task::spawn("test", future::pending::<()>());
+        }
+        Ok(())
     }
 }
 

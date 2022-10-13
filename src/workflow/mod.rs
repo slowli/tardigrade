@@ -85,6 +85,8 @@
 //! tardigrade::workflow_entry!(MyWorkflow);
 //! ```
 
+use async_trait::async_trait;
+
 use std::{borrow::Cow, future::Future, mem};
 
 /// Derives the [`GetInterface`] trait for a workflow type.
@@ -357,34 +359,36 @@ impl WorkflowFn for () {
 }
 
 /// Workflow that can be spawned.
+#[async_trait(?Send)]
 pub trait SpawnWorkflow: GetInterface + TakeHandle<Wasm, Id = ()> + WorkflowFn {
-    /// Spawns a workflow instance.
-    fn spawn(args: Self::Args, handle: <Self as TakeHandle<Wasm>>::Handle) -> TaskHandle;
+    /// Spawns the main task of the workflow.
+    async fn spawn(args: Self::Args, handle: <Self as TakeHandle<Wasm>>::Handle) -> TaskResult;
 }
 
 /// Handle to a task, essentially equivalent to a boxed [`Future`].
 #[derive(Debug)]
 #[repr(transparent)]
+#[doc(hidden)] // only used by the `workflow_entry!` macro
 pub struct TaskHandle(imp::TaskHandle);
 
 impl TaskHandle {
     /// Creates a handle.
-    pub fn new(future: impl Future<Output = TaskResult> + 'static) -> Self {
+    pub(crate) fn new(future: impl Future<Output = TaskResult> + 'static) -> Self {
         Self(imp::TaskHandle::for_main_task(future))
     }
 
     #[doc(hidden)] // only used in the `workflow_entry` macro
     pub fn from_workflow<W: SpawnWorkflow>(
-        raw_data: Vec<u8>,
+        raw_args: Vec<u8>,
         mut wasm: Wasm,
     ) -> Result<Self, AccessError> {
-        let data = W::Codec::default()
-            .try_decode_bytes(raw_data)
+        let args = W::Codec::default()
+            .try_decode_bytes(raw_args)
             .map_err(|err| {
                 AccessErrorKind::Custom(Box::new(err)).with_location(InterfaceLocation::Args)
             })?;
         let handle = <W as TakeHandle<Wasm>>::take_handle(&mut wasm, &())?;
-        Ok(W::spawn(data, handle))
+        Ok(Self::new(W::spawn(args, handle)))
     }
 
     #[cfg(not(target_arch = "wasm32"))]

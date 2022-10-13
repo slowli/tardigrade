@@ -1,5 +1,6 @@
 //! Tests for spawning and managing child workflows.
 
+use async_trait::async_trait;
 use futures::{stream, SinkExt, StreamExt, TryStreamExt};
 
 use std::collections::HashSet;
@@ -10,7 +11,7 @@ use tardigrade::{
     spawn::{ManageWorkflowsExt, Workflows},
     task::TaskResult,
     test::Runtime,
-    workflow::{GetInterface, SpawnWorkflow, TakeHandle, TaskHandle, Wasm, WorkflowFn},
+    workflow::{GetInterface, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
     Json,
 };
 
@@ -35,18 +36,18 @@ impl WorkflowFn for ParentWorkflow {
     type Codec = Json;
 }
 
+#[async_trait(?Send)]
 impl SpawnWorkflow for ParentWorkflow {
-    fn spawn(concurrency: u32, handle: TestHandle<Wasm>) -> TaskHandle {
+    async fn spawn(concurrency: u32, handle: TestHandle<Wasm>) -> TaskResult {
         let concurrency = concurrency as usize;
-        let commands =
-            handle
-                .commands
-                .map(Ok)
-                .try_for_each_concurrent(concurrency, move |command| {
-                    let events = handle.events.clone();
-                    Self::spawn_child(command, events)
-                });
-        TaskHandle::new(commands)
+        handle
+            .commands
+            .map(Ok)
+            .try_for_each_concurrent(concurrency, move |command| {
+                let events = handle.events.clone();
+                Self::spawn_child(command, events)
+            })
+            .await
     }
 }
 

@@ -1,5 +1,6 @@
 //! High-level integration tests.
 
+use async_trait::async_trait;
 use futures::{stream, SinkExt, StreamExt};
 
 mod channel;
@@ -10,8 +11,9 @@ mod timers;
 
 use tardigrade::{
     channel::{Receiver, Sender},
+    task::TaskResult,
     test::Runtime,
-    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, TaskHandle, Wasm, WorkflowFn},
+    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
     Json,
 };
 
@@ -30,13 +32,12 @@ impl WorkflowFn for TestedWorkflow {
     type Codec = Json;
 }
 
+#[async_trait(?Send)]
 impl SpawnWorkflow for TestedWorkflow {
-    fn spawn(_data: (), handle: TestHandle<Wasm>) -> TaskHandle {
-        TaskHandle::new(async move {
-            let commands = handle.commands.map(Ok);
-            commands.forward(handle.events).await?;
-            Ok(())
-        })
+    async fn spawn(_args: (), handle: TestHandle<Wasm>) -> TaskResult {
+        let commands = handle.commands.map(Ok);
+        commands.forward(handle.events).await?;
+        Ok(())
     }
 }
 

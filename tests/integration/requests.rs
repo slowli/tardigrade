@@ -1,12 +1,14 @@
 //! Tests for `Requests`.
 
+use async_trait::async_trait;
 use futures::{future, stream, FutureExt, SinkExt, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 
 use tardigrade::{
     channel::{Receiver, Requests, Sender, WithId},
+    task::TaskResult,
     test::Runtime,
-    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, TaskHandle, Wasm, WorkflowFn},
+    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
     Json,
 };
 
@@ -48,53 +50,52 @@ impl WorkflowFn for TestedWorkflow {
     type Codec = Json;
 }
 
+#[async_trait(?Send)]
 impl SpawnWorkflow for TestedWorkflow {
-    fn spawn(args: TestInit, handle: TestHandle<Wasm>) -> TaskHandle {
+    async fn spawn(args: TestInit, handle: TestHandle<Wasm>) -> TaskResult {
         let strings = args.strings;
         let options = args.options;
         let (requests, requests_task) = Requests::builder(handle.requests, handle.responses)
             .with_capacity(options.capacity)
             .build();
 
-        TaskHandle::new(async move {
-            if options.drop_requests {
-                let expected_responses: Vec<_> = strings.iter().map(String::len).collect();
+        if options.drop_requests {
+            let expected_responses: Vec<_> = strings.iter().map(String::len).collect();
 
-                let req_futures: Vec<_> = strings
-                    .into_iter()
-                    .map(|string| requests.request(string))
-                    .collect();
-                drop(requests);
+            let req_futures: Vec<_> = strings
+                .into_iter()
+                .map(|string| requests.request(string))
+                .collect();
+            drop(requests);
 
-                if options.ignore_some_responses {
-                    // Wait until half of futures is resolved.
-                    let len = req_futures.len();
-                    stream::iter(req_futures)
-                        .buffer_unordered(len)
-                        .take(len / 2)
-                        .try_for_each(|_| future::ready(Ok(())))
-                        .await?;
-                } else {
-                    let responses = future::try_join_all(req_futures).await?;
-                    assert_eq!(responses, expected_responses);
-                }
+            if options.ignore_some_responses {
+                // Wait until half of futures is resolved.
+                let len = req_futures.len();
+                stream::iter(req_futures)
+                    .buffer_unordered(len)
+                    .take(len / 2)
+                    .try_for_each(|_| future::ready(Ok(())))
+                    .await?;
             } else {
-                for (i, string) in strings.into_iter().enumerate() {
-                    let expected_response = string.len();
-                    let response_fut = requests.request(string);
-                    if options.ignore_some_responses && i % 2 == 0 {
-                        assert!(response_fut.now_or_never().is_none()); // drops the response
-                    } else {
-                        let response = response_fut.await?;
-                        assert_eq!(response, expected_response);
-                    }
-                }
-                drop(requests);
+                let responses = future::try_join_all(req_futures).await?;
+                assert_eq!(responses, expected_responses);
             }
+        } else {
+            for (i, string) in strings.into_iter().enumerate() {
+                let expected_response = string.len();
+                let response_fut = requests.request(string);
+                if options.ignore_some_responses && i % 2 == 0 {
+                    assert!(response_fut.now_or_never().is_none()); // drops the response
+                } else {
+                    let response = response_fut.await?;
+                    assert_eq!(response, expected_response);
+                }
+            }
+            drop(requests);
+        }
 
-            requests_task.await?;
-            Ok(())
-        })
+        requests_task.await?;
+        Ok(())
     }
 }
 

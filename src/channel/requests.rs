@@ -149,7 +149,7 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 /// # }
 ///
 /// impl SpawnWorkflow for MyWorkflow {
-///     fn spawn(_data: (), handle: MyHandle<Wasm>) -> TaskHandle {
+///     fn spawn(_args: (), handle: MyHandle<Wasm>) -> TaskHandle {
 ///         let (requests, _) = Requests::builder(handle.requests, handle.responses)
 ///             .with_capacity(4)
 ///             .with_task_name("handling_requests")
