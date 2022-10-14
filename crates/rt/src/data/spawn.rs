@@ -24,7 +24,7 @@ use tardigrade::spawn::{ChannelSpawnConfig, ChannelsConfig};
 use tardigrade_shared::{
     abi::{IntoWasm, TryFromWasm},
     interface::{ChannelKind, Interface},
-    ChannelId, JoinError, PollTask, SpawnError, WakerId, WorkflowId,
+    ChannelId, JoinError, PollTask, SpawnError, TaskError, WakerId, WorkflowId,
 };
 
 type ChannelHandles = ChannelsConfig<ChannelId>;
@@ -232,6 +232,15 @@ impl WorkflowData<'_> {
         poll_result.wake_if_pending(cx, || WakerPlacement::WorkflowCompletion(workflow_id))
     }
 
+    fn workflow_task_error(&self, workflow_id: WorkflowId) -> Option<&TaskError> {
+        let result = self.persisted.child_workflows[&workflow_id].result();
+        if let Poll::Ready(Err(JoinError::Err(err))) = result {
+            Some(err)
+        } else {
+            None
+        }
+    }
+
     /// Handles dropping the child workflow handle from the workflow side. Returns wakers
     /// that should be dropped.
     pub(super) fn handle_child_handle_drop(&mut self, workflow_id: WorkflowId) -> HashSet<WakerId> {
@@ -382,5 +391,20 @@ impl SpawnFunctions {
         );
         poll_cx.save_waker(&mut ctx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))
+    }
+
+    pub fn completion_error(
+        ctx: StoreContextMut<'_, WorkflowData>,
+        workflow: Option<ExternRef>,
+    ) -> Result<i64, Trap> {
+        let workflow_id = HostResource::from_ref(workflow.as_ref())?.as_workflow()?;
+        let maybe_err = ctx
+            .data()
+            .workflow_task_error(workflow_id)
+            .map(TaskError::clone_boxed);
+        Ok(maybe_err
+            .map(|err| err.into_wasm(&mut WasmAllocator::new(ctx)))
+            .transpose()?
+            .unwrap_or(0))
     }
 }

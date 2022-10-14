@@ -142,6 +142,7 @@ impl SpawnFunctions {
             "workflow::poll_completion" => {
                 ensure_func_ty::<(Ref, WasmContextPtr), i64>(ty, fn_name)
             }
+            "workflow::completion_error" => ensure_func_ty::<Ref, i64>(ty, fn_name),
 
             other => {
                 bail!(
@@ -179,6 +180,10 @@ impl ExtendLinker for SpawnFunctions {
             (
                 "workflow::poll_completion",
                 wrap2(&mut *store, Self::poll_workflow_completion),
+            ),
+            (
+                "workflow::completion_error",
+                wrap1(&mut *store, Self::completion_error),
             ),
         ]
     }

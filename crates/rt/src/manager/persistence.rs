@@ -6,12 +6,13 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     mem,
+    task::Poll,
 };
 
 use crate::{
     manager::{transaction::Transaction, ChannelInfo, ChannelSide},
     receipt::Receipt,
-    utils::Message,
+    utils::{clone_join_error, Message},
     workflow::{ChannelIds, Workflow},
     PersistedWorkflow,
 };
@@ -310,10 +311,9 @@ impl PersistedWorkflows {
     pub(super) fn persist_workflow(&mut self, id: WorkflowId, workflow: Workflow) {
         // Since all outbound messages are drained, persisting the workflow is safe.
         let workflow = workflow.persist().unwrap();
-        let mut completion_notification_receiver = None;
         let persisted = self.workflows.get_mut(&id).unwrap();
-        if workflow.is_finished() {
-            completion_notification_receiver = persisted.parent_id;
+        let completion_notification = if let Poll::Ready(result) = workflow.result() {
+            let parent_id = persisted.parent_id;
             // Close all channels linked to the workflow.
             for (.., state) in workflow.inbound_channels() {
                 self.close_channel_side(state.id(), ChannelSide::Receiver);
@@ -323,13 +323,15 @@ impl PersistedWorkflows {
             }
             // Garbage-collect the workflow state.
             self.workflows.remove(&id);
+            parent_id.map(|id| (id, result.map_err(clone_join_error)))
         } else {
             persisted.workflow = workflow;
-        }
+            None
+        };
 
-        if let Some(parent_id) = completion_notification_receiver {
+        if let Some((parent_id, result)) = completion_notification {
             let persisted = self.workflows.get_mut(&parent_id).unwrap();
-            persisted.workflow.notify_on_child_completion(id, Ok(()));
+            persisted.workflow.notify_on_child_completion(id, result);
         }
     }
 }

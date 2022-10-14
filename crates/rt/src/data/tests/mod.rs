@@ -19,7 +19,7 @@ use crate::{
         ResourceEventKind, ResourceId,
     },
     test::MockScheduler,
-    utils::{copy_string_from_wasm, WasmAllocator},
+    utils::{copy_string_from_wasm, decode_string, WasmAllocator},
     workflow::{PersistedWorkflow, Workflow},
 };
 use tardigrade::spawn::ChannelsConfig;
@@ -27,13 +27,6 @@ use tardigrade_shared::{abi::AllocateBytes, interface::Interface, JoinError};
 
 const POLL_CX: WasmContextPtr = 1_234;
 const ERROR_PTR: u32 = 1_024; // enough to not intersect with "real" memory
-
-#[allow(clippy::cast_sign_loss)]
-fn decode_string(poll_res: i64) -> (u32, u32) {
-    let ptr = ((poll_res as u64) >> 32) as u32;
-    let len = (poll_res & 0x_ffff_ffff) as u32;
-    (ptr, len)
-}
 
 fn answer_main_task(mut poll_fns: Answers<MockPollFn>) -> Answers<MockPollFn, TaskId> {
     Answers::from_fn(move |&task_id| {
@@ -613,7 +606,9 @@ fn dropping_inbound_channel_in_workflow() {
     assert_eq!(mock.consumed_wakers.len(), 1, "{:?}", mock.consumed_wakers);
 }
 
-fn complete_task_with_error(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
+pub(crate) fn complete_task_with_error(
+    mut ctx: StoreContextMut<'_, WorkflowData>,
+) -> Result<Poll<()>, Trap> {
     let (message_ptr, message_len) =
         WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"error message")?;
     let (filename_ptr, filename_len) =

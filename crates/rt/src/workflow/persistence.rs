@@ -5,6 +5,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use wasmtime::Store;
 
+use std::task::Poll;
+
 use crate::{
     data::{
         ChildWorkflowState, InboundChannelState, OutboundChannelState, PersistError,
@@ -221,11 +223,11 @@ impl PersistedWorkflow {
         self.args.is_none()
     }
 
-    /// Checks whether the workflow is finished, i.e., its main task is completed.
-    pub fn is_finished(&self) -> bool {
+    /// Returns the result of executing this workflow, which is the output of its main task.
+    pub fn result(&self) -> Poll<Result<(), &JoinError>> {
         self.state
             .main_task()
-            .map_or(false, |state| state.result().is_ready())
+            .map_or(Poll::Pending, TaskState::result)
     }
 
     /// Returns the current time for the workflow.

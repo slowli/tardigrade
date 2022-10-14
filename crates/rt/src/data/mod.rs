@@ -11,7 +11,7 @@ mod persistence;
 mod spawn;
 mod task;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 mod time;
 
 pub(crate) use self::{

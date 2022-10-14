@@ -149,6 +149,14 @@ pub(crate) fn copy_string_from_wasm(
     String::from_utf8(buffer).map_err(|err| Trap::new(format!("invalid UTF-8 string: {}", err)))
 }
 
+#[cfg(test)]
+#[allow(clippy::cast_sign_loss)]
+pub(crate) fn decode_string(poll_res: i64) -> (u32, u32) {
+    let ptr = ((poll_res as u64) >> 32) as u32;
+    let len = (poll_res & 0x_ffff_ffff) as u32;
+    (ptr, len)
+}
+
 pub(crate) fn drop_value<T>(poll_result: &Poll<T>) -> Poll<()> {
     match poll_result {
         Poll::Pending => Poll::Pending,
@@ -212,16 +220,20 @@ fn merging_vectors() {
     assert_eq!(target, [1, 2, 3, 3, 3, 4, 5, 7, 8, 9, 13, 20]);
 }
 
+pub(crate) fn clone_join_error(err: &JoinError) -> JoinError {
+    match err {
+        JoinError::Aborted => JoinError::Aborted,
+        JoinError::Err(err) => JoinError::Err(err.clone_boxed()),
+    }
+}
+
 pub(crate) fn clone_completion_result(
     result: &Poll<Result<(), JoinError>>,
 ) -> Poll<Result<(), JoinError>> {
     match result {
         Poll::Pending => Poll::Pending,
         Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
-        Poll::Ready(Err(JoinError::Aborted)) => Poll::Ready(Err(JoinError::Aborted)),
-        Poll::Ready(Err(JoinError::Err(err))) => {
-            Poll::Ready(Err(JoinError::Err(err.clone_boxed())))
-        }
+        Poll::Ready(Err(err)) => Poll::Ready(Err(clone_join_error(err))),
     }
 }
 

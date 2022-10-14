@@ -3,8 +3,11 @@
 use wasmtime::ExternRef;
 
 use super::*;
-use crate::receipt::{ResourceEventKind, ResourceId};
-use crate::{data::SpawnFunctions, receipt::ResourceEvent};
+use crate::{
+    data::{tests::complete_task_with_error, SpawnFunctions},
+    receipt::{ResourceEvent, ResourceEventKind, ResourceId},
+    utils::{copy_string_from_wasm, decode_string},
+};
 use tardigrade_shared::{abi::TryFromWasm, interface::ChannelKind};
 
 const CHILD_ID: WorkflowId = 1;
@@ -255,16 +258,17 @@ fn test_child_channels_after_closure(
     Ok(Poll::Pending)
 }
 
-fn test_child_workflow_channel_management(complete_child: bool) {
-    let spawn_and_poll_child: MockPollFn = |mut ctx| {
-        let _ = spawn_child(ctx.as_context_mut())?;
-        let child = Some(WorkflowData::child_ref(CHILD_ID));
-        let poll_result =
-            SpawnFunctions::poll_workflow_completion(ctx.as_context_mut(), child, POLL_CX)?;
-        assert_eq!(poll_result, -1); // Poll::Pending
+fn spawn_and_poll_child(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
+    let _ = spawn_child(ctx.as_context_mut())?;
+    let child = Some(WorkflowData::child_ref(CHILD_ID));
+    let poll_result =
+        SpawnFunctions::poll_workflow_completion(ctx.as_context_mut(), child, POLL_CX)?;
+    assert_eq!(poll_result, -1); // Poll::Pending
 
-        Ok(Poll::Pending)
-    };
+    Ok(Poll::Pending)
+}
+
+fn test_child_workflow_channel_management(complete_child: bool) {
     let poll_child_workflow: MockPollFn = if complete_child {
         |_| Ok(Poll::Ready(()))
     } else {
@@ -594,4 +598,43 @@ fn spawning_child_with_aliased_outbound_channel() {
 #[test]
 fn spawning_and_completing_child_with_aliased_outbound_channel() {
     test_child_with_aliased_outbound_channel(true);
+}
+
+#[test]
+fn completing_child_with_error() {
+    let check_child_completion: MockPollFn = |mut ctx| {
+        let child = Some(WorkflowData::child_ref(CHILD_ID));
+        let poll_result =
+            SpawnFunctions::poll_workflow_completion(ctx.as_context_mut(), child.clone(), POLL_CX)?;
+        assert_eq!(poll_result, -2); // Poll::Ready(Ok(()))
+
+        let err = SpawnFunctions::completion_error(ctx.as_context_mut(), child)?;
+        assert_ne!(err, 0);
+        let (err_ptr, err_len) = decode_string(err);
+        let memory = ctx.data().exports().memory;
+        let err_json = copy_string_from_wasm(&ctx, &memory, err_ptr, err_len)?;
+        assert!(err_json.starts_with('{') && err_json.ends_with('}'));
+
+        Ok(Poll::Pending)
+    };
+
+    let poll_fns = Answers::from_values([
+        spawn_and_poll_child,
+        complete_task_with_error,
+        check_child_completion,
+    ]);
+    let _guard = ExportsMock::prepare(poll_fns);
+    let mut manager = create_test_manager();
+    let workflow_id = create_test_workflow(&manager).id();
+    manager.tick_workflow(workflow_id).unwrap();
+    manager.tick_workflow(CHILD_ID).unwrap();
+
+    let receipt = manager.tick_workflow(workflow_id).unwrap();
+    let is_child_polled = receipt.events().any(|event| {
+        event.as_resource_event().map_or(false, |event| {
+            matches!(event.resource_id, ResourceId::Workflow(CHILD_ID))
+                && matches!(event.kind, ResourceEventKind::Polled(Poll::Ready(())))
+        })
+    });
+    assert!(is_child_polled, "{:?}", receipt);
 }
