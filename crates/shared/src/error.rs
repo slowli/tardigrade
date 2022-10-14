@@ -57,6 +57,15 @@ impl<E: error::Error + Send + Sync + 'static> From<E> for TaskError {
 }
 
 impl TaskError {
+    /// Creates a new error with the specified message.
+    #[track_caller]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            cause: message.into().into(),
+            location: ErrorLocation::new(Location::caller()),
+        }
+    }
+
     /// Returns the error cause.
     pub fn cause(&self) -> &(dyn error::Error + 'static) {
         self.cause.as_ref()
