@@ -204,6 +204,8 @@ pub(super) struct CurrentExecution {
     tasks_to_be_aborted: HashSet<TaskId>,
     /// Information about a panic that has occurred during execution.
     panic_info: Option<PanicInfo>,
+    /// Information about a task error that has occurred during execution.
+    task_error_info: Option<PanicInfo>,
     /// Wakers created during execution, together with their placement.
     new_wakers: HashSet<WakerId>,
     /// Log of events.
@@ -217,6 +219,7 @@ impl CurrentExecution {
             tasks_to_be_awoken: HashSet::new(),
             tasks_to_be_aborted: HashSet::new(),
             panic_info: None,
+            task_error_info: None,
             new_wakers: HashSet::new(),
             events: Vec::new(),
         }
@@ -305,6 +308,18 @@ impl CurrentExecution {
         self.panic_info = Some(panic_info);
     }
 
+    pub fn set_task_error(&mut self, panic_info: PanicInfo) {
+        warn!(
+            "Execution {:?} led to a task error: {:?}",
+            self.function, panic_info
+        );
+        self.task_error_info = Some(panic_info);
+    }
+
+    pub fn take_task_error(&mut self) -> Option<PanicInfo> {
+        self.task_error_info.take()
+    }
+
     fn resource_events(events: &[Event]) -> impl Iterator<Item = &ResourceEvent> {
         events.iter().filter_map(Event::as_resource_event)
     }
@@ -317,6 +332,12 @@ impl CurrentExecution {
         use self::ResourceEventKind::{Created, Dropped};
 
         trace!("Committing {self:?} onto {state:?}");
+        if let Some(err) = &self.task_error_info {
+            warn!(
+                "Task error {:?} was reported, but the task was not completed",
+                err
+            );
+        }
 
         let cause = if let ExecutedFunction::Waker { wake_up_cause, .. } = self.function {
             // Copy the cause; we're not really interested in

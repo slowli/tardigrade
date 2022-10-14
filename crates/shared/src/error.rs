@@ -23,6 +23,13 @@ impl fmt::Display for ErrorLocation {
 }
 
 impl ErrorLocation {
+    /// Unknown error location.
+    pub const UNKNOWN: Self = Self {
+        filename: Cow::Borrowed("(unknown)"),
+        line: 1,
+        column: 1,
+    };
+
     fn new(source: &'static Location<'static>) -> Self {
         Self {
             filename: Cow::Borrowed(source.file()),
@@ -63,6 +70,14 @@ impl TaskError {
         Self {
             cause: message.into().into(),
             location: ErrorLocation::new(Location::caller()),
+        }
+    }
+
+    #[doc(hidden)] // used by runtime
+    pub fn from_parts(message: String, location: ErrorLocation) -> Self {
+        Self {
+            cause: message.into(),
+            location,
         }
     }
 

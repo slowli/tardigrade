@@ -58,7 +58,9 @@ impl ModuleImports {
             "timer::poll" => ensure_func_ty::<(TimerId, WasmContextPtr), i64>(ty, fn_name),
 
             "drop_ref" => ensure_func_ty::<Ref, ()>(ty, fn_name),
-            "panic" => ensure_func_ty::<(u32, u32, u32, u32, u32, u32), ()>(ty, fn_name),
+            "task::report_error" | "panic" => {
+                ensure_func_ty::<(u32, u32, u32, u32, u32, u32), ()>(ty, fn_name)
+            }
 
             other if other.starts_with("workflow::") => SpawnFunctions::validate_import(ty, other),
 
@@ -88,6 +90,10 @@ impl ExtendLinker for WorkflowFunctions {
             (
                 "task::abort",
                 wrap1(&mut *store, Self::schedule_task_abortion),
+            ),
+            (
+                "task::report_error",
+                wrap6(&mut *store, Self::report_task_error),
             ),
             // Channel functions
             ("mpsc_receiver::get", wrap4(&mut *store, Self::get_receiver)),

@@ -14,7 +14,7 @@ use wasmtime::Trap;
 use std::{error, fmt, ops::Range, task::Poll};
 
 use crate::{ChannelId, TaskId, TimerId, WakerId, WorkflowId};
-use tardigrade_shared::{ErrorLocation, SendError};
+use tardigrade_shared::{ErrorLocation, SendError, TaskError};
 
 /// Cause of waking up a workflow task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -381,5 +381,15 @@ impl fmt::Display for PanicInfo {
             (None, Some(location)) => write!(formatter, "panic at {}", location),
             (None, None) => formatter.write_str("panic at unknown location"),
         }
+    }
+}
+
+impl From<PanicInfo> for TaskError {
+    fn from(info: PanicInfo) -> Self {
+        let message = info
+            .message
+            .unwrap_or_else(|| "task execution failed".to_owned());
+        let location = info.location.unwrap_or(ErrorLocation::UNKNOWN);
+        Self::from_parts(message, location)
     }
 }

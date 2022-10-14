@@ -11,7 +11,7 @@ use std::{
 
 use super::{
     helpers::{CurrentExecution, WakeIfPending, WakerPlacement, WasmContext, WasmContextPtr},
-    PersistedWorkflowData, WorkflowData, WorkflowFunctions,
+    PersistedWorkflowData, ReportedErrorKind, WorkflowData, WorkflowFunctions,
 };
 use crate::{
     receipt::{Event, ExecutedFunction, PanicInfo, ResourceEventKind, ResourceId, WakeUpCause},
@@ -168,7 +168,12 @@ impl WorkflowData<'_> {
         } else {
             unreachable!("`complete_current_task` called when task isn't executing")
         };
-        self.persisted.complete_task(task_id, Ok(()));
+        let result = if let Some(err) = self.current_execution().take_task_error() {
+            Err(JoinError::Err(err.into()))
+        } else {
+            Ok(())
+        };
+        self.persisted.complete_task(task_id, result);
         self.current_execution()
             .push_resource_event(ResourceId::Task(task_id), ResourceEventKind::Dropped);
     }
@@ -289,5 +294,26 @@ impl WorkflowFunctions {
     ) -> Result<(), Trap> {
         let result = ctx.data_mut().schedule_task_abortion(task_id);
         log_result!(result, "Scheduled task {task_id} to be aborted")
+    }
+
+    pub fn report_task_error(
+        ctx: StoreContextMut<'_, WorkflowData>,
+        message_ptr: u32,
+        message_len: u32,
+        filename_ptr: u32,
+        filename_len: u32,
+        line: u32,
+        column: u32,
+    ) -> Result<(), Trap> {
+        Self::report_error_or_panic(
+            ctx,
+            ReportedErrorKind::TaskError,
+            message_ptr,
+            message_len,
+            filename_ptr,
+            filename_len,
+            line,
+            column,
+        )
     }
 }

@@ -291,12 +291,8 @@ mod tests {
             ctx: StoreContextMut<'_, WorkflowData>,
             task_id: TaskId,
         ) -> Result<Poll<()>, Trap> {
-            if task_id == 0 {
-                let poll_fn = this.borrow().poll_fns.next_for(());
-                poll_fn(ctx)
-            } else {
-                Ok(Poll::Pending)
-            }
+            let poll_fn = this.borrow().poll_fns.next_for(task_id);
+            poll_fn(ctx)
         }
 
         pub(super) fn drop_task(
