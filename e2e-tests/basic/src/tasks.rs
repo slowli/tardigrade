@@ -1,13 +1,15 @@
 //! Version of the `PizzaDelivery` workflow with timers replaced with external tasks.
 //! Also, we don't do delivery.
 
+use async_trait::async_trait;
 use futures::{Future, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::{DomainEvent, PizzaOrder, SharedHandle};
 use tardigrade::{
     channel::{Receiver, Requests, Sender, WithId},
-    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, TaskHandle, Wasm, WorkflowFn},
+    task::TaskResult,
+    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
     FutureExt as _, Json,
 };
 
@@ -40,9 +42,11 @@ impl WorkflowFn for PizzaDeliveryWithTasks {
     type Codec = Json;
 }
 
+#[async_trait(?Send)]
 impl SpawnWorkflow for PizzaDeliveryWithTasks {
-    fn spawn(args: Self::Args, handle: WorkflowHandle<Wasm>) -> TaskHandle {
-        TaskHandle::new(handle.spawn(args))
+    async fn spawn(args: Self::Args, handle: WorkflowHandle<Wasm>) -> TaskResult {
+        handle.spawn(args).await;
+        Ok(())
     }
 }
 

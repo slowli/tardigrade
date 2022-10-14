@@ -126,7 +126,7 @@ async fn test_concurrency_in_workflow(mut api: Handle<PizzaDelivery, RemoteWorkf
     assert_eq!((next_timer - now).num_milliseconds(), 10);
     Timers::set_now(next_timer);
 
-    tardigrade::yield_now().await;
+    tardigrade::task::yield_now().await;
     assert!(api.shared.events.next().now_or_never().is_none());
     // You'd think that `DomainEvent::Baked { index: 1, .. }` would be triggered,
     // but this is not the case! In reality, the 1st order will only be polled once

@@ -1,6 +1,7 @@
 //! Tardigrade workflow example implementing pizza shop business process
 //! (baking and delivery).
 
+use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 
@@ -9,8 +10,9 @@ use std::time::Duration;
 use tardigrade::{
     channel::{Receiver, Sender},
     sleep,
+    task::TaskResult,
     trace::Tracer,
-    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, TaskHandle, Wasm, WorkflowFn},
+    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
     FutureExt as _, Json,
 };
 
@@ -114,9 +116,11 @@ impl WorkflowFn for PizzaDelivery {
 }
 
 /// Defines how workflow instances are spawned.
+#[async_trait(?Send)]
 impl SpawnWorkflow for PizzaDelivery {
-    fn spawn(args: Args, handle: PizzaDeliveryHandle) -> TaskHandle {
-        TaskHandle::new(handle.spawn(args))
+    async fn spawn(args: Args, handle: PizzaDeliveryHandle) -> TaskResult {
+        handle.spawn(args).await;
+        Ok(())
     }
 }
 
