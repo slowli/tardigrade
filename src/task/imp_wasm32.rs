@@ -96,7 +96,7 @@ fn report_task_error(err: &TaskError) {
         );
     }
 
-    let message = err.to_string();
+    let message = err.cause().to_string();
     unsafe {
         report_error(
             message.as_ptr(),
