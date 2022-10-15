@@ -630,10 +630,22 @@ fn completing_main_task_with_error() {
     let poll_fns = Answers::from_value(complete_task_with_error as MockPollFn);
     let _guard = ExportsMock::prepare(poll_fns);
     let clock = MockScheduler::default();
-    let (_, workflow) = create_workflow(Services {
+    let (receipt, workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
     });
+
+    let task_result = receipt.executions().iter().find_map(|execution| {
+        if let ExecutedFunction::Task { poll_result, .. } = &execution.function {
+            Some(poll_result)
+        } else {
+            None
+        }
+    });
+    assert_matches!(
+        task_result.unwrap(),
+        Poll::Ready(Err(err)) if err.location().filename == "/build/src/test.rs"
+    );
 
     let tasks = &workflow.data().persisted.tasks;
     assert_eq!(tasks.len(), 1);
@@ -684,6 +696,23 @@ fn completing_subtask_with_error() {
     }
     assert_eq!(executions_by_task[&0], 2);
     assert_eq!(executions_by_task[&1], 1);
+
+    let task_result = receipt.executions().iter().find_map(|execution| {
+        if let ExecutedFunction::Task {
+            task_id: 1,
+            poll_result,
+            ..
+        } = &execution.function
+        {
+            Some(poll_result)
+        } else {
+            None
+        }
+    });
+    assert_matches!(
+        task_result.unwrap(),
+        Poll::Ready(Err(err)) if err.location().filename == "/build/src/test.rs"
+    );
 
     let tasks = &workflow.data().persisted.tasks;
     assert_eq!(tasks.len(), 2);

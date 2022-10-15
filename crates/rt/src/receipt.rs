@@ -14,7 +14,7 @@ use wasmtime::Trap;
 use std::{error, fmt, ops::Range, task::Poll};
 
 use crate::{ChannelId, TaskId, TimerId, WakerId, WorkflowId};
-use tardigrade_shared::{ErrorLocation, SendError, TaskError};
+use tardigrade_shared::{ErrorLocation, SendError, TaskError, TaskResult};
 
 /// Cause of waking up a workflow task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,7 +74,7 @@ pub enum WakeUpCause {
 /// These functions are exported from the workflow WASM module and are called during different
 /// stages of the workflow lifecycle (e.g., after receiving an inbound message or completing
 /// a timer).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[non_exhaustive]
 pub enum ExecutedFunction {
     /// Entry point of the workflow.
@@ -88,7 +88,7 @@ pub enum ExecutedFunction {
         /// Cause of the task waking up.
         wake_up_cause: WakeUpCause,
         /// Result of polling a task.
-        poll_result: Poll<()>,
+        poll_result: Poll<TaskResult>,
     },
     /// Waking up a [`Waker`](std::task::Waker).
     #[non_exhaustive]

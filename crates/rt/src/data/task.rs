@@ -18,7 +18,7 @@ use crate::{
     utils::{self, WasmAllocator},
     TaskId, WakerId,
 };
-use tardigrade_shared::{abi::IntoWasm, JoinError, PollTask};
+use tardigrade_shared::{abi::IntoWasm, JoinError, PollTask, TaskResult};
 
 /// Priority queue for tasks.
 #[derive(Debug, Default)]
@@ -144,7 +144,7 @@ impl WorkflowData<'_> {
             .expect("called outside event loop")
     }
 
-    pub(crate) fn set_current_execution(&mut self, function: ExecutedFunction) {
+    pub(crate) fn set_current_execution(&mut self, function: &ExecutedFunction) {
         self.current_execution = Some(CurrentExecution::new(function));
     }
 
@@ -161,21 +161,25 @@ impl WorkflowData<'_> {
         }
     }
 
-    pub(crate) fn complete_current_task(&mut self) {
-        let current_execution = self.current_execution();
-        let task_id = if let ExecutedFunction::Task { task_id, .. } = current_execution.function {
-            task_id
-        } else {
-            unreachable!("`complete_current_task` called when task isn't executing")
-        };
-        let result = if let Some(err) = self.current_execution().take_task_error() {
-            Err(JoinError::Err(err.into()))
-        } else {
-            Ok(())
-        };
-        self.persisted.complete_task(task_id, result);
+    /// Returns the result of task completion.
+    pub(crate) fn complete_current_task(&mut self) -> TaskResult {
+        let task_id = self
+            .current_execution()
+            .task_id
+            .expect("`complete_current_task` called when task isn't executing");
+        let result: TaskResult = self
+            .current_execution()
+            .take_task_error()
+            .map_or(Ok(()), |info| Err(info.into()));
+
+        let join_result = result
+            .as_ref()
+            .copied()
+            .map_err(|err| JoinError::Err(err.clone_boxed()));
+        self.persisted.complete_task(task_id, join_result);
         self.current_execution()
             .push_resource_event(ResourceId::Task(task_id), ResourceEventKind::Dropped);
+        result
     }
 
     fn spawn_task(&mut self, task_id: TaskId, task_name: String) -> Result<(), Trap> {
@@ -186,7 +190,7 @@ impl WorkflowData<'_> {
 
         let execution = self.current_execution();
         execution.push_resource_event(ResourceId::Task(task_id), ResourceEventKind::Created);
-        let task_state = TaskState::new(task_name, execution.function.task_id());
+        let task_state = TaskState::new(task_name, execution.task_id);
         self.persisted.tasks.insert(task_id, task_state);
         Ok(())
     }

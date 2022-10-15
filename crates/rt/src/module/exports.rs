@@ -13,8 +13,7 @@ use crate::{
     module::ensure_func_ty,
     TaskId, WakerId,
 };
-use tardigrade::interface::Interface;
-use tardigrade_shared::abi::TryFromWasm;
+use tardigrade_shared::{abi::TryFromWasm, interface::Interface};
 
 #[derive(Clone, Copy)]
 pub(crate) struct ModuleExports {

@@ -196,8 +196,10 @@ impl Wakers {
 
 #[derive(Debug)]
 pub(super) struct CurrentExecution {
-    /// Executed function.
-    pub function: ExecutedFunction,
+    /// ID of the executed task, if any.
+    pub task_id: Option<TaskId>,
+    /// Wakeup cause for wakers created by this execution.
+    wake_up_cause: WakeUpCause,
     /// Tasks to be awaken after the task finishes polling.
     tasks_to_be_awoken: HashSet<TaskId>,
     /// Tasks to be aborted after the task finishes polling.
@@ -213,9 +215,19 @@ pub(super) struct CurrentExecution {
 }
 
 impl CurrentExecution {
-    pub fn new(function: ExecutedFunction) -> Self {
+    pub fn new(function: &ExecutedFunction) -> Self {
+        let task_id = function.task_id();
+        let wake_up_cause = if let ExecutedFunction::Waker { wake_up_cause, .. } = function {
+            // Copy the cause; we're not really interested in
+            // `WakeUpCause::Function { task_id: None }` that would result otherwise.
+            wake_up_cause.clone()
+        } else {
+            WakeUpCause::Function { task_id }
+        };
+
         Self {
-            function,
+            task_id,
+            wake_up_cause,
             tasks_to_be_awoken: HashSet::new(),
             tasks_to_be_aborted: HashSet::new(),
             panic_info: None,
@@ -301,18 +313,12 @@ impl CurrentExecution {
     }
 
     pub fn set_panic(&mut self, panic_info: PanicInfo) {
-        warn!(
-            "Execution {:?} led to a panic: {:?}",
-            self.function, panic_info
-        );
+        warn!("Execution {self:?} led to a panic: {panic_info:?}");
         self.panic_info = Some(panic_info);
     }
 
     pub fn set_task_error(&mut self, panic_info: PanicInfo) {
-        warn!(
-            "Execution {:?} led to a task error: {:?}",
-            self.function, panic_info
-        );
+        warn!("Execution {self:?} led to a task error: {panic_info:?}");
         self.task_error_info = Some(panic_info);
     }
 
@@ -339,16 +345,7 @@ impl CurrentExecution {
             );
         }
 
-        let cause = if let ExecutedFunction::Waker { wake_up_cause, .. } = self.function {
-            // Copy the cause; we're not really interested in
-            // `WakeUpCause::Function { task_id: None }` that would result otherwise.
-            wake_up_cause
-        } else {
-            WakeUpCause::Function {
-                task_id: self.function.task_id(),
-            }
-        };
-
+        let cause = self.wake_up_cause;
         for event in Self::resource_events(&self.events) {
             match (event.kind, event.resource_id) {
                 (Created, ResourceId::Task(task_id)) => {

@@ -154,11 +154,8 @@ impl<'a> Workflow<'a> {
             } => {
                 let exports = self.store.data().exports();
                 let exec_result = exports.poll_task(self.store.as_context_mut(), *task_id);
-                if let Ok(Poll::Ready(())) = exec_result {
-                    self.store.data_mut().complete_current_task();
-                }
                 exec_result.map(|poll| {
-                    *poll_result = poll;
+                    *poll_result = poll.map(|()| self.store.data_mut().complete_current_task());
                 })?;
             }
 
@@ -188,9 +185,7 @@ impl<'a> Workflow<'a> {
         data: Option<&[u8]>,
         receipt: &mut Receipt,
     ) -> Result<ExecutionOutput, ExecutionError> {
-        self.store
-            .data_mut()
-            .set_current_execution(function.clone());
+        self.store.data_mut().set_current_execution(&function);
 
         let output = self.do_execute(&mut function, data);
         let (events, panic_info) = self
