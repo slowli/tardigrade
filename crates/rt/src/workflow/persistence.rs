@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use wasmtime::Store;
 
-use std::task::Poll;
+use std::{fmt, task::Poll};
 
 use crate::{
     data::{
@@ -20,7 +20,7 @@ use crate::{
 };
 use tardigrade_shared::JoinError;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Memory {
     Unstructured(#[serde(with = "serde_compress")] Vec<u8>),
@@ -31,6 +31,27 @@ enum Memory {
         #[serde(with = "serde_compress")]
         heap: Vec<u8>,
     },
+}
+
+impl fmt::Debug for Memory {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unstructured(bytes) => formatter
+                .debug_struct("Unstructured")
+                .field("len", &bytes.len())
+                .finish(),
+            Self::Structured {
+                data_base,
+                data_diff,
+                heap,
+            } => formatter
+                .debug_struct("Structured")
+                .field("data_base", data_base)
+                .field("data_diff_len", &data_diff.len())
+                .field("heap_len", &heap.len())
+                .finish(),
+        }
+    }
 }
 
 mod serde_compress {
