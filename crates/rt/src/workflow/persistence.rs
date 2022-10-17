@@ -251,6 +251,11 @@ impl PersistedWorkflow {
             .map_or(Poll::Pending, TaskState::result)
     }
 
+    /// Aborts the workflow by changing the result of its main task.
+    pub(crate) fn abort(&mut self) {
+        self.state.abort();
+    }
+
     /// Returns the current time for the workflow.
     pub fn current_time(&self) -> DateTime<Utc> {
         self.state.timers.last_known_time()

@@ -76,14 +76,13 @@ impl ChannelInfo {
 }
 
 #[derive(Debug)]
-struct DropMessageAction<'a> {
-    manager: &'a mut WorkflowManager,
+struct DropMessageAction {
     channel_id: ChannelId,
 }
 
-impl DropMessageAction<'_> {
-    fn execute(self) {
-        let state = self.manager.state.get_mut().unwrap();
+impl DropMessageAction {
+    fn execute(self, manager: &mut WorkflowManager) {
+        let state = manager.state.get_mut().unwrap();
         state.take_message(self.channel_id);
     }
 }
@@ -128,7 +127,23 @@ impl<T> TickResult<T> {
 /// wrapper.
 #[derive(Debug)]
 pub struct Actions<'a> {
-    drop_message_action: Option<DropMessageAction<'a>>,
+    manager: &'a mut WorkflowManager,
+    abort_action: bool,
+    drop_message_action: Option<DropMessageAction>,
+}
+
+impl<'a> Actions<'a> {
+    fn new(manager: &'a mut WorkflowManager, abort_action: bool) -> Self {
+        Self {
+            manager,
+            abort_action,
+            drop_message_action: None,
+        }
+    }
+
+    fn allow_dropping_message(&mut self, channel_id: ChannelId) {
+        self.drop_message_action = Some(DropMessageAction { channel_id });
+    }
 }
 
 impl TickResult<Actions<'_>> {
@@ -136,6 +151,20 @@ impl TickResult<Actions<'_>> {
     /// by consuming a message from a certain channel.
     pub fn can_drop_erroneous_message(&self) -> bool {
         self.extra.drop_message_action.is_some()
+    }
+
+    /// Aborts the erroneous workflow.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the execution is successful.
+    pub fn abort_workflow(self) -> TickResult<()> {
+        assert!(
+            self.extra.abort_action,
+            "cannot abort workflow because it did not error"
+        );
+        self.extra.manager.abort_workflow(self.workflow_id);
+        self.drop_extra()
     }
 
     /// Drops a message that led to erroneous workflow execution.
@@ -149,8 +178,7 @@ impl TickResult<Actions<'_>> {
             .drop_message_action
             .take()
             .expect("cannot drop message");
-        action.execute();
-
+        action.execute(self.extra.manager);
         self.drop_extra()
     }
 }
@@ -435,7 +463,7 @@ impl WorkflowManager {
             }
 
             let messages = workflow.drain_messages();
-            state.persist_workflow(workflow_id, workflow);
+            state.persist_workflow(workflow_id, workflow.persist());
             state.commit(transaction, receipt);
             state.push_messages(messages);
 
@@ -498,11 +526,30 @@ impl WorkflowManager {
         let result = workflow.tick();
         if let Ok(receipt) = &result {
             let messages = workflow.drain_messages();
-            state.persist_workflow(workflow_id, workflow);
+            state.persist_workflow(workflow_id, workflow.persist());
             state.commit(transaction, receipt);
             state.push_messages(messages);
         }
         result
+    }
+
+    /// Aborts the workflow with the specified ID. The parent workflow, if any, will be notified,
+    /// and all channel handles owned by the workflow will be properly disposed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the manager does not contain a workflow with the specified ID.
+    pub fn abort_workflow(&mut self, workflow_id: WorkflowId) {
+        trace!("Aborting workflow {workflow_id}");
+
+        let state = self.state.get_mut().unwrap();
+        state
+            .workflows
+            .get_mut(&workflow_id)
+            .unwrap()
+            .workflow
+            .abort();
+        state.handle_workflow_update(workflow_id);
     }
 
     /// Accesses persisted views of the workflows managed by this manager.
@@ -529,10 +576,8 @@ impl WorkflowManager {
             let result = self.tick_workflow(workflow_id);
             return Ok(TickResult {
                 workflow_id,
+                extra: Actions::new(self, result.is_err()),
                 result,
-                extra: Actions {
-                    drop_message_action: None,
-                },
             });
         }
 
@@ -540,18 +585,13 @@ impl WorkflowManager {
         trace!("Searched for workflow with consumable message: {ids:?}");
         if let Some((channel_id, workflow_id)) = ids {
             let result = self.feed_message_to_workflow(channel_id, workflow_id);
+            let mut actions = Actions::new(self, result.is_err());
+            if result.is_err() {
+                actions.allow_dropping_message(channel_id);
+            }
             return Ok(TickResult {
                 workflow_id,
-                extra: Actions {
-                    drop_message_action: if result.is_err() {
-                        Some(DropMessageAction {
-                            manager: self,
-                            channel_id,
-                        })
-                    } else {
-                        None
-                    },
-                },
+                extra: actions,
                 result,
             });
         }

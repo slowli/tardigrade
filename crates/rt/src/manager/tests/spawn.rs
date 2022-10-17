@@ -638,3 +638,60 @@ fn completing_child_with_error() {
     });
     assert!(is_child_polled, "{:?}", receipt);
 }
+
+fn complete_task_with_panic(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
+    let (message_ptr, message_len) =
+        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"panic message")?;
+    let (filename_ptr, filename_len) =
+        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"/build/src/test.rs")?;
+    WorkflowFunctions::report_panic(
+        ctx,
+        message_ptr,
+        message_len,
+        filename_ptr,
+        filename_len,
+        42, // line
+        1,  // column
+    )?;
+    Err(Trap::new("oops"))
+}
+
+#[test]
+fn completing_child_with_panic() {
+    let check_child_completion: MockPollFn = |ctx| {
+        let child = Some(WorkflowData::child_ref(CHILD_ID));
+        let poll_result = SpawnFunctions::poll_workflow_completion(ctx, child, POLL_CX)?;
+        assert_eq!(poll_result, -3); // Poll::Ready(Err(Aborted))
+
+        Ok(Poll::Pending)
+    };
+
+    let poll_fns = Answers::from_values([
+        spawn_and_poll_child,
+        complete_task_with_panic,
+        check_child_completion,
+    ]);
+    let _guard = ExportsMock::prepare(poll_fns);
+    let mut manager = create_test_manager();
+    let workflow_id = create_test_workflow(&manager).id();
+
+    let tick_result = manager.tick().unwrap();
+    assert_eq!(tick_result.workflow_id(), workflow_id);
+    tick_result.into_inner().unwrap();
+    let tick_result = manager.tick().unwrap();
+    assert_eq!(tick_result.workflow_id(), CHILD_ID);
+    let err = tick_result.abort_workflow().into_inner().unwrap_err();
+    assert_eq!(
+        err.panic_info().unwrap().message.as_deref(),
+        Some("panic message")
+    );
+
+    let receipt = manager.tick_workflow(workflow_id).unwrap();
+    let is_child_polled = receipt.events().any(|event| {
+        event.as_resource_event().map_or(false, |event| {
+            matches!(event.resource_id, ResourceId::Workflow(CHILD_ID))
+                && matches!(event.kind, ResourceEventKind::Polled(Poll::Ready(())))
+        })
+    });
+    assert!(is_child_polled, "{:?}", receipt);
+}

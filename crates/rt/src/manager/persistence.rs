@@ -13,7 +13,7 @@ use crate::{
     manager::{transaction::Transaction, ChannelInfo, ChannelSide},
     receipt::Receipt,
     utils::{clone_join_error, Message},
-    workflow::{ChannelIds, Workflow},
+    workflow::ChannelIds,
     PersistedWorkflow,
 };
 use tardigrade_shared::{interface::ChannelKind, ChannelId, SendError, WorkflowId};
@@ -308,10 +308,14 @@ impl PersistedWorkflows {
         }
     }
 
-    pub(super) fn persist_workflow(&mut self, id: WorkflowId, workflow: Workflow) {
-        // Since all outbound messages are drained, persisting the workflow is safe.
-        let workflow = workflow.persist().unwrap();
-        let persisted = self.workflows.get_mut(&id).unwrap();
+    pub(super) fn persist_workflow(&mut self, id: WorkflowId, workflow: PersistedWorkflow) {
+        self.workflows.get_mut(&id).unwrap().workflow = workflow;
+        self.handle_workflow_update(id);
+    }
+
+    pub(super) fn handle_workflow_update(&mut self, id: WorkflowId) {
+        let persisted = self.workflows.remove(&id).unwrap();
+        let workflow = &persisted.workflow;
         let completion_notification = if let Poll::Ready(result) = workflow.result() {
             let parent_id = persisted.parent_id;
             // Close all channels linked to the workflow.
@@ -321,11 +325,9 @@ impl PersistedWorkflows {
             for (.., state) in workflow.outbound_channels() {
                 self.close_channel_side(state.id(), ChannelSide::WorkflowSender(id));
             }
-            // Garbage-collect the workflow state.
-            self.workflows.remove(&id);
             parent_id.map(|id| (id, result.map_err(clone_join_error)))
         } else {
-            persisted.workflow = workflow;
+            self.workflows.insert(id, persisted);
             None
         };
 

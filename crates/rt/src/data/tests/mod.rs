@@ -165,7 +165,7 @@ fn starting_workflow() {
         }) if channel_name == "orders"
     );
 
-    workflow.persist().unwrap();
+    workflow.persist();
 }
 
 #[test]
@@ -570,7 +570,7 @@ fn timers_basics() {
     assert!(timers[&1].completed_at().is_none());
 
     scheduler.set_now(scheduler.now() + chrono::Duration::seconds(1));
-    let mut persisted = workflow.persist().unwrap();
+    let mut persisted = workflow.persist();
     persisted.set_current_time(scheduler.now());
     let mut workflow = restore_workflow(
         persisted,

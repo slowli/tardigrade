@@ -135,6 +135,23 @@ impl PersistedWorkflowData {
         let wakers = mem::take(&mut task_state.wakes_on_completion);
         self.schedule_wakers(wakers, WakeUpCause::CompletedTask(task_id));
     }
+
+    pub(crate) fn abort(&mut self) {
+        let main_task = self
+            .tasks
+            .values_mut()
+            .find(|state| state.spawned_by.is_none());
+        let main_task = if let Some(task) = main_task {
+            task
+        } else {
+            // Create a surrogate main task (may be necessary if the workflow is aborted
+            // before initialization, e.g., if it panics in init code).
+            self.tasks
+                .entry(0)
+                .or_insert_with(|| TaskState::new("_main".to_owned(), None))
+        };
+        main_task.completion_result = Poll::Ready(Err(JoinError::Aborted));
+    }
 }
 
 impl WorkflowData<'_> {

@@ -10,7 +10,7 @@ mod persistence;
 pub use self::persistence::PersistedWorkflow;
 
 use crate::{
-    data::{ConsumeError, PersistError, WorkflowData},
+    data::{ConsumeError, WorkflowData},
     module::{DataSection, ModuleExports, Services, WorkflowSpawner},
     receipt::{
         Event, ExecutedFunction, Execution, ExecutionError, Receipt, ResourceEventKind, ResourceId,
@@ -313,8 +313,8 @@ impl<'a> Workflow<'a> {
     ///
     /// Returns an error if the workflow is in such a state that it cannot be persisted
     /// right now.
-    pub(crate) fn persist(self) -> Result<PersistedWorkflow, PersistError> {
-        PersistedWorkflow::new(self)
+    pub(crate) fn persist(self) -> PersistedWorkflow {
+        PersistedWorkflow::new(self).unwrap()
     }
 
     fn copy_memory(&mut self, offset: usize, memory_contents: &[u8]) -> anyhow::Result<()> {

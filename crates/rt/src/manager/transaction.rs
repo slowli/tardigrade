@@ -45,7 +45,7 @@ impl TransactionInner {
             WorkflowWithMeta {
                 definition_id,
                 parent_id,
-                workflow: workflow.persist().unwrap(),
+                workflow: workflow.persist(),
             },
         );
         id
