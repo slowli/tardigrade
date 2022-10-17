@@ -25,6 +25,7 @@
 //! ```
 
 use chrono::{DateTime, Utc};
+#[cfg(feature = "async")]
 use futures::{channel::mpsc, Stream};
 
 use std::{
@@ -254,13 +255,17 @@ impl ModuleCompiler {
 #[derive(Debug)]
 pub struct MockScheduler {
     inner: Mutex<SchedulerBase>,
+    #[cfg(feature = "async")]
     new_expirations_sx: mpsc::UnboundedSender<DateTime<Utc>>,
 }
 
+#[allow(clippy::derivable_impls)]
+// ^ triggered if building without `async` feature on
 impl Default for MockScheduler {
     fn default() -> Self {
         Self {
             inner: Mutex::default(),
+            #[cfg(feature = "async")]
             new_expirations_sx: mpsc::unbounded().0,
         }
     }
@@ -269,6 +274,8 @@ impl Default for MockScheduler {
 impl MockScheduler {
     /// Creates a mock scheduler together with a stream that notifies the consumer
     /// about new timer expirations.
+    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+    #[cfg(feature = "async")]
     pub fn with_expirations() -> (Self, impl Stream<Item = DateTime<Utc>> + Unpin) {
         let (new_expirations_sx, rx) = mpsc::unbounded();
         let this = Self {
