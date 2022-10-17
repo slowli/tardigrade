@@ -2,13 +2,14 @@
 
 use assert_matches::assert_matches;
 use async_std::task;
+use chrono::{DateTime, Utc};
 use futures::{
     channel::{mpsc, oneshot},
     future::{self, Either},
     stream, FutureExt, SinkExt, Stream, StreamExt, TryStreamExt,
 };
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use tardigrade::{
     interface::{InboundChannel, OutboundChannel},
@@ -31,14 +32,10 @@ use tardigrade_test_basic::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOr
 
 use super::{TestResult, MODULE};
 
-async fn retry_until_some<T>(mut condition: impl FnMut() -> Option<T>) -> T {
-    for _ in 0..5 {
-        if let Some(value) = condition() {
-            return value;
-        }
-        task::sleep(Duration::from_millis(10)).await;
+fn drain_stream(stream: &mut (impl Stream + Unpin)) {
+    while stream.next().now_or_never().is_some() {
+        // Just drop the returned item
     }
-    panic!("Run out of attempts waiting for condition");
 }
 
 async fn test_async_handle(cancel_workflow: bool) -> TestResult {
@@ -237,6 +234,7 @@ async fn wait_timer(
 
 struct AsyncRig {
     scheduler: Arc<MockScheduler>,
+    scheduler_expirations: Box<dyn Stream<Item = DateTime<Utc>> + Unpin>,
     events: MessageReceiver<DomainEvent, Json>,
     tracer: TracerHandle<Json>,
     results: mpsc::UnboundedReceiver<TickResult<()>>,
@@ -244,7 +242,8 @@ struct AsyncRig {
 
 async fn initialize_workflow() -> TestResult<AsyncRig> {
     let module = task::spawn_blocking(|| &*MODULE).await;
-    let scheduler = Arc::new(MockScheduler::default());
+    let (scheduler, expirations) = MockScheduler::with_expirations();
+    let scheduler = Arc::new(scheduler);
     let spawner = module.for_workflow::<PizzaDelivery>()?;
     let mut manager = WorkflowManager::builder()
         .with_spawner("pizza", spawner)
@@ -292,6 +291,7 @@ async fn initialize_workflow() -> TestResult<AsyncRig> {
 
     Ok(AsyncRig {
         scheduler,
+        scheduler_expirations: Box::new(expirations),
         events: events_rx,
         tracer,
         results,
@@ -302,6 +302,7 @@ async fn initialize_workflow() -> TestResult<AsyncRig> {
 async fn async_handle_with_mock_scheduler() -> TestResult {
     let AsyncRig {
         scheduler,
+        mut scheduler_expirations,
         mut events,
         mut tracer,
         results,
@@ -310,12 +311,13 @@ async fn async_handle_with_mock_scheduler() -> TestResult {
 
     wait_timer(&mut receipts, 1, ResourceEventKind::Created).await;
     let now = scheduler.now();
-    let next_timer = retry_until_some(|| {
-        scheduler
-            .next_timer_expiration()
-            .filter(|&timer| (timer - now).num_milliseconds() == 40)
-    })
-    .await;
+    let next_timer = loop {
+        let timer = scheduler_expirations.next().await.unwrap();
+        if (timer - now).num_milliseconds() == 40 {
+            break timer;
+        }
+    };
+    drain_stream(&mut scheduler_expirations);
 
     scheduler.set_now(next_timer);
     {
@@ -348,12 +350,12 @@ async fn async_handle_with_mock_scheduler() -> TestResult {
     assert_eq!(delivery_future.state(), FutureState::Polling);
 
     let now = scheduler.now();
-    let next_timer = retry_until_some(|| scheduler.next_timer_expiration()).await;
+    let next_timer = scheduler_expirations.next().await.unwrap();
     assert_eq!((next_timer - now).num_milliseconds(), 10);
     scheduler.set_now(next_timer);
 
     wait_timer(&mut receipts, 2, ResourceEventKind::Created).await;
-    let next_timer = retry_until_some(|| scheduler.next_timer_expiration()).await;
+    let next_timer = scheduler_expirations.next().await.unwrap();
     scheduler.set_now(next_timer);
     wait_timer(&mut receipts, 0, ResourceEventKind::Dropped).await;
 
@@ -401,19 +403,20 @@ async fn async_handle_with_mock_scheduler_and_bulk_update() -> TestResult {
     Ok(())
 }
 
-#[derive(Debug)]
 struct CancellableWorkflow {
     orders_sx: MessageSender<PizzaOrder, Json>,
     events_rx: MessageReceiver<DomainEvent, Json>,
     tracer: TracerHandle<Json>,
     join_handle: task::JoinHandle<WorkflowManager>,
     scheduler: Arc<MockScheduler>,
+    scheduler_expirations: Box<dyn Stream<Item = DateTime<Utc>> + Unpin>,
     cancel_sx: oneshot::Sender<()>,
 }
 
 async fn spawn_cancellable_workflow() -> TestResult<CancellableWorkflow> {
     let module = task::spawn_blocking(|| &*MODULE).await;
-    let scheduler = Arc::new(MockScheduler::default());
+    let (scheduler, expirations) = MockScheduler::with_expirations();
+    let scheduler = Arc::new(scheduler);
     let spawner = module.for_workflow::<PizzaDelivery>()?;
     let mut manager = WorkflowManager::builder()
         .with_spawner("pizza", spawner)
@@ -447,6 +450,7 @@ async fn spawn_cancellable_workflow() -> TestResult<CancellableWorkflow> {
         tracer,
         join_handle,
         scheduler,
+        scheduler_expirations: Box::new(expirations),
         cancel_sx,
     })
 }
@@ -459,6 +463,7 @@ async fn persisting_workflow() -> TestResult {
         mut tracer,
         join_handle,
         scheduler,
+        mut scheduler_expirations,
         cancel_sx,
     } = spawn_cancellable_workflow().await?;
 
@@ -468,7 +473,7 @@ async fn persisting_workflow() -> TestResult {
     };
     orders_sx.send(order).await?;
 
-    let next_timer = retry_until_some(|| scheduler.next_timer_expiration()).await;
+    let next_timer = scheduler_expirations.next().await.unwrap();
     scheduler.set_now(next_timer);
     // Wait until the second timer is active.
     while let Some(event) = events_rx.try_next().await? {
@@ -496,7 +501,7 @@ async fn persisting_workflow() -> TestResult {
     let join_handle = task::spawn(async move { env.run(&mut manager).await });
 
     drop(orders_sx); // should terminate the workflow once the delivery timer is expired
-    let next_timer = retry_until_some(|| scheduler.next_timer_expiration()).await;
+    let next_timer = scheduler_expirations.next().await.unwrap();
     scheduler.set_now(next_timer);
     assert_matches!(join_handle.await?, Termination::Finished);
 

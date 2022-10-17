@@ -25,6 +25,7 @@
 //! ```
 
 use chrono::{DateTime, Utc};
+use futures::{channel::mpsc, Stream};
 
 use std::{
     env, fs, ops,
@@ -250,12 +251,33 @@ impl ModuleCompiler {
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MockScheduler {
     inner: Mutex<SchedulerBase>,
+    new_expirations_sx: mpsc::UnboundedSender<DateTime<Utc>>,
+}
+
+impl Default for MockScheduler {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::default(),
+            new_expirations_sx: mpsc::unbounded().0,
+        }
+    }
 }
 
 impl MockScheduler {
+    /// Creates a mock scheduler together with a stream that notifies the consumer
+    /// about new timer expirations.
+    pub fn with_expirations() -> (Self, impl Stream<Item = DateTime<Utc>> + Unpin) {
+        let (new_expirations_sx, rx) = mpsc::unbounded();
+        let this = Self {
+            inner: Mutex::default(),
+            new_expirations_sx,
+        };
+        (this, rx)
+    }
+
     fn inner(&self) -> impl ops::DerefMut<Target = SchedulerBase> + '_ {
         self.inner.lock().unwrap()
     }
@@ -292,6 +314,7 @@ impl Schedule for MockScheduler {
         if now >= expires_at {
             Box::pin(future::ready(now))
         } else {
+            self.new_expirations_sx.unbounded_send(expires_at).ok();
             Box::pin(guard.insert_timer(expires_at).then(|res| match res {
                 Ok(timestamp) => future::ready(timestamp).left_future(),
                 Err(_) => future::pending().right_future(),
