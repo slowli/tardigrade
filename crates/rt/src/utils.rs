@@ -1,5 +1,6 @@
 //! Misc utils.
 
+use futures::future::Aborted;
 use serde::{Deserialize, Serialize};
 use wasmtime::{AsContext, AsContextMut, Memory, StoreContextMut, Trap};
 
@@ -235,6 +236,13 @@ pub(crate) fn clone_completion_result(
         Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
         Poll::Ready(Err(err)) => Poll::Ready(Err(clone_join_error(err))),
     }
+}
+
+pub(crate) fn extract_task_poll_result(result: Result<(), &JoinError>) -> Result<(), Aborted> {
+    result.or_else(|err| match err {
+        JoinError::Err(_) => Ok(()),
+        JoinError::Aborted => Err(Aborted),
+    })
 }
 
 pub(crate) mod serde_b64 {

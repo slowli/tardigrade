@@ -1,6 +1,5 @@
 //! Task errors.
 
-use futures::future::Aborted;
 use serde::{Deserialize, Serialize};
 
 use std::{borrow::Cow, error, fmt, panic::Location};
@@ -153,12 +152,16 @@ pub enum JoinError {
 }
 
 impl JoinError {
-    #[doc(hidden)]
-    pub fn task_poll_result(result: Result<(), &Self>) -> Result<(), Aborted> {
-        result.or_else(|err| match err {
-            Self::Err(_) => Ok(()),
-            Self::Aborted => Err(Aborted),
-        })
+    /// Unwraps this error into an underlying [`TaskError`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if this is not a task error.
+    pub fn unwrap_task_error(self) -> TaskError {
+        match self {
+            Self::Err(err) => err,
+            Self::Aborted => panic!("not a task error"),
+        }
     }
 }
 

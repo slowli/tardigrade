@@ -72,10 +72,7 @@ impl SpawnWorkflow for PizzaDeliveryWithTasks {
             tasks
                 .try_for_each(future::ok)
                 .await
-                .map_err(|err| match err {
-                    JoinError::Err(err) => err,
-                    JoinError::Aborted => unreachable!(), // we never abort tasks
-                })
+                .map_err(JoinError::unwrap_task_error)
         } else {
             tasks.for_each(|_| future::ready(())).await;
             Ok(())

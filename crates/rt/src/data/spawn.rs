@@ -224,7 +224,7 @@ impl WorkflowData<'_> {
     ) -> PollTask {
         let poll_result = self.persisted.child_workflows[&workflow_id]
             .result()
-            .map(JoinError::task_poll_result);
+            .map(utils::extract_task_poll_result);
         self.current_execution().push_resource_event(
             ResourceId::Workflow(workflow_id),
             ResourceEventKind::Polled(utils::drop_value(&poll_result)),

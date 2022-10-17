@@ -211,7 +211,7 @@ impl WorkflowData<'_> {
     fn poll_task_completion(&mut self, task_id: TaskId, cx: &mut WasmContext) -> PollTask {
         let poll_result = self.persisted.tasks[&task_id]
             .result()
-            .map(JoinError::task_poll_result);
+            .map(utils::extract_task_poll_result);
         let empty_result = utils::drop_value(&poll_result);
         self.current_execution().push_resource_event(
             ResourceId::Task(task_id),
