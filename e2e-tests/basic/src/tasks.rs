@@ -48,8 +48,8 @@ impl SpawnWorkflow for PizzaDeliveryWithTasks {
             let task_name = format!("order #{}", order_index);
             let task_handle = task::try_spawn(&task_name, async move {
                 futures::select_biased! {
-                    _ = sleep(fail_after).fuse() => Err(TaskError::new("baking interrupted")),
                     _ = shared.bake(order_index, order).fuse() => Ok(()),
+                    _ = sleep(fail_after).fuse() => Err(TaskError::new("baking interrupted")),
                 }
             });
             tasks.push(task_handle);
@@ -68,8 +68,18 @@ impl SpawnWorkflow for PizzaDeliveryWithTasks {
         }
 
         // Finish remaining tasks.
-        tasks.try_for_each(future::ok).await?;
-        Ok(())
+        if args.propagate_errors {
+            tasks
+                .try_for_each(future::ok)
+                .await
+                .map_err(|err| match err {
+                    JoinError::Err(err) => err,
+                    JoinError::Aborted => unreachable!(), // we never abort tasks
+                })
+        } else {
+            tasks.for_each(|_| future::ready(())).await;
+            Ok(())
+        }
     }
 }
 
