@@ -389,6 +389,7 @@ fn assert_child_inbound_message_receipt(receipt: &Receipt) {
                 }
             },
             events,
+            ..
         } if channel_name == "traces" && events.is_empty()
     );
     let task_execution = &receipt.executions()[1];

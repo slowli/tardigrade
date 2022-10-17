@@ -3,7 +3,7 @@
 use anyhow::Context;
 use wasmtime::{AsContextMut, Linker, Store, Trap};
 
-use std::{collections::HashMap, mem, sync::Arc, task::Poll};
+use std::{collections::HashMap, mem, sync::Arc};
 
 mod persistence;
 
@@ -19,11 +19,15 @@ use crate::{
     utils::Message,
     ChannelId, TaskId, WorkflowId,
 };
-use tardigrade::spawn::{ChannelSpawnConfig, ChannelsConfig};
+use tardigrade::{
+    spawn::{ChannelSpawnConfig, ChannelsConfig},
+    task::TaskResult,
+};
 
 #[derive(Debug, Default)]
 struct ExecutionOutput {
     main_task_id: Option<TaskId>,
+    task_result: Option<TaskResult>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -142,20 +146,18 @@ impl<'a> Workflow<'a> {
 
     fn do_execute(
         &mut self,
-        function: &mut ExecutedFunction,
+        function: &ExecutedFunction,
         data: Option<&[u8]>,
     ) -> Result<ExecutionOutput, Trap> {
         let mut output = ExecutionOutput::default();
         match function {
-            ExecutedFunction::Task {
-                task_id,
-                poll_result,
-                ..
-            } => {
+            ExecutedFunction::Task { task_id, .. } => {
                 let exports = self.store.data().exports();
                 let exec_result = exports.poll_task(self.store.as_context_mut(), *task_id);
                 exec_result.map(|poll| {
-                    *poll_result = poll.map(|()| self.store.data_mut().complete_current_task());
+                    if poll.is_ready() {
+                        output.task_result = Some(self.store.data_mut().complete_current_task());
+                    }
                 })?;
             }
 
@@ -181,19 +183,26 @@ impl<'a> Workflow<'a> {
 
     fn execute(
         &mut self,
-        mut function: ExecutedFunction,
+        function: ExecutedFunction,
         data: Option<&[u8]>,
         receipt: &mut Receipt,
     ) -> Result<ExecutionOutput, ExecutionError> {
         self.store.data_mut().set_current_execution(&function);
 
-        let output = self.do_execute(&mut function, data);
+        let mut output = self.do_execute(&function, data);
         let (events, panic_info) = self
             .store
             .data_mut()
             .remove_current_execution(output.is_err());
         let dropped_tasks = Self::dropped_tasks(&events);
-        receipt.executions.push(Execution { function, events });
+        let task_result = output
+            .as_mut()
+            .map_or(None, |output| output.task_result.take());
+        receipt.executions.push(Execution {
+            function,
+            events,
+            task_result,
+        });
 
         // On error, we don't drop tasks mentioned in `resource_events`.
         let output =
@@ -231,7 +240,6 @@ impl<'a> Workflow<'a> {
         let function = ExecutedFunction::Task {
             task_id,
             wake_up_cause,
-            poll_result: Poll::Pending,
         };
         let poll_result = self.execute(function, None, receipt).map(drop);
         log_result!(poll_result, "Finished polling task {task_id}")

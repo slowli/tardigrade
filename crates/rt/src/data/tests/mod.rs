@@ -153,7 +153,6 @@ fn starting_workflow() {
         ExecutedFunction::Task {
             task_id: 0,
             wake_up_cause: WakeUpCause::Spawned,
-            poll_result: Poll::Pending,
         }
     );
     assert_eq!(execution.events.len(), 1);
@@ -226,6 +225,7 @@ fn assert_inbound_message_receipt(receipt: &Receipt) {
                 }
             },
             events,
+            ..
         } if channel_name == "orders" && events.is_empty()
     );
     let task_execution = &receipt.executions()[1];
@@ -635,16 +635,13 @@ fn completing_main_task_with_error() {
         workflows: &NoOpWorkflowManager,
     });
 
-    let task_result = receipt.executions().iter().find_map(|execution| {
-        if let ExecutedFunction::Task { poll_result, .. } = &execution.function {
-            Some(poll_result)
-        } else {
-            None
-        }
-    });
+    let task_result = receipt
+        .executions()
+        .iter()
+        .find_map(|execution| execution.task_result.as_ref());
     assert_matches!(
         task_result.unwrap(),
-        Poll::Ready(Err(err)) if err.location().filename == "/build/src/test.rs"
+        Err(err) if err.location().filename == "/build/src/test.rs"
     );
 
     let tasks = &workflow.data().persisted.tasks;
@@ -697,21 +694,13 @@ fn completing_subtask_with_error() {
     assert_eq!(executions_by_task[&0], 2);
     assert_eq!(executions_by_task[&1], 1);
 
-    let task_result = receipt.executions().iter().find_map(|execution| {
-        if let ExecutedFunction::Task {
-            task_id: 1,
-            poll_result,
-            ..
-        } = &execution.function
-        {
-            Some(poll_result)
-        } else {
-            None
-        }
-    });
+    let task_result = receipt
+        .executions()
+        .iter()
+        .find_map(|execution| execution.task_result.as_ref());
     assert_matches!(
         task_result.unwrap(),
-        Poll::Ready(Err(err)) if err.location().filename == "/build/src/test.rs"
+        Err(err) if err.location().filename == "/build/src/test.rs"
     );
 
     let tasks = &workflow.data().persisted.tasks;

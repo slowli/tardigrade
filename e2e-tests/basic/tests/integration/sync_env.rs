@@ -62,10 +62,10 @@ fn basic_workflow() -> TestResult {
         &execution.function,
         ExecutedFunction::Task {
             wake_up_cause: WakeUpCause::Spawned,
-            poll_result: Poll::Pending,
             ..
         }
     );
+    assert!(execution.task_result.is_none());
 
     assert_eq!(execution.events.len(), 1);
     assert_matches!(

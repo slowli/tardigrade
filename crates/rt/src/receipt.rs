@@ -87,8 +87,6 @@ pub enum ExecutedFunction {
         task_id: TaskId,
         /// Cause of the task waking up.
         wake_up_cause: WakeUpCause,
-        /// Result of polling a task.
-        poll_result: Poll<TaskResult>,
     },
     /// Waking up a [`Waker`](std::task::Waker).
     #[non_exhaustive]
@@ -271,6 +269,10 @@ pub struct Execution {
     pub function: ExecutedFunction,
     /// Events that have occurred during the execution (in the order of their appearance).
     pub events: Vec<Event>,
+    /// Result of executing a task. This field can only be set for
+    /// [task executions](ExecutedFunction::Task), but it is `None` if the task is
+    /// not completed as a result of this execution.
+    pub task_result: Option<TaskResult>,
 }
 
 /// Receipt for executing tasks in a workflow.

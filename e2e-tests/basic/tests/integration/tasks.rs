@@ -18,7 +18,9 @@ use tardigrade_rt::{
         future::{AsyncEnv, MessageSender, Termination},
         WorkflowManager,
     },
-    receipt::{Event, ExecutedFunction, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
+    receipt::{
+        Event, ExecutedFunction, Execution, Receipt, ResourceEvent, ResourceEventKind, ResourceId,
+    },
     test::MockScheduler,
     TaskId,
 };
@@ -209,11 +211,11 @@ impl TaskFailureKind {
 fn assert_task_results(receipts: &[Receipt], expected_successful_tasks: &HashSet<TaskId>) {
     let executions = receipts.iter().flat_map(Receipt::executions);
     let results_by_task = executions.filter_map(|execution| {
-        if let ExecutedFunction::Task {
-            task_id,
-            poll_result: Poll::Ready(result),
+        if let Execution {
+            function: ExecutedFunction::Task { task_id, .. },
+            task_result: Some(result),
             ..
-        } = &execution.function
+        } = execution
         {
             Some((*task_id, result))
         } else {
