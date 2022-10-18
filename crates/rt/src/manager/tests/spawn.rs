@@ -644,6 +644,12 @@ fn complete_task_with_panic(mut ctx: StoreContextMut<'_, WorkflowData>) -> Resul
         WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"panic message")?;
     let (filename_ptr, filename_len) =
         WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"/build/src/test.rs")?;
+
+    let events = Some(WorkflowData::outbound_channel_ref(None, "events"));
+    let send_result =
+        WorkflowFunctions::start_send(ctx.as_context_mut(), events, message_ptr, message_len)?;
+    assert_eq!(send_result, 0); // Ok(())
+
     WorkflowFunctions::report_panic(
         ctx,
         message_ptr,
@@ -656,20 +662,28 @@ fn complete_task_with_panic(mut ctx: StoreContextMut<'_, WorkflowData>) -> Resul
     Err(Trap::new("oops"))
 }
 
+fn check_aborted_child_completion(
+    mut ctx: StoreContextMut<'_, WorkflowData>,
+) -> Result<Poll<()>, Trap> {
+    let child = Some(WorkflowData::child_ref(CHILD_ID));
+    let poll_result =
+        SpawnFunctions::poll_workflow_completion(ctx.as_context_mut(), child, POLL_CX)?;
+    assert_eq!(poll_result, -3); // Poll::Ready(Err(Aborted))
+
+    let child_events = Some(WorkflowData::inbound_channel_ref(Some(CHILD_ID), "events"));
+    let poll_result =
+        WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), child_events, POLL_CX)?;
+    assert_eq!(poll_result, -2); // Poll::Ready(None)
+
+    Ok(Poll::Pending)
+}
+
 #[test]
 fn completing_child_with_panic() {
-    let check_child_completion: MockPollFn = |ctx| {
-        let child = Some(WorkflowData::child_ref(CHILD_ID));
-        let poll_result = SpawnFunctions::poll_workflow_completion(ctx, child, POLL_CX)?;
-        assert_eq!(poll_result, -3); // Poll::Ready(Err(Aborted))
-
-        Ok(Poll::Pending)
-    };
-
     let poll_fns = Answers::from_values([
         spawn_and_poll_child,
         complete_task_with_panic,
-        check_child_completion,
+        check_aborted_child_completion,
     ]);
     let _guard = ExportsMock::prepare(poll_fns);
     let mut manager = create_test_manager();
@@ -678,6 +692,8 @@ fn completing_child_with_panic() {
     let tick_result = manager.tick().unwrap();
     assert_eq!(tick_result.workflow_id(), workflow_id);
     tick_result.into_inner().unwrap();
+    let child_events_id = manager.lock().channel_ids(CHILD_ID).unwrap().outbound["events"];
+
     let tick_result = manager.tick().unwrap();
     assert_eq!(tick_result.workflow_id(), CHILD_ID);
     let err = tick_result.abort_workflow().into_inner().unwrap_err();
@@ -685,6 +701,20 @@ fn completing_child_with_panic() {
         err.panic_info().unwrap().message.as_deref(),
         Some("panic message")
     );
+    assert_child_abort(&mut manager, workflow_id, child_events_id);
+}
+
+fn assert_child_abort(
+    manager: &mut WorkflowManager,
+    workflow_id: WorkflowId,
+    child_events_id: ChannelId,
+) {
+    // Check that the event emitted by the panicking workflow was not committed.
+    let state = manager.lock();
+    let child_events = &state.channels[&child_events_id];
+    assert_eq!(child_events.messages, []);
+    assert!(child_events.is_closed);
+    drop(state);
 
     let receipt = manager.tick_workflow(workflow_id).unwrap();
     let is_child_polled = receipt.events().any(|event| {
@@ -694,4 +724,76 @@ fn completing_child_with_panic() {
         })
     });
     assert!(is_child_polled, "{:?}", receipt);
+}
+
+fn test_aborting_child(initialize_child: bool) {
+    let poll_fns: Vec<MockPollFn> = if initialize_child {
+        vec![
+            spawn_and_poll_child,
+            |_| Ok(Poll::Pending),
+            check_aborted_child_completion,
+        ]
+    } else {
+        vec![spawn_and_poll_child, check_aborted_child_completion]
+    };
+
+    let poll_fns = Answers::from_values(poll_fns);
+    let _guard = ExportsMock::prepare(poll_fns);
+    let mut manager = create_test_manager();
+    let workflow_id = create_test_workflow(&manager).id();
+
+    manager.tick_workflow(workflow_id).unwrap();
+    let child_events_id = manager.lock().channel_ids(CHILD_ID).unwrap().outbound["events"];
+    if initialize_child {
+        manager.tick_workflow(CHILD_ID).unwrap();
+    }
+    manager.abort_workflow(CHILD_ID);
+
+    assert_child_abort(&mut manager, workflow_id, child_events_id);
+}
+
+#[test]
+fn aborting_child_before_initialization() {
+    test_aborting_child(false);
+}
+
+#[test]
+fn aborting_child_after_initialization() {
+    test_aborting_child(true);
+}
+
+#[test]
+fn aborting_parent() {
+    let check_child_channels: MockPollFn = |mut ctx| {
+        let orders = Some(WorkflowData::inbound_channel_ref(None, "orders"));
+        let poll_result =
+            WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
+        assert_eq!(poll_result, -2); // Poll::Ready(None)
+
+        let events = Some(WorkflowData::outbound_channel_ref(None, "events"));
+        let (message_ptr, message_len) =
+            WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"child event")?;
+        let send_result =
+            WorkflowFunctions::start_send(ctx.as_context_mut(), events, message_ptr, message_len)?;
+        assert_eq!(send_result, 2); // Err(SendError::Closed)
+
+        Ok(Poll::Ready(()))
+    };
+
+    let poll_fns = Answers::from_values([spawn_and_poll_child, check_child_channels]);
+    let _guard = ExportsMock::prepare(poll_fns);
+    let mut manager = create_test_manager();
+    let workflow_id = create_test_workflow(&manager).id();
+
+    manager.tick_workflow(workflow_id).unwrap();
+    let child_events_id = manager.lock().channel_ids(CHILD_ID).unwrap().outbound["events"];
+    manager.abort_workflow(workflow_id);
+    {
+        let state = manager.lock();
+        let child_events = &state.channels[&child_events_id];
+        assert!(child_events.is_closed);
+    }
+
+    manager.tick_workflow(CHILD_ID).unwrap();
+    assert!(manager.is_empty());
 }

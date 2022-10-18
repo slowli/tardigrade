@@ -87,6 +87,7 @@ impl ChannelState {
                 self.sender_workflow_ids.remove(&id);
             }
             ChannelSide::Receiver => {
+                self.receiver_workflow_id = None;
                 self.is_closed = true;
                 return true;
             }
@@ -332,8 +333,10 @@ impl PersistedWorkflows {
         };
 
         if let Some((parent_id, result)) = completion_notification {
-            let persisted = self.workflows.get_mut(&parent_id).unwrap();
-            persisted.workflow.notify_on_child_completion(id, result);
+            // The parent may be already completed, thus refutable matching.
+            if let Some(persisted) = self.workflows.get_mut(&parent_id) {
+                persisted.workflow.notify_on_child_completion(id, result);
+            }
         }
     }
 }

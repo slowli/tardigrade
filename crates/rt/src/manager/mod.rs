@@ -153,7 +153,8 @@ impl TickResult<Actions<'_>> {
         self.extra.drop_message_action.is_some()
     }
 
-    /// Aborts the erroneous workflow.
+    /// Aborts the erroneous workflow. Messages emitted by the workflow during the erroneous
+    /// execution are discarded; same with the workflows spawned during the execution.
     ///
     /// # Panics
     ///
@@ -543,12 +544,11 @@ impl WorkflowManager {
         trace!("Aborting workflow {workflow_id}");
 
         let state = self.state.get_mut().unwrap();
-        state
+        let persisted = state
             .workflows
             .get_mut(&workflow_id)
-            .unwrap()
-            .workflow
-            .abort();
+            .expect("workflow not found");
+        persisted.workflow.abort();
         state.handle_workflow_update(workflow_id);
     }
 
