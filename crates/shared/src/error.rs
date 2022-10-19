@@ -38,17 +38,94 @@ impl ErrorLocation {
     }
 }
 
+/// Additional context for a [`TaskError`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorContext {
+    message: String,
+    location: ErrorLocation,
+}
+
+impl ErrorContext {
+    /// Returns human-readable contextual message.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// Returns the source code location associated with this context.
+    pub fn location(&self) -> &ErrorLocation {
+        &self.location
+    }
+}
+
+impl fmt::Display for ErrorContext {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.location, self.message)
+    }
+}
+
 /// Business error raised by a workflow task.
+///
+/// A `TaskError` can be created [`From`] any type implementing the [`Error`](error::Error) trait,
+/// or using [`Self::new()`]. Another way to create errors is by using the [`ErrorContextExt`]
+/// trait implemented for [`Result`]s and [`Option`]s (just like the `Context` trait from
+/// [`anyhow`]).
+///
+/// A `TaskError` encapsulates at least the caller source code [location](Self::location()) and
+/// the underlying [cause](Self::cause()). If the error crosses the host-workflow boundary,
+/// the cause if just a string message. Otherwise (i.e., within a workflow), it is the original
+/// error cause provided when creating it; thus, it can be downcast etc.
+///
+/// An error is associated with zero or more additional [`ErrorContext`]s.
+/// Contexts can be added via [`Self::context()`], or using the [`ErrorContextExt`] extension
+/// trait.
+///
+/// [`anyhow`]: https://crates.io/crates/anyhow
+///
+/// # Examples
+///
+/// ```
+/// # use tardigrade_shared::TaskError;
+/// let err = TaskError::new("(error message)");
+/// let err = err.context("(more high-level context)");
+///
+/// println!("{err}"); // one-line error message
+/// println!("{err:#}"); // multiline message including all contexts
+///
+/// assert_eq!(err.cause().to_string(), "(error message)");
+/// assert_eq!(err.contexts().len(), 1);
+/// assert_eq!(err.contexts()[0].message(), "(more high-level context)");
+/// ```
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TaskError {
     #[serde(with = "serde_error")]
     cause: Box<dyn error::Error + Send + Sync>,
     location: ErrorLocation,
+    contexts: Vec<ErrorContext>,
 }
 
 impl fmt::Display for TaskError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}: {}", self.location, self.cause)
+        if formatter.alternate() && !self.contexts.is_empty() {
+            let (last_context, contexts) = self.contexts.split_last().unwrap();
+            writeln!(
+                formatter,
+                "{}: {}",
+                last_context.location, last_context.message
+            )?;
+            writeln!(formatter, "Caused by:")?;
+            for context in contexts.iter().rev() {
+                writeln!(formatter, "    {context}")?;
+            }
+            writeln!(formatter, "    {}: {}", self.location, self.cause)
+        } else if let Some(context) = self.contexts.last() {
+            if self.contexts.len() == 1 {
+                write!(formatter, "{context} (+1 cause)")
+            } else {
+                write!(formatter, "{context} (+{} cause)", self.contexts.len())
+            }
+        } else {
+            write!(formatter, "{}: {}", self.location, self.cause)
+        }
     }
 }
 
@@ -58,6 +135,7 @@ impl<E: error::Error + Send + Sync + 'static> From<E> for TaskError {
         Self {
             cause: Box::new(err),
             location: ErrorLocation::new(Location::caller()),
+            contexts: Vec::new(),
         }
     }
 }
@@ -69,6 +147,7 @@ impl TaskError {
         Self {
             cause: message.into().into(),
             location: ErrorLocation::new(Location::caller()),
+            contexts: Vec::new(),
         }
     }
 
@@ -77,6 +156,7 @@ impl TaskError {
         Self {
             cause: message.into(),
             location,
+            contexts: Vec::new(),
         }
     }
 
@@ -90,13 +170,35 @@ impl TaskError {
         &self.location
     }
 
+    /// Returns the additional context(s) associated with this error.
+    pub fn contexts(&self) -> &[ErrorContext] {
+        &self.contexts
+    }
+
+    /// Adds an additional context to this error.
+    #[track_caller]
+    #[must_use]
+    pub fn context(mut self, message: impl Into<String>) -> Self {
+        self.contexts.push(ErrorContext {
+            message: message.into(),
+            location: ErrorLocation::new(Location::caller()),
+        });
+        self
+    }
+
+    #[doc(hidden)] // used by runtime
+    pub fn push_context_from_parts(&mut self, message: String, location: ErrorLocation) {
+        self.contexts.push(ErrorContext { message, location });
+    }
+
     /// Clones this error by replacing the cause with its message.
-    #[doc(hidden)]
+    #[doc(hidden)] // used by runtime
     #[must_use]
     pub fn clone_boxed(&self) -> Self {
         Self {
             cause: self.cause.to_string().into(),
             location: self.location.clone(),
+            contexts: self.contexts.clone(),
         }
     }
 }
@@ -140,6 +242,124 @@ mod serde_error {
 
 /// Result of executing a workflow task.
 pub type TaskResult<T = ()> = Result<T, TaskError>;
+
+/// Extension trait to convert [`Result`]s and [`Option`]s to [`TaskResult`]s.
+///
+/// # Examples
+///
+/// ```
+/// # use std::fmt;
+/// # use tardigrade_shared::{ErrorContextExt, TaskResult};
+/// #[derive(Debug)]
+/// pub struct CustomError { /* ... */ }
+///
+/// # impl fmt::Display for CustomError {
+/// #     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+/// #         formatter.write_str("custom error")
+/// #     }
+/// # }
+/// impl std::error::Error for CustomError {}
+///
+/// // Fallible function (can be defined either in the workflow code
+/// // or externally).
+/// fn fallible(value: u32) -> Result<u32, CustomError> {
+///     // snipped...
+/// #   Err(CustomError {})
+/// }
+///
+/// // Part of the workflow logic.
+/// fn computation(value: u32) -> TaskResult {
+///     let output = fallible(value).with_context(|| {
+///         format!("computations for {value}")
+///     })?;
+///     // other logic...
+///    Ok(())
+/// }
+///
+/// fn high_level_logic() -> TaskResult {
+///     computation(42).context("high-level logic")?;
+///     // other logic...
+///     Ok(())
+/// }
+/// ```
+// **NB.** Implementations must avoid using `Result::map_err()` etc. since they lead to incorrect
+// caller tracking.
+#[allow(clippy::missing_errors_doc)] // doesn't make sense semantically
+pub trait ErrorContextExt<T> {
+    /// Adds additional context to an error.
+    #[track_caller]
+    fn context<C: Into<String>>(self, context: C) -> TaskResult<T>;
+
+    /// Adds additional, lazily evaluated context to an error.
+    #[track_caller]
+    fn with_context<C, F>(self, lazy_context: F) -> TaskResult<T>
+    where
+        C: Into<String>,
+        F: FnOnce() -> C;
+}
+
+impl<T, E> ErrorContextExt<T> for Result<T, E>
+where
+    E: error::Error + Send + Sync + 'static,
+{
+    fn context<C: Into<String>>(self, context: C) -> TaskResult<T> {
+        match self {
+            Ok(value) => Ok(value),
+            Err(err) => Err(TaskError::from(err).context(context)),
+        }
+    }
+
+    fn with_context<C, F>(self, lazy_context: F) -> TaskResult<T>
+    where
+        C: Into<String>,
+        F: FnOnce() -> C,
+    {
+        match self {
+            Ok(value) => Ok(value),
+            Err(err) => Err(TaskError::from(err).context(lazy_context())),
+        }
+    }
+}
+
+impl<T> ErrorContextExt<T> for TaskResult<T> {
+    fn context<C: Into<String>>(self, context: C) -> TaskResult<T> {
+        match self {
+            Ok(value) => Ok(value),
+            Err(err) => Err(err.context(context)),
+        }
+    }
+
+    fn with_context<C, F>(self, lazy_context: F) -> TaskResult<T>
+    where
+        C: Into<String>,
+        F: FnOnce() -> C,
+    {
+        match self {
+            Ok(value) => Ok(value),
+            Err(err) => Err(err.context(lazy_context())),
+        }
+    }
+}
+
+impl<T> ErrorContextExt<T> for Option<T> {
+    fn context<C: Into<String>>(self, context: C) -> TaskResult<T> {
+        match self {
+            Some(value) => Ok(value),
+            None => Err(TaskError::new(context)),
+        }
+    }
+
+    fn with_context<C, F>(self, lazy_context: F) -> TaskResult<T>
+    where
+        C: Into<String>,
+        F: FnOnce() -> C,
+    {
+        match self {
+            Some(value) => Ok(value),
+            None => Err(TaskError::new(lazy_context())),
+        }
+    }
+}
 
 /// Errors that can occur when joining a task (i.e., waiting for its completion).
 #[derive(Debug, Serialize, Deserialize)]
@@ -231,3 +451,40 @@ impl fmt::Display for SpawnError {
 }
 
 impl error::Error for SpawnError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // TODO: test `ErrorContextExt`
+
+    #[test]
+    fn task_error_string_presentation() {
+        let mut err = TaskError::from_parts(
+            "operation failed".to_owned(),
+            ErrorLocation {
+                filename: Cow::Borrowed("error.rs"),
+                line: 42,
+                column: 10,
+            },
+        );
+        assert_eq!(err.to_string(), "error.rs:42:10: operation failed");
+        assert_eq!(format!("{err:#}"), "error.rs:42:10: operation failed");
+
+        err.push_context_from_parts(
+            "additional context".to_owned(),
+            ErrorLocation {
+                filename: Cow::Borrowed("lib.rs"),
+                line: 100,
+                column: 8,
+            },
+        );
+        assert_eq!(
+            err.to_string(),
+            "lib.rs:100:8: additional context (+1 cause)"
+        );
+        let expected_message = "lib.rs:100:8: additional context\n\
+            Caused by:\n    error.rs:42:10: operation failed\n";
+        assert_eq!(format!("{err:#}"), expected_message);
+    }
+}

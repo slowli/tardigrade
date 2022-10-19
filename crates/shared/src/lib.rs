@@ -14,7 +14,10 @@ pub mod trace;
 mod types;
 
 pub use crate::{
-    error::{ErrorLocation, JoinError, SendError, SpawnError, TaskError, TaskResult},
+    error::{
+        ErrorContext, ErrorContextExt, ErrorLocation, JoinError, SendError, SpawnError, TaskError,
+        TaskResult,
+    },
     types::{
         ChannelId, FutureId, PollMessage, PollTask, TaskId, TimerDefinition, TimerId, WakerId,
         WorkflowId,

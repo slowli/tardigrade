@@ -107,6 +107,19 @@ fn report_task_error(err: &TaskError) {
             err.location().column,
         );
     }
+
+    for context in err.contexts() {
+        unsafe {
+            report_error(
+                context.message().as_ptr(),
+                context.message().len(),
+                context.location().filename.as_ptr(),
+                context.location().filename.len(),
+                context.location().line,
+                context.location().column,
+            );
+        }
+    }
 }
 
 /// Handle to a spawned task / `PinnedFuture`.

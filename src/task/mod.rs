@@ -16,7 +16,9 @@ pub(crate) mod imp;
 #[path = "imp_mock.rs"]
 mod imp;
 
-pub use tardigrade_shared::{ErrorLocation, JoinError, TaskError, TaskResult};
+pub use tardigrade_shared::{
+    ErrorContext, ErrorContextExt, ErrorLocation, JoinError, TaskError, TaskResult,
+};
 
 pin_project! {
     /// Handle to a spawned task.
