@@ -118,9 +118,12 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 /// `Requests` instance can be built from a pair of inbound / outbound channels:
 ///
 /// ```
+/// # use async_trait::async_trait;
 /// # use serde::{Deserialize, Serialize};
+/// #
 /// # use tardigrade::{
 /// #     channel::{Requests, Sender, Receiver, WithId},
+/// #     task::{TaskResult, ErrorContextExt},
 /// #     workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, TakeHandle, Wasm, WorkflowFn},
 /// #     Json,
 /// # };
@@ -148,18 +151,19 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 /// #     type Codec = Json;
 /// # }
 ///
+/// #[async_trait(?Send)]
 /// impl SpawnWorkflow for MyWorkflow {
-///     fn spawn(_args: (), handle: MyHandle<Wasm>) -> TaskHandle {
+///     async fn spawn(_args: (), handle: MyHandle<Wasm>) -> TaskResult {
 ///         let (requests, _) = Requests::builder(handle.requests, handle.responses)
 ///             .with_capacity(4)
 ///             .with_task_name("handling_requests")
 ///             .build();
-///         TaskHandle::new(async move {
-///             match requests.request(Request { /* ... */ }).await {
-///                 Ok(response) => { /* do something with response */ }
-///                 Err(_) => { /* request has been cancelled */ }
-///             }
-///         })
+///         let response = requests
+///             .request(Request { /* ... */ })
+///             .await
+///             .context("request cancelled")?;
+///         // Do something with response...
+/// #       Ok(())
 ///     }
 /// }
 /// ```
@@ -236,7 +240,7 @@ where
         self
     }
 
-    /// Specifies a task name to use when [spawning a task](crate::spawn()) to support
+    /// Specifies a task name to use when [spawning a task](crate::task::spawn()) to support
     /// request / response processing. The default task name is `_requests`.
     #[must_use]
     pub fn with_task_name(mut self, task_name: &'a str) -> Self {

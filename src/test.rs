@@ -7,13 +7,17 @@
 //! # Examples
 //!
 //! ```
-//! # use std::time::Duration;
 //! # use assert_matches::assert_matches;
+//! # use async_trait::async_trait;
 //! # use futures::{FutureExt, SinkExt, StreamExt};
 //! # use serde::{Deserialize, Serialize};
+//! #
+//! # use std::time::Duration;
+//! #
 //! # use tardigrade::{
 //! #     channel::Sender,
-//! #     workflow::{Handle, GetInterface, SpawnWorkflow, TaskHandle, TakeHandle, Wasm, WorkflowFn},
+//! #     task::TaskResult,
+//! #     workflow::{Handle, GetInterface, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
 //! #     Json,
 //! # };
 //! // Assume we want to test a workflow.
@@ -46,16 +50,14 @@
 //! }
 //!
 //! // Workflow logic
+//! #[async_trait(?Send)]
 //! impl SpawnWorkflow for MyWorkflow {
-//!     fn spawn(args: Args, handle: MyHandle<Wasm>) -> TaskHandle {
-//!         let counter = args.counter;
-//!         let mut events = handle.events;
-//!         TaskHandle::new(async move {
-//!             for i in 0..counter {
-//!                 tardigrade::sleep(Duration::from_millis(100)).await;
-//!                 events.send(Event::Count(i)).await.ok();
-//!             }
-//!         })
+//!     async fn spawn(args: Args, mut handle: MyHandle<Wasm>) -> TaskResult {
+//!         for i in 0..args.counter {
+//!             tardigrade::sleep(Duration::from_millis(100)).await;
+//!             handle.events.send(Event::Count(i)).await.ok();
+//!         }
+//!         Ok(())
 //!     }
 //! }
 //!

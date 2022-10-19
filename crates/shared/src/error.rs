@@ -273,7 +273,7 @@ pub type TaskResult<T = ()> = Result<T, TaskError>;
 ///         format!("computations for {value}")
 ///     })?;
 ///     // other logic...
-///    Ok(())
+///     Ok(())
 /// }
 ///
 /// fn high_level_logic() -> TaskResult {
@@ -361,13 +361,14 @@ impl<T> ErrorContextExt<T> for Option<T> {
     }
 }
 
-/// Errors that can occur when joining a task (i.e., waiting for its completion).
+/// Errors that can occur when joining a task or a previously spawned workflow (i.e.,
+/// waiting for its completion).
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JoinError {
-    /// An error has occurred during task execution.
+    /// An error has occurred during task / workflow execution.
     Err(TaskError),
-    /// The task was aborted.
+    /// The task / workflow was aborted.
     Aborted,
 }
 

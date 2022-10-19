@@ -3,11 +3,15 @@
 //! # Examples
 //!
 //! ```
+//! # use async_trait::async_trait;
 //! # use futures::{SinkExt, StreamExt};
+//! #
 //! # use std::error;
+//! #
 //! # use tardigrade::{
 //! #     channel::{Sender, Receiver},
-//! #     workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, TakeHandle, Wasm, WorkflowFn},
+//! #     task::TaskResult,
+//! #     workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
 //! #     Json,
 //! # };
 //! // Assume we want to spawn a child workflow defined as follows:
@@ -26,11 +30,11 @@
 //!     type Args = ();
 //!     type Codec = Json;
 //! }
+//! # #[async_trait(?Send)]
 //! # impl SpawnWorkflow for ChildWorkflow {
-//! #     fn spawn(_args: (), handle: ChildHandle<Wasm>) -> TaskHandle {
-//! #         TaskHandle::new(async move {
-//! #             handle.commands.map(Ok).forward(handle.events).await.unwrap();
-//! #         })
+//! #     async fn spawn(_args: (), handle: ChildHandle<Wasm>) -> TaskResult {
+//! #         handle.commands.map(Ok).forward(handle.events).await?;
+//! #         Ok(())
 //! #     }
 //! # }
 //!

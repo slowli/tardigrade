@@ -7,14 +7,17 @@
 //! Simple workflow definition:
 //!
 //! ```
+//! # use async_trait::async_trait;
 //! # use futures::{SinkExt, StreamExt};
 //! # use serde::{Deserialize, Serialize};
-//! use tardigrade::{channel::{Sender, Receiver}, workflow::*, Json};
+//! use tardigrade::{
+//!     channel::{Sender, Receiver}, task::TaskResult, workflow::*, Json,
+//! };
 //!
 //! /// Handle for the workflow. Fields are public for integration testing.
 //! #[tardigrade::handle]
 //! #[derive(Debug)]
-//! pub struct MyHandle<Env> {
+//! pub struct MyHandle<Env = Wasm> {
 //!     /// Inbound channel with commands.
 //!     pub commands: Handle<Receiver<Command, Json>, Env>,
 //!     /// Outbound channel with events.
@@ -70,15 +73,16 @@
 //! }
 //!
 //! // Actual workflow logic.
+//! #[async_trait(?Send)]
 //! impl SpawnWorkflow for MyWorkflow {
-//!     fn spawn(mut args: Args, mut handle: MyHandle<Wasm>) -> TaskHandle {
-//!         TaskHandle::new(async move {
-//!             while let Some(command) = handle.commands.next().await {
-//!                 handle
-//!                     .process_command(&command, &mut args.start_counter)
-//!                     .await;
-//!             }
-//!         })
+//!     async fn spawn(args: Args, mut handle: MyHandle) -> TaskResult {
+//!         let mut counter = args.start_counter;
+//!         while let Some(command) = handle.commands.next().await {
+//!             handle
+//!                 .process_command(&command, &mut counter)
+//!                 .await;
+//!         }
+//!         Ok(())
 //!     }
 //! }
 //!

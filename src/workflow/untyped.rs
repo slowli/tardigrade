@@ -8,8 +8,7 @@ use crate::{
     interface::{AccessError, InboundChannel, Interface, OutboundChannel},
 };
 
-/// Dynamically-typed handle to a workflow containing handles to its inputs
-/// and channels.
+/// Dynamically-typed handle to a workflow containing handles to its channels.
 pub struct UntypedHandle<Env>
 where
     RawReceiver: TakeHandle<Env, Id = str>,
