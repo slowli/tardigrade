@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::PizzaDeliveryHandle;
 use tardigrade::{
     sleep,
-    task::{self, JoinError, TaskError, TaskResult},
+    task::{self, ErrorContextExt, JoinError, TaskError, TaskResult},
     workflow::{GetInterface, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
     Json,
 };
@@ -60,7 +60,7 @@ impl SpawnWorkflow for PizzaDeliveryWithTasks {
             if tasks.len() == args.oven_count {
                 if let Some(Err(JoinError::Err(err))) = tasks.next().await {
                     if args.propagate_errors {
-                        return Err(err); // TODO: add context
+                        return Err(err).context("propagating task error");
                     }
                 }
             }
@@ -73,6 +73,7 @@ impl SpawnWorkflow for PizzaDeliveryWithTasks {
                 .try_for_each(future::ok)
                 .await
                 .map_err(JoinError::unwrap_task_error)
+                .context("propagating task error")
         } else {
             tasks.for_each(|_| future::ready(())).await;
             Ok(())

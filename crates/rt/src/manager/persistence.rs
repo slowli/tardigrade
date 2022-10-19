@@ -189,9 +189,13 @@ impl PersistedWorkflows {
         }
 
         for sender_workflow_id in &channel_state.sender_workflow_ids {
-            let workflow = &mut self.workflows.get_mut(sender_workflow_id).unwrap().workflow;
-            workflow.close_outbound_channels_by_id(channel_id);
-            trace!("Closed sender end of channel {channel_id} in workflow {sender_workflow_id}");
+            // The workflow may be missing from `self.workflows` if it has just completed.
+            if let Some(persisted) = self.workflows.get_mut(sender_workflow_id) {
+                persisted.workflow.close_outbound_channels_by_id(channel_id);
+                trace!(
+                    "Closed sender end of channel {channel_id} in workflow {sender_workflow_id}"
+                );
+            }
         }
     }
 

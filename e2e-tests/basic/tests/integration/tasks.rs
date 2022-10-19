@@ -230,6 +230,15 @@ fn assert_task_results(receipts: &[Receipt], expected_successful_tasks: &HashSet
             let err = result.as_ref().unwrap_err();
             assert_eq!(err.cause().to_string(), "baking interrupted");
             assert!(err.location().filename.ends_with("tasks.rs"));
+
+            if *task_id == 0 {
+                assert_eq!(err.contexts().len(), 1);
+                let context = &err.contexts()[0];
+                assert_eq!(context.message(), "propagating task error");
+                assert!(context.location().filename.ends_with("tasks.rs"));
+            } else {
+                assert!(err.contexts().is_empty());
+            }
         }
     }
 }
