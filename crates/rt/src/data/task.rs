@@ -187,7 +187,7 @@ impl WorkflowData<'_> {
         let result: TaskResult = self
             .current_execution()
             .take_task_error()
-            .map_or(Ok(()), |info| Err(info.into()));
+            .map_or(Ok(()), Err);
 
         let join_result = result
             .as_ref()

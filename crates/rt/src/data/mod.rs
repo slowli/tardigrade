@@ -261,7 +261,7 @@ impl WorkflowFunctions {
         };
         match error_kind {
             ReportedErrorKind::TaskError => {
-                ctx.data_mut().current_execution().set_task_error(info);
+                ctx.data_mut().current_execution().push_task_error(info);
             }
             ReportedErrorKind::Panic => {
                 ctx.data_mut().current_execution().set_panic(info);

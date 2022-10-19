@@ -386,12 +386,19 @@ impl fmt::Display for PanicInfo {
     }
 }
 
-impl From<PanicInfo> for TaskError {
-    fn from(info: PanicInfo) -> Self {
-        let message = info
+impl PanicInfo {
+    pub(crate) fn into_parts(self) -> (String, ErrorLocation) {
+        let message = self
             .message
             .unwrap_or_else(|| "task execution failed".to_owned());
-        let location = info.location.unwrap_or(ErrorLocation::UNKNOWN);
+        let location = self.location.unwrap_or(ErrorLocation::UNKNOWN);
+        (message, location)
+    }
+}
+
+impl From<PanicInfo> for TaskError {
+    fn from(info: PanicInfo) -> Self {
+        let (message, location) = info.into_parts();
         Self::from_parts(message, location)
     }
 }

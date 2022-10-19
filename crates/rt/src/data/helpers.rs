@@ -13,7 +13,7 @@ use crate::{
     },
     ChannelId, TaskId, TimerId, WakerId, WorkflowId,
 };
-use tardigrade_shared::{interface::ChannelKind, JoinError, PollMessage, SendError};
+use tardigrade_shared::{interface::ChannelKind, JoinError, PollMessage, SendError, TaskError};
 
 /// Unique reference to a channel within a workflow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,7 +207,7 @@ pub(super) struct CurrentExecution {
     /// Information about a panic that has occurred during execution.
     panic_info: Option<PanicInfo>,
     /// Information about a task error that has occurred during execution.
-    task_error_info: Option<PanicInfo>,
+    task_error: Option<TaskError>,
     /// Wakers created during execution, together with their placement.
     new_wakers: HashSet<WakerId>,
     /// Log of events.
@@ -231,7 +231,7 @@ impl CurrentExecution {
             tasks_to_be_awoken: HashSet::new(),
             tasks_to_be_aborted: HashSet::new(),
             panic_info: None,
-            task_error_info: None,
+            task_error: None,
             new_wakers: HashSet::new(),
             events: Vec::new(),
         }
@@ -317,13 +317,18 @@ impl CurrentExecution {
         self.panic_info = Some(panic_info);
     }
 
-    pub fn set_task_error(&mut self, panic_info: PanicInfo) {
+    pub fn push_task_error(&mut self, panic_info: PanicInfo) {
         warn!("Execution {self:?} led to a task error: {panic_info:?}");
-        self.task_error_info = Some(panic_info);
+        if let Some(err) = &mut self.task_error {
+            let (message, location) = panic_info.into_parts();
+            err.push_context_from_parts(message, location);
+        } else {
+            self.task_error = Some(panic_info.into());
+        }
     }
 
-    pub fn take_task_error(&mut self) -> Option<PanicInfo> {
-        self.task_error_info.take()
+    pub fn take_task_error(&mut self) -> Option<TaskError> {
+        self.task_error.take()
     }
 
     fn resource_events(events: &[Event]) -> impl Iterator<Item = &ResourceEvent> {
@@ -338,7 +343,7 @@ impl CurrentExecution {
         use self::ResourceEventKind::{Created, Dropped};
 
         trace!("Committing {self:?} onto {state:?}");
-        if let Some(err) = &self.task_error_info {
+        if let Some(err) = &self.task_error {
             warn!(
                 "Task error {:?} was reported, but the task was not completed",
                 err

@@ -606,11 +606,14 @@ fn dropping_inbound_channel_in_workflow() {
     assert_eq!(mock.consumed_wakers.len(), 1, "{:?}", mock.consumed_wakers);
 }
 
-pub(crate) fn complete_task_with_error(
+fn report_task_error(
     mut ctx: StoreContextMut<'_, WorkflowData>,
-) -> Result<Poll<()>, Trap> {
+    line: u32,
+    column: u32,
+    message: &str,
+) -> Result<(), Trap> {
     let (message_ptr, message_len) =
-        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"error message")?;
+        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(message.as_bytes())?;
     let (filename_ptr, filename_len) =
         WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"/build/src/test.rs")?;
     WorkflowFunctions::report_task_error(
@@ -619,9 +622,15 @@ pub(crate) fn complete_task_with_error(
         message_len,
         filename_ptr,
         filename_len,
-        42, // line
-        1,  // column
-    )?;
+        line,
+        column,
+    )
+}
+
+pub(crate) fn complete_task_with_error(
+    ctx: StoreContextMut<'_, WorkflowData>,
+) -> Result<Poll<()>, Trap> {
+    report_task_error(ctx, 42, 1, "error message")?;
     Ok(Poll::Ready(()))
 }
 
@@ -646,10 +655,10 @@ fn completing_main_task_with_error() {
 
     let tasks = &workflow.data().persisted.tasks;
     assert_eq!(tasks.len(), 1);
-    assert_task_error(&tasks[&0]);
+    assert_task_error(&tasks[&0], false);
 }
 
-fn assert_task_error(task_state: &TaskState) {
+fn assert_task_error(task_state: &TaskState, has_context: bool) {
     let err = match task_state.result() {
         Poll::Ready(Err(JoinError::Err(err))) => err,
         other => panic!("unexpected task result: {:?}", other),
@@ -659,6 +668,36 @@ fn assert_task_error(task_state: &TaskState) {
     assert_eq!(err.location().filename, "/build/src/test.rs");
     assert_eq!(err.location().line, 42);
     assert_eq!(err.location().column, 1);
+
+    if has_context {
+        assert_eq!(err.contexts().len(), 1);
+        let context = &err.contexts()[0];
+        assert_eq!(context.message(), "context message");
+        assert_eq!(context.location().filename, "/build/src/test.rs");
+        assert_eq!(context.location().line, 10);
+        assert_eq!(context.location().column, 4);
+    }
+}
+
+#[test]
+fn completing_main_task_with_compound_error() {
+    let complete_task_with_compound_error: MockPollFn = |mut ctx| {
+        report_task_error(ctx.as_context_mut(), 42, 1, "error message")?;
+        report_task_error(ctx, 10, 4, "context message")?;
+        Ok(Poll::Ready(()))
+    };
+
+    let poll_fns = Answers::from_value(complete_task_with_compound_error);
+    let _guard = ExportsMock::prepare(poll_fns);
+    let clock = MockScheduler::default();
+    let (_, workflow) = create_workflow(Services {
+        clock: &clock,
+        workflows: &NoOpWorkflowManager,
+    });
+
+    let tasks = &workflow.data().persisted.tasks;
+    assert_eq!(tasks.len(), 1);
+    assert_task_error(&tasks[&0], true);
 }
 
 #[test]
@@ -705,7 +744,7 @@ fn completing_subtask_with_error() {
 
     let tasks = &workflow.data().persisted.tasks;
     assert_eq!(tasks.len(), 2);
-    assert_task_error(&tasks[&1]);
+    assert_task_error(&tasks[&1], false);
     let main_task = &tasks[&0];
     assert_matches!(main_task.result(), Poll::Pending);
 }
