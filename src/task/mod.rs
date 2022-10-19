@@ -16,7 +16,7 @@ pub(crate) mod imp;
 #[path = "imp_mock.rs"]
 mod imp;
 
-pub use tardigrade_shared::{
+pub use crate::error::{
     ErrorContext, ErrorContextExt, ErrorLocation, JoinError, TaskError, TaskResult,
 };
 

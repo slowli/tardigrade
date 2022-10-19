@@ -16,9 +16,12 @@ use super::{
 use crate::{
     receipt::{Event, ExecutedFunction, PanicInfo, ResourceEventKind, ResourceId, WakeUpCause},
     utils::{self, WasmAllocator},
+};
+use tardigrade::{
+    abi::{IntoWasm, PollTask},
+    task::{JoinError, TaskResult},
     TaskId, WakerId,
 };
-use tardigrade_shared::{abi::IntoWasm, JoinError, PollTask, TaskResult};
 
 /// Priority queue for tasks.
 #[derive(Debug, Default)]

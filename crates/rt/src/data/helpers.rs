@@ -11,9 +11,14 @@ use crate::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, PanicInfo, ResourceEvent,
         ResourceEventKind, ResourceId, WakeUpCause,
     },
+};
+use tardigrade::{
+    abi::PollMessage,
+    channel::SendError,
+    interface::ChannelKind,
+    task::{JoinError, TaskError},
     ChannelId, TaskId, TimerId, WakerId, WorkflowId,
 };
-use tardigrade_shared::{interface::ChannelKind, JoinError, PollMessage, SendError, TaskError};
 
 /// Unique reference to a channel within a workflow.
 #[derive(Debug, Clone, Serialize, Deserialize)]

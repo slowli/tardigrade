@@ -12,7 +12,7 @@ use std::{
     time::Duration,
 };
 
-use tardigrade::{spawn::ManageWorkflowsExt, Json};
+use tardigrade::{spawn::ManageWorkflowsExt, Json, TaskId};
 use tardigrade_rt::{
     manager::{
         future::{AsyncEnv, MessageSender, Termination},
@@ -22,7 +22,6 @@ use tardigrade_rt::{
         Event, ExecutedFunction, Execution, Receipt, ResourceEvent, ResourceEventKind, ResourceId,
     },
     test::MockScheduler,
-    TaskId,
 };
 use tardigrade_test_basic::{
     tasks::{Args, PizzaDeliveryWithTasks},

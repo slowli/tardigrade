@@ -17,13 +17,13 @@ use super::{
 };
 use crate::{
     channel::{imp::raw_channel, RawReceiver, RawSender},
+    error::SpawnError,
     interface::ChannelKind,
     task::{JoinError, JoinHandle},
     test::Runtime,
     workflow::{UntypedHandle, Wasm},
     Raw,
 };
-use tardigrade_shared::SpawnError;
 
 impl ManageInterfaces for Workflows {
     fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {

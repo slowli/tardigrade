@@ -7,7 +7,7 @@ use wasmtime::{AsContext, AsContextMut, Memory, StoreContextMut, Trap};
 use std::{cmp::Ordering, fmt, mem, task::Poll};
 
 use crate::data::WorkflowData;
-use tardigrade_shared::{abi::AllocateBytes, JoinError};
+use tardigrade::{abi::AllocateBytes, task::JoinError};
 
 #[cfg(feature = "log")]
 macro_rules! trace {

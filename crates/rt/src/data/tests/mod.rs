@@ -22,8 +22,9 @@ use crate::{
     utils::{copy_string_from_wasm, decode_string, WasmAllocator},
     workflow::{PersistedWorkflow, Workflow},
 };
-use tardigrade::spawn::ChannelsConfig;
-use tardigrade_shared::{abi::AllocateBytes, interface::Interface, JoinError};
+use tardigrade::{
+    abi::AllocateBytes, interface::Interface, spawn::ChannelsConfig, task::JoinError,
+};
 
 const POLL_CX: WasmContextPtr = 1_234;
 const ERROR_PTR: u32 = 1_024; // enough to not intersect with "real" memory

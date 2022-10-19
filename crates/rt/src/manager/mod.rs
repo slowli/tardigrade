@@ -37,11 +37,12 @@ use crate::{
     PersistedWorkflow, WorkflowSpawner,
 };
 use tardigrade::{
+    channel::SendError,
     interface::{ChannelKind, Interface},
     spawn::{ChannelsConfig, ManageInterfaces, ManageWorkflows, SpecifyWorkflowChannels},
     workflow::WorkflowFn,
+    ChannelId, WorkflowId,
 };
-use tardigrade_shared::{ChannelId, SendError, WorkflowId};
 
 /// Information about a channel managed by a [`WorkflowManager`].
 #[derive(Debug)]

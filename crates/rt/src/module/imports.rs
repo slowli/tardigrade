@@ -11,8 +11,8 @@ use std::str;
 use crate::{
     data::{SpawnFunctions, WasmContextPtr, WorkflowData, WorkflowFunctions},
     module::{ensure_func_ty, ExtendLinker},
-    TaskId, TimerId,
 };
+use tardigrade::{TaskId, TimerId};
 
 type Ref = Option<ExternRef>;
 

@@ -11,9 +11,8 @@ use std::{collections::HashMap, fmt, str, task::Poll};
 use crate::{
     data::{WasmContextPtr, WorkflowData},
     module::ensure_func_ty,
-    TaskId, WakerId,
 };
-use tardigrade_shared::{abi::TryFromWasm, interface::Interface};
+use tardigrade::{abi::TryFromWasm, interface::Interface, TaskId, WakerId};
 
 #[derive(Clone, Copy)]
 pub(crate) struct ModuleExports {

@@ -17,9 +17,8 @@ use super::{
 use crate::{
     receipt::{ResourceEventKind, ResourceId, WakeUpCause},
     utils::WasmAllocator,
-    TimerId, WakerId,
 };
-use tardigrade_shared::{abi::IntoWasm, TimerDefinition};
+use tardigrade::{abi::IntoWasm, TimerDefinition, TimerId, WakerId};
 
 /// State of a workflow timer.
 #[derive(Debug, Clone, Serialize, Deserialize)]

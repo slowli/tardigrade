@@ -1,15 +1,7 @@
 //! Types shared between host and client envs.
 
 use chrono::{DateTime, Utc};
-use futures::future::Aborted;
 use serde::{Deserialize, Serialize};
-
-use std::task::Poll;
-
-/// Result of polling a receiver end of a channel.
-pub type PollMessage = Poll<Option<Vec<u8>>>;
-/// Result of polling a workflow task.
-pub type PollTask = Poll<Result<(), Aborted>>;
 
 /// ID of a [`Waker`](std::task::Waker) defined by a workflow.
 pub type WakerId = u64;

@@ -44,7 +44,7 @@
 //!     // other variants...
 //! }
 //!
-//! impl MyHandle<Wasm> {
+//! impl MyHandle {
 //!     async fn process_command(
 //!         &mut self,
 //!         command: &Command,

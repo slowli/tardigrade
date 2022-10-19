@@ -79,7 +79,7 @@ use std::{
     task::{Context, Poll},
 };
 
-pub use tardigrade_shared::SpawnError;
+pub use crate::error::SpawnError;
 
 use crate::{
     channel::{RawReceiver, RawSender, Receiver, SendError, Sender},

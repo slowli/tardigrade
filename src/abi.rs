@@ -13,9 +13,13 @@ use std::{error, fmt, task::Poll};
 
 use crate::{
     error::{SendError, SpawnError, TaskError},
-    interface::AccessErrorKind,
-    types::{PollMessage, PollTask},
+    interface::{AccessErrorKind, ChannelKind},
 };
+
+/// Result of polling a receiver end of a channel.
+pub type PollMessage = Poll<Option<Vec<u8>>>;
+/// Result of polling a workflow task.
+pub type PollTask = Poll<Result<(), Aborted>>;
 
 /// Value directly representable in WASM ABI, e.g., `i64`.
 pub trait WasmValue {}
@@ -261,6 +265,7 @@ impl IntoWasm for Result<(), AccessErrorKind> {
                 let (ptr, len) = alloc.copy_to_wasm(message.as_bytes())?;
                 (i64::from(ptr) << 32) + i64::from(len)
             }
+            Err(_) => unreachable!(), // no other `AccessErrorKind` variants
         })
     }
 
@@ -341,6 +346,25 @@ impl IntoWasm for Result<(), SpawnError> {
             let len = (abi & 0xffff_ffff) as usize;
             let message = String::from_raw_parts(ptr, len, len);
             Err(SpawnError::new(message))
+        }
+    }
+}
+
+impl TryFromWasm for ChannelKind {
+    type Abi = i32;
+
+    fn into_abi_in_wasm(self) -> Self::Abi {
+        match self {
+            Self::Inbound => 0,
+            Self::Outbound => 1,
+        }
+    }
+
+    fn try_from_wasm(abi: Self::Abi) -> Result<Self, FromWasmError> {
+        match abi {
+            0 => Ok(Self::Inbound),
+            1 => Ok(Self::Outbound),
+            _ => Err(FromWasmError::new("unexpected `ChannelKind` value")),
         }
     }
 }

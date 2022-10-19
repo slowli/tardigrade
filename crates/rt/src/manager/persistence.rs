@@ -16,7 +16,7 @@ use crate::{
     workflow::ChannelIds,
     PersistedWorkflow,
 };
-use tardigrade_shared::{interface::ChannelKind, ChannelId, SendError, WorkflowId};
+use tardigrade::{channel::SendError, interface::ChannelKind, ChannelId, WorkflowId};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct ChannelState {

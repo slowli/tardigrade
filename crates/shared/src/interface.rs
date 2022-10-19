@@ -6,11 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use std::{collections::HashMap, error, fmt, ops};
 
-use crate::abi::{FromWasmError, TryFromWasm};
-
 /// Kind of a channel in a workflow interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(i32)]
 pub enum ChannelKind {
     /// Inbound channel.
     Inbound = 0,
@@ -24,22 +21,6 @@ impl fmt::Display for ChannelKind {
             Self::Inbound => "inbound",
             Self::Outbound => "outbound",
         })
-    }
-}
-
-impl TryFromWasm for ChannelKind {
-    type Abi = i32;
-
-    fn into_abi_in_wasm(self) -> Self::Abi {
-        self as i32
-    }
-
-    fn try_from_wasm(abi: Self::Abi) -> Result<Self, FromWasmError> {
-        match abi {
-            0 => Ok(Self::Inbound),
-            1 => Ok(Self::Outbound),
-            _ => Err(FromWasmError::new("unexpected `ChannelKind` value")),
-        }
     }
 }
 

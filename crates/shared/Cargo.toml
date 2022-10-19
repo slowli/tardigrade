@@ -11,8 +11,6 @@ description = "Shared data types for Tardigrade workflows"
 repository = "https://github.com/slowli/tardigrade"
 
 [dependencies]
-chrono = { version = "0.4.22", default-features = false, features = ["serde"] }
-futures = { version = "0.3.24", default-features = false, features = ["alloc"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

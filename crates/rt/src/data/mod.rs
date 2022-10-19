@@ -34,9 +34,8 @@ use crate::{
     receipt::{PanicInfo, WakeUpCause},
     utils::copy_string_from_wasm,
     workflow::ChannelIds,
-    TaskId, WorkflowId,
 };
-use tardigrade_shared::{interface::Interface, ErrorLocation};
+use tardigrade::{interface::Interface, task::ErrorLocation, TaskId, WorkflowId};
 
 /// Kinds of errors reported by workflows.
 #[derive(Debug, Clone, Copy)]

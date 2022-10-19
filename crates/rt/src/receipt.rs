@@ -13,8 +13,11 @@ use wasmtime::Trap;
 
 use std::{error, fmt, ops::Range, task::Poll};
 
-use crate::{ChannelId, TaskId, TimerId, WakerId, WorkflowId};
-use tardigrade_shared::{ErrorLocation, SendError, TaskError, TaskResult};
+use tardigrade::{
+    channel::SendError,
+    task::{ErrorLocation, TaskError, TaskResult},
+    ChannelId, TaskId, TimerId, WakerId, WorkflowId,
+};
 
 /// Cause of waking up a workflow task.
 #[derive(Debug, Clone, Serialize, Deserialize)]

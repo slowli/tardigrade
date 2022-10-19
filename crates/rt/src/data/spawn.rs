@@ -20,11 +20,12 @@ use crate::{
     utils::{self, WasmAllocator},
     workflow::ChannelIds,
 };
-use tardigrade::spawn::{ChannelSpawnConfig, ChannelsConfig};
-use tardigrade_shared::{
-    abi::{IntoWasm, TryFromWasm},
+use tardigrade::{
+    abi::{IntoWasm, PollTask, TryFromWasm},
     interface::{ChannelKind, Interface},
-    ChannelId, JoinError, PollTask, SpawnError, TaskError, WakerId, WorkflowId,
+    spawn::{ChannelSpawnConfig, ChannelsConfig, SpawnError},
+    task::{JoinError, TaskError},
+    ChannelId, WakerId, WorkflowId,
 };
 
 type ChannelHandles = ChannelsConfig<ChannelId>;

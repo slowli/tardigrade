@@ -4,10 +4,11 @@ use chrono::{DateTime, Utc};
 
 use std::{borrow::Cow, fmt};
 
-use crate::{workflow::ChannelIds, ChannelId, WorkflowId};
+use crate::workflow::ChannelIds;
 use tardigrade::{
     interface::Interface,
     spawn::{ChannelsConfig, ManageInterfaces, ManageWorkflows, SpecifyWorkflowChannels},
+    ChannelId, WorkflowId,
 };
 
 /// Wall clock.

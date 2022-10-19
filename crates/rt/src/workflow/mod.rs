@@ -17,11 +17,11 @@ use crate::{
         WakeUpCause,
     },
     utils::Message,
-    ChannelId, TaskId, WorkflowId,
 };
 use tardigrade::{
     spawn::{ChannelSpawnConfig, ChannelsConfig},
     task::TaskResult,
+    ChannelId, TaskId, WorkflowId,
 };
 
 #[derive(Debug, Default)]

@@ -11,14 +11,13 @@ use std::{
 };
 
 use super::*;
-use crate::{
-    data::SpawnFunctions, module::WorkflowAndChannelIds, utils::copy_bytes_from_wasm, ChannelId,
-};
+use crate::{data::SpawnFunctions, module::WorkflowAndChannelIds, utils::copy_bytes_from_wasm};
 use tardigrade::{
+    abi::TryFromWasm,
     interface::{ChannelKind, Interface},
     spawn::{ChannelsConfig, ManageInterfaces, ManageWorkflows, SpecifyWorkflowChannels},
+    ChannelId,
 };
-use tardigrade_shared::abi::TryFromWasm;
 
 #[derive(Debug)]
 struct NewWorkflowCall {

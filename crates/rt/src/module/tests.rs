@@ -9,7 +9,8 @@ use std::{
 };
 
 use super::*;
-use crate::{module::WorkflowModule, TaskId, WakerId};
+use crate::module::WorkflowModule;
+use tardigrade::{TaskId, WakerId};
 
 const INTERFACE: &[u8] = br#"{
     "v": 0,

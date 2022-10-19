@@ -60,8 +60,11 @@
     clippy::trait_duplication_in_bounds
 )]
 
+#[doc(hidden)] // used by runtime; low-level and unstable
+pub mod abi;
 pub mod channel;
 mod codec;
+mod error;
 mod ext;
 pub mod spawn;
 pub mod task;
@@ -69,6 +72,7 @@ pub mod task;
 pub mod test;
 mod time;
 pub mod trace;
+mod types;
 pub mod workflow;
 
 #[cfg(feature = "serde_json")]
@@ -77,6 +81,7 @@ pub use crate::{
     codec::{Decode, Encode, Raw},
     ext::FutureExt,
     time::{now, sleep, Timer},
+    types::{ChannelId, FutureId, TaskId, TimerDefinition, TimerId, WakerId, WorkflowId},
 };
 
 /// Proc macro attribute for workflow handles.

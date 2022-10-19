@@ -8,7 +8,7 @@ use tardigrade::{
     interface::{InboundChannel, OutboundChannel},
     spawn::ManageWorkflowsExt,
     trace::FutureState,
-    Decode, Encode, Json,
+    Decode, Encode, Json, WorkflowId,
 };
 use tardigrade_rt::{
     manager::{WorkflowHandle, WorkflowManager},
@@ -16,7 +16,6 @@ use tardigrade_rt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, ExecutionError, WakeUpCause,
     },
     test::MockScheduler,
-    WorkflowId,
 };
 use tardigrade_test_basic::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOrder};
 

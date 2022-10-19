@@ -9,11 +9,11 @@ use super::{
 use crate::{
     module::{NoOpWorkflowManager, Services, WorkflowAndChannelIds},
     workflow::{ChannelIds, Workflow},
-    ChannelId, WorkflowId,
 };
 use tardigrade::{
     interface::Interface,
     spawn::{ChannelsConfig, ManageInterfaces, ManageWorkflows, SpecifyWorkflowChannels},
+    ChannelId, WorkflowId,
 };
 
 #[derive(Debug)]

@@ -8,7 +8,7 @@ use crate::{
     receipt::{ResourceEvent, ResourceEventKind, ResourceId},
     utils::{copy_string_from_wasm, decode_string},
 };
-use tardigrade_shared::{abi::TryFromWasm, interface::ChannelKind};
+use tardigrade::{abi::TryFromWasm, interface::ChannelKind};
 
 const CHILD_ID: WorkflowId = 1;
 

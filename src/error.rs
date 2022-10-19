@@ -84,7 +84,7 @@ impl fmt::Display for ErrorContext {
 /// # Examples
 ///
 /// ```
-/// # use tardigrade_shared::TaskError;
+/// # use tardigrade::task::TaskError;
 /// let err = TaskError::new("(error message)");
 /// let err = err.context("(more high-level context)");
 ///
@@ -249,7 +249,7 @@ pub type TaskResult<T = ()> = Result<T, TaskError>;
 ///
 /// ```
 /// # use std::fmt;
-/// # use tardigrade_shared::{ErrorContextExt, TaskResult};
+/// # use tardigrade::task::{ErrorContextExt, TaskResult};
 /// #[derive(Debug)]
 /// pub struct CustomError { /* ... */ }
 ///

@@ -29,7 +29,6 @@ async-io = { version = "1.7.0", optional = true }
 # Enables logging during workflow execution.
 log = { version = "0.4.17", optional = true }
 
-tardigrade-shared = { version = "0.1.0", path = "../shared" }
 tardigrade = { version = "0.1.0", path = "../.." }
 
 [dev-dependencies]

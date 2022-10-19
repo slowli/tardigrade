@@ -15,7 +15,7 @@ use tardigrade::{
     interface::{InboundChannel, OutboundChannel},
     spawn::ManageWorkflowsExt,
     trace::FutureState,
-    Decode, Encode, Json,
+    Decode, Encode, Json, TimerId,
 };
 use tardigrade_rt::{
     manager::{
@@ -26,7 +26,7 @@ use tardigrade_rt::{
     },
     receipt::{Event, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
     test::MockScheduler,
-    TimerId, WorkflowSpawner,
+    WorkflowSpawner,
 };
 use tardigrade_test_basic::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOrder};
 

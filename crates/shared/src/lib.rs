@@ -7,19 +7,4 @@
 #![warn(clippy::all, clippy::pedantic)]
 #![allow(clippy::must_use_candidate, clippy::module_name_repetitions)]
 
-pub mod abi;
-mod error;
 pub mod interface;
-pub mod trace;
-mod types;
-
-pub use crate::{
-    error::{
-        ErrorContext, ErrorContextExt, ErrorLocation, JoinError, SendError, SpawnError, TaskError,
-        TaskResult,
-    },
-    types::{
-        ChannelId, FutureId, PollMessage, PollTask, TaskId, TimerDefinition, TimerId, WakerId,
-        WorkflowId,
-    },
-};

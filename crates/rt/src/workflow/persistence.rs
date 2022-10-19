@@ -16,9 +16,8 @@ use crate::{
     receipt::WakeUpCause,
     utils::Message,
     workflow::{ChannelIds, Workflow},
-    ChannelId, TaskId, TimerId, WorkflowId,
 };
-use tardigrade_shared::JoinError;
+use tardigrade::{task::JoinError, ChannelId, TaskId, TimerId, WorkflowId};
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
