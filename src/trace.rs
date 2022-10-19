@@ -17,9 +17,8 @@ use std::{
 use crate::{
     channel::Sender,
     interface::{AccessError, InterfaceBuilder, OutboundChannelSpec},
-    types::FutureId,
     workflow::{TakeHandle, Wasm},
-    Encode,
+    Encode, FutureId,
 };
 
 /// Payload of the traced future update.

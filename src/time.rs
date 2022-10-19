@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use pin_project_lite::pin_project;
+use serde::{Deserialize, Serialize};
 
 use std::{
     future::Future,
@@ -20,7 +21,7 @@ mod imp {
         task::{Context, Poll},
     };
 
-    use tardigrade_shared::{abi::IntoWasm, TimerId};
+    use crate::{abi::IntoWasm, TimerId};
 
     #[derive(Debug)]
     pub struct Timer(TimerId);
@@ -123,6 +124,13 @@ mod imp {
     pub(super) fn now() -> DateTime<Utc> {
         Runtime::with_mut(|rt| rt.scheduler().now())
     }
+}
+
+/// Definition of a timer used by a workflow.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct TimerDefinition {
+    /// Expiration timestamp of the timer.
+    pub expires_at: DateTime<Utc>,
 }
 
 pin_project! {

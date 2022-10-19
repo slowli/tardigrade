@@ -162,7 +162,7 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 ///             .request(Request { /* ... */ })
 ///             .await
 ///             .context("request cancelled")?;
-///         // Do something with response...
+///         // Do something with the response...
 /// #       Ok(())
 ///     }
 /// }

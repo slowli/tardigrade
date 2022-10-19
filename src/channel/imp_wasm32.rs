@@ -11,12 +11,12 @@ use std::{
 };
 
 use crate::{
+    abi::IntoWasm,
     channel::SendError,
     interface::{AccessError, AccessErrorKind, InboundChannel, OutboundChannel},
     spawn::imp::RemoteWorkflow,
     workflow::{TakeHandle, Wasm},
 };
-use tardigrade_shared::abi::IntoWasm;
 
 pub(crate) static mut ACCESS_ERROR_PAD: i64 = 0;
 

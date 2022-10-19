@@ -10,16 +10,17 @@ use std::{
 };
 
 use super::{
-    ChannelSpawnConfig, ChannelsConfig, ManageInterfaces, ManageWorkflows, Remote, Workflows,
+    ChannelSpawnConfig, ChannelsConfig, ManageInterfaces, ManageWorkflows, Remote, SpawnError,
+    Workflows,
 };
-use crate::channel::{
-    imp::{mpsc_receiver_get, mpsc_sender_get, MpscSender, ACCESS_ERROR_PAD},
-    RawReceiver, RawSender,
-};
-use tardigrade_shared::{
-    abi::IntoWasm,
+use crate::{
+    abi::{IntoWasm, PollTask, TryFromWasm},
+    channel::{
+        imp::{mpsc_receiver_get, mpsc_sender_get, MpscSender, ACCESS_ERROR_PAD},
+        RawReceiver, RawSender,
+    },
     interface::{ChannelKind, Interface},
-    JoinError, PollTask, SpawnError, TaskError,
+    task::{JoinError, TaskError},
 };
 
 static mut SPAWN_ERROR_PAD: i64 = 0;
@@ -96,7 +97,7 @@ extern "C" {
     #[link_name = "workflow::insert_handle"]
     fn insert_handle(
         spawner: &Resource<ChannelsConfig<RawReceiver, RawSender>>,
-        channel_kind: ChannelKind,
+        channel_kind: i32,
         name_ptr: *const u8,
         name_len: usize,
         is_closed: bool,
@@ -121,7 +122,7 @@ impl ChannelSpawnConfig<RawReceiver> {
             Self::New | Self::Closed => {
                 insert_handle(
                     spawner,
-                    ChannelKind::Inbound,
+                    ChannelKind::Inbound.into_abi_in_wasm(),
                     channel_name.as_ptr(),
                     channel_name.len(),
                     matches!(self, Self::Closed),
@@ -142,7 +143,7 @@ impl ChannelSpawnConfig<RawSender> {
             Self::New | Self::Closed => {
                 insert_handle(
                     spawner,
-                    ChannelKind::Outbound,
+                    ChannelKind::Outbound.into_abi_in_wasm(),
                     channel_name.as_ptr(),
                     channel_name.len(),
                     matches!(self, Self::Closed),

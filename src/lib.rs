@@ -72,7 +72,6 @@ pub mod task;
 pub mod test;
 mod time;
 pub mod trace;
-mod types;
 pub mod workflow;
 
 #[cfg(feature = "serde_json")]
@@ -80,8 +79,7 @@ pub use crate::codec::Json;
 pub use crate::{
     codec::{Decode, Encode, Raw},
     ext::FutureExt,
-    time::{now, sleep, Timer},
-    types::{ChannelId, FutureId, TaskId, TimerDefinition, TimerId, WakerId, WorkflowId},
+    time::{now, sleep, Timer, TimerDefinition},
 };
 
 /// Proc macro attribute for workflow handles.
@@ -131,6 +129,19 @@ pub use tardigrade_shared::interface;
 pub mod _reexports {
     pub use once_cell::sync::Lazy;
 }
+
+/// ID of a [`Waker`](std::task::Waker) defined by a workflow.
+pub type WakerId = u64;
+/// ID of a workflow task.
+pub type TaskId = u64;
+/// ID of a workflow timer.
+pub type TimerId = u64;
+/// ID of a (traced) future defined by a workflow.
+pub type FutureId = u64;
+/// ID of a workflow.
+pub type WorkflowId = u64;
+/// ID of a channel.
+pub type ChannelId = u128;
 
 /// Creates an entry point for the specified workflow type.
 ///

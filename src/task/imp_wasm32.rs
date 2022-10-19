@@ -11,9 +11,10 @@ use std::{
     task::{Context, Poll, Wake, Waker},
 };
 
-use tardigrade_shared::{
-    abi::{IntoWasm, TryFromWasm},
-    JoinError, PollTask, TaskError, TaskId, TaskResult, WakerId,
+use crate::{
+    abi::{IntoWasm, PollTask, TryFromWasm},
+    task::{JoinError, TaskError, TaskResult},
+    TaskId, WakerId,
 };
 
 /// Container similar to `Slab`, but with guarantee that returned item keys are never reused.

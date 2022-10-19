@@ -106,8 +106,8 @@ use crate::{
     interface::Interface,
     spawn::{ManageWorkflowsExt, RemoteWorkflow, Spawner, Workflows},
     task::{self, TaskResult},
-    types::WorkflowId,
     workflow::{Handle, SpawnWorkflow, TakeHandle, TaskHandle, UntypedHandle, Wasm},
+    WorkflowId,
 };
 
 #[derive(Debug)]
