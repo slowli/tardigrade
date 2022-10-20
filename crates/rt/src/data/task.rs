@@ -42,6 +42,11 @@ impl TaskQueue {
         });
     }
 
+    fn clear(&mut self) {
+        self.inner.clear();
+        self.causes.clear();
+    }
+
     fn take_task(&mut self) -> Option<(TaskId, WakeUpCause)> {
         let key = self.inner.pop_front()?;
         let value = self.causes.remove(&key).unwrap();
@@ -139,6 +144,10 @@ impl PersistedWorkflowData {
         self.schedule_wakers(wakers, WakeUpCause::CompletedTask(task_id));
     }
 
+    pub(crate) fn result(&self) -> Poll<Result<(), &JoinError>> {
+        self.main_task().map_or(Poll::Pending, TaskState::result)
+    }
+
     pub(crate) fn abort(&mut self) {
         let main_task = self
             .tasks
@@ -158,6 +167,10 @@ impl PersistedWorkflowData {
 }
 
 impl WorkflowData<'_> {
+    pub(crate) fn result(&self) -> Poll<Result<(), &JoinError>> {
+        self.persisted.result()
+    }
+
     pub(super) fn current_execution(&mut self) -> &mut CurrentExecution {
         self.current_execution
             .as_mut()
@@ -275,6 +288,10 @@ impl WorkflowData<'_> {
                 return Some((task, wake_up_cause));
             }
         }
+    }
+
+    pub(crate) fn clear_task_queue(&mut self) {
+        self.task_queue.clear();
     }
 }
 

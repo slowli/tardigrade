@@ -245,9 +245,7 @@ impl PersistedWorkflow {
 
     /// Returns the result of executing this workflow, which is the output of its main task.
     pub fn result(&self) -> Poll<Result<(), &JoinError>> {
-        self.state
-            .main_task()
-            .map_or(Poll::Pending, TaskState::result)
+        self.state.result()
     }
 
     /// Aborts the workflow by changing the result of its main task.

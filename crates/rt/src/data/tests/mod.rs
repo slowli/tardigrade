@@ -393,6 +393,43 @@ fn spawning_and_cancelling_task() {
 }
 
 #[test]
+fn workflow_terminates_after_main_task_completion() {
+    let spawn_task_and_complete: MockPollFn = |ctx| {
+        let _ = initialize_and_spawn_task(ctx)?;
+        Ok(Poll::Ready(()))
+    };
+
+    let mut poll_fns = Answers::from_value(spawn_task_and_complete);
+    let poll_fns = Answers::from_fn(move |&task_id| {
+        assert_eq!(task_id, 0, "polled subtask");
+        poll_fns.next_for(())
+    });
+    let _guard = ExportsMock::prepare(poll_fns);
+    let clock = MockScheduler::default();
+    let (receipt, workflow) = create_workflow(Services {
+        clock: &clock,
+        workflows: &NoOpWorkflowManager,
+    });
+
+    let mut executions = receipt.executions().iter().rev();
+    let last_execution = executions
+        .find(|execution| matches!(execution.function, ExecutedFunction::Task { .. }))
+        .unwrap();
+    assert_matches!(
+        last_execution.function,
+        ExecutedFunction::Task {
+            task_id: 0,
+            wake_up_cause: WakeUpCause::Spawned
+        }
+    );
+    let task_result = last_execution.task_result.as_ref().unwrap();
+    task_result.as_ref().unwrap();
+
+    let workflow = workflow.persist();
+    assert_matches!(workflow.result(), Poll::Ready(Ok(())));
+}
+
+#[test]
 fn rolling_back_task_spawning() {
     let spawn_task_and_trap: MockPollFn = |mut ctx| {
         let (name_ptr, name_len) =

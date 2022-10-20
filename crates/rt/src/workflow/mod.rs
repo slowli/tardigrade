@@ -271,6 +271,12 @@ impl<'a> Workflow<'a> {
 
         while let Some((task_id, wake_up_cause)) = self.store.data_mut().take_next_task() {
             self.poll_task(task_id, wake_up_cause, receipt)?;
+            if self.store.data().result().is_ready() {
+                trace!("Workflow is completed; clearing task queue");
+                self.store.data_mut().clear_task_queue();
+                break;
+            }
+
             self.wake_tasks(receipt)?;
         }
         Ok(())
