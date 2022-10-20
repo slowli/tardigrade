@@ -96,9 +96,10 @@
 //! ## Persisting and restoring workflow
 //!
 //! ```
+//! # use tardigrade::WorkflowId;
 //! # use tardigrade_rt::{
 //! #     manager::{PersistedWorkflows, WorkflowManager},
-//! #     PersistedWorkflow, WorkflowId,
+//! #     PersistedWorkflow,
 //! # };
 //! # fn test_wrapper(manager: WorkflowManager, workflow_id: WorkflowId) -> anyhow::Result<()> {
 //! let manager: WorkflowManager = // ...
@@ -143,4 +144,3 @@ pub use crate::{
     module::{Clock, ExtendLinker, WorkflowEngine, WorkflowModule, WorkflowSpawner},
     workflow::PersistedWorkflow,
 };
-pub use tardigrade_shared::{ChannelId, FutureId, TaskId, TimerId, WakerId, WorkflowId};

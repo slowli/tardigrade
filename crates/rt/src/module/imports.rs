@@ -11,8 +11,8 @@ use std::str;
 use crate::{
     data::{SpawnFunctions, WasmContextPtr, WorkflowData, WorkflowFunctions},
     module::{ensure_func_ty, ExtendLinker},
-    TaskId, TimerId,
 };
+use tardigrade::{TaskId, TimerId};
 
 type Ref = Option<ExternRef>;
 
@@ -58,7 +58,9 @@ impl ModuleImports {
             "timer::poll" => ensure_func_ty::<(TimerId, WasmContextPtr), i64>(ty, fn_name),
 
             "drop_ref" => ensure_func_ty::<Ref, ()>(ty, fn_name),
-            "panic" => ensure_func_ty::<(u32, u32, u32, u32, u32, u32), ()>(ty, fn_name),
+            "task::report_error" | "report_panic" => {
+                ensure_func_ty::<(u32, u32, u32, u32, u32, u32), ()>(ty, fn_name)
+            }
 
             other if other.starts_with("workflow::") => SpawnFunctions::validate_import(ty, other),
 
@@ -89,6 +91,10 @@ impl ExtendLinker for WorkflowFunctions {
                 "task::abort",
                 wrap1(&mut *store, Self::schedule_task_abortion),
             ),
+            (
+                "task::report_error",
+                wrap6(&mut *store, Self::report_task_error),
+            ),
             // Channel functions
             ("mpsc_receiver::get", wrap4(&mut *store, Self::get_receiver)),
             (
@@ -116,7 +122,7 @@ impl ExtendLinker for WorkflowFunctions {
             // Resource management
             ("drop_ref", wrap1(&mut *store, Self::drop_ref)),
             // Panic hook
-            ("panic", wrap6(&mut *store, Self::report_panic)),
+            ("report_panic", wrap6(&mut *store, Self::report_panic)),
         ]
     }
 }
@@ -136,6 +142,7 @@ impl SpawnFunctions {
             "workflow::poll_completion" => {
                 ensure_func_ty::<(Ref, WasmContextPtr), i64>(ty, fn_name)
             }
+            "workflow::completion_error" => ensure_func_ty::<Ref, i64>(ty, fn_name),
 
             other => {
                 bail!(
@@ -173,6 +180,10 @@ impl ExtendLinker for SpawnFunctions {
             (
                 "workflow::poll_completion",
                 wrap2(&mut *store, Self::poll_workflow_completion),
+            ),
+            (
+                "workflow::completion_error",
+                wrap1(&mut *store, Self::completion_error),
             ),
         ]
     }

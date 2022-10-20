@@ -8,16 +8,15 @@ use crate::{
     manager::{ChannelInfo, WorkflowManager},
     module::WorkflowAndChannelIds,
     utils::Message,
-    ChannelId, PersistedWorkflow, WorkflowId,
+    PersistedWorkflow,
 };
 use tardigrade::{
-    channel::{Receiver, Sender},
+    channel::{Receiver, SendError, Sender},
     interface::{AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel},
     trace::{FutureUpdate, TracedFutures, Tracer},
     workflow::{GetInterface, TakeHandle, UntypedHandle},
-    Decode, Encode,
+    ChannelId, Decode, Encode, WorkflowId,
 };
-use tardigrade_shared::SendError;
 
 /// Handle to a workflow in a [`WorkflowManager`].
 ///

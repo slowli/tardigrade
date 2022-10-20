@@ -3,11 +3,15 @@
 //! # Examples
 //!
 //! ```
+//! # use async_trait::async_trait;
 //! # use futures::{SinkExt, StreamExt};
+//! #
 //! # use std::error;
+//! #
 //! # use tardigrade::{
 //! #     channel::{Sender, Receiver},
-//! #     workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, TakeHandle, Wasm, WorkflowFn},
+//! #     task::TaskResult,
+//! #     workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
 //! #     Json,
 //! # };
 //! // Assume we want to spawn a child workflow defined as follows:
@@ -26,11 +30,11 @@
 //!     type Args = ();
 //!     type Codec = Json;
 //! }
+//! # #[async_trait(?Send)]
 //! # impl SpawnWorkflow for ChildWorkflow {
-//! #     fn spawn(_args: (), handle: ChildHandle<Wasm>) -> TaskHandle {
-//! #         TaskHandle::new(async move {
-//! #             handle.commands.map(Ok).forward(handle.events).await.unwrap();
-//! #         })
+//! #     async fn spawn(_args: (), handle: ChildHandle<Wasm>) -> TaskResult {
+//! #         handle.commands.map(Ok).forward(handle.events).await?;
+//! #         Ok(())
 //! #     }
 //! # }
 //!
@@ -75,18 +79,18 @@ use std::{
     task::{Context, Poll},
 };
 
-pub use tardigrade_shared::SpawnError;
+pub use crate::error::HostError;
 
 use crate::{
     channel::{RawReceiver, RawSender, Receiver, SendError, Sender},
     interface::{
         AccessError, AccessErrorKind, ChannelKind, InboundChannel, Interface, OutboundChannel,
     },
+    task::JoinError,
     trace::{FutureUpdate, TracedFutures, Tracer},
     workflow::{GetInterface, TakeHandle, UntypedHandle, WorkflowFn},
     Decode, Encode,
 };
-use tardigrade_shared::JoinError;
 
 #[cfg(target_arch = "wasm32")]
 #[path = "imp_wasm32.rs"]
@@ -262,7 +266,7 @@ where
     W: WorkflowFn + TakeHandle<RemoteWorkflow, Id = ()>,
 {
     type Handle = WorkflowHandle<W>;
-    type Error = SpawnError;
+    type Error = HostError;
 
     fn create_workflow(
         &'a self,

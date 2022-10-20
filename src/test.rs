@@ -7,13 +7,17 @@
 //! # Examples
 //!
 //! ```
-//! # use std::time::Duration;
 //! # use assert_matches::assert_matches;
+//! # use async_trait::async_trait;
 //! # use futures::{FutureExt, SinkExt, StreamExt};
 //! # use serde::{Deserialize, Serialize};
+//! #
+//! # use std::time::Duration;
+//! #
 //! # use tardigrade::{
 //! #     channel::Sender,
-//! #     workflow::{Handle, GetInterface, SpawnWorkflow, TaskHandle, TakeHandle, Wasm, WorkflowFn},
+//! #     task::TaskResult,
+//! #     workflow::{Handle, GetInterface, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
 //! #     Json,
 //! # };
 //! // Assume we want to test a workflow.
@@ -46,16 +50,14 @@
 //! }
 //!
 //! // Workflow logic
+//! #[async_trait(?Send)]
 //! impl SpawnWorkflow for MyWorkflow {
-//!     fn spawn(args: Args, handle: MyHandle<Wasm>) -> TaskHandle {
-//!         let counter = args.counter;
-//!         let mut events = handle.events;
-//!         TaskHandle::new(async move {
-//!             for i in 0..counter {
-//!                 tardigrade::sleep(Duration::from_millis(100)).await;
-//!                 events.send(Event::Count(i)).await.ok();
-//!             }
-//!         })
+//!     async fn spawn(args: Args, mut handle: MyHandle<Wasm>) -> TaskResult {
+//!         for i in 0..args.counter {
+//!             tardigrade::sleep(Duration::from_millis(100)).await;
+//!             handle.events.send(Event::Count(i)).await.ok();
+//!         }
+//!         Ok(())
 //!     }
 //! }
 //!
@@ -103,9 +105,10 @@ use std::{
 use crate::{
     interface::Interface,
     spawn::{ManageWorkflowsExt, RemoteWorkflow, Spawner, Workflows},
+    task::{self, TaskResult},
     workflow::{Handle, SpawnWorkflow, TakeHandle, TaskHandle, UntypedHandle, Wasm},
+    WorkflowId,
 };
-use tardigrade_shared::WorkflowId;
 
 #[derive(Debug)]
 struct TimerEntry {
@@ -292,10 +295,11 @@ impl WorkflowRegistry {
             TaskHandle::from_workflow::<W>(args, wasm)
                 .expect("failed spawning workflow")
                 .into_inner()
-                .await;
+                .await
         };
-        let spawn_fn = spawn_fn.map(move |()| {
+        let spawn_fn = spawn_fn.map(move |result| {
             Runtime::with_mut(|rt| rt.workflow_registry_mut().terminate_workflow(workflow_id));
+            result
         });
         TaskHandle::new(WithTaskContext::new(spawn_fn, context))
     }
@@ -412,17 +416,17 @@ impl Runtime {
         definition_id: &str,
         args: Vec<u8>,
         remote_handles: UntypedHandle<Wasm>,
-    ) -> RemoteHandle<()> {
+    ) -> RemoteHandle<TaskResult> {
         let task = self
             .workflow_registry
             .create_workflow(definition_id, args, remote_handles);
         self.do_spawn(task.into_inner())
     }
 
-    pub(crate) fn spawn_task<T: 'static>(
+    pub(crate) fn spawn_task(
         &mut self,
-        task: impl Future<Output = T> + 'static,
-    ) -> RemoteHandle<T> {
+        task: impl Future<Output = TaskResult> + 'static,
+    ) -> RemoteHandle<TaskResult> {
         let context = TaskContext::get();
         let (task, abort_handle) = future::abortable(task);
         self.workflow_registry
@@ -477,7 +481,7 @@ impl Runtime {
                 .unwrap()
                 .build()
                 .expect("failed spawning workflow");
-            crate::yield_now().await; // allow the workflow to initialize
+            task::yield_now().await; // allow the workflow to initialize
             test_fn(workflow.api).await;
         });
     }

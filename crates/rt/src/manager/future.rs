@@ -18,11 +18,10 @@ use std::{
 use crate::{
     manager::{TickResult, WorkflowManager},
     receipt::ExecutionError,
-    ChannelId, FutureId,
 };
 use tardigrade::{
     trace::{FutureUpdate, TracedFuture, TracedFutures},
-    Decode, Encode,
+    ChannelId, Decode, Encode, FutureId,
 };
 
 /// Future for [`Schedule::create_timer()`].
@@ -115,10 +114,10 @@ pub enum Termination {
 /// use async_std::task;
 /// use futures::prelude::*;
 /// use tardigrade::interface::{InboundChannel, OutboundChannel};
+/// # use tardigrade::WorkflowId;
 /// use tardigrade_rt::manager::{
 ///     future::{AsyncEnv, AsyncIoScheduler}, WorkflowHandle, WorkflowManager,
 /// };
-/// # use tardigrade_rt::WorkflowId;
 ///
 /// # async fn test_wrapper(
 /// #     manager: WorkflowManager,

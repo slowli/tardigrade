@@ -1,12 +1,13 @@
 //! Misc utils.
 
+use futures::future::Aborted;
 use serde::{Deserialize, Serialize};
 use wasmtime::{AsContext, AsContextMut, Memory, StoreContextMut, Trap};
 
 use std::{cmp::Ordering, fmt, mem, task::Poll};
 
 use crate::data::WorkflowData;
-use tardigrade_shared::abi::AllocateBytes;
+use tardigrade::{abi::AllocateBytes, task::JoinError};
 
 #[cfg(feature = "log")]
 macro_rules! trace {
@@ -149,6 +150,14 @@ pub(crate) fn copy_string_from_wasm(
     String::from_utf8(buffer).map_err(|err| Trap::new(format!("invalid UTF-8 string: {}", err)))
 }
 
+#[cfg(test)]
+#[allow(clippy::cast_sign_loss)]
+pub(crate) fn decode_string(poll_res: i64) -> (u32, u32) {
+    let ptr = ((poll_res as u64) >> 32) as u32;
+    let len = (poll_res & 0x_ffff_ffff) as u32;
+    (ptr, len)
+}
+
 pub(crate) fn drop_value<T>(poll_result: &Poll<T>) -> Poll<()> {
     match poll_result {
         Poll::Pending => Poll::Pending,
@@ -210,6 +219,30 @@ fn merging_vectors() {
 
     merge_vec(&mut target, vec![5]);
     assert_eq!(target, [1, 2, 3, 3, 3, 4, 5, 7, 8, 9, 13, 20]);
+}
+
+pub(crate) fn clone_join_error(err: &JoinError) -> JoinError {
+    match err {
+        JoinError::Aborted => JoinError::Aborted,
+        JoinError::Err(err) => JoinError::Err(err.clone_boxed()),
+    }
+}
+
+pub(crate) fn clone_completion_result(
+    result: &Poll<Result<(), JoinError>>,
+) -> Poll<Result<(), JoinError>> {
+    match result {
+        Poll::Pending => Poll::Pending,
+        Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
+        Poll::Ready(Err(err)) => Poll::Ready(Err(clone_join_error(err))),
+    }
+}
+
+pub(crate) fn extract_task_poll_result(result: Result<(), &JoinError>) -> Result<(), Aborted> {
+    result.or_else(|err| match err {
+        JoinError::Err(_) => Ok(()),
+        JoinError::Aborted => Err(Aborted),
+    })
 }
 
 pub(crate) mod serde_b64 {

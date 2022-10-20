@@ -8,7 +8,7 @@ use tardigrade::{
     interface::{InboundChannel, OutboundChannel},
     spawn::ManageWorkflowsExt,
     trace::FutureState,
-    Decode, Encode, Json,
+    Decode, Encode, Json, WorkflowId,
 };
 use tardigrade_rt::{
     manager::{WorkflowHandle, WorkflowManager},
@@ -16,7 +16,6 @@ use tardigrade_rt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, ExecutionError, WakeUpCause,
     },
     test::MockScheduler,
-    WorkflowId,
 };
 use tardigrade_test_basic::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOrder};
 
@@ -62,10 +61,10 @@ fn basic_workflow() -> TestResult {
         &execution.function,
         ExecutedFunction::Task {
             wake_up_cause: WakeUpCause::Spawned,
-            poll_result: Poll::Pending,
             ..
         }
     );
+    assert!(execution.task_result.is_none());
 
     assert_eq!(execution.events.len(), 1);
     assert_matches!(

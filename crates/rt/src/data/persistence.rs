@@ -14,8 +14,11 @@ use super::{
     time::Timers,
     PersistedWorkflowData, WorkflowCounters, WorkflowData,
 };
-use crate::{module::Services, workflow::ChannelIds, WorkflowId};
-use tardigrade::interface::{ChannelKind, Interface};
+use crate::{module::Services, workflow::ChannelIds};
+use tardigrade::{
+    interface::{ChannelKind, Interface},
+    WorkflowId,
+};
 
 /// Error persisting a workflow.
 #[derive(Debug)]
@@ -181,8 +184,8 @@ impl WorkflowData<'_> {
     }
 
     // Must be preceded with `Self::check_persistence()`.
-    pub(crate) fn persist(&self) -> PersistedWorkflowData {
-        self.persisted.clone()
+    pub(crate) fn persist(self) -> PersistedWorkflowData {
+        self.persisted
     }
 }
 

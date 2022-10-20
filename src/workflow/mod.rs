@@ -7,14 +7,17 @@
 //! Simple workflow definition:
 //!
 //! ```
+//! # use async_trait::async_trait;
 //! # use futures::{SinkExt, StreamExt};
 //! # use serde::{Deserialize, Serialize};
-//! use tardigrade::{channel::{Sender, Receiver}, workflow::*, Json};
+//! use tardigrade::{
+//!     channel::{Sender, Receiver}, task::TaskResult, workflow::*, Json,
+//! };
 //!
 //! /// Handle for the workflow. Fields are public for integration testing.
 //! #[tardigrade::handle]
 //! #[derive(Debug)]
-//! pub struct MyHandle<Env> {
+//! pub struct MyHandle<Env = Wasm> {
 //!     /// Inbound channel with commands.
 //!     pub commands: Handle<Receiver<Command, Json>, Env>,
 //!     /// Outbound channel with events.
@@ -41,7 +44,7 @@
 //!     // other variants...
 //! }
 //!
-//! impl MyHandle<Wasm> {
+//! impl MyHandle {
 //!     async fn process_command(
 //!         &mut self,
 //!         command: &Command,
@@ -70,20 +73,23 @@
 //! }
 //!
 //! // Actual workflow logic.
+//! #[async_trait(?Send)]
 //! impl SpawnWorkflow for MyWorkflow {
-//!     fn spawn(mut args: Args, mut handle: MyHandle<Wasm>) -> TaskHandle {
-//!         TaskHandle::new(async move {
-//!             while let Some(command) = handle.commands.next().await {
-//!                 handle
-//!                     .process_command(&command, &mut args.start_counter)
-//!                     .await;
-//!             }
-//!         })
+//!     async fn spawn(args: Args, mut handle: MyHandle) -> TaskResult {
+//!         let mut counter = args.start_counter;
+//!         while let Some(command) = handle.commands.next().await {
+//!             handle
+//!                 .process_command(&command, &mut counter)
+//!                 .await;
+//!         }
+//!         Ok(())
 //!     }
 //! }
 //!
 //! tardigrade::workflow_entry!(MyWorkflow);
 //! ```
+
+use async_trait::async_trait;
 
 use std::{borrow::Cow, future::Future, mem};
 
@@ -105,6 +111,7 @@ use crate::{
     interface::{
         AccessError, AccessErrorKind, ArgsSpec, Interface, InterfaceBuilder, InterfaceLocation,
     },
+    task::TaskResult,
     Decode, Encode, Raw,
 };
 
@@ -126,7 +133,7 @@ mod imp {
 
     #[link(wasm_import_module = "tardigrade_rt")]
     extern "C" {
-        #[link_name = "panic"]
+        #[link_name = "report_panic"]
         fn report_panic(
             message_ptr: *const u8,
             message_len: usize,
@@ -176,8 +183,10 @@ mod imp {
 mod imp {
     use std::{fmt, future::Future, pin::Pin};
 
+    use crate::task::TaskResult;
+
     #[repr(transparent)]
-    pub(super) struct TaskHandle(pub Pin<Box<dyn Future<Output = ()>>>);
+    pub(super) struct TaskHandle(pub Pin<Box<dyn Future<Output = TaskResult>>>);
 
     impl fmt::Debug for TaskHandle {
         fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -186,7 +195,7 @@ mod imp {
     }
 
     impl TaskHandle {
-        pub fn new(future: impl Future<Output = ()> + 'static) -> Self {
+        pub fn for_main_task(future: impl Future<Output = TaskResult> + 'static) -> Self {
             Self(Box::pin(future))
         }
     }
@@ -354,38 +363,61 @@ impl WorkflowFn for () {
 }
 
 /// Workflow that can be spawned.
+///
+/// This trait can be defined using the [`async_trait`] proc macro.
+///
+/// [`async_trait`]: https://docs.rs/async-trait/
+///
+/// # Examples
+///
+/// See [module docs](crate::workflow#examples) for workflow definition examples.
+#[async_trait(?Send)]
 pub trait SpawnWorkflow: GetInterface + TakeHandle<Wasm, Id = ()> + WorkflowFn {
-    /// Spawns a workflow instance.
-    fn spawn(args: Self::Args, handle: <Self as TakeHandle<Wasm>>::Handle) -> TaskHandle;
+    /// Spawns the main task of the workflow.
+    ///
+    /// The workflow completes immediately when its main task completes,
+    /// and its completion state is determined by the returned [`TaskResult`].
+    /// (Cf. processes in operating systems.) Thus, if a workflow needs to wait for some
+    /// [`spawn`]ed task, it needs to preserve its [`JoinHandle`], propagating [`TaskError`]s
+    /// if necessary.
+    ///
+    /// See [`task`](crate::task#error-handling) module docs for more information
+    /// about error handling.
+    ///
+    /// [`spawn`]: crate::task::spawn()
+    /// [`JoinHandle`]: crate::task::JoinHandle
+    /// [`TaskError`]: crate::task::TaskError
+    async fn spawn(args: Self::Args, handle: <Self as TakeHandle<Wasm>>::Handle) -> TaskResult;
 }
 
 /// Handle to a task, essentially equivalent to a boxed [`Future`].
 #[derive(Debug)]
 #[repr(transparent)]
+#[doc(hidden)] // only used by the `workflow_entry!` macro
 pub struct TaskHandle(imp::TaskHandle);
 
 impl TaskHandle {
     /// Creates a handle.
-    pub fn new(future: impl Future<Output = ()> + 'static) -> Self {
-        Self(imp::TaskHandle::new(future))
+    pub(crate) fn new(future: impl Future<Output = TaskResult> + 'static) -> Self {
+        Self(imp::TaskHandle::for_main_task(future))
     }
 
     #[doc(hidden)] // only used in the `workflow_entry` macro
     pub fn from_workflow<W: SpawnWorkflow>(
-        raw_data: Vec<u8>,
+        raw_args: Vec<u8>,
         mut wasm: Wasm,
     ) -> Result<Self, AccessError> {
-        let data = W::Codec::default()
-            .try_decode_bytes(raw_data)
+        let args = W::Codec::default()
+            .try_decode_bytes(raw_args)
             .map_err(|err| {
                 AccessErrorKind::Custom(Box::new(err)).with_location(InterfaceLocation::Args)
             })?;
         let handle = <W as TakeHandle<Wasm>>::take_handle(&mut wasm, &())?;
-        Ok(W::spawn(data, handle))
+        Ok(Self::new(W::spawn(args, handle)))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn into_inner(self) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+    pub(crate) fn into_inner(self) -> std::pin::Pin<Box<dyn Future<Output = TaskResult>>> {
         self.0 .0
     }
 }

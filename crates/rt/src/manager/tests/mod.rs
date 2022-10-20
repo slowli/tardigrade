@@ -16,11 +16,11 @@ use crate::{
     utils::WasmAllocator,
     WorkflowEngine, WorkflowModule,
 };
+use tardigrade::abi::AllocateBytes;
 use tardigrade::{
     interface::{InboundChannel, OutboundChannel},
     spawn::ManageWorkflowsExt,
 };
-use tardigrade_shared::abi::AllocateBytes;
 
 const POLL_CX: WasmContextPtr = 123;
 const ERROR_PTR: u32 = 1_024;

@@ -11,10 +11,8 @@ use std::{collections::HashMap, fmt, str, task::Poll};
 use crate::{
     data::{WasmContextPtr, WorkflowData},
     module::ensure_func_ty,
-    TaskId, WakerId,
 };
-use tardigrade::interface::Interface;
-use tardigrade_shared::abi::TryFromWasm;
+use tardigrade::{abi::TryFromWasm, interface::Interface, TaskId, WakerId};
 
 #[derive(Clone, Copy)]
 pub(crate) struct ModuleExports {
@@ -291,12 +289,8 @@ mod tests {
             ctx: StoreContextMut<'_, WorkflowData>,
             task_id: TaskId,
         ) -> Result<Poll<()>, Trap> {
-            if task_id == 0 {
-                let poll_fn = this.borrow().poll_fns.next_for(());
-                poll_fn(ctx)
-            } else {
-                Ok(Poll::Pending)
-            }
+            let poll_fn = this.borrow().poll_fns.next_for(task_id);
+            poll_fn(ctx)
         }
 
         pub(super) fn drop_task(

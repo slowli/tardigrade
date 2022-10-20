@@ -13,8 +13,11 @@ use wasmtime::Trap;
 
 use std::{error, fmt, ops::Range, task::Poll};
 
-use crate::{ChannelId, TaskId, TimerId, WakerId, WorkflowId};
-use tardigrade_shared::SendError;
+use tardigrade::{
+    channel::SendError,
+    task::{ErrorLocation, TaskError, TaskResult},
+    ChannelId, TaskId, TimerId, WakerId, WorkflowId,
+};
 
 /// Cause of waking up a workflow task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,7 +77,7 @@ pub enum WakeUpCause {
 /// These functions are exported from the workflow WASM module and are called during different
 /// stages of the workflow lifecycle (e.g., after receiving an inbound message or completing
 /// a timer).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[non_exhaustive]
 pub enum ExecutedFunction {
     /// Entry point of the workflow.
@@ -87,8 +90,6 @@ pub enum ExecutedFunction {
         task_id: TaskId,
         /// Cause of the task waking up.
         wake_up_cause: WakeUpCause,
-        /// Result of polling a task.
-        poll_result: Poll<()>,
     },
     /// Waking up a [`Waker`](std::task::Waker).
     #[non_exhaustive]
@@ -271,21 +272,19 @@ pub struct Execution {
     pub function: ExecutedFunction,
     /// Events that have occurred during the execution (in the order of their appearance).
     pub events: Vec<Event>,
+    /// Result of executing a task. This field can only be set for
+    /// [task executions](ExecutedFunction::Task), but it is `None` if the task is
+    /// not completed as a result of this execution.
+    pub task_result: Option<TaskResult>,
 }
 
 /// Receipt for executing tasks in a workflow.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Receipt {
     pub(crate) executions: Vec<Execution>,
 }
 
 impl Receipt {
-    pub(crate) fn new() -> Self {
-        Self {
-            executions: Vec::new(),
-        }
-    }
-
     pub(crate) fn extend(&mut self, other: Self) {
         self.executions.extend(other.executions);
     }
@@ -309,28 +308,6 @@ impl Receipt {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct ExtendedTrap {
-    trap: Trap,
-    panic_info: Option<PanicInfo>,
-}
-
-impl ExtendedTrap {
-    pub fn new(trap: Trap, panic_info: Option<PanicInfo>) -> Self {
-        Self { trap, panic_info }
-    }
-}
-
-impl fmt::Display for ExtendedTrap {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(panic_info) = &self.panic_info {
-            write!(formatter, "{}; trap info: {}", panic_info, self.trap)
-        } else {
-            fmt::Display::fmt(&self.trap, formatter)
-        }
-    }
-}
-
 /// Error occurring during workflow execution.
 ///
 /// An error is caused by the executed WASM code [`Trap`]ping, which can be caused by a panic
@@ -344,10 +321,10 @@ pub struct ExecutionError {
 }
 
 impl ExecutionError {
-    pub(crate) fn new(trap: ExtendedTrap, receipt: Receipt) -> Self {
+    pub(crate) fn new(trap: Trap, panic_info: Option<PanicInfo>, receipt: Receipt) -> Self {
         Self {
-            trap: trap.trap,
-            panic_info: trap.panic_info,
+            trap,
+            panic_info,
             receipt,
         }
     }
@@ -396,7 +373,7 @@ pub struct PanicInfo {
     /// Human-readable panic message.
     pub message: Option<String>,
     /// Location where the panic has occurred.
-    pub location: Option<PanicLocation>,
+    pub location: Option<ErrorLocation>,
 }
 
 impl fmt::Display for PanicInfo {
@@ -412,20 +389,19 @@ impl fmt::Display for PanicInfo {
     }
 }
 
-/// Location of a panic in the workflow code.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct PanicLocation {
-    /// Name of the file where a panic has occurred.
-    pub filename: String,
-    /// Line number in the file.
-    pub line: u32,
-    /// Column number on the line.
-    pub column: u32,
+impl PanicInfo {
+    pub(crate) fn into_parts(self) -> (String, ErrorLocation) {
+        let message = self
+            .message
+            .unwrap_or_else(|| "task execution failed".to_owned());
+        let location = self.location.unwrap_or(ErrorLocation::UNKNOWN);
+        (message, location)
+    }
 }
 
-impl fmt::Display for PanicLocation {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}:{}:{}", self.filename, self.line, self.column)
+impl From<PanicInfo> for TaskError {
+    fn from(info: PanicInfo) -> Self {
+        let (message, location) = info.into_parts();
+        Self::from_parts(message, location)
     }
 }

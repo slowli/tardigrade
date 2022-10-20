@@ -9,11 +9,11 @@ use super::{
 use crate::{
     module::{NoOpWorkflowManager, Services, WorkflowAndChannelIds},
     workflow::{ChannelIds, Workflow},
-    ChannelId, WorkflowId,
 };
 use tardigrade::{
     interface::Interface,
     spawn::{ChannelsConfig, ManageInterfaces, ManageWorkflows, SpecifyWorkflowChannels},
+    ChannelId, WorkflowId,
 };
 
 #[derive(Debug)]
@@ -34,7 +34,7 @@ impl TransactionInner {
         &mut self,
         definition_id: String,
         parent_id: Option<WorkflowId>,
-        mut workflow: Workflow,
+        workflow: Workflow,
     ) -> WorkflowId {
         debug_assert!(!workflow.is_initialized());
 
@@ -45,7 +45,7 @@ impl TransactionInner {
             WorkflowWithMeta {
                 definition_id,
                 parent_id,
-                workflow: workflow.persist().unwrap(),
+                workflow: workflow.persist(),
             },
         );
         id

@@ -10,16 +10,17 @@ use std::{
 };
 
 use super::{
-    ChannelSpawnConfig, ChannelsConfig, ManageInterfaces, ManageWorkflows, Remote, Workflows,
+    ChannelSpawnConfig, ChannelsConfig, HostError, ManageInterfaces, ManageWorkflows, Remote,
+    Workflows,
 };
-use crate::channel::{
-    imp::{mpsc_receiver_get, mpsc_sender_get, MpscSender, ACCESS_ERROR_PAD},
-    RawReceiver, RawSender,
-};
-use tardigrade_shared::{
-    abi::IntoWasm,
+use crate::{
+    abi::{IntoWasm, PollTask, TryFromWasm},
+    channel::{
+        imp::{mpsc_receiver_get, mpsc_sender_get, MpscSender, ACCESS_ERROR_PAD},
+        RawReceiver, RawSender,
+    },
     interface::{ChannelKind, Interface},
-    JoinError, SpawnError,
+    task::{JoinError, TaskError},
 };
 
 static mut SPAWN_ERROR_PAD: i64 = 0;
@@ -48,7 +49,7 @@ impl ManageInterfaces for Workflows {
 
 impl ManageWorkflows<'_, ()> for Workflows {
     type Handle = super::RemoteWorkflow;
-    type Error = SpawnError;
+    type Error = HostError;
 
     fn create_workflow(
         &self,
@@ -79,7 +80,7 @@ impl ManageWorkflows<'_, ()> for Workflows {
                 channels.into_resource(),
                 &mut SPAWN_ERROR_PAD,
             );
-            Result::<(), SpawnError>::from_abi_in_wasm(SPAWN_ERROR_PAD).map(|()| RemoteWorkflow {
+            Result::<(), HostError>::from_abi_in_wasm(SPAWN_ERROR_PAD).map(|()| RemoteWorkflow {
                 resource: workflow.unwrap(),
             })
         };
@@ -96,7 +97,7 @@ extern "C" {
     #[link_name = "workflow::insert_handle"]
     fn insert_handle(
         spawner: &Resource<ChannelsConfig<RawReceiver, RawSender>>,
-        channel_kind: ChannelKind,
+        channel_kind: i32,
         name_ptr: *const u8,
         name_len: usize,
         is_closed: bool,
@@ -121,7 +122,7 @@ impl ChannelSpawnConfig<RawReceiver> {
             Self::New | Self::Closed => {
                 insert_handle(
                     spawner,
-                    ChannelKind::Inbound,
+                    ChannelKind::Inbound.into_abi_in_wasm(),
                     channel_name.as_ptr(),
                     channel_name.len(),
                     matches!(self, Self::Closed),
@@ -142,7 +143,7 @@ impl ChannelSpawnConfig<RawSender> {
             Self::New | Self::Closed => {
                 insert_handle(
                     spawner,
-                    ChannelKind::Outbound,
+                    ChannelKind::Outbound.into_abi_in_wasm(),
                     channel_name.as_ptr(),
                     channel_name.len(),
                     matches!(self, Self::Closed),
@@ -235,11 +236,25 @@ impl Future for RemoteWorkflow {
                 workflow: &Resource<RemoteWorkflow>,
                 cx: *mut Context<'_>,
             ) -> i64;
+
+            #[link_name = "workflow::completion_error"]
+            fn workflow_completion_error(workflow: &Resource<RemoteWorkflow>) -> i64;
         }
 
         unsafe {
             let poll_result = workflow_poll_completion(&self.resource, cx);
-            IntoWasm::from_abi_in_wasm(poll_result)
+            let poll_result = PollTask::from_abi_in_wasm(poll_result);
+            poll_result.map(|res| {
+                res.map_err(|_| JoinError::Aborted).and_then(|()| {
+                    let maybe_err = workflow_completion_error(&self.resource);
+                    if maybe_err == 0 {
+                        Ok(())
+                    } else {
+                        let err = TaskError::from_abi_in_wasm(maybe_err);
+                        Err(JoinError::Err(err))
+                    }
+                })
+            })
         }
     }
 }

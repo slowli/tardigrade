@@ -5,6 +5,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use wasmtime::Store;
 
+use std::{fmt, task::Poll};
+
 use crate::{
     data::{
         ChildWorkflowState, InboundChannelState, OutboundChannelState, PersistError,
@@ -14,11 +16,10 @@ use crate::{
     receipt::WakeUpCause,
     utils::Message,
     workflow::{ChannelIds, Workflow},
-    ChannelId, TaskId, TimerId, WorkflowId,
 };
-use tardigrade_shared::JoinError;
+use tardigrade::{task::JoinError, ChannelId, TaskId, TimerId, WorkflowId};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Memory {
     Unstructured(#[serde(with = "serde_compress")] Vec<u8>),
@@ -29,6 +30,28 @@ enum Memory {
         #[serde(with = "serde_compress")]
         heap: Vec<u8>,
     },
+}
+
+impl fmt::Debug for Memory {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unstructured(bytes) => formatter
+                .debug_struct("Unstructured")
+                .field("len", &bytes.len())
+                .finish(),
+
+            Self::Structured {
+                data_base,
+                data_diff,
+                heap,
+            } => formatter
+                .debug_struct("Structured")
+                .field("data_base", data_base)
+                .field("data_diff_len", &data_diff.len())
+                .field("heap_len", &heap.len())
+                .finish(),
+        }
+    }
 }
 
 mod serde_compress {
@@ -131,11 +154,12 @@ pub struct PersistedWorkflow {
 }
 
 impl PersistedWorkflow {
-    pub(super) fn new(workflow: &mut Workflow) -> Result<Self, PersistError> {
+    pub(super) fn new(mut workflow: Workflow) -> Result<Self, PersistError> {
         workflow.store.data().check_persistence()?;
-        let state = workflow.store.data().persist();
         let refs = Refs::new(&mut workflow.store);
         let memory = Memory::new(&workflow.store, workflow.data_section.as_deref());
+        let state = workflow.store.into_data().persist();
+
         Ok(Self {
             state,
             refs,
@@ -220,11 +244,14 @@ impl PersistedWorkflow {
         self.args.is_none()
     }
 
-    /// Checks whether the workflow is finished, i.e., its main task is completed.
-    pub fn is_finished(&self) -> bool {
-        self.state
-            .main_task()
-            .map_or(false, |state| state.result().is_ready())
+    /// Returns the result of executing this workflow, which is the output of its main task.
+    pub fn result(&self) -> Poll<Result<(), &JoinError>> {
+        self.state.result()
+    }
+
+    /// Aborts the workflow by changing the result of its main task.
+    pub(crate) fn abort(&mut self) {
+        self.state.abort();
     }
 
     /// Returns the current time for the workflow.

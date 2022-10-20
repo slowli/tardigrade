@@ -21,10 +21,13 @@ use crate::{
     receipt::WakeUpCause,
     utils::{copy_bytes_from_wasm, copy_string_from_wasm, merge_vec, Message, WasmAllocator},
     workflow::ChannelIds,
+};
+use tardigrade::{
+    abi::{IntoWasm, PollMessage},
+    channel::SendError,
+    interface::{AccessErrorKind, ChannelKind},
     ChannelId, WakerId, WorkflowId,
 };
-use tardigrade::interface::{AccessErrorKind, ChannelKind};
-use tardigrade_shared::{abi::IntoWasm, PollMessage, SendError};
 
 /// Wrapper around `Message` that contains message index within all messages emitted
 /// by the workflow during its execution. This allows correct ordering of messages

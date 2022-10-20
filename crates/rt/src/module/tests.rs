@@ -9,7 +9,8 @@ use std::{
 };
 
 use super::*;
-use crate::{module::WorkflowModule, TaskId, WakerId};
+use crate::module::WorkflowModule;
+use tardigrade::{TaskId, WakerId};
 
 const INTERFACE: &[u8] = br#"{
     "v": 0,
@@ -27,15 +28,16 @@ pub(crate) struct ExportsMock {
     pub consumed_wakers: HashSet<WakerId>,
     pub dropped_tasks: HashSet<TaskId>,
     pub heap_pos: u32,
-    pub poll_fns: Answers<MockPollFn>,
+    pub poll_fns: Answers<MockPollFn, TaskId>,
 }
 
 #[allow(clippy::unnecessary_wraps)] // required by mock interface
 impl ExportsMock {
     pub const MOCK_MODULE_BYTES: &'static [u8] = b"\0asm\x01\0\0\0";
 
-    pub fn prepare(poll_fns: Answers<MockPollFn>) -> MockGuard<Self> {
+    pub fn prepare(poll_fns: Answers<MockPollFn, TaskId>) -> MockGuard<Self> {
         let this = Self {
+            heap_pos: 256, // prevent 0 pointers when allocating bytes
             poll_fns,
             ..Self::default()
         };

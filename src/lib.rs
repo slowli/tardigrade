@@ -12,8 +12,8 @@
 //! - Tasks
 //!
 //! Timers [can be created dynamically](sleep) during workflow operation; likewise, tasks
-//! can be [`spawn()`]ed to achieve concurrency (but not parallelism!). In contrast, the
-//! set of channels and their direction (inbound or outbound)
+//! can be [`spawn()`](task::spawn())ed to achieve concurrency (but not parallelism!).
+//! In contrast, the set of channels and their direction (inbound or outbound)
 //! are static / predefined in the workflow [`Interface`].
 //!
 //! A workflow is sandboxed by the virtue of being implemented as a WASM module.
@@ -60,11 +60,14 @@
     clippy::trait_duplication_in_bounds
 )]
 
+#[doc(hidden)] // used by runtime; low-level and unstable
+pub mod abi;
 pub mod channel;
 mod codec;
+mod error;
 mod ext;
 pub mod spawn;
-mod task;
+pub mod task;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod test;
 mod time;
@@ -76,8 +79,7 @@ pub use crate::codec::Json;
 pub use crate::{
     codec::{Decode, Encode, Raw},
     ext::FutureExt,
-    task::{spawn, yield_now, JoinHandle},
-    time::{now, sleep, Timer},
+    time::{now, sleep, Timer, TimerDefinition},
 };
 
 /// Proc macro attribute for workflow handles.
@@ -127,6 +129,19 @@ pub use tardigrade_shared::interface;
 pub mod _reexports {
     pub use once_cell::sync::Lazy;
 }
+
+/// ID of a [`Waker`](std::task::Waker) defined by a workflow.
+pub type WakerId = u64;
+/// ID of a workflow task.
+pub type TaskId = u64;
+/// ID of a workflow timer.
+pub type TimerId = u64;
+/// ID of a (traced) future defined by a workflow.
+pub type FutureId = u64;
+/// ID of a workflow.
+pub type WorkflowId = u64;
+/// ID of a channel.
+pub type ChannelId = u128;
 
 /// Creates an entry point for the specified workflow type.
 ///

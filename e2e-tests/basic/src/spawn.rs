@@ -1,12 +1,14 @@
 //! Version of the `PizzaDelivery` workflow with each order implemented via a separate workflow.
 //! Also, there is no delivery.
 
-use futures::{FutureExt, StreamExt};
+use async_trait::async_trait;
+use futures::{StreamExt, TryStreamExt};
 
 use crate::{Args, PizzaDeliveryHandle, PizzaOrder, SharedHandle};
 use tardigrade::{
     spawn::{ManageWorkflowsExt, Workflows},
-    workflow::{GetInterface, SpawnWorkflow, TakeHandle, TaskHandle, Wasm, WorkflowFn},
+    task::{TaskError, TaskResult},
+    workflow::{GetInterface, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
     Json,
 };
 
@@ -20,26 +22,28 @@ impl WorkflowFn for PizzaDeliveryWithSpawning {
 }
 
 impl PizzaDeliveryHandle {
-    async fn spawn_with_child_workflows(self, args: Args) {
+    async fn spawn_with_child_workflows(self, args: Args) -> TaskResult {
         let mut counter = 0;
-        let events = self.shared.events;
         self.orders
-            .for_each_concurrent(args.oven_count, |order| {
+            .map(Ok)
+            .try_for_each_concurrent(args.oven_count, |order| {
                 counter += 1;
-                let builder = Workflows
-                    .new_workflow::<Baking>("baking", (counter, order))
-                    .unwrap();
-                builder.handle().events.copy_from(events.clone());
-                builder.handle().tracer.close();
-                builder.build().unwrap().workflow.map(Result::unwrap)
+                let events = self.shared.events.clone();
+                async move {
+                    let builder = Workflows.new_workflow::<Baking>("baking", (counter, order))?;
+                    builder.handle().events.copy_from(events);
+                    builder.handle().tracer.close();
+                    builder.build()?.workflow.await.map_err(TaskError::from)
+                }
             })
-            .await;
+            .await
     }
 }
 
+#[async_trait(?Send)]
 impl SpawnWorkflow for PizzaDeliveryWithSpawning {
-    fn spawn(args: Args, handle: PizzaDeliveryHandle) -> TaskHandle {
-        TaskHandle::new(handle.spawn_with_child_workflows(args))
+    async fn spawn(args: Args, handle: PizzaDeliveryHandle) -> TaskResult {
+        handle.spawn_with_child_workflows(args).await
     }
 }
 
@@ -54,11 +58,11 @@ impl WorkflowFn for Baking {
     type Codec = Json;
 }
 
+#[async_trait(?Send)]
 impl SpawnWorkflow for Baking {
-    fn spawn((idx, order): (usize, PizzaOrder), handle: SharedHandle<Wasm>) -> TaskHandle {
-        TaskHandle::new(async move {
-            handle.bake(idx, order).await;
-        })
+    async fn spawn((idx, order): (usize, PizzaOrder), handle: SharedHandle<Wasm>) -> TaskResult {
+        handle.bake(idx, order).await;
+        Ok(())
     }
 }
 

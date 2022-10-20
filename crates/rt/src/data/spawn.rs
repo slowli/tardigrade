@@ -17,14 +17,15 @@ use crate::{
         PersistedWorkflowData, WorkflowData,
     },
     receipt::{ResourceEventKind, ResourceId, WakeUpCause},
-    utils::{copy_bytes_from_wasm, copy_string_from_wasm, drop_value, serde_poll, WasmAllocator},
+    utils::{self, WasmAllocator},
     workflow::ChannelIds,
 };
-use tardigrade::spawn::{ChannelSpawnConfig, ChannelsConfig};
-use tardigrade_shared::{
-    abi::{IntoWasm, TryFromWasm},
+use tardigrade::{
+    abi::{IntoWasm, PollTask, TryFromWasm},
     interface::{ChannelKind, Interface},
-    ChannelId, JoinError, SpawnError, WakerId, WorkflowId,
+    spawn::{ChannelSpawnConfig, ChannelsConfig, HostError},
+    task::{JoinError, TaskError},
+    ChannelId, WakerId, WorkflowId,
 };
 
 type ChannelHandles = ChannelsConfig<ChannelId>;
@@ -35,13 +36,23 @@ pub(super) struct SharedChannelHandles {
 }
 
 /// State of child workflow as viewed by its parent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ChildWorkflowState {
     pub(super) channels: ChannelStates,
-    #[serde(with = "serde_poll")]
+    #[serde(with = "utils::serde_poll")]
     completion_result: Poll<Result<(), JoinError>>,
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     wakes_on_completion: HashSet<WakerId>,
+}
+
+impl Clone for ChildWorkflowState {
+    fn clone(&self) -> Self {
+        Self {
+            channels: self.channels.clone(),
+            completion_result: utils::clone_completion_result(&self.completion_result),
+            wakes_on_completion: self.wakes_on_completion.clone(),
+        }
+    }
 }
 
 impl ChildWorkflowState {
@@ -184,7 +195,7 @@ impl WorkflowData<'_> {
         definition_id: &str,
         args: Vec<u8>,
         channels: &ChannelsConfig<ChannelId>,
-    ) -> Result<WorkflowId, SpawnError> {
+    ) -> Result<WorkflowId, HostError> {
         let result = self
             .services
             .workflows
@@ -204,22 +215,31 @@ impl WorkflowData<'_> {
             ids.workflow_id
         });
         log_result!(result, "Spawned workflow using `{definition_id}`")
-            .map_err(|err| SpawnError::new(err.to_string()))
+            .map_err(|err| HostError::new(err.to_string()))
     }
 
     fn poll_workflow_completion(
         &mut self,
         workflow_id: WorkflowId,
         cx: &mut WasmContext,
-    ) -> Poll<Result<(), JoinError>> {
+    ) -> PollTask {
         let poll_result = self.persisted.child_workflows[&workflow_id]
-            .completion_result
-            .clone();
+            .result()
+            .map(utils::extract_task_poll_result);
         self.current_execution().push_resource_event(
             ResourceId::Workflow(workflow_id),
-            ResourceEventKind::Polled(drop_value(&poll_result)),
+            ResourceEventKind::Polled(utils::drop_value(&poll_result)),
         );
         poll_result.wake_if_pending(cx, || WakerPlacement::WorkflowCompletion(workflow_id))
+    }
+
+    fn workflow_task_error(&self, workflow_id: WorkflowId) -> Option<&TaskError> {
+        let result = self.persisted.child_workflows[&workflow_id].result();
+        if let Poll::Ready(Err(JoinError::Err(err))) = result {
+            Some(err)
+        } else {
+            None
+        }
     }
 
     /// Handles dropping the child workflow handle from the workflow side. Returns wakers
@@ -245,7 +265,7 @@ pub(crate) struct SpawnFunctions;
 impl SpawnFunctions {
     fn write_spawn_result(
         ctx: &mut StoreContextMut<'_, WorkflowData>,
-        result: Result<(), SpawnError>,
+        result: Result<(), HostError>,
         error_ptr: u32,
     ) -> Result<(), Trap> {
         let memory = ctx.data().exports().memory;
@@ -261,7 +281,7 @@ impl SpawnFunctions {
         id_len: u32,
     ) -> Result<i64, Trap> {
         let memory = ctx.data().exports().memory;
-        let id = copy_string_from_wasm(&ctx, &memory, id_ptr, id_len)?;
+        let id = utils::copy_string_from_wasm(&ctx, &memory, id_ptr, id_len)?;
 
         let workflows = &ctx.data().services.workflows;
         let interface = workflows
@@ -293,7 +313,7 @@ impl SpawnFunctions {
             _ => return Err(Trap::new("invalid `is_closed` value; expected 0 or 1")),
         };
         let memory = ctx.data().exports().memory;
-        let name = copy_string_from_wasm(&ctx, &memory, name_ptr, name_len)?;
+        let name = utils::copy_string_from_wasm(&ctx, &memory, name_ptr, name_len)?;
 
         let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
         let mut handles = handles.inner.lock().unwrap();
@@ -319,7 +339,7 @@ impl SpawnFunctions {
         let channel_state = ctx.data().persisted.outbound_channel(channel_ref);
         let channel_id = channel_state.unwrap().id();
         let memory = ctx.data().exports().memory;
-        let name = copy_string_from_wasm(&ctx, &memory, name_ptr, name_len)?;
+        let name = utils::copy_string_from_wasm(&ctx, &memory, name_ptr, name_len)?;
         let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
 
         let mut handles = handles.inner.lock().unwrap();
@@ -339,8 +359,8 @@ impl SpawnFunctions {
         error_ptr: u32,
     ) -> Result<Option<ExternRef>, Trap> {
         let memory = ctx.data().exports().memory;
-        let id = copy_string_from_wasm(&ctx, &memory, id_ptr, id_len)?;
-        let args = copy_bytes_from_wasm(&ctx, &memory, args_ptr, args_len)?;
+        let id = utils::copy_string_from_wasm(&ctx, &memory, id_ptr, id_len)?;
+        let args = utils::copy_bytes_from_wasm(&ctx, &memory, args_ptr, args_len)?;
         let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
         let handles = handles.inner.lock().unwrap();
         ctx.data().validate_handles(&id, &handles)?;
@@ -372,5 +392,20 @@ impl SpawnFunctions {
         );
         poll_cx.save_waker(&mut ctx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))
+    }
+
+    pub fn completion_error(
+        ctx: StoreContextMut<'_, WorkflowData>,
+        workflow: Option<ExternRef>,
+    ) -> Result<i64, Trap> {
+        let workflow_id = HostResource::from_ref(workflow.as_ref())?.as_workflow()?;
+        let maybe_err = ctx
+            .data()
+            .workflow_task_error(workflow_id)
+            .map(TaskError::clone_boxed);
+        Ok(maybe_err
+            .map(|err| err.into_wasm(&mut WasmAllocator::new(ctx)))
+            .transpose()?
+            .unwrap_or(0))
     }
 }

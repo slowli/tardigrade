@@ -7,13 +7,19 @@
 //! [`wit-bindgen`]: https://github.com/bytecodealliance/wit-bindgen
 
 use chrono::{DateTime, TimeZone, Utc};
+use futures::future::Aborted;
 
 use std::{error, fmt, task::Poll};
 
 use crate::{
-    interface::AccessErrorKind,
-    types::{JoinError, PollMessage, PollTask, SendError, SpawnError},
+    error::{HostError, SendError, TaskError},
+    interface::{AccessErrorKind, ChannelKind},
 };
+
+/// Result of polling a receiver end of a channel.
+pub type PollMessage = Poll<Option<Vec<u8>>>;
+/// Result of polling a workflow task.
+pub type PollTask = Poll<Result<(), Aborted>>;
 
 /// Value directly representable in WASM ABI, e.g., `i64`.
 pub trait WasmValue {}
@@ -138,29 +144,6 @@ impl TryFromWasm for Poll<()> {
     }
 }
 
-impl IntoWasm for PollTask {
-    type Abi = i64;
-
-    fn into_wasm<A: AllocateBytes>(self, _: &mut A) -> Result<Self::Abi, A::Error> {
-        Ok(match self {
-            Self::Pending => -1,
-            Self::Ready(Ok(())) => -2,
-            Self::Ready(Err(JoinError::Aborted)) => -3,
-            Self::Ready(Err(JoinError::Trapped)) => 0,
-        })
-    }
-
-    unsafe fn from_abi_in_wasm(abi: i64) -> Self {
-        match abi {
-            -1 => Self::Pending,
-            -2 => Self::Ready(Ok(())),
-            -3 => Self::Ready(Err(JoinError::Aborted)),
-            0 => Self::Ready(Err(JoinError::Trapped)),
-            _ => panic!("Unexpected ABI value"),
-        }
-    }
-}
-
 impl IntoWasm for Option<Vec<u8>> {
     type Abi = i64;
 
@@ -183,6 +166,41 @@ impl IntoWasm for Option<Vec<u8>> {
                 let len = (abi & 0xffff_ffff) as usize;
                 Vec::from_raw_parts(ptr, len, len)
             }),
+        }
+    }
+}
+
+impl IntoWasm for TaskError {
+    type Abi = i64;
+
+    fn into_wasm<A: AllocateBytes>(self, alloc: &mut A) -> Result<Self::Abi, A::Error> {
+        let serialized = serde_json::to_vec(&self).expect("failed serializing `TaskError`");
+        Some(serialized).into_wasm(alloc)
+    }
+
+    unsafe fn from_abi_in_wasm(abi: Self::Abi) -> Self {
+        let serialized = Option::<Vec<u8>>::from_abi_in_wasm(abi).unwrap();
+        serde_json::from_slice(&serialized).expect("failed deserializing `TaskError`")
+    }
+}
+
+impl IntoWasm for PollTask {
+    type Abi = i64;
+
+    fn into_wasm<A: AllocateBytes>(self, _: &mut A) -> Result<Self::Abi, A::Error> {
+        Ok(match self {
+            Self::Pending => -1,
+            Self::Ready(Ok(())) => -2,
+            Self::Ready(Err(Aborted)) => -3,
+        })
+    }
+
+    unsafe fn from_abi_in_wasm(abi: i64) -> Self {
+        match abi {
+            -1 => Self::Pending,
+            -2 => Self::Ready(Ok(())),
+            -3 => Self::Ready(Err(Aborted)),
+            _ => panic!("Unexpected ABI value"),
         }
     }
 }
@@ -247,6 +265,7 @@ impl IntoWasm for Result<(), AccessErrorKind> {
                 let (ptr, len) = alloc.copy_to_wasm(message.as_bytes())?;
                 (i64::from(ptr) << 32) + i64::from(len)
             }
+            Err(_) => unreachable!(), // no other `AccessErrorKind` variants
         })
     }
 
@@ -304,7 +323,7 @@ impl IntoWasm for Poll<Result<(), SendError>> {
     }
 }
 
-impl IntoWasm for Result<(), SpawnError> {
+impl IntoWasm for Result<(), HostError> {
     type Abi = i64;
 
     fn into_wasm<A: AllocateBytes>(self, alloc: &mut A) -> Result<Self::Abi, A::Error> {
@@ -326,7 +345,26 @@ impl IntoWasm for Result<(), SpawnError> {
             let ptr = (abi >> 32) as *mut u8;
             let len = (abi & 0xffff_ffff) as usize;
             let message = String::from_raw_parts(ptr, len, len);
-            Err(SpawnError::new(message))
+            Err(HostError::new(message))
+        }
+    }
+}
+
+impl TryFromWasm for ChannelKind {
+    type Abi = i32;
+
+    fn into_abi_in_wasm(self) -> Self::Abi {
+        match self {
+            Self::Inbound => 0,
+            Self::Outbound => 1,
+        }
+    }
+
+    fn try_from_wasm(abi: Self::Abi) -> Result<Self, FromWasmError> {
+        match abi {
+            0 => Ok(Self::Inbound),
+            1 => Ok(Self::Outbound),
+            _ => Err(FromWasmError::new("unexpected `ChannelKind` value")),
         }
     }
 }

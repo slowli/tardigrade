@@ -15,12 +15,12 @@ anyhow = "1.0.57"
 base64 = "0.13.0"
 chrono = { version = "0.4.22", features = ["serde"] }
 flate2 = "1.0.24" # TODO: make optional? (+ expose workflow memory)
+futures = "0.3.21"
 leb128 = "0.2.5"
 once_cell = "1.13.0"
 serde = { version = "1", features = ["derive"] }
-wasmtime = "0.37.0"
+wasmtime = "1.0.1"
 
-futures = { version = "0.3.21", optional = true }
 pin-project-lite = { version = "0.2.9", optional = true }
 
 ## Standalone optional dependencies
@@ -29,7 +29,6 @@ async-io = { version = "1.7.0", optional = true }
 # Enables logging during workflow execution.
 log = { version = "0.4.17", optional = true }
 
-tardigrade-shared = { version = "0.1.0", path = "../shared" }
 tardigrade = { version = "0.1.0", path = "../.." }
 
 [dev-dependencies]
@@ -42,4 +41,4 @@ version-sync = "0.9.4"
 [features]
 default = []
 # Exposes async handles for workflows.
-async = ["futures", "pin-project-lite"]
+async = ["pin-project-lite"]

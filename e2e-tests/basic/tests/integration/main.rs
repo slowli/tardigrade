@@ -11,6 +11,7 @@ use tardigrade_rt::{
 };
 
 mod async_env;
+mod requests;
 mod spawn;
 mod sync_env;
 mod tasks;
@@ -50,7 +51,7 @@ fn module_information_is_correct() -> TestResult {
     assert!(interfaces["PizzaDelivery"]
         .inbound_channel("baking_responses")
         .is_none());
-    assert!(interfaces["PizzaDeliveryWithTasks"]
+    assert!(interfaces["PizzaDeliveryWithRequests"]
         .inbound_channel("baking_responses")
         .is_some());
     Ok(())

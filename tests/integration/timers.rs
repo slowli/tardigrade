@@ -1,5 +1,6 @@
 //! Timer-related tests.
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::{SinkExt, StreamExt};
 use std::time::Duration;
@@ -7,8 +8,9 @@ use std::time::Duration;
 use tardigrade::workflow::WorkflowFn;
 use tardigrade::{
     channel::Sender,
+    task::TaskResult,
     test::{Runtime, Timers},
-    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, TaskHandle, Wasm},
+    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm},
     Json, Timer,
 };
 
@@ -26,15 +28,15 @@ impl WorkflowFn for TimersWorkflow {
     type Codec = Json;
 }
 
+#[async_trait(?Send)]
 impl SpawnWorkflow for TimersWorkflow {
-    fn spawn(_data: (), mut handle: TestHandle<Wasm>) -> TaskHandle {
-        TaskHandle::new(async move {
-            let now = tardigrade::now();
-            let completion_time = Timer::at(now - chrono::Duration::milliseconds(100)).await;
-            handle.timestamps.send(completion_time).await.unwrap();
-            let completion_time = Timer::after(Duration::from_millis(100)).await;
-            handle.timestamps.send(completion_time).await.unwrap();
-        })
+    async fn spawn(_args: (), mut handle: TestHandle<Wasm>) -> TaskResult {
+        let now = tardigrade::now();
+        let completion_time = Timer::at(now - chrono::Duration::milliseconds(100)).await;
+        handle.timestamps.send(completion_time).await?;
+        let completion_time = Timer::after(Duration::from_millis(100)).await;
+        handle.timestamps.send(completion_time).await?;
+        Ok(())
     }
 }
 

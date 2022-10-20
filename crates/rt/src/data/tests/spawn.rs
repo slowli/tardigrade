@@ -11,14 +11,13 @@ use std::{
 };
 
 use super::*;
-use crate::{
-    data::SpawnFunctions, module::WorkflowAndChannelIds, utils::copy_bytes_from_wasm, ChannelId,
-};
+use crate::{data::SpawnFunctions, module::WorkflowAndChannelIds, utils::copy_bytes_from_wasm};
 use tardigrade::{
+    abi::TryFromWasm,
     interface::{ChannelKind, Interface},
     spawn::{ChannelsConfig, ManageInterfaces, ManageWorkflows, SpecifyWorkflowChannels},
+    ChannelId,
 };
-use tardigrade_shared::abi::TryFromWasm;
 
 #[derive(Debug)]
 struct NewWorkflowCall {
@@ -389,6 +388,7 @@ fn assert_child_inbound_message_receipt(receipt: &Receipt) {
                 }
             },
             events,
+            ..
         } if channel_name == "traces" && events.is_empty()
     );
     let task_execution = &receipt.executions()[1];

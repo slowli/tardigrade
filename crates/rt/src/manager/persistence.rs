@@ -6,16 +6,17 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     mem,
+    task::Poll,
 };
 
 use crate::{
     manager::{transaction::Transaction, ChannelInfo, ChannelSide},
     receipt::Receipt,
-    utils::Message,
-    workflow::{ChannelIds, Workflow},
+    utils::{clone_join_error, Message},
+    workflow::ChannelIds,
     PersistedWorkflow,
 };
-use tardigrade_shared::{interface::ChannelKind, ChannelId, SendError, WorkflowId};
+use tardigrade::{channel::SendError, interface::ChannelKind, ChannelId, WorkflowId};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct ChannelState {
@@ -86,6 +87,7 @@ impl ChannelState {
                 self.sender_workflow_ids.remove(&id);
             }
             ChannelSide::Receiver => {
+                self.receiver_workflow_id = None;
                 self.is_closed = true;
                 return true;
             }
@@ -187,9 +189,13 @@ impl PersistedWorkflows {
         }
 
         for sender_workflow_id in &channel_state.sender_workflow_ids {
-            let workflow = &mut self.workflows.get_mut(sender_workflow_id).unwrap().workflow;
-            workflow.close_outbound_channels_by_id(channel_id);
-            trace!("Closed sender end of channel {channel_id} in workflow {sender_workflow_id}");
+            // The workflow may be missing from `self.workflows` if it has just completed.
+            if let Some(persisted) = self.workflows.get_mut(sender_workflow_id) {
+                persisted.workflow.close_outbound_channels_by_id(channel_id);
+                trace!(
+                    "Closed sender end of channel {channel_id} in workflow {sender_workflow_id}"
+                );
+            }
         }
     }
 
@@ -307,13 +313,16 @@ impl PersistedWorkflows {
         }
     }
 
-    pub(super) fn persist_workflow(&mut self, id: WorkflowId, mut workflow: Workflow) {
-        // Since all outbound messages are drained, persisting the workflow is safe.
-        let workflow = workflow.persist().unwrap();
-        let mut completion_notification_receiver = None;
-        let persisted = self.workflows.get_mut(&id).unwrap();
-        if workflow.is_finished() {
-            completion_notification_receiver = persisted.parent_id;
+    pub(super) fn persist_workflow(&mut self, id: WorkflowId, workflow: PersistedWorkflow) {
+        self.workflows.get_mut(&id).unwrap().workflow = workflow;
+        self.handle_workflow_update(id);
+    }
+
+    pub(super) fn handle_workflow_update(&mut self, id: WorkflowId) {
+        let persisted = self.workflows.remove(&id).unwrap();
+        let workflow = &persisted.workflow;
+        let completion_notification = if let Poll::Ready(result) = workflow.result() {
+            let parent_id = persisted.parent_id;
             // Close all channels linked to the workflow.
             for (.., state) in workflow.inbound_channels() {
                 self.close_channel_side(state.id(), ChannelSide::Receiver);
@@ -321,15 +330,17 @@ impl PersistedWorkflows {
             for (.., state) in workflow.outbound_channels() {
                 self.close_channel_side(state.id(), ChannelSide::WorkflowSender(id));
             }
-            // Garbage-collect the workflow state.
-            self.workflows.remove(&id);
+            parent_id.map(|id| (id, result.map_err(clone_join_error)))
         } else {
-            persisted.workflow = workflow;
-        }
+            self.workflows.insert(id, persisted);
+            None
+        };
 
-        if let Some(parent_id) = completion_notification_receiver {
-            let persisted = self.workflows.get_mut(&parent_id).unwrap();
-            persisted.workflow.notify_on_child_completion(id, Ok(()));
+        if let Some((parent_id, result)) = completion_notification {
+            // The parent may be already completed, thus refutable matching.
+            if let Some(persisted) = self.workflows.get_mut(&parent_id) {
+                persisted.workflow.notify_on_child_completion(id, result);
+            }
         }
     }
 }

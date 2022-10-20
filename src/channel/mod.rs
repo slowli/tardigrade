@@ -41,7 +41,7 @@ pub use self::{
     broadcast::{BroadcastError, BroadcastPublisher, BroadcastSubscriber},
     requests::{Requests, RequestsBuilder, WithId},
 };
-pub use tardigrade_shared::SendError;
+pub use crate::error::SendError;
 
 pin_project! {
     /// Receiver for an inbound channel provided to the workflow.

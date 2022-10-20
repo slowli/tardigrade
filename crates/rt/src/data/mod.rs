@@ -11,7 +11,7 @@ mod persistence;
 mod spawn;
 mod task;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 mod time;
 
 pub(crate) use self::{
@@ -31,12 +31,18 @@ use self::{channel::ChannelStates, helpers::CurrentExecution, task::TaskQueue, t
 use crate::{
     data::helpers::HostResource,
     module::{ModuleExports, Services},
-    receipt::{PanicInfo, PanicLocation, WakeUpCause},
+    receipt::{PanicInfo, WakeUpCause},
     utils::copy_string_from_wasm,
     workflow::ChannelIds,
-    TaskId, WorkflowId,
 };
-use tardigrade::interface::Interface;
+use tardigrade::{interface::Interface, task::ErrorLocation, TaskId, WorkflowId};
+
+/// Kinds of errors reported by workflows.
+#[derive(Debug, Clone, Copy)]
+enum ReportedErrorKind {
+    Panic,
+    TaskError,
+}
 
 /// `Workflow` state that can be persisted between workflow invocations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,7 +197,30 @@ impl WorkflowFunctions {
     }
 
     pub fn report_panic(
+        ctx: StoreContextMut<'_, WorkflowData>,
+        message_ptr: u32,
+        message_len: u32,
+        filename_ptr: u32,
+        filename_len: u32,
+        line: u32,
+        column: u32,
+    ) -> Result<(), Trap> {
+        Self::report_error_or_panic(
+            ctx,
+            ReportedErrorKind::Panic,
+            message_ptr,
+            message_len,
+            filename_ptr,
+            filename_len,
+            line,
+            column,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // acceptable for internal fn
+    fn report_error_or_panic(
         mut ctx: StoreContextMut<'_, WorkflowData>,
+        error_kind: ReportedErrorKind,
         message_ptr: u32,
         message_len: u32,
         filename_ptr: u32,
@@ -221,14 +250,22 @@ impl WorkflowFunctions {
             )?)
         };
 
-        ctx.data_mut().current_execution().set_panic(PanicInfo {
+        let info = PanicInfo {
             message,
-            location: filename.map(|filename| PanicLocation {
-                filename,
+            location: filename.map(|filename| ErrorLocation {
+                filename: filename.into(),
                 line,
                 column,
             }),
-        });
+        };
+        match error_kind {
+            ReportedErrorKind::TaskError => {
+                ctx.data_mut().current_execution().push_task_error(info);
+            }
+            ReportedErrorKind::Panic => {
+                ctx.data_mut().current_execution().set_panic(info);
+            }
+        }
         Ok(())
     }
 }
