@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use std::{borrow::Cow, error, fmt, panic::Location};
 
+#[cfg(test)]
+mod tests;
+
 /// Location of a panic or error in the workflow code.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorLocation {
