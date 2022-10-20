@@ -79,7 +79,7 @@ use std::{
     task::{Context, Poll},
 };
 
-pub use crate::error::SpawnError;
+pub use crate::error::HostError;
 
 use crate::{
     channel::{RawReceiver, RawSender, Receiver, SendError, Sender},
@@ -266,7 +266,7 @@ where
     W: WorkflowFn + TakeHandle<RemoteWorkflow, Id = ()>,
 {
     type Handle = WorkflowHandle<W>;
-    type Error = SpawnError;
+    type Error = HostError;
 
     fn create_workflow(
         &'a self,

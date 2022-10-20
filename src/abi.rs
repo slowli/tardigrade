@@ -12,7 +12,7 @@ use futures::future::Aborted;
 use std::{error, fmt, task::Poll};
 
 use crate::{
-    error::{SendError, SpawnError, TaskError},
+    error::{HostError, SendError, TaskError},
     interface::{AccessErrorKind, ChannelKind},
 };
 
@@ -323,7 +323,7 @@ impl IntoWasm for Poll<Result<(), SendError>> {
     }
 }
 
-impl IntoWasm for Result<(), SpawnError> {
+impl IntoWasm for Result<(), HostError> {
     type Abi = i64;
 
     fn into_wasm<A: AllocateBytes>(self, alloc: &mut A) -> Result<Self::Abi, A::Error> {
@@ -345,7 +345,7 @@ impl IntoWasm for Result<(), SpawnError> {
             let ptr = (abi >> 32) as *mut u8;
             let len = (abi & 0xffff_ffff) as usize;
             let message = String::from_raw_parts(ptr, len, len);
-            Err(SpawnError::new(message))
+            Err(HostError::new(message))
         }
     }
 }

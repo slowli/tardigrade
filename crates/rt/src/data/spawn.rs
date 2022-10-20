@@ -23,7 +23,7 @@ use crate::{
 use tardigrade::{
     abi::{IntoWasm, PollTask, TryFromWasm},
     interface::{ChannelKind, Interface},
-    spawn::{ChannelSpawnConfig, ChannelsConfig, SpawnError},
+    spawn::{ChannelSpawnConfig, ChannelsConfig, HostError},
     task::{JoinError, TaskError},
     ChannelId, WakerId, WorkflowId,
 };
@@ -195,7 +195,7 @@ impl WorkflowData<'_> {
         definition_id: &str,
         args: Vec<u8>,
         channels: &ChannelsConfig<ChannelId>,
-    ) -> Result<WorkflowId, SpawnError> {
+    ) -> Result<WorkflowId, HostError> {
         let result = self
             .services
             .workflows
@@ -215,7 +215,7 @@ impl WorkflowData<'_> {
             ids.workflow_id
         });
         log_result!(result, "Spawned workflow using `{definition_id}`")
-            .map_err(|err| SpawnError::new(err.to_string()))
+            .map_err(|err| HostError::new(err.to_string()))
     }
 
     fn poll_workflow_completion(
@@ -265,7 +265,7 @@ pub(crate) struct SpawnFunctions;
 impl SpawnFunctions {
     fn write_spawn_result(
         ctx: &mut StoreContextMut<'_, WorkflowData>,
-        result: Result<(), SpawnError>,
+        result: Result<(), HostError>,
         error_ptr: u32,
     ) -> Result<(), Trap> {
         let memory = ctx.data().exports().memory;

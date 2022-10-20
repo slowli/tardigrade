@@ -10,7 +10,7 @@ use std::{
 };
 
 use super::{
-    ChannelSpawnConfig, ChannelsConfig, ManageInterfaces, ManageWorkflows, Remote, SpawnError,
+    ChannelSpawnConfig, ChannelsConfig, HostError, ManageInterfaces, ManageWorkflows, Remote,
     Workflows,
 };
 use crate::{
@@ -49,7 +49,7 @@ impl ManageInterfaces for Workflows {
 
 impl ManageWorkflows<'_, ()> for Workflows {
     type Handle = super::RemoteWorkflow;
-    type Error = SpawnError;
+    type Error = HostError;
 
     fn create_workflow(
         &self,
@@ -80,7 +80,7 @@ impl ManageWorkflows<'_, ()> for Workflows {
                 channels.into_resource(),
                 &mut SPAWN_ERROR_PAD,
             );
-            Result::<(), SpawnError>::from_abi_in_wasm(SPAWN_ERROR_PAD).map(|()| RemoteWorkflow {
+            Result::<(), HostError>::from_abi_in_wasm(SPAWN_ERROR_PAD).map(|()| RemoteWorkflow {
                 resource: workflow.unwrap(),
             })
         };

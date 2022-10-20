@@ -17,7 +17,7 @@ use super::{
 };
 use crate::{
     channel::{imp::raw_channel, RawReceiver, RawSender},
-    error::SpawnError,
+    error::HostError,
     interface::ChannelKind,
     task::{JoinError, JoinHandle},
     test::Runtime,
@@ -37,7 +37,7 @@ impl ManageInterfaces for Workflows {
 
 impl ManageWorkflows<'_, ()> for Workflows {
     type Handle = super::RemoteWorkflow;
-    type Error = SpawnError;
+    type Error = HostError;
 
     fn create_workflow(
         &self,

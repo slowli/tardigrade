@@ -425,14 +425,13 @@ impl fmt::Display for SendError {
 
 impl error::Error for SendError {}
 
-/// Errors that can occur when spawning a workflow.
-// TODO: generalize as a trap?
+/// Errors generated on the host side and sent to a workflow.
 #[derive(Debug)]
-pub struct SpawnError {
+pub struct HostError {
     message: String,
 }
 
-impl SpawnError {
+impl HostError {
     /// Creates an error with the specified `message`.
     pub fn new(message: impl Into<String>) -> Self {
         Self {
@@ -441,51 +440,10 @@ impl SpawnError {
     }
 }
 
-impl fmt::Display for SpawnError {
+impl fmt::Display for HostError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "error has occurred during workflow instantiation: {}",
-            self.message
-        )
+        formatter.write_str(&self.message)
     }
 }
 
-impl error::Error for SpawnError {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // TODO: test `ErrorContextExt`
-
-    #[test]
-    fn task_error_string_presentation() {
-        let mut err = TaskError::from_parts(
-            "operation failed".to_owned(),
-            ErrorLocation {
-                filename: Cow::Borrowed("error.rs"),
-                line: 42,
-                column: 10,
-            },
-        );
-        assert_eq!(err.to_string(), "error.rs:42:10: operation failed");
-        assert_eq!(format!("{err:#}"), "error.rs:42:10: operation failed");
-
-        err.push_context_from_parts(
-            "additional context".to_owned(),
-            ErrorLocation {
-                filename: Cow::Borrowed("lib.rs"),
-                line: 100,
-                column: 8,
-            },
-        );
-        assert_eq!(
-            err.to_string(),
-            "lib.rs:100:8: additional context (+1 cause)"
-        );
-        let expected_message = "lib.rs:100:8: additional context\n\
-            Caused by:\n    error.rs:42:10: operation failed\n";
-        assert_eq!(format!("{err:#}"), expected_message);
-    }
-}
+impl error::Error for HostError {}
