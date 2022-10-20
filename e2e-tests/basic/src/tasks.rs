@@ -1,23 +1,22 @@
 //! Pizza delivery using subtasks for each order.
 
 use async_trait::async_trait;
-use futures::{future, stream::FuturesUnordered, FutureExt, StreamExt, TryStreamExt};
+use futures::{future, stream::FuturesUnordered, SinkExt, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 
-use std::time::Duration;
+use std::collections::HashSet;
 
-use crate::PizzaDeliveryHandle;
+use crate::{DomainEvent, PizzaDeliveryHandle, PizzaKind};
 use tardigrade::{
-    sleep,
     task::{self, ErrorContextExt, JoinError, TaskError, TaskResult},
     workflow::{GetInterface, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
     Json,
 };
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Args {
     pub oven_count: usize,
-    pub fail_after: Duration,
+    pub fail_kinds: HashSet<PizzaKind>,
     pub propagate_errors: bool,
 }
 
@@ -38,18 +37,26 @@ impl WorkflowFn for PizzaDeliveryWithTasks {
 #[async_trait(?Send)]
 impl SpawnWorkflow for PizzaDeliveryWithTasks {
     async fn spawn(args: Args, mut handle: PizzaDeliveryHandle<Wasm>) -> TaskResult {
-        let fail_after = args.fail_after;
-        let mut order_index = 0;
+        let mut index = 0;
         let mut tasks = FuturesUnordered::new();
 
         while let Some(order) = handle.orders.next().await {
-            order_index += 1;
+            index += 1;
             let shared = handle.shared.clone();
-            let task_name = format!("order #{}", order_index);
+            let task_name = format!("order #{}", index);
+            let fail = args.fail_kinds.contains(&order.kind);
+            let mut events = handle.shared.events.clone();
+
             let task_handle = task::try_spawn(&task_name, async move {
-                futures::select_biased! {
-                    _ = shared.bake(order_index, order).fuse() => Ok(()),
-                    _ = sleep(fail_after).fuse() => Err(TaskError::new("baking interrupted")),
+                if fail {
+                    events
+                        .send(DomainEvent::OrderTaken { index, order })
+                        .await
+                        .ok();
+                    Err(TaskError::new("cannot bake"))
+                } else {
+                    shared.bake(index, order).await;
+                    Ok(())
                 }
             });
             tasks.push(task_handle);

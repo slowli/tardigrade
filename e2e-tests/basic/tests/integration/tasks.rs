@@ -9,7 +9,6 @@ use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
     task::Poll,
-    time::Duration,
 };
 
 use tardigrade::{spawn::ManageWorkflowsExt, Json, TaskId};
@@ -29,8 +28,6 @@ use tardigrade_test_basic::{
 };
 
 use crate::{TestResult, MODULE};
-
-const LARGE_DURATION: Duration = Duration::from_secs(86_400);
 
 pub(crate) async fn send_orders(
     mut orders_sx: MessageSender<PizzaOrder, Json>,
@@ -103,7 +100,7 @@ fn assert_receipts(receipts: &[Receipt], order_count: usize) {
             task_events.as_slice(),
             [
                 ResourceEventKind::Created,
-                ResourceEventKind::Polled(Poll::Pending),
+                ..,
                 ResourceEventKind::Dropped,
                 ResourceEventKind::Polled(Poll::Ready(())),
             ]
@@ -153,9 +150,10 @@ async fn setup_workflow(
 }
 
 async fn test_workflow_with_tasks(args: Args, order_count: usize) -> TestResult {
+    let expected_concurrency = args.oven_count;
     let (events, receipts) = setup_workflow(args, order_count).await?;
     assert_event_completeness(&events, order_count);
-    assert_event_concurrency(&events, args.oven_count);
+    assert_event_concurrency(&events, expected_concurrency);
     assert_receipts(&receipts, order_count);
     Ok(())
 }
@@ -164,13 +162,13 @@ async fn test_workflow_with_tasks(args: Args, order_count: usize) -> TestResult 
 async fn task_basics() -> TestResult {
     let args = Args {
         oven_count: 1,
-        fail_after: LARGE_DURATION,
+        fail_kinds: HashSet::new(),
         propagate_errors: false,
     };
 
     for order_count in 1..5 {
         println!("Testing with {order_count} order(s)");
-        test_workflow_with_tasks(args, order_count).await?;
+        test_workflow_with_tasks(args.clone(), order_count).await?;
     }
     Ok(())
 }
@@ -179,13 +177,13 @@ async fn task_basics() -> TestResult {
 async fn tasks_with_concurrency() -> TestResult {
     let args = Args {
         oven_count: 3,
-        fail_after: LARGE_DURATION,
+        fail_kinds: HashSet::new(),
         propagate_errors: false,
     };
 
     for order_count in [2, 3, 5, 8, 13] {
         println!("Testing with {order_count} order(s)");
-        test_workflow_with_tasks(args, order_count).await?;
+        test_workflow_with_tasks(args.clone(), order_count).await?;
     }
     Ok(())
 }
@@ -199,10 +197,14 @@ enum TaskFailureKind {
 }
 
 impl TaskFailureKind {
-    fn fail_after(self) -> Duration {
+    fn fail_kinds(self) -> HashSet<PizzaKind> {
         match self {
-            Self::All => PizzaKind::FourCheese.baking_time() - Duration::from_millis(5),
-            Self::Margherita => PizzaKind::Margherita.baking_time() - Duration::from_millis(5),
+            Self::All => HashSet::from_iter([
+                PizzaKind::Margherita,
+                PizzaKind::FourCheese,
+                PizzaKind::Pepperoni,
+            ]),
+            Self::Margherita => HashSet::from_iter([PizzaKind::Margherita]),
         }
     }
 }
@@ -227,7 +229,7 @@ fn assert_task_results(receipts: &[Receipt], expected_successful_tasks: &HashSet
             assert!(result.is_ok(), "{result:?}");
         } else {
             let err = result.as_ref().unwrap_err();
-            assert_eq!(err.cause().to_string(), "baking interrupted");
+            assert_eq!(err.cause().to_string(), "cannot bake");
             assert!(err.location().filename.ends_with("tasks.rs"));
 
             if *task_id == 0 {
@@ -245,7 +247,7 @@ fn assert_task_results(receipts: &[Receipt], expected_successful_tasks: &HashSet
 async fn test_failures_in_tasks(kind: TaskFailureKind, propagate_errors: bool) -> TestResult {
     let args = Args {
         oven_count: 2,
-        fail_after: kind.fail_after(),
+        fail_kinds: kind.fail_kinds(),
         propagate_errors,
     };
     let order_count = 3;
