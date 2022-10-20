@@ -63,6 +63,34 @@ as JSON in a custom WASM section, similar to how it is done in `wasm-bindgen`.
 [Canonical ABI]: https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md
 [`wit-bindgen`]: https://github.com/bytecodealliance/wit-bindgen
 
+### Error handling
+
+Errors in tasks and workflows are explicit: the corresponding futures return 
+`TaskResult = Result<(), TaskError>`. Internally, `TaskError` is similar to `anyhow::Error`
+or similar app-level errors; it aggregates lower-level errors in a uniform format,
+and also captures the code location via [`panic::Location`]; this is more lightweight
+than capturing the entire backtrace. Like `anyhow::Error`, `TaskError` can capture
+additional contexts, though they are lightweight as well (a message and code location).
+
+As with OS processes, the workflow result is determined solely by completion of its main task;
+this is more tractable and provides a way to propagate errors. Through some trickery
+in the client code, `TaskError`s are propagated within a workflow without losing any info
+about the error cause. Such a loss only occurs if an error crosses the client–host boundary
+(the original cause is replaced with its `Display`ed message).
+
+Unlike OS processes, panics are not well handled in tasks; a panic in *any* task
+that has bubbled up to the task level (i.e., has led to a WASM [`Trap`]) is considered 
+to lead to the corrupted workflow state. The `WorkflowManager` can abort such workflows, 
+or propagate the error externally. (Other ways to deal with traps could be added in the future.)
+The reason for this is that there is no guarantee that a panic unwinds the call stack;
+the compilation profile may set `panic = abort`. Thus, the workflow memory
+can indeed be corrupted after a panic. Beside broken invariants encapsulated in [`UnwindSafe`],
+this corruption may be as simple as non-freed heap allocations, or the broken shadow stack pointer. 
+
+[`panic::Location`]: https://doc.rust-lang.org/std/panic/struct.Location.html
+[`Trap`]: https://docs.rs/wasmtime/1/wasmtime/struct.Trap.html
+[`UnwindSafe`]: https://doc.rust-lang.org/std/panic/trait.UnwindSafe.html
+
 ## Typed workflows
 
 To interact with workflows, Tardigrade uses a concept of a *handle*. A workflow

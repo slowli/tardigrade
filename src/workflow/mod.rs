@@ -133,7 +133,7 @@ mod imp {
 
     #[link(wasm_import_module = "tardigrade_rt")]
     extern "C" {
-        #[link_name = "panic"]
+        #[link_name = "report_panic"]
         fn report_panic(
             message_ptr: *const u8,
             message_len: usize,
