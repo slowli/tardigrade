@@ -317,18 +317,18 @@ impl CurrentExecution {
         self.push_event(ResourceEvent { resource_id, kind });
     }
 
-    pub fn set_panic(&mut self, panic_info: PanicInfo) {
-        warn!("Execution {self:?} led to a panic: {panic_info:?}");
-        self.panic_info = Some(panic_info);
+    pub fn set_panic(&mut self, info: PanicInfo) {
+        warn!("Execution {self:?} led to a panic: {info:?}");
+        self.panic_info = Some(info);
     }
 
-    pub fn push_task_error(&mut self, panic_info: PanicInfo) {
-        warn!("Execution {self:?} led to a task error: {panic_info:?}");
+    pub fn push_task_error(&mut self, info: PanicInfo) {
+        warn!("Execution {self:?} led to a task error: {info:?}");
         if let Some(err) = &mut self.task_error {
-            let (message, location) = panic_info.into_parts();
+            let (message, location) = info.into_parts();
             err.push_context_from_parts(message, location);
         } else {
-            self.task_error = Some(panic_info.into());
+            self.task_error = Some(info.into());
         }
     }
 

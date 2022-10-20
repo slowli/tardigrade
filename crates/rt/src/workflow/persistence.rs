@@ -39,6 +39,7 @@ impl fmt::Debug for Memory {
                 .debug_struct("Unstructured")
                 .field("len", &bytes.len())
                 .finish(),
+
             Self::Structured {
                 data_base,
                 data_diff,

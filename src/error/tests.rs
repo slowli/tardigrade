@@ -1,7 +1,5 @@
 use super::*;
 
-// TODO: test `ErrorContextExt`
-
 #[test]
 fn task_error_string_presentation() {
     let mut err = TaskError::from_parts(

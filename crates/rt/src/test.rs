@@ -259,8 +259,7 @@ pub struct MockScheduler {
     new_expirations_sx: mpsc::UnboundedSender<DateTime<Utc>>,
 }
 
-#[allow(clippy::derivable_impls)]
-// ^ triggered if building without `async` feature on
+#[allow(clippy::derivable_impls)] // triggered if building without `async` feature on
 impl Default for MockScheduler {
     fn default() -> Self {
         Self {
