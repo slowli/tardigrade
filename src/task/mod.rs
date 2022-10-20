@@ -1,4 +1,16 @@
-//! Tasks.
+//! Task management in workflows.
+//!
+//! Similarly to other async runtimes, a task is a self-contained unit of work with the `'static`
+//! lifetime. Tasks are spawned from the workflow code using [`spawn()`] or [`try_spawn()`]
+//! functions, which return the [`JoinHandle`] for the created task. This handle can be polled
+//! to completion, or be used to abort the task.
+//!
+//! # Error handling
+//!
+//! Errors during task execution are encapsulated in [`TaskError`], which provides a way to
+//! track source code location and the cause of errors. Unlike with threads or tasks in
+//! most other async runtimes, a panic in *any* task is unrecoverable. Depending
+//! on the host settings, it may lead to the erroneous workflow termination, or to its rollback.
 
 use futures::FutureExt;
 use pin_project_lite::pin_project;
@@ -53,8 +65,10 @@ impl Future for JoinHandle {
     }
 }
 
-/// Spawns a new task and returns a handle that can be used to wait for its completion
+/// Spawns a new infallible task and returns a handle that can be used to wait for its completion
 /// or abort the task.
+///
+/// Essentially, this is a shortcut for `try_spawn(task_name, task.map(Ok))`.
 pub fn spawn(task_name: &str, task: impl Future<Output = ()> + 'static) -> JoinHandle {
     try_spawn(task_name, task.map(Ok))
 }

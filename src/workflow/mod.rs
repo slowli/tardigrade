@@ -363,9 +363,30 @@ impl WorkflowFn for () {
 }
 
 /// Workflow that can be spawned.
+///
+/// This trait can be defined using the [`async_trait`] proc macro.
+///
+/// [`async_trait`]: https://docs.rs/async-trait/
+///
+/// # Examples
+///
+/// See [module docs](crate::workflow#examples) for workflow definition examples.
 #[async_trait(?Send)]
 pub trait SpawnWorkflow: GetInterface + TakeHandle<Wasm, Id = ()> + WorkflowFn {
     /// Spawns the main task of the workflow.
+    ///
+    /// The workflow completes immediately when its main task completes,
+    /// and its completion state is determined by the returned [`TaskResult`].
+    /// (Cf. processes in operating systems.) Thus, if a workflow needs to wait for some
+    /// [`spawn`]ed task, it needs to preserve its [`JoinHandle`], propagating [`TaskError`]s
+    /// if necessary.
+    ///
+    /// See [`task`](crate::task#error-handling) module docs for more information
+    /// about error handling.
+    ///
+    /// [`spawn`]: crate::task::spawn()
+    /// [`JoinHandle`]: crate::task::JoinHandle
+    /// [`TaskError`]: crate::task::TaskError
     async fn spawn(args: Self::Args, handle: <Self as TakeHandle<Wasm>>::Handle) -> TaskResult;
 }
 
