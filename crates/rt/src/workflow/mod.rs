@@ -165,7 +165,6 @@ impl<'a> Workflow<'a> {
                 waker_id,
                 wake_up_cause,
             } => {
-                trace!("Waking up waker {waker_id} with cause {wake_up_cause:?}");
                 WorkflowData::wake(&mut self.store, *waker_id, wake_up_cause.clone())?;
             }
             ExecutedFunction::TaskDrop { task_id } => {
@@ -229,20 +228,18 @@ impl<'a> Workflow<'a> {
         task_ids.collect()
     }
 
+    #[tracing::instrument(level = "debug", skip(self, receipt), err)]
     fn poll_task(
         &mut self,
         task_id: TaskId,
         wake_up_cause: WakeUpCause,
         receipt: &mut Receipt,
     ) -> Result<(), ExecutionError> {
-        trace!("Polling task {task_id} because of {wake_up_cause:?}");
-
         let function = ExecutedFunction::Task {
             task_id,
             wake_up_cause,
         };
-        let poll_result = self.execute(function, None, receipt).map(drop);
-        log_result!(poll_result, "Finished polling task {task_id}")
+        self.execute(function, None, receipt).map(drop)
     }
 
     fn wake_tasks(&mut self, receipt: &mut Receipt) -> Result<(), ExecutionError> {
@@ -257,6 +254,7 @@ impl<'a> Workflow<'a> {
         Ok(())
     }
 
+    #[tracing::instrument(level = "debug", skip(self), err)]
     pub(crate) fn tick(&mut self) -> Result<Receipt, ExecutionError> {
         if !self.is_initialized() {
             return self.initialize();
@@ -272,7 +270,7 @@ impl<'a> Workflow<'a> {
         while let Some((task_id, wake_up_cause)) = self.store.data_mut().take_next_task() {
             self.poll_task(task_id, wake_up_cause, receipt)?;
             if self.store.data().result().is_ready() {
-                trace!("Workflow is completed; clearing task queue");
+                tracing::debug!("workflow is completed; clearing task queue");
                 self.store.data_mut().clear_task_queue();
                 break;
             }
@@ -282,21 +280,16 @@ impl<'a> Workflow<'a> {
         Ok(())
     }
 
+    #[tracing::instrument(level = "debug", skip(self, message), err, fields(message.len = message.len()))]
     pub(crate) fn push_inbound_message(
         &mut self,
         workflow_id: Option<WorkflowId>,
         channel_name: &str,
         message: Vec<u8>,
     ) -> Result<(), ConsumeError> {
-        let message_len = message.len();
-        let result = self
-            .store
+        self.store
             .data_mut()
-            .push_inbound_message(workflow_id, channel_name, message);
-        log_result!(
-            result,
-            "Consumed message ({message_len} bytes) for channel `{channel_name}`"
-        )
+            .push_inbound_message(workflow_id, channel_name, message)
     }
 
     pub(crate) fn take_pending_inbound_message(
@@ -309,6 +302,7 @@ impl<'a> Workflow<'a> {
             .take_pending_inbound_message(workflow_id, channel_name)
     }
 
+    #[tracing::instrument(level = "debug", skip(self), ret)]
     pub(crate) fn drain_messages(&mut self) -> HashMap<ChannelId, Vec<Message>> {
         self.store.data_mut().drain_messages()
     }

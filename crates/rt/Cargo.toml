@@ -26,8 +26,8 @@ pin-project-lite = { version = "0.2.9", optional = true }
 ## Standalone optional dependencies
 # Implements the scheduler trait based on `async-io` / `async-std` runtime.
 async-io = { version = "1.7.0", optional = true }
-# Enables logging during workflow execution.
-log = { version = "0.4.17", optional = true }
+# Enables tracing during workflow execution.
+tracing = "0.1.37" # TODO: make optional?
 
 tardigrade = { version = "0.1.0", path = "../.." }
 

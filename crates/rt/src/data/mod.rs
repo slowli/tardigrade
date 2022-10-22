@@ -1,6 +1,7 @@
 //! Workflow state.
 
 use serde::{Deserialize, Serialize};
+use tracing::field;
 use wasmtime::{AsContextMut, ExternRef, StoreContextMut, Trap};
 
 use std::collections::{HashMap, HashSet};
@@ -161,13 +162,14 @@ impl<'a> WorkflowData<'a> {
 pub(crate) struct WorkflowFunctions;
 
 impl WorkflowFunctions {
+    #[tracing::instrument(level = "debug", skip_all, err, fields(resource))]
     #[allow(clippy::needless_pass_by_value)] // required by wasmtime
     pub fn drop_ref(
         mut ctx: StoreContextMut<'_, WorkflowData>,
         dropped: Option<ExternRef>,
     ) -> Result<(), Trap> {
         let dropped = HostResource::from_ref(dropped.as_ref())?;
-        trace!("{dropped:?} dropped by workflow code");
+        tracing::Span::current().record("resource", field::debug(dropped));
 
         let wakers = match dropped {
             HostResource::InboundChannel(channel_ref) => {
@@ -187,15 +189,17 @@ impl WorkflowFunctions {
         let exports = ctx.data().exports();
         for waker in wakers {
             let result = exports.drop_waker(ctx.as_context_mut(), waker);
-            let result = log_result!(
-                result,
-                "Dropped waker {waker} for {dropped:?} dropped by the workflow"
-            );
             result.ok(); // We assume traps during dropping wakers is not significant
         }
         Ok(())
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip(ctx, message_ptr, message_len, filename_ptr, filename_len),
+        err,
+        fields(message, filename)
+    )]
     pub fn report_panic(
         ctx: StoreContextMut<'_, WorkflowData>,
         message_ptr: u32,
@@ -249,6 +253,9 @@ impl WorkflowFunctions {
                 filename_len,
             )?)
         };
+        tracing::Span::current()
+            .record("message", &message)
+            .record("filename", &filename);
 
         let info = PanicInfo {
             message,

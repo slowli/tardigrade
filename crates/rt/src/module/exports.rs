@@ -30,6 +30,7 @@ pub(crate) struct ModuleExports {
 
 #[cfg_attr(test, mimicry::mock(using = "super::tests::ExportsMock"))]
 impl ModuleExports {
+    #[tracing::instrument(level = "debug", skip_all, ret, err, fields(args.len = raw_data.len()))]
     pub fn create_main_task(
         &self,
         mut ctx: StoreContextMut<'_, WorkflowData>,
@@ -40,68 +41,66 @@ impl ModuleExports {
         self.memory
             .write(ctx.as_context_mut(), data_ptr as usize, raw_data)
             .map_err(|err| {
-                let message = format!("cannot write to WASM memory: {}", err);
+                let message = format!("cannot write to WASM memory: {err}");
                 Trap::new(message)
             })?;
-        let result = self.create_main_task.call(ctx, (data_ptr, data_len));
-        log_result!(result, "Created main task")
+        self.create_main_task.call(ctx, (data_ptr, data_len))
     }
 
+    #[tracing::instrument(level = "debug", skip(self, ctx), ret, err)]
     pub fn poll_task(
         &self,
         ctx: StoreContextMut<'_, WorkflowData>,
         task_id: TaskId,
     ) -> Result<Poll<()>, Trap> {
-        let result = self
-            .poll_task
+        self.poll_task
             .call(ctx, task_id)
-            .and_then(|res| <Poll<()>>::try_from_wasm(res).map_err(Trap::new));
-        log_result!(result, "Polled task {task_id}")
+            .and_then(|res| <Poll<()>>::try_from_wasm(res).map_err(Trap::new))
     }
 
+    #[tracing::instrument(level = "debug", skip(self, ctx), err)]
     pub fn drop_task(
         &self,
         ctx: StoreContextMut<'_, WorkflowData>,
         task_id: TaskId,
     ) -> Result<(), Trap> {
-        let result = self.drop_task.call(ctx, task_id);
-        log_result!(result, "Dropped task {task_id}")
+        self.drop_task.call(ctx, task_id)
     }
 
+    #[tracing::instrument(level = "trace", skip(self, ctx), ret, err)]
     pub fn alloc_bytes(
         &self,
         ctx: StoreContextMut<'_, WorkflowData>,
         capacity: u32,
     ) -> Result<u32, Trap> {
-        let result = self.alloc_bytes.call(ctx, capacity);
-        log_result!(result, "Allocated {capacity} bytes")
+        self.alloc_bytes.call(ctx, capacity)
     }
 
+    #[tracing::instrument(level = "debug", skip(self, ctx), ret, err)]
     pub fn create_waker(
         &self,
         ctx: StoreContextMut<'_, WorkflowData>,
         cx_ptr: WasmContextPtr,
     ) -> Result<WakerId, Trap> {
-        let result = self.create_waker.call(ctx, cx_ptr);
-        log_result!(result, "Created waker from context {cx_ptr}")
+        self.create_waker.call(ctx, cx_ptr)
     }
 
+    #[tracing::instrument(level = "debug", skip(self, ctx), err)]
     pub fn wake_waker(
         &self,
         ctx: StoreContextMut<'_, WorkflowData>,
         waker_id: WakerId,
     ) -> Result<(), Trap> {
-        let result = self.wake_waker.call(ctx, waker_id);
-        log_result!(result, "Waked waker {waker_id}")
+        self.wake_waker.call(ctx, waker_id)
     }
 
+    #[tracing::instrument(level = "debug", skip(self, ctx), err)]
     pub fn drop_waker(
         &self,
         ctx: StoreContextMut<'_, WorkflowData>,
         waker_id: WakerId,
     ) -> Result<(), Trap> {
-        let result = self.drop_waker.call(ctx, waker_id);
-        log_result!(result, "Dropped waker {waker_id}")
+        self.drop_waker.call(ctx, waker_id)
     }
 }
 

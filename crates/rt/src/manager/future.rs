@@ -1,6 +1,5 @@
 //! Async handles for workflows.
 
-use anyhow::Context as _;
 use chrono::{DateTime, Utc};
 use futures::{channel::mpsc, future, FutureExt, Sink, Stream, StreamExt};
 use pin_project_lite::pin_project;
@@ -19,10 +18,7 @@ use crate::{
     manager::{TickResult, WorkflowManager},
     receipt::ExecutionError,
 };
-use tardigrade::{
-    trace::{FutureUpdate, TracedFuture, TracedFutures},
-    ChannelId, Decode, Encode, FutureId,
-};
+use tardigrade::{ChannelId, Decode, Encode};
 
 /// Future for [`Schedule::create_timer()`].
 pub type TimerFuture = Pin<Box<dyn Future<Output = DateTime<Utc>> + Send>>;
@@ -409,70 +405,5 @@ impl<T, C: Decode<T>> Stream for MessageReceiver<T, C> {
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Ready(Some(bytes)) => Poll::Ready(Some(projection.codec.try_decode_bytes(bytes))),
         }
-    }
-}
-
-pin_project! {
-    /// Async handle allowing to trace futures.
-    ///
-    /// This handle is a [`Stream`] emitting updated future states as the updates are received
-    /// from the workflow.
-    #[derive(Debug)]
-    pub struct TracerHandle<C> {
-        #[pin]
-        receiver: MessageReceiver<FutureUpdate, C>,
-        futures: TracedFutures,
-    }
-}
-
-impl<C> TracerHandle<C> {
-    /// Returns a reference to the traced futures.
-    pub fn futures(&self) -> &TracedFutures {
-        &self.futures
-    }
-
-    /// Sets futures, usually after restoring the handle.
-    pub fn set_futures(&mut self, futures: TracedFutures) {
-        self.futures = futures;
-    }
-
-    /// Returns traced futures, consuming this handle.
-    pub fn into_futures(self) -> TracedFutures {
-        self.futures
-    }
-}
-
-impl<C: Decode<FutureUpdate>> super::TracerHandle<'_, C> {
-    /// Registers this tracer in `env`, allowing to later asynchronously receive traces.
-    pub fn into_async(self, env: &mut AsyncEnv) -> TracerHandle<C> {
-        TracerHandle {
-            receiver: self.receiver.into_async(env),
-            futures: self.futures,
-        }
-    }
-}
-
-impl<C: Decode<FutureUpdate>> Stream for TracerHandle<C> {
-    type Item = anyhow::Result<(FutureId, TracedFuture)>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let projection = self.project();
-        let update = match projection.receiver.poll_next(cx) {
-            Poll::Ready(Some(Ok(update))) => update,
-            Poll::Ready(Some(Err(err))) => {
-                let res = Err(err).context("cannot decode `FutureUpdate`");
-                return Poll::Ready(Some(res));
-            }
-            Poll::Ready(None) => return Poll::Ready(None),
-            Poll::Pending => return Poll::Pending,
-        };
-
-        let future_id = update.id;
-        let update_result = projection
-            .futures
-            .update(update)
-            .map(|()| (future_id, projection.futures[future_id].clone()))
-            .context("invalid update");
-        Poll::Ready(Some(update_result))
     }
 }

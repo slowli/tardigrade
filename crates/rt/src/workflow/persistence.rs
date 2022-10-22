@@ -180,6 +180,7 @@ impl PersistedWorkflow {
         self.state.outbound_channels()
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     pub(crate) fn close_inbound_channel(
         &mut self,
         workflow_id: Option<WorkflowId>,
@@ -188,6 +189,7 @@ impl PersistedWorkflow {
         self.state.close_inbound_channel(workflow_id, channel_name);
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     pub(crate) fn close_outbound_channel(
         &mut self,
         workflow_id: Option<WorkflowId>,
@@ -196,6 +198,7 @@ impl PersistedWorkflow {
         self.state.close_outbound_channel(workflow_id, channel_name);
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     pub(crate) fn close_outbound_channels_by_id(&mut self, channel_id: ChannelId) {
         for (_, _, channel_state) in self.state.outbound_channels_mut() {
             if channel_state.id() == channel_id {
@@ -231,6 +234,7 @@ impl PersistedWorkflow {
         self.state.child_workflow(id)
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     pub(crate) fn notify_on_child_completion(
         &mut self,
         id: WorkflowId,
@@ -259,6 +263,7 @@ impl PersistedWorkflow {
         self.state.timers.last_known_time()
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     pub(crate) fn set_current_time(&mut self, time: DateTime<Utc>) {
         self.state.set_current_time(time);
     }
