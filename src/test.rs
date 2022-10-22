@@ -292,7 +292,7 @@ impl WorkflowRegistry {
             // otherwise we could get `RefCell` borrow errors (e.g., if the init code
             // spawns tasks). Additionally, this more closely matches execution flow
             // of the real runtime.
-            TaskHandle::from_workflow::<W>(args, wasm)
+            TaskHandle::spawn_workflow::<W>(args, wasm)
                 .expect("failed spawning workflow")
                 .into_inner()
                 .await

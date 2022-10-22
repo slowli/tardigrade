@@ -75,6 +75,7 @@ pub fn spawn(task_name: &str, task: impl Future<Output = ()> + 'static) -> JoinH
 
 /// Spawns a new fallible task and returns a handle that can be used to wait for its completion
 /// or abort the task.
+#[cfg_attr(feature = "tracing", tracing::instrument(level = "debug", skip(task)))]
 pub fn try_spawn(task_name: &str, task: impl Future<Output = TaskResult> + 'static) -> JoinHandle {
     JoinHandle {
         inner: imp::spawn(task_name, task),

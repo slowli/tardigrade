@@ -402,8 +402,9 @@ impl TaskHandle {
         Self(imp::TaskHandle::for_main_task(future))
     }
 
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, err))]
     #[doc(hidden)] // only used in the `workflow_entry` macro
-    pub fn from_workflow<W: SpawnWorkflow>(
+    pub fn spawn_workflow<W: SpawnWorkflow>(
         raw_args: Vec<u8>,
         mut wasm: Wasm,
     ) -> Result<Self, AccessError> {

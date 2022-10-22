@@ -37,6 +37,10 @@ struct RequestsHandle<Req, Resp> {
 }
 
 impl<Req, Resp> RequestsHandle<Req, Resp> {
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "run_requests", skip_all, fields(self.capacity = self.capacity))
+    )]
     async fn run(
         mut self,
         mut requests_sx: impl Sink<WithId<Req>, Error = SendError> + Unpin,
@@ -61,10 +65,16 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
             futures::select! {
                 maybe_resp = responses_rx.next() => {
                     if let Some(WithId { id, data }) = maybe_resp {
+                        #[cfg(feature = "tracing")]
+                        tracing::debug!(id, "received response");
+
                         if let Some(sx) = pending_requests.remove(&id) {
                             sx.send(data).ok();
                         }
                     } else {
+                        #[cfg(feature = "tracing")]
+                        tracing::debug!("response channel closed");
+
                         // The responses channel has closed. This means that we'll never
                         // receive responses for remaining requests. We signal this by dropping
                         // respective `oneshot::Sender`s.
@@ -75,6 +85,9 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 
                 maybe_req = requests_rx.next() => {
                     if let Some((req, sx)) = maybe_req {
+                        #[cfg(feature = "tracing")]
+                        tracing::debug!(id = next_id, "received new request");
+
                         let data_to_send = WithId {
                             id: next_id,
                             data: req,
@@ -82,6 +95,9 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
                         pending_requests.insert(next_id, sx);
                         next_id += 1;
                         if requests_sx.send(data_to_send).await.is_err() {
+                            #[cfg(feature = "tracing")]
+                            tracing::debug!("requests channel closed");
+
                             // The requests channel has been closed by the other side.
                             // We cannot process new requests, but the outstanding ones
                             // can still be completed.
@@ -96,6 +112,11 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 
             // Free up space for pending requests.
             pending_requests.retain(|_, sx| !sx.is_canceled());
+            #[cfg(feature = "tracing")]
+            tracing::debug!(
+                requests = pending_requests.len(),
+                "removed cancelled pending requests"
+            );
 
             if self.requests_rx.is_terminated() && pending_requests.is_empty() {
                 break;
@@ -105,6 +126,9 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
             requests_rx = if pending_requests.len() < self.capacity {
                 self.requests_rx.by_ref().left_stream()
             } else {
+                #[cfg(feature = "tracing")]
+                tracing::debug!("requests are at capacity; not accepting new requests");
+
                 stream::pending().right_stream()
             };
         }
