@@ -1,5 +1,7 @@
 //! Transactions for `WorkflowManager`.
 
+use tracing_tunnel::PersistedSpans;
+
 use std::{borrow::Cow, collections::HashMap, sync::Mutex};
 
 use super::{
@@ -46,6 +48,7 @@ impl TransactionInner {
                 definition_id,
                 parent_id,
                 workflow: workflow.persist(),
+                tracing_spans: PersistedSpans::default(),
             },
         );
         id
@@ -82,6 +85,7 @@ impl Transaction {
             workflows: &NoOpWorkflowManager,
             // ^ `workflows` is not used during instantiation, so it's OK to provide
             // a no-op implementation.
+            tracer: None,
         }
     }
 

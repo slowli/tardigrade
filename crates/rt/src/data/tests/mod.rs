@@ -143,6 +143,7 @@ fn starting_workflow() {
     let (receipt, workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
     let exports_mock = exports_guard.into_inner();
     assert!(exports_mock.exports_created);
@@ -177,6 +178,7 @@ fn receiving_inbound_message() {
     let (_, mut workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
 
     workflow
@@ -295,6 +297,7 @@ fn trap_when_starting_workflow() {
     let services = Services {
         clock: &MockScheduler::default(),
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     };
     let mut workflow = spawner
         .spawn(b"test_input".to_vec(), &channel_ids, services)
@@ -328,6 +331,7 @@ fn spawning_and_cancelling_task() {
     let (receipt, mut workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
 
     assert_eq!(receipt.executions().len(), 3);
@@ -409,6 +413,7 @@ fn workflow_terminates_after_main_task_completion() {
     let (receipt, workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
 
     let mut executions = receipt.executions().iter().rev();
@@ -443,6 +448,7 @@ fn rolling_back_task_spawning() {
     let (_, mut workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
 
     // Push the message in order to tick the main task.
@@ -481,6 +487,7 @@ fn rolling_back_task_abort() {
     let (_, mut workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
 
     // Push the message in order to tick the main task.
@@ -522,6 +529,7 @@ fn rolling_back_emitting_messages_on_trap() {
     let (_, mut workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
 
     // Push the message in order to tick the main task.
@@ -546,6 +554,7 @@ fn rolling_back_placing_waker_on_trap() {
     let (_, mut workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
 
     // Push the message in order to tick the main task.
@@ -599,6 +608,7 @@ fn timers_basics() {
     let (_, mut workflow) = create_workflow(Services {
         clock: &scheduler,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
 
     workflow.tick().unwrap();
@@ -615,6 +625,7 @@ fn timers_basics() {
         Services {
             clock: &scheduler,
             workflows: &NoOpWorkflowManager,
+            tracer: None,
         },
     );
     workflow.tick().unwrap();
@@ -637,6 +648,7 @@ fn dropping_inbound_channel_in_workflow() {
     let (_, mut workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
 
     workflow.tick().unwrap();
@@ -680,6 +692,7 @@ fn completing_main_task_with_error() {
     let (receipt, workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
 
     let task_result = receipt
@@ -731,6 +744,7 @@ fn completing_main_task_with_compound_error() {
     let (_, workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
 
     let tasks = &workflow.data().persisted.tasks;
@@ -760,6 +774,7 @@ fn completing_subtask_with_error() {
     let (receipt, workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
 
     let mut executions_by_task = HashMap::<_, usize>::new();

@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use tracing::field;
+use tracing_tunnel::TracingEvent;
 use wasmtime::{AsContextMut, ExternRef, StoreContextMut, Trap};
 
 use std::collections::{HashMap, HashSet};
@@ -11,9 +12,10 @@ mod helpers;
 mod persistence;
 mod spawn;
 mod task;
+mod time;
+
 #[cfg(test)]
 pub(crate) mod tests;
-mod time;
 
 pub(crate) use self::{
     channel::ConsumeError,
@@ -272,6 +274,31 @@ impl WorkflowFunctions {
             ReportedErrorKind::Panic => {
                 ctx.data_mut().current_execution().set_panic(info);
             }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct TracingFunctions;
+
+impl TracingFunctions {
+    #[allow(clippy::needless_pass_by_value)] // required by wasmtime
+    pub fn send_trace(
+        mut ctx: StoreContextMut<'_, WorkflowData>,
+        trace_ptr: u32,
+        trace_len: u32,
+    ) -> Result<(), Trap> {
+        let memory = ctx.data().exports().memory;
+        let trace = copy_string_from_wasm(&ctx, &memory, trace_ptr, trace_len)?;
+        let trace: TracingEvent = serde_json::from_str(&trace).map_err(|err| {
+            let message = format!("`TracingEvent` deserialization failed: {err}");
+            Trap::new(message)
+        })?;
+        tracing::trace!(?trace, "received client trace");
+
+        if let Some(tracing) = ctx.data_mut().services.tracer.as_deref_mut() {
+            tracing.handle_trace(trace);
         }
         Ok(())
     }

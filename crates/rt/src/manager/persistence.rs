@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tracing_tunnel::{TracingEventReceiver, PersistedMetadata, PersistedSpans};
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -100,12 +101,19 @@ impl ChannelState {
     }
 }
 
+/// Persisted information associated with a `WorkflowSpawner`.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub(super) struct SpawnerMeta {
+    pub tracing_metadata: PersistedMetadata,
+}
+
 /// Wrapper for either ongoing or persisted workflow.
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct WorkflowWithMeta {
     pub definition_id: String,
     pub parent_id: Option<WorkflowId>,
     pub workflow: PersistedWorkflow,
+    pub tracing_spans: PersistedSpans,
 }
 
 /// Serializable persisted view of the workflows and channels managed by a [`WorkflowManager`].
@@ -117,10 +125,11 @@ pub struct PersistedWorkflows {
     pub(super) channels: HashMap<ChannelId, ChannelState>,
     pub(super) next_workflow_id: WorkflowId,
     pub(super) next_channel_id: ChannelId,
+    pub(super) spawners: HashMap<String, SpawnerMeta>,
 }
 
-impl Default for PersistedWorkflows {
-    fn default() -> Self {
+impl PersistedWorkflows {
+    pub(super) fn new(spawner_ids: impl Iterator<Item = String>) -> Self {
         let mut channels = HashMap::with_capacity(1);
         channels.insert(0, ChannelState::closed());
         Self {
@@ -128,11 +137,10 @@ impl Default for PersistedWorkflows {
             channels,
             next_workflow_id: 0,
             next_channel_id: 1, // avoid "pre-closed" channel ID
+            spawners: spawner_ids.map(|id| (id, SpawnerMeta::default())).collect(),
         }
     }
-}
 
-impl PersistedWorkflows {
     pub(super) fn take_message(&mut self, channel_id: ChannelId) -> Option<(Message, bool)> {
         let channel_state = self.channels.get_mut(&channel_id).unwrap();
         channel_state.messages.pop_front().map(|message| {
@@ -314,8 +322,17 @@ impl PersistedWorkflows {
         }
     }
 
-    pub(super) fn persist_workflow(&mut self, id: WorkflowId, workflow: PersistedWorkflow) {
-        self.workflows.get_mut(&id).unwrap().workflow = workflow;
+    pub(super) fn persist_workflow(
+        &mut self,
+        id: WorkflowId,
+        workflow: PersistedWorkflow,
+        tracer: TracingEventReceiver,
+    ) {
+        let persisted = self.workflows.get_mut(&id).unwrap();
+        persisted.workflow = workflow;
+        let spawner_meta = self.spawners.get_mut(&persisted.definition_id).unwrap();
+        tracer.persist_metadata(&mut spawner_meta.tracing_metadata);
+        persisted.tracing_spans = tracer.persist_spans();
         self.handle_workflow_update(id);
     }
 
