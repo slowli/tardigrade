@@ -257,8 +257,7 @@ pub struct Wasm {
 
 impl Wasm {
     /// Sets the panic hook to pass panic messages to the host.
-    #[doc(hidden)] // used by the `workflow_entry!` macro
-    pub fn set_panic_hook() {
+    fn set_panic_hook() {
         #[cfg(target_arch = "wasm32")]
         std::panic::set_hook(Box::new(imp::handle_panic));
     }
@@ -402,9 +401,11 @@ impl TaskHandle {
         Self(imp::TaskHandle::for_main_task(future))
     }
 
-    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, err))]
-    #[doc(hidden)] // only used in the `workflow_entry` macro
-    pub fn spawn_workflow<W: SpawnWorkflow>(
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip_all, err, fields(args.len = raw_args.len()))
+    )]
+    pub(crate) fn from_workflow<W: SpawnWorkflow>(
         raw_args: Vec<u8>,
         mut wasm: Wasm,
     ) -> Result<Self, AccessError> {
@@ -421,6 +422,16 @@ impl TaskHandle {
     pub(crate) fn into_inner(self) -> std::pin::Pin<Box<dyn Future<Output = TaskResult>>> {
         self.0 .0
     }
+}
+
+#[doc(hidden)] // only used by `workflow_entry!` macro
+pub fn spawn_workflow<W: SpawnWorkflow>(raw_args: Vec<u8>) -> TaskHandle {
+    Wasm::set_panic_hook();
+
+    #[cfg(all(feature = "tracing", target_arch = "wasm32"))]
+    tracing::subscriber::set_global_default(crate::tracing::new_subscriber()).ok();
+
+    TaskHandle::from_workflow::<W>(raw_args, Wasm::default()).unwrap()
 }
 
 #[cfg(test)]

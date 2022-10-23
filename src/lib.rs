@@ -70,6 +70,8 @@ pub mod task;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod test;
 mod time;
+#[cfg(feature = "tracing")]
+mod tracing;
 pub mod workflow;
 
 #[cfg(feature = "serde_json")]
@@ -166,11 +168,8 @@ macro_rules! workflow_entry {
                 data_ptr: *mut u8,
                 data_len: usize,
             ) -> $crate::workflow::TaskHandle {
-                $crate::workflow::Wasm::set_panic_hook();
-                // ^ Needs to be set at the very start of the workflow
                 let data = std::vec::Vec::from_raw_parts(data_ptr, data_len, data_len);
-                $crate::workflow::TaskHandle::spawn_workflow::<$workflow>(data, Wasm::default())
-                    .unwrap()
+                $crate::workflow::spawn_workflow::<$workflow>(data)
             }
         };
     };

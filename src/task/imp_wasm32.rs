@@ -3,8 +3,6 @@
 use futures::future::{Aborted, FutureExt, RemoteHandle, TryFutureExt};
 use once_cell::unsync::Lazy;
 use slab::Slab;
-#[cfg(feature = "tracing")]
-use tracing::{field, Span};
 
 use std::{
     future::Future,

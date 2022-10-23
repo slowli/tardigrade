@@ -20,6 +20,7 @@ serde = "1"
 serde_json = { version = "1", optional = true }
 slab = "0.4.6"
 tracing = { version = "0.1.37", optional = true }
+tracing-tunnel = { version = "0.1.0", path = "../tracing-toolbox/tunnel", optional = true }
 
 tardigrade-shared = { version = "0.1.0", path = "crates/shared" }
 tardigrade-derive = { version = "0.1.0", path = "crates/derive", optional = true }
@@ -38,6 +39,7 @@ version-sync = "0.9.4"
 [features]
 default = ["serde_json", "tracing"]
 derive = ["tardigrade-derive"]
+tracing = ["dep:tracing", "tracing-tunnel", "serde_json"]
 
 [[test]]
 name = "integration"
