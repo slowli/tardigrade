@@ -9,6 +9,17 @@ use std::{cmp::Ordering, fmt, mem, task::Poll};
 use crate::data::WorkflowData;
 use tardigrade::{abi::AllocateBytes, task::JoinError};
 
+pub(crate) fn debug_result<T, E>(result: &Result<T, E>)
+where
+    T: fmt::Debug,
+    E: fmt::Debug + fmt::Display,
+{
+    match result {
+        Ok(_) => tracing::debug!(result = ?result),
+        Err(err) => tracing::warn!(result.err = %err, "erroneous result"),
+    }
+}
+
 /// Thin wrapper around `Vec<u8>`.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]

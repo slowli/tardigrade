@@ -650,12 +650,7 @@ impl WorkflowFunctions {
             .map_err(|err| Trap::new(format!("cannot write to WASM memory: {}", err)))
     }
 
-    #[tracing::instrument(
-        level = "debug",
-        skip_all,
-        err,
-        fields(workflow_id, channel_name, result)
-    )]
+    #[tracing::instrument(level = "debug", skip_all, err, fields(workflow_id, channel_name))]
     pub fn get_receiver(
         mut ctx: StoreContextMut<'_, WorkflowData>,
         workflow: Option<ExternRef>,
@@ -678,7 +673,7 @@ impl WorkflowFunctions {
             .get_mut(&channel_name)
             .ok_or(AccessErrorKind::Unknown)
             .map(|state| state.acquire().ok());
-        tracing::Span::current().record("result", field::debug(&result));
+        utils::debug_result(&result);
 
         let mut channel_ref = None;
         let result = result.map(|acquire_result| {
@@ -705,7 +700,7 @@ impl WorkflowFunctions {
         }
     }
 
-    #[tracing::instrument(level = "debug", skip_all, err, fields(channel, message.len, result))]
+    #[tracing::instrument(level = "debug", skip_all, err, fields(channel, message.len))]
     pub fn poll_next_for_receiver(
         mut ctx: StoreContextMut<'_, WorkflowData>,
         channel_ref: Option<ExternRef>,
@@ -718,22 +713,17 @@ impl WorkflowFunctions {
         let poll_result = ctx
             .data_mut()
             .poll_inbound_channel(channel_ref, &mut poll_cx);
-        tracing::Span::current().record("result", field::debug(utils::drop_value(&poll_result)));
+        tracing::debug!(result = ?utils::drop_value(&poll_result));
+
         if let Poll::Ready(maybe_message) = &poll_result {
             let message_len = maybe_message.as_ref().map(Vec::len);
             tracing::Span::current().record("message.len", message_len);
         }
-
         poll_cx.save_waker(&mut ctx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))
     }
 
-    #[tracing::instrument(
-        level = "debug",
-        skip_all,
-        err,
-        fields(workflow_id, channel_name, result)
-    )]
+    #[tracing::instrument(level = "debug", skip_all, err, fields(workflow_id, channel_name))]
     pub fn get_sender(
         mut ctx: StoreContextMut<'_, WorkflowData>,
         workflow: Option<ExternRef>,
@@ -756,7 +746,7 @@ impl WorkflowFunctions {
             .get_mut(&channel_name)
             .ok_or(AccessErrorKind::Unknown)
             .map(|state| state.acquire().ok());
-        tracing::Span::current().record("result", field::debug(&result));
+        utils::debug_result(&result);
 
         let mut channel_ref = None;
         let result = result.map(|acquire_result| {
@@ -767,7 +757,7 @@ impl WorkflowFunctions {
         Ok(channel_ref)
     }
 
-    #[tracing::instrument(level = "debug", skip_all, err, fields(channel, result))]
+    #[tracing::instrument(level = "debug", skip_all, err, fields(channel))]
     pub fn poll_ready_for_sender(
         mut ctx: StoreContextMut<'_, WorkflowData>,
         channel_ref: Option<ExternRef>,
@@ -780,7 +770,7 @@ impl WorkflowFunctions {
         let poll_result = ctx
             .data_mut()
             .poll_outbound_channel(channel_ref, false, &mut cx);
-        tracing::Span::current().record("channel", field::debug(&poll_result));
+        tracing::debug!(result = ?poll_result);
 
         cx.save_waker(&mut ctx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))
@@ -790,7 +780,7 @@ impl WorkflowFunctions {
         level = "debug",
         skip_all,
         err,
-        fields(channel, message.len = message_len, result)
+        fields(channel, message.len = message_len)
     )]
     pub fn start_send(
         mut ctx: StoreContextMut<'_, WorkflowData>,
@@ -804,12 +794,11 @@ impl WorkflowFunctions {
         tracing::Span::current().record("channel", field::debug(channel_ref));
 
         let result = ctx.data_mut().push_outbound_message(channel_ref, message);
-        tracing::Span::current().record("result", field::debug(&result));
-
+        utils::debug_result(&result);
         result.into_wasm(&mut WasmAllocator::new(ctx))
     }
 
-    #[tracing::instrument(level = "debug", skip_all, err, fields(channel, result))]
+    #[tracing::instrument(level = "debug", skip_all, err, fields(channel))]
     pub fn poll_flush_for_sender(
         mut ctx: StoreContextMut<'_, WorkflowData>,
         channel_ref: Option<ExternRef>,
@@ -822,7 +811,7 @@ impl WorkflowFunctions {
         let poll_result = ctx
             .data_mut()
             .poll_outbound_channel(channel_ref, true, &mut poll_cx);
-        tracing::Span::current().record("result", field::debug(&poll_result));
+        tracing::debug!(result = ?poll_result);
 
         poll_cx.save_waker(&mut ctx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))

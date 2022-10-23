@@ -2,7 +2,6 @@
 
 use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
-use tracing::field;
 use wasmtime::{StoreContextMut, Trap};
 
 use std::{
@@ -219,7 +218,7 @@ impl WorkflowFunctions {
         ctx.data_mut().drop_timer(timer_id)
     }
 
-    #[tracing::instrument(level = "debug", skip(ctx, poll_cx), err, fields(result))]
+    #[tracing::instrument(level = "debug", skip(ctx, poll_cx), err)]
     pub fn poll_timer(
         mut ctx: StoreContextMut<'_, WorkflowData>,
         timer_id: TimerId,
@@ -227,7 +226,7 @@ impl WorkflowFunctions {
     ) -> Result<i64, Trap> {
         let mut poll_cx = WasmContext::new(poll_cx);
         let poll_result = ctx.data_mut().poll_timer(timer_id, &mut poll_cx)?;
-        tracing::Span::current().record("result", field::debug(&poll_result));
+        tracing::debug!(result = ?poll_result);
 
         poll_cx.save_waker(&mut ctx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))

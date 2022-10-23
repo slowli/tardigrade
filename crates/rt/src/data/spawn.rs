@@ -368,7 +368,7 @@ impl SpawnFunctions {
         Ok(())
     }
 
-    #[tracing::instrument(level = "debug", skip_all, err, fields(id, args.len = args_len, handles, result))]
+    #[tracing::instrument(level = "debug", skip_all, err, fields(id, args.len = args_len, handles))]
     pub fn spawn(
         mut ctx: StoreContextMut<'_, WorkflowData>,
         id_ptr: u32,
@@ -396,13 +396,13 @@ impl SpawnFunctions {
             .map(|id| {
                 workflow_id = Some(id);
             });
-        tracing::Span::current().record("result", field::debug(&result));
+        utils::debug_result(&result);
 
         Self::write_spawn_result(&mut ctx, result, error_ptr)?;
         Ok(workflow_id.map(|id| HostResource::Workflow(id).into_ref()))
     }
 
-    #[tracing::instrument(level = "debug", skip_all, err, fields(workflow_id, result))]
+    #[tracing::instrument(level = "debug", skip_all, err, fields(workflow_id))]
     pub fn poll_workflow_completion(
         mut ctx: StoreContextMut<'_, WorkflowData>,
         workflow: Option<ExternRef>,
@@ -413,10 +413,8 @@ impl SpawnFunctions {
         let poll_result = ctx
             .data_mut()
             .poll_workflow_completion(workflow_id, &mut poll_cx);
-
-        tracing::Span::current()
-            .record("workflow_id", workflow_id)
-            .record("result", field::debug(&poll_result));
+        tracing::debug!(resul = ?poll_result);
+        tracing::Span::current().record("workflow_id", workflow_id);
 
         poll_cx.save_waker(&mut ctx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))

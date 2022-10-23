@@ -1,7 +1,6 @@
 //! Functionality to manage tasks.
 
 use serde::{Deserialize, Serialize};
-use tracing::field;
 use wasmtime::{StoreContextMut, Trap};
 
 use std::{
@@ -298,7 +297,7 @@ impl WorkflowData<'_> {
 
 /// Task-related functions exported to WASM.
 impl WorkflowFunctions {
-    #[tracing::instrument(level = "debug", skip(ctx, poll_cx), err, fields(result))]
+    #[tracing::instrument(level = "debug", skip(ctx, poll_cx), err)]
     pub fn poll_task_completion(
         mut ctx: StoreContextMut<'_, WorkflowData>,
         task_id: TaskId,
@@ -306,7 +305,7 @@ impl WorkflowFunctions {
     ) -> Result<i64, Trap> {
         let mut poll_cx = WasmContext::new(poll_cx);
         let poll_result = ctx.data_mut().poll_task_completion(task_id, &mut poll_cx);
-        tracing::Span::current().record("result", field::debug(&poll_result));
+        tracing::debug!(result = ?poll_result);
 
         poll_cx.save_waker(&mut ctx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))

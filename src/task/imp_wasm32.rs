@@ -277,7 +277,7 @@ pub(super) fn spawn(
 #[export_name = "tardigrade_rt::poll_task"]
 #[cfg_attr(
     feature = "tracing",
-    tracing::instrument(name = "poll_task", skip_all, fields(task_id = task.0, result))
+    tracing::instrument(name = "poll_task", skip_all, fields(task_id = task.0))
 )]
 pub extern "C" fn __tardigrade_rt__poll_task(task: RawTaskHandle) -> i32 {
     let waker = Waker::from(Arc::new(HostContext(task.0)));
@@ -285,7 +285,7 @@ pub extern "C" fn __tardigrade_rt__poll_task(task: RawTaskHandle) -> i32 {
     let poll_result = task.deref_and_poll(&mut cx);
 
     #[cfg(feature = "tracing")]
-    Span::current().record("result", field::debug(&poll_result));
+    tracing::info!(result = ?poll_result);
 
     TryFromWasm::into_abi_in_wasm(poll_result)
 }
