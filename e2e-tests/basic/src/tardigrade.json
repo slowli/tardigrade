@@ -8,10 +8,6 @@
   "out": {
     "events": {
       "description": "Domain events emitted during pizza order lifecycle"
-    },
-    "traces": {
-      "capacity": null,
-      "description": "Structured logs for traced futures"
     }
   },
   "args": {

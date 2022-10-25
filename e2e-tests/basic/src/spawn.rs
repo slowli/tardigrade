@@ -32,7 +32,7 @@ impl PizzaDeliveryHandle {
                 async move {
                     let builder = Workflows.new_workflow::<Baking>("baking", (counter, order))?;
                     builder.handle().events.copy_from(events);
-                    builder.handle().tracer.close();
+                    // FIXME: add another outbound channel to close?
                     builder.build()?.workflow.await.map_err(TaskError::from)
                 }
             })

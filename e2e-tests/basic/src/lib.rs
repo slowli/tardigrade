@@ -4,6 +4,7 @@
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use tracing::Instrument;
 
 use std::time::Duration;
 
@@ -11,9 +12,8 @@ use tardigrade::{
     channel::{Receiver, Sender},
     sleep,
     task::TaskResult,
-    trace::Tracer,
     workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
-    FutureExt as _, Json,
+    Json,
 };
 
 pub mod requests;
@@ -47,7 +47,7 @@ pub struct PizzaOrder {
 }
 
 /// Domain events emitted by the workflow and sent via the corresponding outbound channel.
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DomainEvent {
     OrderTaken { index: usize, order: PizzaOrder },
     Baked { index: usize, order: PizzaOrder },
@@ -81,9 +81,6 @@ pub struct SharedHandle<Env> {
     // For the proc macro to work, fields need to be defined as `Handle<T, Env>`, where
     // `T` describes a workflow element (in this case, an outbound channel).
     pub events: Handle<Sender<DomainEvent, Json>, Env>,
-    #[tardigrade(rename = "traces")]
-    // ^ Similar to `serde`, elements can be renamed using a field attribute.
-    pub tracer: Handle<Tracer<Json>, Env>,
 }
 
 /// Handle for the workflow.
@@ -131,6 +128,7 @@ tardigrade::workflow_entry!(PizzaDelivery);
 impl PizzaDeliveryHandle {
     /// This is where the actual workflow logic is contained. We pass incoming orders
     /// through 2 unordered buffers with the capacities defined by the workflow arguments.
+    #[tracing::instrument(skip(self))]
     async fn spawn(self, args: Args) {
         let shared = self.shared;
         let mut counter = 0;
@@ -138,13 +136,7 @@ impl PizzaDeliveryHandle {
             .orders
             .map(|order| {
                 counter += 1;
-                shared.bake(counter, order).trace(
-                    &shared.tracer,
-                    format!("baking_process (order={})", counter),
-                )
-                // ^ `trace` extension for `Future`s allows tracing progress
-                // for the target. Internally, it passes updates to the host
-                // via an outbound channel.
+                shared.bake(counter, order)
             })
             .buffer_unordered(args.oven_count);
 
@@ -157,30 +149,36 @@ impl PizzaDeliveryHandle {
 }
 
 impl SharedHandle<Wasm> {
+    #[tracing::instrument(skip(self))]
     async fn bake(&self, index: usize, order: PizzaOrder) -> (usize, PizzaOrder) {
         let mut events = self.events.clone();
-        events
-            .send(DomainEvent::OrderTaken { index, order })
-            .await
-            .ok();
+        let event = DomainEvent::OrderTaken { index, order };
+        events.send(event).await.ok();
+        tracing::info!(?event, "sent event");
+
         sleep(order.kind.baking_time())
-            .trace(&self.tracer, "baking_timer")
+            .instrument(tracing::info_span!("baking_timer", index, ?order.kind))
             .await;
-        events.send(DomainEvent::Baked { index, order }).await.ok();
+
+        let event = DomainEvent::Baked { index, order };
+        events.send(event).await.ok();
+        tracing::info!(?event, "sent event");
         (index, order)
     }
 
+    #[tracing::instrument(skip(self))]
     async fn deliver(&self, index: usize, order: PizzaOrder) {
         let mut events = self.events.clone();
-        events
-            .send(DomainEvent::StartedDelivering { index, order })
-            .await
-            .ok();
+        let event = DomainEvent::StartedDelivering { index, order };
+        events.send(event).await.ok();
+        tracing::info!(?event, "sent event");
+
         let delay = Duration::from_millis(order.delivery_distance * 10);
-        sleep(delay).trace(&self.tracer, "delivery_timer").await;
-        events
-            .send(DomainEvent::Delivered { index, order })
-            .await
-            .ok();
+        let sleep_span = tracing::info_span!("delivery_timer", index, order.delivery_distance);
+        sleep(delay).instrument(sleep_span).await;
+
+        let event = DomainEvent::Delivered { index, order };
+        events.send(event).await.ok();
+        tracing::info!(?event, "sent event");
     }
 }
