@@ -2,6 +2,9 @@
 
 use externref::processor::Processor;
 use once_cell::sync::Lazy;
+use tracing::{subscriber::DefaultGuard, Level, Subscriber};
+use tracing_capture::{CaptureLayer, SharedStorage};
+use tracing_subscriber::{layer::SubscriberExt, registry::LookupSpan, FmtSubscriber};
 
 use std::{collections::HashMap, error};
 
@@ -18,7 +21,7 @@ mod tasks;
 
 static MODULE: Lazy<WorkflowModule> = Lazy::new(|| {
     // Since this closure is called once, it is a good place to do other initialization
-    enable_logs();
+    //tracing::subscriber::set_global_default(create_fmt_subscriber()).ok();
 
     let module_bytes = ModuleCompiler::new(env!("CARGO_PKG_NAME"))
         .set_current_dir(env!("CARGO_MANIFEST_DIR"))
@@ -35,11 +38,25 @@ static MODULE: Lazy<WorkflowModule> = Lazy::new(|| {
 
 type TestResult<T = ()> = Result<T, Box<dyn error::Error>>;
 
-fn enable_logs() {
-    env_logger::builder()
-        .parse_filters("tardigrade_rt=trace,externref=debug")
-        .is_test(true)
-        .init();
+fn create_fmt_subscriber() -> impl Subscriber + for<'a> LookupSpan<'a> {
+    const FILTER: &str = "tardigrade_test_basic=debug,\
+        tardigrade=debug,\
+        tardigrade_rt=debug,\
+        externref=debug";
+
+    FmtSubscriber::builder()
+        .pretty()
+        .with_test_writer()
+        .with_env_filter(FILTER)
+        .finish()
+}
+
+fn enable_tracing_assertions() -> (DefaultGuard, SharedStorage) {
+    let storage = SharedStorage::default();
+    let layer = CaptureLayer::new(&storage).with_filter("tardigrade_test_basic", Level::INFO);
+    let subscriber = create_fmt_subscriber().with(layer);
+    let guard = tracing::subscriber::set_default(subscriber);
+    (guard, storage)
 }
 
 #[test]

@@ -164,27 +164,20 @@ async fn accessing_handles_in_child_workflows() -> TestResult {
 
     let mut env = AsyncEnv::new(AsyncIoScheduler);
     let mut child_events_rxs = vec![];
-    let mut child_tracers = vec![];
     for &child_id in &child_ids {
         let child = manager.workflow(child_id).unwrap();
         let child_handle = child.downcast::<Baking>()?.handle();
         assert!(child_handle.events.can_receive_messages());
         assert_eq!(child_handle.events.channel_id(), parent_events_id);
         child_events_rxs.push(child_handle.events.into_async(&mut env));
-
-        let traces_info = child_handle.tracer.channel_info();
-        assert!(traces_info.is_closed());
-        child_tracers.push(child_handle.tracer.into_async(&mut env));
     }
 
     // The aliased channels should be immediately disconnected.
     assert!(child_events_rxs[0].try_next().await?.is_none());
-    assert!(child_tracers[0].try_next().await?.is_none());
 
     task::spawn(async move { env.run(&mut manager).await });
     // The pre-closed channels should be disconnected as well, but this happens
     // on first tick.
-    assert!(child_tracers[1].try_next().await?.is_none());
     let events: Vec<_> = child_events_rxs[1].by_ref().try_collect().await?;
     assert_eq!(events.len(), 4);
 
