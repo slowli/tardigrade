@@ -220,7 +220,11 @@ struct RestorationTemplate<'a> {
 }
 
 impl<'a> RestorationTemplate<'a> {
-    fn restore(self, transaction: &'a Transaction, tracer: &'a mut TracingEventReceiver) -> Workflow<'a> {
+    fn restore(
+        self,
+        transaction: &'a Transaction,
+        tracer: &'a mut TracingEventReceiver,
+    ) -> Workflow<'a> {
         let services = Services {
             clock: self.clock,
             workflows: transaction,
@@ -252,7 +256,7 @@ impl Shared {
         &self,
         committed: &mut PersistedWorkflows,
         id: WorkflowId,
-    ) -> (RestorationTemplate<'_>, EventConsumer) {
+    ) -> (RestorationTemplate<'_>, TracingEventReceiver) {
         let persisted = committed
             .workflows
             .get_mut(&id)
@@ -267,7 +271,7 @@ impl Shared {
             spawner,
             persisted: persisted.workflow.clone(),
         };
-        let consumer = EventConsumer::new(
+        let consumer = TracingEventReceiver::new(
             &mut committed
                 .spawners
                 .get_mut(definition_id)

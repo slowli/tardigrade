@@ -89,7 +89,7 @@ pub(crate) trait HandleTraces {
 
 impl HandleTraces for TracingEventReceiver {
     fn handle_trace(&mut self, event: TracingEvent) {
-        self.consume_event(event);
+        self.receive(event);
     }
 }
 

@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tracing_tunnel::{TracingEventReceiver, PersistedMetadata, PersistedSpans};
+use tracing_tunnel::{PersistedMetadata, PersistedSpans, TracingEventReceiver};
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
