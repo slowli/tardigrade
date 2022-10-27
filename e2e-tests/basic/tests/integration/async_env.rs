@@ -115,6 +115,7 @@ async fn test_async_handle(cancel_workflow: bool) -> TestResult {
 fn assert_completed_spans(storage: &Storage) {
     let spans: HashSet<_> = storage
         .spans()
+        .iter()
         .filter_map(|span| {
             if span.stats().is_closed {
                 Some(span.metadata().name())
@@ -350,6 +351,7 @@ async fn async_handle_with_mock_scheduler() -> TestResult {
         let storage = tracing_storage.lock();
         let baking_spans: HashMap<_, _> = storage
             .spans()
+            .iter()
             .filter_map(|span| {
                 if span.metadata().name() == "bake" {
                     Some((span["index"].as_uint().unwrap(), span))

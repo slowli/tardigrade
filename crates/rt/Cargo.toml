@@ -29,9 +29,14 @@ pin-project-lite = { version = "0.2.9", optional = true }
 async-io = { version = "1.7.0", optional = true }
 # Enables tracing during workflow execution.
 tracing = "0.1.37" # TODO: make optional?
-tracing-tunnel = { version = "0.1.0", path = "../../../tracing-toolbox/tunnel", features = ["receiver"] }
 
 tardigrade = { version = "0.1.0", path = "../.." }
+
+[dependencies.tracing-tunnel]
+version = "0.1.0"
+git = "https://github.com/slowli/tracing-toolbox.git"
+rev = "5b918df7adea79a3b2cc8d14decbb493c360467f"
+features = ["receiver"]
 
 [dev-dependencies]
 assert_matches = "1.5.0"

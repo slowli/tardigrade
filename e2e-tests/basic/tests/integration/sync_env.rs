@@ -118,9 +118,9 @@ fn basic_workflow() -> TestResult {
     manager.tick()?.into_inner()?;
     {
         let storage = tracing_storage.lock();
-        dbg!(&*storage);
         let baking_timer = storage
             .spans()
+            .iter()
             .find(|span| span.metadata().name() == "baking_timer")
             .unwrap();
         assert_eq!(baking_timer["index"], 1_u64);
@@ -149,8 +149,9 @@ fn basic_workflow() -> TestResult {
 
     {
         let storage = tracing_storage.lock();
-        let baking_timer = storage
-            .spans()
+        let captured_spans = storage.spans();
+        let baking_timer = captured_spans
+            .iter()
             .find(|span| span.metadata().name() == "baking_timer")
             .unwrap();
         let stats = baking_timer.stats();
@@ -158,7 +159,6 @@ fn basic_workflow() -> TestResult {
         assert!(stats.is_closed);
 
         // Check that the capturing layer properly does filtering.
-        let captured_spans: Vec<_> = storage.spans().collect();
         assert!(captured_spans.len() < 10, "{captured_spans:?}");
     }
     Ok(())
@@ -288,6 +288,7 @@ fn persisting_workflow() -> TestResult {
         let storage = tracing_storage.lock();
         let delivery_timer = storage
             .spans()
+            .iter()
             .find(|span| span.metadata().name() == "delivery_timer")
             .unwrap();
         let stats = delivery_timer.stats();

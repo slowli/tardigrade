@@ -4,7 +4,9 @@ use externref::processor::Processor;
 use once_cell::sync::Lazy;
 use tracing::{subscriber::DefaultGuard, Level, Subscriber};
 use tracing_capture::{CaptureLayer, SharedStorage};
-use tracing_subscriber::{layer::SubscriberExt, registry::LookupSpan, FmtSubscriber};
+use tracing_subscriber::{
+    filter::Targets, layer::SubscriberExt, registry::LookupSpan, FmtSubscriber,
+};
 
 use std::{collections::HashMap, error};
 
@@ -53,7 +55,8 @@ fn create_fmt_subscriber() -> impl Subscriber + for<'a> LookupSpan<'a> {
 
 fn enable_tracing_assertions() -> (DefaultGuard, SharedStorage) {
     let storage = SharedStorage::default();
-    let layer = CaptureLayer::new(&storage).with_filter("tardigrade_test_basic", Level::INFO);
+    let filter = Targets::new().with_target("tardigrade_test_basic", Level::INFO);
+    let layer = CaptureLayer::new(&storage).with_filter(filter);
     let subscriber = create_fmt_subscriber().with(layer);
     let guard = tracing::subscriber::set_default(subscriber);
     (guard, storage)

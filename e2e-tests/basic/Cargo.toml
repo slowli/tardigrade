@@ -30,7 +30,10 @@ once_cell = "1.12.0"
 serde_json = "1.0"
 tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 
-tracing-capture = { version = "0.1.0", path = "../../../tracing-toolbox/capture" }
+[dev-dependencies.tracing-capture]
+version = "0.1.0"
+git = "https://github.com/slowli/tracing-toolbox.git"
+rev = "5b918df7adea79a3b2cc8d14decbb493c360467f"
 
 [dev-dependencies.externref]
 version = "0.1.0"
