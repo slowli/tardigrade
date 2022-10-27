@@ -96,15 +96,11 @@ use std::{borrow::Cow, future::Future, mem};
 /// Derives the [`GetInterface`] trait for a workflow type.
 ///
 /// [`GetInterface`]: trait@GetInterface
-#[cfg(feature = "derive")]
-#[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
 pub use tardigrade_derive::GetInterface;
 
 /// Derives the [`TakeHandle`] trait for a workflow type.
 ///
 /// [`TakeHandle`]: trait@TakeHandle
-#[cfg(feature = "derive")]
-#[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
 pub use tardigrade_derive::TakeHandle;
 
 use crate::{
