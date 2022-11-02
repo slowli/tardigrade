@@ -1,6 +1,7 @@
 //! Spawning workflows.
 
 use serde::{Deserialize, Serialize};
+use tracing::field;
 use wasmtime::{AsContextMut, ExternRef, StoreContextMut, Trap};
 
 use std::{
@@ -190,6 +191,7 @@ impl WorkflowData<'_> {
         Trap::new(format!("extra {} handles: {}", channel_kind, extra_handles))
     }
 
+    #[tracing::instrument(skip(args), ret, err, fields(args.len = args.len()))]
     fn spawn_workflow(
         &mut self,
         definition_id: &str,
@@ -214,8 +216,7 @@ impl WorkflowData<'_> {
             );
             ids.workflow_id
         });
-        log_result!(result, "Spawned workflow using `{definition_id}`")
-            .map_err(|err| HostError::new(err.to_string()))
+        result.map_err(|err| HostError::new(err.to_string()))
     }
 
     fn poll_workflow_completion(
@@ -275,6 +276,7 @@ impl SpawnFunctions {
             .map_err(|err| Trap::new(format!("cannot write to WASM memory: {}", err)))
     }
 
+    #[tracing::instrument(level = "debug", skip_all, err, fields(id, interface.is_some))]
     pub fn workflow_interface(
         ctx: StoreContextMut<'_, WorkflowData>,
         id_ptr: u32,
@@ -282,14 +284,18 @@ impl SpawnFunctions {
     ) -> Result<i64, Trap> {
         let memory = ctx.data().exports().memory;
         let id = utils::copy_string_from_wasm(&ctx, &memory, id_ptr, id_len)?;
+        tracing::Span::current().record("id", &id);
 
         let workflows = &ctx.data().services.workflows;
         let interface = workflows
             .interface(&id)
             .map(|interface| interface.to_bytes());
+        tracing::Span::current().record("interface.is_some", interface.is_some());
+
         interface.into_wasm(&mut WasmAllocator::new(ctx))
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     #[allow(clippy::unnecessary_wraps)] // required by wasmtime
     pub fn create_channel_handles() -> Option<ExternRef> {
         let resource = HostResource::from(SharedChannelHandles {
@@ -298,6 +304,7 @@ impl SpawnFunctions {
         Some(resource.into_ref())
     }
 
+    #[tracing::instrument(level = "debug", skip_all, err, fields(channel_kind, name, config))]
     pub fn set_channel_handle(
         ctx: StoreContextMut<'_, WorkflowData>,
         handles: Option<ExternRef>,
@@ -315,6 +322,11 @@ impl SpawnFunctions {
         let memory = ctx.data().exports().memory;
         let name = utils::copy_string_from_wasm(&ctx, &memory, name_ptr, name_len)?;
 
+        tracing::Span::current()
+            .record("channel_kind", field::debug(channel_kind))
+            .record("name", &name)
+            .record("config", field::debug(&channel_config));
+
         let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
         let mut handles = handles.inner.lock().unwrap();
         match channel_kind {
@@ -325,9 +337,11 @@ impl SpawnFunctions {
                 handles.outbound.insert(name, channel_config);
             }
         }
+        tracing::debug!(?handles, "inserted channel handle");
         Ok(())
     }
 
+    #[tracing::instrument(level = "debug", skip_all, err, fields(name, sender))]
     pub fn copy_sender_handle(
         ctx: StoreContextMut<'_, WorkflowData>,
         handles: Option<ExternRef>,
@@ -340,15 +354,21 @@ impl SpawnFunctions {
         let channel_id = channel_state.unwrap().id();
         let memory = ctx.data().exports().memory;
         let name = utils::copy_string_from_wasm(&ctx, &memory, name_ptr, name_len)?;
-        let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
 
+        tracing::Span::current()
+            .record("name", &name)
+            .record("sender", field::debug(channel_ref));
+
+        let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
         let mut handles = handles.inner.lock().unwrap();
         handles
             .outbound
             .insert(name, ChannelSpawnConfig::Existing(channel_id));
+        tracing::debug!(?handles, "inserted channel handle");
         Ok(())
     }
 
+    #[tracing::instrument(level = "debug", skip_all, err, fields(id, args.len = args_len, handles))]
     pub fn spawn(
         mut ctx: StoreContextMut<'_, WorkflowData>,
         id_ptr: u32,
@@ -363,8 +383,12 @@ impl SpawnFunctions {
         let args = utils::copy_bytes_from_wasm(&ctx, &memory, args_ptr, args_len)?;
         let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
         let handles = handles.inner.lock().unwrap();
-        ctx.data().validate_handles(&id, &handles)?;
 
+        tracing::Span::current()
+            .record("id", &id)
+            .record("handles", field::debug(&handles));
+
+        ctx.data().validate_handles(&id, &handles)?;
         let mut workflow_id = None;
         let result = ctx
             .data_mut()
@@ -372,10 +396,13 @@ impl SpawnFunctions {
             .map(|id| {
                 workflow_id = Some(id);
             });
+        utils::debug_result(&result);
+
         Self::write_spawn_result(&mut ctx, result, error_ptr)?;
         Ok(workflow_id.map(|id| HostResource::Workflow(id).into_ref()))
     }
 
+    #[tracing::instrument(level = "debug", skip_all, err, fields(workflow_id))]
     pub fn poll_workflow_completion(
         mut ctx: StoreContextMut<'_, WorkflowData>,
         workflow: Option<ExternRef>,
@@ -386,14 +413,14 @@ impl SpawnFunctions {
         let poll_result = ctx
             .data_mut()
             .poll_workflow_completion(workflow_id, &mut poll_cx);
-        trace!(
-            "Polled completion for workflow {workflow_id} with context {poll_cx:?}: \
-             {poll_result:?}"
-        );
+        tracing::debug!(resul = ?poll_result);
+        tracing::Span::current().record("workflow_id", workflow_id);
+
         poll_cx.save_waker(&mut ctx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))
     }
 
+    #[tracing::instrument(level = "debug", skip_all, err, fields(workflow_id, err))]
     pub fn completion_error(
         ctx: StoreContextMut<'_, WorkflowData>,
         workflow: Option<ExternRef>,
@@ -403,6 +430,11 @@ impl SpawnFunctions {
             .data()
             .workflow_task_error(workflow_id)
             .map(TaskError::clone_boxed);
+
+        tracing::Span::current()
+            .record("workflow_id", workflow_id)
+            .record("err", maybe_err.as_ref().map(field::debug));
+
         Ok(maybe_err
             .map(|err| err.into_wasm(&mut WasmAllocator::new(ctx)))
             .transpose()?

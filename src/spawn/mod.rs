@@ -60,10 +60,7 @@
 //! # }).unwrap();
 //! ```
 
-use futures::{
-    stream::{Fuse, FusedStream},
-    FutureExt, Sink, Stream, StreamExt,
-};
+use futures::{Sink, Stream};
 use pin_project_lite::pin_project;
 use serde::{Deserialize, Serialize};
 
@@ -87,7 +84,6 @@ use crate::{
         AccessError, AccessErrorKind, ChannelKind, InboundChannel, Interface, OutboundChannel,
     },
     task::JoinError,
-    trace::{FutureUpdate, TracedFutures, Tracer},
     workflow::{GetInterface, TakeHandle, UntypedHandle, WorkflowFn},
     Decode, Encode,
 };
@@ -508,23 +504,6 @@ where
     }
 }
 
-impl<Ch, C> TakeHandle<Spawner<Ch>> for Tracer<C>
-where
-    Ch: SpecifyWorkflowChannels,
-    C: Encode<FutureUpdate>,
-{
-    type Id = str;
-    type Handle = SenderConfig<Ch, FutureUpdate, C>;
-
-    fn take_handle(env: &mut Spawner<Ch>, id: &Self::Id) -> Result<Self::Handle, AccessError> {
-        Ok(SenderConfig {
-            spawner: env.clone(),
-            channel_name: id.to_owned(),
-            _ty: PhantomData,
-        })
-    }
-}
-
 /// Builder allowing to configure workflow aspects, such as channels, before instantiation.
 pub struct WorkflowBuilder<'a, M, W>
 where
@@ -705,50 +684,6 @@ impl<T, C: Encode<T>> Sink<T> for Remote<Sender<T, C>> {
         match self.get_mut() {
             Self::NotCaptured => Poll::Ready(Ok(())),
             Self::Some(sender) => Pin::new(sender).poll_close(cx),
-        }
-    }
-}
-
-impl<C: Decode<FutureUpdate> + Default> TakeHandle<RemoteWorkflow> for Tracer<C> {
-    type Id = str;
-    type Handle = Remote<TracerHandle<C>>;
-
-    fn take_handle(env: &mut RemoteWorkflow, id: &Self::Id) -> Result<Self::Handle, AccessError> {
-        let receiver = Sender::<FutureUpdate, C>::take_handle(env, id)?;
-        Ok(receiver.map(|receiver| TracerHandle {
-            receiver: receiver.fuse(),
-            futures: TracedFutures::default(),
-        }))
-    }
-}
-
-/// Handle for traced futures from a [`RemoteWorkflow`].
-///
-/// [`RemoteWorkflow`]: crate::spawn::RemoteWorkflow
-#[derive(Debug)]
-pub struct TracerHandle<C> {
-    receiver: Fuse<Receiver<FutureUpdate, C>>,
-    futures: TracedFutures,
-}
-
-impl<C> TracerHandle<C>
-where
-    C: Decode<FutureUpdate> + Default,
-{
-    /// Returns a reference to the traced futures.
-    pub fn futures(&self) -> &TracedFutures {
-        &self.futures
-    }
-
-    /// Applies all accumulated updates for the traced futures.
-    #[allow(clippy::missing_panics_doc)]
-    pub fn update(&mut self) {
-        if self.receiver.is_terminated() {
-            return;
-        }
-        while let Some(Some(update)) = self.receiver.next().now_or_never() {
-            self.futures.update(update).unwrap();
-            // `unwrap()` is intentional: it's to catch bugs in library code
         }
     }
 }

@@ -1,5 +1,7 @@
 //! Transactions for `WorkflowManager`.
 
+use tracing_tunnel::{PersistedMetadata, PersistedSpans};
+
 use std::{borrow::Cow, collections::HashMap, sync::Mutex};
 
 use super::{
@@ -45,7 +47,8 @@ impl TransactionInner {
             WorkflowWithMeta {
                 definition_id,
                 parent_id,
-                workflow: workflow.persist(),
+                workflow: workflow.persist(&mut PersistedMetadata::default()),
+                tracing_spans: PersistedSpans::default(),
             },
         );
         id
@@ -82,6 +85,7 @@ impl Transaction {
             workflows: &NoOpWorkflowManager,
             // ^ `workflows` is not used during instantiation, so it's OK to provide
             // a no-op implementation.
+            tracer: None,
         }
     }
 
@@ -118,18 +122,13 @@ impl ManageWorkflows<'_, ()> for Transaction {
     type Handle = WorkflowAndChannelIds;
     type Error = anyhow::Error;
 
+    #[tracing::instrument(skip(self, args), ret, err, fields(args.len = args.len()))]
     fn create_workflow(
         &self,
         id: &str,
         args: Vec<u8>,
         channels: ChannelsConfig<ChannelId>,
     ) -> Result<Self::Handle, Self::Error> {
-        trace!(
-            "Creating workflow from definition `{id}` with args ({args_len} bytes) \
-             and {channels:?} in transaction {self:?}",
-            args_len = args.len()
-        );
-
         let spawner = self
             .shared
             .spawners
@@ -152,7 +151,6 @@ impl ManageWorkflows<'_, ()> for Transaction {
             workflow_id,
             channel_ids,
         };
-        trace!("Created workflow {ids:?} in transaction {self:?}");
         Ok(ids)
     }
 }

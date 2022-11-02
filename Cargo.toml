@@ -13,20 +13,24 @@ repository = "https://github.com/slowli/tardigrade"
 [dependencies]
 async-trait = "0.1.57"
 chrono = { version = "0.4.22", default-features = false, features = ["serde"] }
+externref = "0.1.0"
 futures = "0.3.21"
 once_cell = "1.12.0"
 pin-project-lite = "0.2.9"
 serde = "1"
 serde_json = { version = "1", optional = true }
 slab = "0.4.6"
+tracing = { version = "0.1.37", optional = true }
 
 tardigrade-shared = { version = "0.1.0", path = "crates/shared" }
-tardigrade-derive = { version = "0.1.0", path = "crates/derive", optional = true }
+tardigrade-derive = { version = "0.1.0", path = "crates/derive" }
 
-[dependencies.externref]
+[dependencies.tracing-tunnel]
 version = "0.1.0"
-git = "https://github.com/slowli/externref.git"
-rev = "1320af1df269cb3df4710da1b3e4e9efb9b43ed3"
+git = "https://github.com/slowli/tracing-toolbox.git"
+rev = "502655fa03d9bcd9f7721b05baba63b550b3d599"
+optional = true
+features = ["sender"]
 
 [dev-dependencies]
 assert_matches = "1.5.0"
@@ -35,13 +39,8 @@ rand = "0.8.5"
 version-sync = "0.9.4"
 
 [features]
-default = ["serde_json"]
-derive = ["tardigrade-derive"]
-
-[[test]]
-name = "integration"
-path = "tests/integration/main.rs"
-required-features = ["derive"]
+default = ["serde_json", "tracing"]
+tracing = ["dep:tracing", "tracing-tunnel", "serde_json"]
 
 [profile.wasm]
 inherits = "release"

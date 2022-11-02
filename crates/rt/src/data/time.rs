@@ -150,7 +150,7 @@ impl PersistedWorkflowData {
         let wakers_by_timer = self.timers.set_current_time(time);
         for (id, wakers) in wakers_by_timer {
             let cause = WakeUpCause::Timer { id };
-            trace!("Scheduled wakers {wakers:?} with {cause:?}");
+            tracing::debug!(?wakers, ?cause, "scheduled wakers");
             self.waker_queue.push(Wakers::new(wakers, cause));
         }
     }
@@ -195,40 +195,39 @@ impl WorkflowData<'_> {
 
 /// Timer-related functions exported to WASM.
 impl WorkflowFunctions {
+    #[tracing::instrument(level = "debug", skip_all, ret)]
     #[allow(clippy::needless_pass_by_value)] // for uniformity with other functions
     pub fn current_timestamp(ctx: StoreContextMut<'_, WorkflowData>) -> i64 {
         ctx.data().services.clock.now().timestamp_millis()
     }
 
+    #[tracing::instrument(level = "debug", skip(ctx), ret)]
     pub fn create_timer(
         mut ctx: StoreContextMut<'_, WorkflowData>,
         timestamp_millis: i64,
     ) -> TimerId {
         let definition = WorkflowData::timer_definition(timestamp_millis);
-        let timer_id = ctx.data_mut().create_timer(definition);
-        trace!("Created timer {timer_id} with definition {definition:?}");
-        timer_id
+        ctx.data_mut().create_timer(definition)
     }
 
+    #[tracing::instrument(level = "debug", skip(ctx), err)]
     pub fn drop_timer(
         mut ctx: StoreContextMut<'_, WorkflowData>,
         timer_id: TimerId,
     ) -> Result<(), Trap> {
-        let result = ctx.data_mut().drop_timer(timer_id);
-        log_result!(result, "Dropped timer {timer_id}")
+        ctx.data_mut().drop_timer(timer_id)
     }
 
+    #[tracing::instrument(level = "debug", skip(ctx, poll_cx), err)]
     pub fn poll_timer(
         mut ctx: StoreContextMut<'_, WorkflowData>,
         timer_id: TimerId,
         poll_cx: WasmContextPtr,
     ) -> Result<i64, Trap> {
         let mut poll_cx = WasmContext::new(poll_cx);
-        let poll_result = ctx.data_mut().poll_timer(timer_id, &mut poll_cx);
-        let poll_result = log_result!(
-            poll_result,
-            "Polled timer {timer_id} with context {poll_cx:?}"
-        )?;
+        let poll_result = ctx.data_mut().poll_timer(timer_id, &mut poll_cx)?;
+        tracing::debug!(result = ?poll_result);
+
         poll_cx.save_waker(&mut ctx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))
     }

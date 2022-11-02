@@ -318,12 +318,12 @@ impl CurrentExecution {
     }
 
     pub fn set_panic(&mut self, info: PanicInfo) {
-        warn!("Execution {self:?} led to a panic: {info:?}");
+        tracing::warn!(?info, "execution led to a panic");
         self.panic_info = Some(info);
     }
 
     pub fn push_task_error(&mut self, info: PanicInfo) {
-        warn!("Execution {self:?} led to a task error: {info:?}");
+        tracing::warn!(?info, "execution led to a task error");
         if let Some(err) = &mut self.task_error {
             let (message, location) = info.into_parts();
             err.push_context_from_parts(message, location);
@@ -344,14 +344,14 @@ impl CurrentExecution {
         events.iter().filter_map(Event::as_channel_event)
     }
 
+    #[tracing::instrument(level = "debug")]
     pub fn commit(self, state: &mut WorkflowData) -> Vec<Event> {
         use self::ResourceEventKind::{Created, Dropped};
 
-        trace!("Committing {self:?} onto {state:?}");
         if let Some(err) = &self.task_error {
-            warn!(
-                "Task error {:?} was reported, but the task was not completed",
-                err
+            tracing::warn!(
+                ?err,
+                "task error was reported, but the task was not completed"
             );
         }
 
@@ -376,14 +376,13 @@ impl CurrentExecution {
         for task_id in self.tasks_to_be_awoken {
             state.task_queue.insert_task(task_id, &cause);
         }
-        trace!("Committed CurrentTask onto {state:?}");
         self.events
     }
 
+    #[tracing::instrument(level = "debug")]
     pub fn revert(self, state: &mut WorkflowData) -> (Vec<Event>, Option<PanicInfo>) {
         use self::ResourceEventKind::Created;
 
-        trace!("Reverting {self:?} from {state:?}");
         for event in Self::resource_events(&self.events) {
             match (event.kind, event.resource_id) {
                 (Created, ResourceId::Task(task_id)) => {
@@ -413,19 +412,18 @@ impl CurrentExecution {
             }
         }
 
-        trace!("Reverted CurrentTask from {state:?}");
         (self.events, self.panic_info)
     }
 }
 
 /// Waker-related `State` functionality.
 impl WorkflowData<'_> {
+    #[tracing::instrument(level = "debug")]
     fn place_waker(&mut self, placement: &WakerPlacement, waker: WakerId) {
         if let Some(execution) = &mut self.current_execution {
             execution.new_wakers.insert(waker);
         }
 
-        trace!("Placing waker {waker} in {placement:?}");
         let persisted = &mut self.persisted;
         match placement {
             WakerPlacement::InboundChannel(channel_ref) => {
@@ -487,11 +485,11 @@ impl WorkflowData<'_> {
 }
 
 impl PersistedWorkflowData {
+    #[tracing::instrument(level = "debug")]
     pub(super) fn schedule_wakers(&mut self, wakers: HashSet<WakerId>, cause: WakeUpCause) {
         if wakers.is_empty() {
             return; // no need to schedule anything
         }
-        trace!("Scheduled wakers {wakers:?} with {cause:?}");
         self.waker_queue.push(Wakers::new(wakers, cause));
     }
 }

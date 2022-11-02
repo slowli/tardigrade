@@ -1,7 +1,5 @@
 //! Handles for workflows in a [`WorkflowManager`] and their components (e.g., channels).
 
-use anyhow::Context;
-
 use std::{fmt, marker::PhantomData, ops::Range};
 
 use crate::{
@@ -13,7 +11,6 @@ use crate::{
 use tardigrade::{
     channel::{Receiver, SendError, Sender},
     interface::{AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel},
-    trace::{FutureUpdate, TracedFutures, Tracer},
     workflow::{GetInterface, TakeHandle, UntypedHandle},
     ChannelId, Decode, Encode, WorkflowId,
 };
@@ -293,72 +290,6 @@ where
         } else {
             Err(AccessErrorKind::Unknown.with_location(OutboundChannel(id)))
         }
-    }
-}
-
-/// Handle allowing to trace futures.
-#[derive(Debug)]
-pub struct TracerHandle<'a, C> {
-    pub(super) receiver: MessageReceiver<'a, FutureUpdate, C>,
-    pub(super) futures: TracedFutures,
-}
-
-impl<'a, C> TracerHandle<'a, C>
-where
-    C: Decode<FutureUpdate>,
-{
-    /// Returns current information about the underlying channel.
-    pub fn channel_info(&self) -> ChannelInfo {
-        self.receiver.channel_info()
-    }
-
-    /// Returns a reference to the traced futures.
-    pub fn futures(&self) -> &TracedFutures {
-        &self.futures
-    }
-
-    /// Sets futures, usually after restoring the handle.
-    pub fn set_futures(&mut self, futures: TracedFutures) {
-        self.futures = futures;
-    }
-
-    /// Returns traced futures, consuming this handle.
-    pub fn into_futures(self) -> TracedFutures {
-        self.futures
-    }
-
-    /// Takes tracing messages from the workflow and updates traced future states accordingly.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if decoding tracing messages fails, or if the updates are inconsistent
-    /// w.r.t. the current tracer state (which could happen if resuming a workflow without
-    /// calling [`Self::set_futures()`]).
-    pub fn take_traces(&mut self) -> anyhow::Result<()> {
-        if let Some(messages) = self.receiver.take_messages() {
-            let updates = messages.decode().context("cannot decode `FutureUpdate`")?;
-            for update in updates {
-                self.futures
-                    .update(update)
-                    .context("incorrect `FutureUpdate` (was the tracing state persisted?)")?;
-            }
-        }
-        Ok(())
-    }
-}
-
-impl<'a, C, W> TakeHandle<WorkflowHandle<'a, W>> for Tracer<C>
-where
-    C: Decode<FutureUpdate> + Default,
-{
-    type Id = str;
-    type Handle = TracerHandle<'a, C>;
-
-    fn take_handle(env: &mut WorkflowHandle<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
-        Ok(TracerHandle {
-            receiver: Sender::<FutureUpdate, C>::take_handle(env, id)?,
-            futures: TracedFutures::default(),
-        })
     }
 }
 

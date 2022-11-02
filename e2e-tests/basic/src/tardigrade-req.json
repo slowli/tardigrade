@@ -14,10 +14,6 @@
     },
     "baking_tasks": {
       "description": "Tasks to bake pizzas"
-    },
-    "traces": {
-      "capacity": null,
-      "description": "Structured logs for traced futures"
     }
   },
   "args": {

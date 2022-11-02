@@ -9,54 +9,15 @@ use std::{cmp::Ordering, fmt, mem, task::Poll};
 use crate::data::WorkflowData;
 use tardigrade::{abi::AllocateBytes, task::JoinError};
 
-#[cfg(feature = "log")]
-macro_rules! trace {
-    ($($arg:tt)*) => {
-        log::trace!(target: "tardigrade_rt", $($arg)*);
-    };
-}
-
-#[cfg(not(feature = "log"))]
-macro_rules! trace {
-    ($($arg:tt)*) => {{
-        let _ = format_args!($($arg)*);
-    }}
-}
-
-#[cfg(feature = "log")]
-macro_rules! warn {
-    ($($arg:tt)*) => {
-        log::warn!(target: "tardigrade_rt", $($arg)*);
-    };
-}
-
-#[cfg(not(feature = "log"))]
-macro_rules! warn {
-    ($($arg:tt)*) => {{
-        let _ = format_args!($($arg)*);
-    }}
-}
-
-#[cfg(feature = "log")]
-macro_rules! log_result {
-    ($result:ident, $($arg:tt)*) => {{
-        match &$result {
-            Ok(val) => {
-                log::trace!(target: "tardigrade_rt", "{}: {:?}", format_args!($($arg)*), val);
-            }
-            Err(err) => {
-                log::warn!(target: "tardigrade_rt", "{}: {}", format_args!($($arg)*), err);
-            }
-        }
-        $result
-    }};
-}
-
-#[cfg(not(feature = "log"))]
-macro_rules! log_result {
-    ($result:tt, $($arg:tt)*) => {
-        ($result, format_args!($($arg)*)).0
-    };
+pub(crate) fn debug_result<T, E>(result: &Result<T, E>)
+where
+    T: fmt::Debug,
+    E: fmt::Debug + fmt::Display,
+{
+    match result {
+        Ok(_) => tracing::debug!(result = ?result),
+        Err(err) => tracing::warn!(result.err = %err, "erroneous result"),
+    }
 }
 
 /// Thin wrapper around `Vec<u8>`.
@@ -108,6 +69,7 @@ impl<'ctx, 'a> WasmAllocator<'ctx, 'a> {
 impl AllocateBytes for WasmAllocator<'_, '_> {
     type Error = Trap;
 
+    #[tracing::instrument(level = "trace", skip_all, ret, err, fields(bytes.len = bytes.len()))]
     fn copy_to_wasm(&mut self, bytes: &[u8]) -> Result<(u32, u32), Trap> {
         let bytes_len = u32::try_from(bytes.len())
             .map_err(|_| Trap::new("integer overflow for message length"))?;

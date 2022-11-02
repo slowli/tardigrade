@@ -42,11 +42,14 @@
 //!
 //! Exposes [`Json`] [codec](crate::Encode) for messages received by a workflow.
 //!
-//! ## `derive`
+//! ## `tracing`
 //!
-//! *(Off by default)*
+//! *(On by default)*
 //!
-//! Re-exports procedural macros from the `tardigrade-derive` crate.
+//! Enables [tracing] for the library glue code and the workflows that are defined
+//! using the library.
+//!
+//! [tracing]: https://docs.rs/tracing/
 
 // Documentation settings.
 #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -65,20 +68,19 @@ pub mod abi;
 pub mod channel;
 mod codec;
 mod error;
-mod ext;
 pub mod spawn;
 pub mod task;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod test;
 mod time;
-pub mod trace;
+#[cfg(feature = "tracing")]
+mod tracing;
 pub mod workflow;
 
 #[cfg(feature = "serde_json")]
 pub use crate::codec::Json;
 pub use crate::{
     codec::{Decode, Encode, Raw},
-    ext::FutureExt,
     time::{now, sleep, Timer, TimerDefinition},
 };
 
@@ -119,8 +121,6 @@ pub use crate::{
 ///
 /// [`Handle`]: crate::workflow::Handle
 /// [`TakeHandle`]: crate::workflow::TakeHandle
-#[cfg(feature = "derive")]
-#[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
 pub use tardigrade_derive::handle;
 
 pub use tardigrade_shared::interface;
@@ -169,11 +169,8 @@ macro_rules! workflow_entry {
                 data_ptr: *mut u8,
                 data_len: usize,
             ) -> $crate::workflow::TaskHandle {
-                $crate::workflow::Wasm::set_panic_hook();
-                // ^ Needs to be set at the very start of the workflow
                 let data = std::vec::Vec::from_raw_parts(data_ptr, data_len, data_len);
-                $crate::workflow::TaskHandle::from_workflow::<$workflow>(data, Wasm::default())
-                    .unwrap()
+                $crate::workflow::spawn_workflow::<$workflow>(data)
             }
         };
     };

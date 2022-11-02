@@ -1,6 +1,7 @@
 //! Services available to workflows. For now, a single service is supported - a wall clock.
 
 use chrono::{DateTime, Utc};
+use tracing_tunnel::TracingEventReceiver;
 
 use std::{borrow::Cow, fmt};
 
@@ -83,10 +84,10 @@ type DynManager = dyn for<'a> ManageWorkflows<
 >;
 
 /// Dynamically dispatched services available to workflows.
-#[derive(Clone, Copy)]
 pub(crate) struct Services<'a> {
     pub clock: &'a dyn Clock,
     pub workflows: &'a DynManager,
+    pub tracer: Option<TracingEventReceiver<'a>>,
 }
 
 impl fmt::Debug for Services<'_> {

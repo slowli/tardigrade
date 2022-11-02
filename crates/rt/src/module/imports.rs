@@ -9,7 +9,7 @@ use wasmtime::{
 use std::str;
 
 use crate::{
-    data::{SpawnFunctions, WasmContextPtr, WorkflowData, WorkflowFunctions},
+    data::{SpawnFunctions, TracingFunctions, WasmContextPtr, WorkflowData, WorkflowFunctions},
     module::{ensure_func_ty, ExtendLinker},
 };
 use tardigrade::{TaskId, TimerId};
@@ -189,6 +189,14 @@ impl ExtendLinker for SpawnFunctions {
     }
 }
 
+impl ExtendLinker for TracingFunctions {
+    const MODULE_NAME: &'static str = "tracing";
+
+    fn functions(&self, store: &mut Store<WorkflowData>) -> Vec<(&'static str, Func)> {
+        vec![("send_trace", wrap2(&mut *store, Self::send_trace))]
+    }
+}
+
 macro_rules! impl_wrapper {
     ($fn_name:ident => $($arg:ident : $arg_ty:ident),*) => {
         fn $fn_name<R, $($arg_ty,)*>(
@@ -232,6 +240,7 @@ mod tests {
         let services = Services {
             clock: &MockScheduler::default(),
             workflows: &NoOpWorkflowManager,
+            tracer: None,
         };
         let state = WorkflowData::new(&interface, &ChannelIds::default(), services);
         let engine = Engine::default();

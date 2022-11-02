@@ -10,7 +10,7 @@ use tardigrade::{
     channel::{Receiver, Requests, Sender, WithId},
     task::TaskResult,
     workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
-    FutureExt as _, Json,
+    Json,
 };
 
 #[tardigrade::handle]
@@ -64,9 +64,7 @@ impl WorkflowHandle<Wasm> {
         async move {
             let order_processing = self.orders.for_each_concurrent(None, |order| {
                 counter += 1;
-                shared
-                    .bake_with_requests(&requests, order, counter)
-                    .trace(&shared.tracer, format!("baking order {}", counter))
+                shared.bake_with_requests(&requests, order, counter)
             });
             order_processing.await;
 

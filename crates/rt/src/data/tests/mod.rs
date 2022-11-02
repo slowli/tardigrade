@@ -2,6 +2,7 @@
 
 use assert_matches::assert_matches;
 use mimicry::Answers;
+use tracing_tunnel::PersistedMetadata;
 use wasmtime::StoreContextMut;
 
 use std::{
@@ -143,6 +144,7 @@ fn starting_workflow() {
     let (receipt, workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
     let exports_mock = exports_guard.into_inner();
     assert!(exports_mock.exports_created);
@@ -166,7 +168,7 @@ fn starting_workflow() {
         }) if channel_name == "orders"
     );
 
-    workflow.persist();
+    workflow.persist(&mut PersistedMetadata::default());
 }
 
 #[test]
@@ -177,6 +179,7 @@ fn receiving_inbound_message() {
     let (_, mut workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
 
     workflow
@@ -295,6 +298,7 @@ fn trap_when_starting_workflow() {
     let services = Services {
         clock: &MockScheduler::default(),
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     };
     let mut workflow = spawner
         .spawn(b"test_input".to_vec(), &channel_ids, services)
@@ -328,6 +332,7 @@ fn spawning_and_cancelling_task() {
     let (receipt, mut workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
 
     assert_eq!(receipt.executions().len(), 3);
@@ -409,6 +414,7 @@ fn workflow_terminates_after_main_task_completion() {
     let (receipt, workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
 
     let mut executions = receipt.executions().iter().rev();
@@ -425,7 +431,7 @@ fn workflow_terminates_after_main_task_completion() {
     let task_result = last_execution.task_result.as_ref().unwrap();
     task_result.as_ref().unwrap();
 
-    let workflow = workflow.persist();
+    let workflow = workflow.persist(&mut PersistedMetadata::default());
     assert_matches!(workflow.result(), Poll::Ready(Ok(())));
 }
 
@@ -443,6 +449,7 @@ fn rolling_back_task_spawning() {
     let (_, mut workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
 
     // Push the message in order to tick the main task.
@@ -481,6 +488,7 @@ fn rolling_back_task_abort() {
     let (_, mut workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
 
     // Push the message in order to tick the main task.
@@ -522,6 +530,7 @@ fn rolling_back_emitting_messages_on_trap() {
     let (_, mut workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
 
     // Push the message in order to tick the main task.
@@ -546,6 +555,7 @@ fn rolling_back_placing_waker_on_trap() {
     let (_, mut workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
 
     // Push the message in order to tick the main task.
@@ -599,6 +609,7 @@ fn timers_basics() {
     let (_, mut workflow) = create_workflow(Services {
         clock: &scheduler,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
 
     workflow.tick().unwrap();
@@ -608,13 +619,14 @@ fn timers_basics() {
     assert!(timers[&1].completed_at().is_none());
 
     scheduler.set_now(scheduler.now() + chrono::Duration::seconds(1));
-    let mut persisted = workflow.persist();
+    let mut persisted = workflow.persist(&mut PersistedMetadata::default());
     persisted.set_current_time(scheduler.now());
     let mut workflow = restore_workflow(
         persisted,
         Services {
             clock: &scheduler,
             workflows: &NoOpWorkflowManager,
+            tracer: None,
         },
     );
     workflow.tick().unwrap();
@@ -637,6 +649,7 @@ fn dropping_inbound_channel_in_workflow() {
     let (_, mut workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
 
     workflow.tick().unwrap();
@@ -680,6 +693,7 @@ fn completing_main_task_with_error() {
     let (receipt, workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
 
     let task_result = receipt
@@ -731,6 +745,7 @@ fn completing_main_task_with_compound_error() {
     let (_, workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
 
     let tasks = &workflow.data().persisted.tasks;
@@ -760,6 +775,7 @@ fn completing_subtask_with_error() {
     let (receipt, workflow) = create_workflow(Services {
         clock: &clock,
         workflows: &NoOpWorkflowManager,
+        tracer: None,
     });
 
     let mut executions_by_task = HashMap::<_, usize>::new();

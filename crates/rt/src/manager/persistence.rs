@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tracing_tunnel::{PersistedMetadata, PersistedSpans};
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -13,7 +14,7 @@ use crate::{
     manager::{transaction::Transaction, ChannelInfo, ChannelSide},
     receipt::Receipt,
     utils::{clone_join_error, Message},
-    workflow::ChannelIds,
+    workflow::{ChannelIds, Workflow},
     PersistedWorkflow,
 };
 use tardigrade::{channel::SendError, interface::ChannelKind, ChannelId, WorkflowId};
@@ -100,12 +101,19 @@ impl ChannelState {
     }
 }
 
+/// Persisted information associated with a `WorkflowSpawner`.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub(super) struct SpawnerMeta {
+    pub tracing_metadata: PersistedMetadata,
+}
+
 /// Wrapper for either ongoing or persisted workflow.
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct WorkflowWithMeta {
     pub definition_id: String,
     pub parent_id: Option<WorkflowId>,
     pub workflow: PersistedWorkflow,
+    pub tracing_spans: PersistedSpans,
 }
 
 /// Serializable persisted view of the workflows and channels managed by a [`WorkflowManager`].
@@ -117,10 +125,11 @@ pub struct PersistedWorkflows {
     pub(super) channels: HashMap<ChannelId, ChannelState>,
     pub(super) next_workflow_id: WorkflowId,
     pub(super) next_channel_id: ChannelId,
+    pub(super) spawners: HashMap<String, SpawnerMeta>,
 }
 
-impl Default for PersistedWorkflows {
-    fn default() -> Self {
+impl PersistedWorkflows {
+    pub(super) fn new(spawner_ids: impl Iterator<Item = String>) -> Self {
         let mut channels = HashMap::with_capacity(1);
         channels.insert(0, ChannelState::closed());
         Self {
@@ -128,11 +137,10 @@ impl Default for PersistedWorkflows {
             channels,
             next_workflow_id: 0,
             next_channel_id: 1, // avoid "pre-closed" channel ID
+            spawners: spawner_ids.map(|id| (id, SpawnerMeta::default())).collect(),
         }
     }
-}
 
-impl PersistedWorkflows {
     pub(super) fn take_message(&mut self, channel_id: ChannelId) -> Option<(Message, bool)> {
         let channel_state = self.channels.get_mut(&channel_id).unwrap();
         channel_state.messages.pop_front().map(|message| {
@@ -146,28 +154,29 @@ impl PersistedWorkflows {
         channel_state.messages.push_front(message);
     }
 
+    #[tracing::instrument(skip(self), err)]
     pub(super) fn send_message(
         &mut self,
         channel_id: ChannelId,
         message: Message,
     ) -> Result<(), SendError> {
         let channel_state = self.channels.get_mut(&channel_id).unwrap();
-        let message_len = message.as_ref().len();
-        let message_idx = channel_state.next_message_idx;
-        let result = channel_state.push_messages([message]);
-        log_result!(
-            result,
-            "Sent message #{message_idx} (len = {message_len} bytes) for channel {channel_id}"
-        )
+        tracing::debug!(
+            idx = channel_state.next_message_idx,
+            "allocated index for message"
+        );
+        channel_state.push_messages([message])
     }
 
+    #[tracing::instrument(skip(self), fields(closed = false))]
     pub(super) fn close_channel_side(&mut self, channel_id: ChannelId, side: ChannelSide) {
         let channel_state = self.channels.get_mut(&channel_id).unwrap();
-        trace!("Closing channel {channel_id} from {side:?}; current state is {channel_state:?}");
+        tracing::debug!(?channel_state, "current channel state");
         if !channel_state.close_side(side) {
             // The channel was not closed; no further actions are necessary.
             return;
         }
+        tracing::Span::current().record("closed", true);
 
         // If the channel is closed by the receiver, no need to notify it again.
         if !matches!(side, ChannelSide::Receiver) && channel_state.messages.is_empty() {
@@ -181,10 +190,6 @@ impl PersistedWorkflows {
                     .workflow;
                 let (child_id, name) = workflow.find_inbound_channel(channel_id);
                 workflow.close_inbound_channel(child_id, &name);
-                trace!(
-                    "Closed receiver end of channel {channel_id} \
-                     in workflow {receiver_workflow_id} as {name} @ {child_id:?}"
-                );
             }
         }
 
@@ -192,9 +197,6 @@ impl PersistedWorkflows {
             // The workflow may be missing from `self.workflows` if it has just completed.
             if let Some(persisted) = self.workflows.get_mut(sender_workflow_id) {
                 persisted.workflow.close_outbound_channels_by_id(channel_id);
-                trace!(
-                    "Closed sender end of channel {channel_id} in workflow {sender_workflow_id}"
-                );
             }
         }
     }
@@ -205,6 +207,7 @@ impl PersistedWorkflows {
     }
 
     // TODO: clearly inefficient
+    #[tracing::instrument(level = "debug", skip(self), ret)]
     pub(super) fn nearest_timer_expiration(&self) -> Option<DateTime<Utc>> {
         let timers = self
             .workflows
@@ -220,6 +223,7 @@ impl PersistedWorkflows {
         expirations.min()
     }
 
+    #[tracing::instrument(level = "debug", skip(self), ret)]
     pub(super) fn find_workflow_with_pending_tasks(&self) -> Option<WorkflowId> {
         self.workflows.iter().find_map(|(&workflow_id, persisted)| {
             let workflow = &persisted.workflow;
@@ -231,6 +235,7 @@ impl PersistedWorkflows {
         })
     }
 
+    #[tracing::instrument(level = "debug", skip(self), ret)]
     pub(super) fn find_consumable_channel(&self) -> Option<(ChannelId, WorkflowId)> {
         let mut all_channels = self.workflows.iter().flat_map(|(&workflow_id, persisted)| {
             persisted
@@ -249,9 +254,11 @@ impl PersistedWorkflows {
         })
     }
 
+    #[tracing::instrument(
+        skip_all,
+        fields(tx.workflow_id = transaction.executing_workflow_id())
+    )]
     pub(super) fn commit(&mut self, transaction: Transaction, receipt: &Receipt) {
-        trace!("Committing {transaction:?} onto workflow manager");
-
         let executed_workflow_id = transaction.executing_workflow_id();
         let transaction = transaction.into_inner();
         debug_assert!(self.next_workflow_id <= transaction.next_workflow_id);
@@ -261,8 +268,11 @@ impl PersistedWorkflows {
 
         // Create new channels and write outbound messages for them when appropriate.
         for (child_id, mut child_workflow) in transaction.new_workflows {
+            let child_span = tracing::debug_span!("prepare_child", child_id);
+            let _entered = child_span.enter();
+
             let channel_ids = child_workflow.workflow.channel_ids();
-            trace!("Handling {channel_ids:?} for new workflow {child_id}");
+            tracing::debug!(?channel_ids, "handling channels for new workflow");
 
             for (name, &channel_id) in &channel_ids.inbound {
                 let channel_state = self
@@ -272,10 +282,7 @@ impl PersistedWorkflows {
                 if channel_state.is_closed {
                     child_workflow.workflow.close_inbound_channel(None, name);
                 }
-                trace!(
-                    "Prepared inbound channel `{name}` (ID = {channel_id}) \
-                     for workflow {child_id}: {channel_state:?}"
-                );
+                tracing::debug!(name, channel_id, ?channel_state, "prepared inbound channel");
             }
             for (name, &channel_id) in &channel_ids.outbound {
                 let channel_state = self
@@ -287,9 +294,11 @@ impl PersistedWorkflows {
                 } else {
                     channel_state.sender_workflow_ids.insert(child_id);
                 }
-                trace!(
-                    "Prepared outbound channel `{name}` (ID = {channel_id}) \
-                     for workflow {child_id}: {channel_state:?}"
+                tracing::debug!(
+                    name,
+                    channel_id,
+                    ?channel_state,
+                    "prepared outbound channel"
                 );
             }
 
@@ -313,9 +322,23 @@ impl PersistedWorkflows {
         }
     }
 
-    pub(super) fn persist_workflow(&mut self, id: WorkflowId, workflow: PersistedWorkflow) {
-        self.workflows.get_mut(&id).unwrap().workflow = workflow;
+    pub(super) fn persist_workflow(&mut self, id: WorkflowId, workflow: Workflow<'_>) {
+        let persisted = self.workflows.get_mut(&id).unwrap();
+        let spawner_meta = self.spawners.get_mut(&persisted.definition_id).unwrap();
+        let workflow = workflow.persist(&mut spawner_meta.tracing_metadata);
+        tracing::debug!(
+            len = spawner_meta.tracing_metadata.len(),
+            "persisted tracing metadata"
+        );
+        persisted.workflow = workflow;
         self.handle_workflow_update(id);
+    }
+
+    pub(super) fn persist_tracing_spans(&mut self, id: WorkflowId, spans: PersistedSpans) {
+        if let Some(persisted) = self.workflows.get_mut(&id) {
+            tracing::debug!(len = spans.len(), "persisted tracing spans");
+            persisted.tracing_spans = spans;
+        }
     }
 
     pub(super) fn handle_workflow_update(&mut self, id: WorkflowId) {

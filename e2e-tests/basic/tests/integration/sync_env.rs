@@ -7,7 +7,6 @@ use std::{sync::Arc, task::Poll};
 use tardigrade::{
     interface::{InboundChannel, OutboundChannel},
     spawn::ManageWorkflowsExt,
-    trace::FutureState,
     Decode, Encode, Json, WorkflowId,
 };
 use tardigrade_rt::{
@@ -19,7 +18,7 @@ use tardigrade_rt::{
 };
 use tardigrade_test_basic::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOrder};
 
-use super::{TestResult, MODULE};
+use super::{enable_tracing_assertions, TestResult, MODULE};
 
 pub fn get_workflow(
     manager: &WorkflowManager,
@@ -34,6 +33,8 @@ pub fn get_workflow(
 
 #[test]
 fn basic_workflow() -> TestResult {
+    let (_guard, tracing_storage) = enable_tracing_assertions();
+
     let clock = Arc::new(MockScheduler::default());
     let spawner = MODULE.for_workflow::<PizzaDelivery>()?;
     let mut manager = WorkflowManager::builder()
@@ -92,8 +93,7 @@ fn basic_workflow() -> TestResult {
         delivery_distance: 10,
     };
     handle.orders.send(order)?;
-    let receipt = manager.tick().unwrap().into_inner()?;
-    dbg!(&receipt); // TODO: assert on receipt
+    manager.tick().unwrap().into_inner()?; // TODO: assert on receipt
 
     let mut workflow = get_workflow(&manager, workflow_id);
     let mut handle = workflow.handle();
@@ -115,6 +115,18 @@ fn basic_workflow() -> TestResult {
     }
 
     manager.tick()?.into_inner()?;
+    {
+        let storage = tracing_storage.lock();
+        let baking_timer = storage
+            .all_spans()
+            .find(|span| span.metadata().name() == "baking_timer")
+            .unwrap();
+        assert_eq!(baking_timer["index"], 1_u64);
+        assert!(baking_timer["order.kind"].is_debug(&PizzaKind::Pepperoni));
+        assert_eq!(baking_timer.stats().entered, 1);
+        assert!(!baking_timer.stats().is_closed);
+    }
+
     let new_time = {
         let persisted = get_workflow(&manager, workflow_id).persisted();
         let timers: Vec<_> = persisted.timers().collect();
@@ -127,20 +139,24 @@ fn basic_workflow() -> TestResult {
     clock.set_now(new_time);
     manager.set_current_time(new_time);
 
-    let receipt = manager.tick()?.into_inner()?;
-    dbg!(&receipt); // TODO: assert on receipt
+    manager.tick()?.into_inner()?; // TODO: assert on receipt
     let mut handle = get_workflow(&manager, workflow_id).handle();
     let events = handle.shared.events.take_messages().unwrap();
     assert_eq!(events.decode()?, [DomainEvent::Baked { index: 1, order }]);
 
-    let tracer_handle = &mut handle.shared.tracer;
-    tracer_handle.take_traces()?;
-    let mut futures = tracer_handle.futures().iter().map(|(_, state)| state);
-    let baking_future = futures
-        .find(|&future| future.name() == "baking_timer")
-        .unwrap();
-    assert_matches!(baking_future.state(), FutureState::Dropped);
+    {
+        let storage = tracing_storage.lock();
+        let mut captured_spans = storage.all_spans();
+        // Check that the capturing layer properly does filtering.
+        assert!(captured_spans.len() < 10, "{captured_spans:?}");
 
+        let baking_timer = captured_spans
+            .find(|span| span.metadata().name() == "baking_timer")
+            .unwrap();
+        let stats = baking_timer.stats();
+        assert!(stats.entered > 1, "{stats:?}");
+        assert!(stats.is_closed);
+    }
     Ok(())
 }
 
@@ -199,6 +215,8 @@ fn workflow_with_concurrency() -> TestResult {
 
 #[test]
 fn persisting_workflow() -> TestResult {
+    let (_guard, tracing_storage) = enable_tracing_assertions();
+
     let clock = Arc::new(MockScheduler::default());
     let spawner = MODULE.for_workflow::<PizzaDelivery>()?;
     let mut manager = WorkflowManager::builder()
@@ -231,8 +249,6 @@ fn persisting_workflow() -> TestResult {
         [DomainEvent::OrderTaken { index: 1, order }]
     );
 
-    handle.shared.tracer.take_traces()?;
-    let traced_futures = handle.shared.tracer.into_futures();
     let persisted_json = manager.persist(serde_json::to_string)?;
     assert!(persisted_json.len() < 5_000, "{}", persisted_json);
     let persisted = serde_json::from_str(&persisted_json)?;
@@ -264,16 +280,16 @@ fn persisting_workflow() -> TestResult {
     manager.tick()?.into_inner()?;
 
     // Check that the delivery timer is now active.
-    let mut handle = get_workflow(&manager, workflow_id).handle();
-    let tracer_handle = &mut handle.shared.tracer;
-    tracer_handle.set_futures(traced_futures);
-    tracer_handle.take_traces()?;
-    let mut futures = tracer_handle.futures().iter().map(|(_, state)| state);
-    let delivery_future = futures
-        .find(|&future| future.name() == "delivery_timer")
-        .unwrap();
-    assert_matches!(delivery_future.state(), FutureState::Polling);
-
+    {
+        let storage = tracing_storage.lock();
+        let delivery_timer = storage
+            .all_spans()
+            .find(|span| span.metadata().name() == "delivery_timer")
+            .unwrap();
+        let stats = delivery_timer.stats();
+        assert!(stats.entered > 0, "{stats:?}");
+        assert!(!stats.is_closed);
+    }
     Ok(())
 }
 
@@ -299,8 +315,7 @@ fn untyped_workflow() -> TestResult {
         delivery_distance: 10,
     };
     handle[InboundChannel("orders")].send(Json.encode_value(order))?;
-    let receipt = manager.tick().unwrap().into_inner()?;
-    dbg!(&receipt);
+    manager.tick().unwrap().into_inner()?; // TODO: assert on receipt
 
     let mut handle = manager.workflow(workflow_id).unwrap().handle();
     let events = handle[OutboundChannel("events")].take_messages().unwrap();
@@ -317,8 +332,6 @@ fn untyped_workflow() -> TestResult {
     assert_eq!(chan.received_messages(), 1);
     let chan = handle[OutboundChannel("events")].channel_info();
     assert_eq!(chan.flushed_messages(), 1);
-    let chan = handle[OutboundChannel("traces")].channel_info();
-    assert_eq!(chan.flushed_messages(), 0);
     Ok(())
 }
 

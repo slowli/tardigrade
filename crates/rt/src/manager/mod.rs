@@ -6,11 +6,13 @@
 
 use anyhow::Context;
 use chrono::{DateTime, Utc};
+use tracing::field;
+use tracing_tunnel::{LocalSpans, PersistedMetadata, PersistedSpans, TracingEventReceiver};
 
 use std::{
     borrow::Cow,
     collections::HashMap,
-    error, fmt,
+    error, fmt, mem,
     sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -24,7 +26,7 @@ mod tests;
 mod transaction;
 
 pub use self::{
-    handle::{MessageReceiver, MessageSender, TakenMessages, TracerHandle, WorkflowHandle},
+    handle::{MessageReceiver, MessageSender, TakenMessages, WorkflowHandle},
     persistence::PersistedWorkflows,
 };
 
@@ -210,6 +212,35 @@ impl fmt::Display for WouldBlock {
 
 impl error::Error for WouldBlock {}
 
+/// Temporary value holding parts necessary to restore a `Workflow`.
+#[derive(Debug)]
+struct WorkflowSeed<'a> {
+    clock: &'a dyn Clock,
+    spawner: &'a WorkflowSpawner<()>,
+    persisted: PersistedWorkflow,
+    tracing_metadata: PersistedMetadata,
+}
+
+impl<'a> WorkflowSeed<'a> {
+    fn restore(
+        self,
+        transaction: &'a Transaction,
+        spans: &'a mut PersistedSpans,
+        local_spans: &'a mut LocalSpans,
+    ) -> Workflow<'a> {
+        let services = Services {
+            clock: self.clock,
+            workflows: transaction,
+            tracer: Some(TracingEventReceiver::new(
+                self.tracing_metadata,
+                spans,
+                local_spans,
+            )),
+        };
+        self.persisted.restore(self.spawner, services).unwrap()
+    }
+}
+
 /// Part of the manager used during workflow instantiation.
 #[derive(Debug, Clone)]
 struct Shared {
@@ -227,39 +258,30 @@ impl Default for Shared {
 }
 
 impl Shared {
-    fn services<'a>(&'a self, transaction: &'a Transaction) -> Services<'a> {
-        Services {
-            clock: self.clock.as_ref(),
-            workflows: transaction,
-        }
-    }
-
-    fn restore_workflow<'a>(
-        &'a self,
-        committed: &PersistedWorkflows,
+    #[tracing::instrument(level = "debug", skip(self, committed), fields(definition_id))]
+    fn restore_workflow(
+        &self,
+        committed: &mut PersistedWorkflows,
         id: WorkflowId,
-        transaction: &'a Transaction,
-    ) -> Workflow<'a> {
+    ) -> (WorkflowSeed<'_>, PersistedSpans) {
         let persisted = committed
             .workflows
-            .get(&id)
+            .get_mut(&id)
             .unwrap_or_else(|| panic!("workflow with ID {} is not persisted", id));
         let definition_id = &persisted.definition_id;
+        tracing::Span::current().record("definition_id", definition_id);
         let spawner = &self.spawners[definition_id];
-        let restored = persisted
-            .workflow
-            .clone()
-            .restore(spawner, self.services(transaction))
-            .with_context(|| {
-                format!(
-                    "failed restoring workflow {id} with {spawner:?} for definition \
-                     `{definition_id}`"
-                )
-            })
-            .unwrap();
+        tracing::debug!(?spawner, "using spawner to restore workflow");
 
-        trace!("Restored workflow {id} with {spawner:?} for definition `{definition_id}`");
-        restored
+        let tracing_metadata = committed.spawners[definition_id].tracing_metadata.clone();
+        let template = WorkflowSeed {
+            clock: self.clock.as_ref(),
+            spawner,
+            persisted: persisted.workflow.clone(),
+            tracing_metadata,
+        };
+        let spans = mem::take(&mut persisted.tracing_spans);
+        (template, spans)
     }
 }
 
@@ -314,17 +336,18 @@ enum ChannelSide {
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct WorkflowManager {
     shared: Shared,
     state: Mutex<PersistedWorkflows>,
+    local_spans: HashMap<WorkflowId, LocalSpans>,
 }
 
 impl WorkflowManager {
     /// Creates a manager builder.
     pub fn builder() -> WorkflowManagerBuilder {
         WorkflowManagerBuilder {
-            manager: Self::default(),
+            shared: Shared::default(),
         }
     }
 
@@ -334,6 +357,12 @@ impl WorkflowManager {
 
     fn check_consistency(&self) -> anyhow::Result<()> {
         let state = self.lock();
+        for definition_id in self.shared.spawners.keys() {
+            if !state.spawners.contains_key(definition_id) {
+                anyhow::bail!("missing spawner metadata for workflow definition `{definition_id}`");
+            }
+        }
+
         for (&id, workflow_record) in &state.workflows {
             let definition_id = &workflow_record.definition_id;
             let spawner = self.shared.spawners.get(definition_id).ok_or_else(|| {
@@ -410,6 +439,11 @@ impl WorkflowManager {
         state.close_channel_side(channel_id, ChannelSide::Receiver);
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip(self),
+        fields(ret.start_idx, ret.count)
+    )]
     pub(crate) fn take_outbound_messages(&self, channel_id: ChannelId) -> (usize, Vec<Message>) {
         let mut state = self.lock();
         let channel_state = state.channels.get_mut(&channel_id).unwrap();
@@ -419,58 +453,57 @@ impl WorkflowManager {
         );
 
         let (start_idx, messages) = channel_state.drain_messages();
-        let count = messages.len();
-        if count > 0 {
-            trace!("Taken {count} messages starting from #{start_idx} from channel {channel_id}");
-        }
+        tracing::Span::current()
+            .record("ret.start_idx", start_idx)
+            .record("ret.count", messages.len());
         (start_idx, messages.into())
     }
 
     /// Atomically pops a message from a channel and feeds it to a listening workflow.
     /// If the workflow execution is successful, its results are committed to the manager state;
     /// otherwise, the results are reverted.
+    #[tracing::instrument(skip(self), err)]
     fn feed_message_to_workflow(
-        &self,
+        &mut self,
         channel_id: ChannelId,
         workflow_id: WorkflowId,
     ) -> Result<Receipt, ExecutionError> {
-        let mut state = self.lock();
+        let state = self.state.get_mut().unwrap();
         let (message, is_closed) = state.take_message(channel_id).expect("no message to feed");
         let workflow = &state.workflows[&workflow_id].workflow;
         let (child_id, channel_name) = workflow.find_inbound_channel(channel_id);
-        trace!(
-            "Feeding {message:?} from channel {channel_id} to receiver \
-             {channel_name} @ {child_id:?} in workflow {workflow_id}"
-        );
 
-        let transaction = Transaction::new(&state, Some(workflow_id), self.shared.clone());
-        let mut workflow = self
-            .shared
-            .restore_workflow(&state, workflow_id, &transaction);
-        trace!("Starting execution of workflow {workflow_id}");
+        let (template, mut spans) = self.shared.restore_workflow(state, workflow_id);
+        let transaction = Transaction::new(state, Some(workflow_id), self.shared.clone());
+        let local_spans = self.local_spans.entry(workflow_id).or_default();
+        let mut workflow = template.restore(&transaction, &mut spans, local_spans);
         let result = Self::push_message(&mut workflow, child_id, &channel_name, message.clone());
+
         if let Ok(receipt) = &result {
             let mut is_consumed = true;
             if workflow.take_pending_inbound_message(child_id, &channel_name) {
                 // The message was not consumed. We still persist the workflow in order to
                 // consume wakers (otherwise, we would loop indefinitely), and place the message
                 // back to the channel.
-                warn!(
-                    "Message {message:?} from channel {channel_id} was not consumed \
-                     by workflow {workflow_id}; placing the message back"
+                tracing::warn!(
+                    ?message,
+                    "message was not consumed by workflow; placing the message back"
                 );
-
                 is_consumed = false;
                 state.revert_taking_message(channel_id, message);
             }
 
-            let messages = workflow.drain_messages();
-            state.persist_workflow(workflow_id, workflow.persist());
-            state.commit(transaction, receipt);
-            state.push_messages(messages);
+            {
+                let span = tracing::debug_span!("persist_workflow_and_messages", workflow_id);
+                let _entered = span.enter();
+                let messages = workflow.drain_messages();
+                state.persist_workflow(workflow_id, workflow);
+                state.persist_tracing_spans(workflow_id, spans);
+                state.commit(transaction, receipt);
+                state.push_messages(messages);
+            }
 
             if is_consumed && is_closed {
-                trace!("Signaling workflow {workflow_id} that channel {channel_id} is closed");
                 // Signal to the workflow that the channel is closed. This can be performed
                 // on a persisted workflow, without executing it.
                 let workflow_record = state.workflows.get_mut(&workflow_id).unwrap();
@@ -482,16 +515,12 @@ impl WorkflowManager {
             // Do not commit the execution result. Instead, put the message back to the channel.
             state.revert_taking_message(channel_id, message);
         }
-
-        log_result!(
-            result,
-            "Fed message from channel {channel_id} to receiver {channel_name} @ {child_id:?} \
-             in workflow {workflow_id}"
-        )
+        result
     }
 
     /// Returns `Ok(None)` if the message cannot be consumed right now (the workflow channel
     /// does not listen to it).
+    #[tracing::instrument(level = "debug", skip(workflow))]
     fn push_message(
         workflow: &mut Workflow,
         child_id: Option<WorkflowId>,
@@ -506,29 +535,32 @@ impl WorkflowManager {
 
     /// Sets the current time for this manager. This may expire timers in some of the contained
     /// workflows.
+    #[tracing::instrument(skip(self))]
     pub fn set_current_time(&self, time: DateTime<Utc>) {
-        trace!("Setting time {time} for workflow manager");
         let mut state = self.lock();
         for persisted in state.workflows.values_mut() {
             persisted.workflow.set_current_time(time);
         }
     }
 
+    #[tracing::instrument(skip(self), err)]
     pub(crate) fn tick_workflow(
         &mut self,
         workflow_id: WorkflowId,
     ) -> Result<Receipt, ExecutionError> {
         let state = self.state.get_mut().unwrap();
+        let (template, mut spans) = self.shared.restore_workflow(state, workflow_id);
         let transaction = Transaction::new(state, Some(workflow_id), self.shared.clone());
-        let mut workflow = self
-            .shared
-            .restore_workflow(state, workflow_id, &transaction);
+        let local_spans = self.local_spans.entry(workflow_id).or_default();
+        let mut workflow = template.restore(&transaction, &mut spans, local_spans);
 
-        trace!("Starting execution of workflow {workflow_id}");
         let result = workflow.tick();
         if let Ok(receipt) = &result {
+            let span = tracing::debug_span!("persist_workflow_and_messages", workflow_id);
+            let _entered = span.enter();
             let messages = workflow.drain_messages();
-            state.persist_workflow(workflow_id, workflow.persist());
+            state.persist_workflow(workflow_id, workflow);
+            state.persist_tracing_spans(workflow_id, spans);
             state.commit(transaction, receipt);
             state.push_messages(messages);
         }
@@ -541,9 +573,8 @@ impl WorkflowManager {
     /// # Panics
     ///
     /// Panics if the manager does not contain a workflow with the specified ID.
+    #[tracing::instrument(skip(self))]
     pub fn abort_workflow(&mut self, workflow_id: WorkflowId) {
-        trace!("Aborting workflow {workflow_id}");
-
         let state = self.state.get_mut().unwrap();
         let persisted = state
             .workflows
@@ -569,11 +600,14 @@ impl WorkflowManager {
     ///
     /// Returns an error if the manager cannot be progressed.
     pub fn tick(&mut self) -> Result<TickResult<Actions<'_>>, WouldBlock> {
+        let span = tracing::info_span!("tick", workflow_id = field::Empty, err = field::Empty);
+        let _entered = span.enter();
         let state = self.state.get_mut().unwrap();
 
         let workflow_id = state.find_workflow_with_pending_tasks();
-        trace!("Searched for workflow with pending tasks: {workflow_id:?}");
         if let Some(workflow_id) = workflow_id {
+            span.record("workflow_id", workflow_id);
+
             let result = self.tick_workflow(workflow_id);
             return Ok(TickResult {
                 workflow_id,
@@ -583,8 +617,9 @@ impl WorkflowManager {
         }
 
         let ids = state.find_consumable_channel();
-        trace!("Searched for workflow with consumable message: {ids:?}");
         if let Some((channel_id, workflow_id)) = ids {
+            span.record("workflow_id", workflow_id);
+
             let result = self.feed_message_to_workflow(channel_id, workflow_id);
             let mut actions = Actions::new(self, result.is_err());
             if result.is_err() {
@@ -597,37 +632,44 @@ impl WorkflowManager {
             });
         }
 
-        Err(WouldBlock {
+        let err = WouldBlock {
             nearest_timer_expiration: state.nearest_timer_expiration(),
-        })
+        };
+        span.record("err", &err as &dyn error::Error);
+        Err(err)
     }
 }
 
 /// Builder for a [`WorkflowManager`].
 #[derive(Debug)]
 pub struct WorkflowManagerBuilder {
-    manager: WorkflowManager,
+    shared: Shared,
 }
 
 impl WorkflowManagerBuilder {
     /// Sets the wall clock to be used in the manager.
     #[must_use]
     pub fn with_clock(mut self, clock: Arc<impl Clock>) -> Self {
-        self.manager.shared.clock = clock;
+        self.shared.clock = clock;
         self
     }
 
     /// Inserts a workflow spawner into the manager.
     #[must_use]
     pub fn with_spawner<W: WorkflowFn>(mut self, id: &str, spawner: WorkflowSpawner<W>) -> Self {
-        let spawners = Arc::get_mut(&mut self.manager.shared.spawners).unwrap();
+        let spawners = Arc::get_mut(&mut self.shared.spawners).unwrap();
         spawners.insert(id.to_owned(), spawner.erase());
         self
     }
 
     /// Finishes building the manager.
     pub fn build(self) -> WorkflowManager {
-        self.manager
+        let spawner_ids = self.shared.spawners.keys().cloned();
+        WorkflowManager {
+            state: Mutex::new(PersistedWorkflows::new(spawner_ids)),
+            shared: self.shared,
+            local_spans: HashMap::new(),
+        }
     }
 
     /// Restores the manager with the provided persisted state.
@@ -636,10 +678,14 @@ impl WorkflowManagerBuilder {
     ///
     /// Returns an error if the state cannot be restored (e.g., there are missing spawners,
     /// or some of spawners do not provide expected workflow interface).
-    pub fn restore(mut self, workflows: PersistedWorkflows) -> anyhow::Result<WorkflowManager> {
-        *self.manager.state.get_mut().unwrap() = workflows;
-        self.manager.check_consistency()?;
-        Ok(self.manager)
+    pub fn restore(self, workflows: PersistedWorkflows) -> anyhow::Result<WorkflowManager> {
+        let manager = WorkflowManager {
+            shared: self.shared,
+            state: Mutex::new(workflows),
+            local_spans: HashMap::new(),
+        };
+        manager.check_consistency()?;
+        Ok(manager)
     }
 }
 
@@ -667,10 +713,7 @@ impl<'a, W: WorkflowFn> ManageWorkflows<'a, W> for WorkflowManager {
         channels: ChannelsConfig<ChannelId>,
     ) -> Result<Self::Handle, Self::Error> {
         let transaction = Transaction::new(&self.lock(), None, self.shared.clone());
-        let services = self.shared.services(&transaction);
-        services
-            .workflows
-            .create_workflow(definition_id, args, channels)?;
+        transaction.create_workflow(definition_id, args, channels)?;
 
         let workflow_id = transaction.single_new_workflow_id().unwrap();
         self.lock().commit(transaction, &Receipt::default());

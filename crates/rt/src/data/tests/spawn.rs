@@ -197,6 +197,7 @@ fn spawning_child_workflow() {
     let workflow = create_workflow_with_manager(Services {
         clock: &clock,
         workflows: &manager,
+        tracer: None,
     });
 
     let mut children: Vec<_> = workflow.data().persisted.child_workflows().collect();
@@ -297,6 +298,7 @@ fn spawning_child_workflow_errors() {
     let workflow = create_workflow_with_manager(Services {
         clock: &clock,
         workflows: &manager,
+        tracer: None,
     });
 
     assert!(workflow.data().persisted.child_workflows().next().is_none());
@@ -346,6 +348,7 @@ fn consuming_message_from_child_workflow() {
     let mut workflow = create_workflow_with_manager(Services {
         clock: &clock,
         workflows: &manager,
+        tracer: None,
     });
 
     workflow
