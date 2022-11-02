@@ -93,8 +93,7 @@ fn basic_workflow() -> TestResult {
         delivery_distance: 10,
     };
     handle.orders.send(order)?;
-    let receipt = manager.tick().unwrap().into_inner()?;
-    dbg!(&receipt); // TODO: assert on receipt
+    manager.tick().unwrap().into_inner()?; // TODO: assert on receipt
 
     let mut workflow = get_workflow(&manager, workflow_id);
     let mut handle = workflow.handle();
@@ -119,8 +118,7 @@ fn basic_workflow() -> TestResult {
     {
         let storage = tracing_storage.lock();
         let baking_timer = storage
-            .spans()
-            .iter()
+            .all_spans()
             .find(|span| span.metadata().name() == "baking_timer")
             .unwrap();
         assert_eq!(baking_timer["index"], 1_u64);
@@ -141,25 +139,23 @@ fn basic_workflow() -> TestResult {
     clock.set_now(new_time);
     manager.set_current_time(new_time);
 
-    let receipt = manager.tick()?.into_inner()?;
-    dbg!(&receipt); // TODO: assert on receipt
+    manager.tick()?.into_inner()?; // TODO: assert on receipt
     let mut handle = get_workflow(&manager, workflow_id).handle();
     let events = handle.shared.events.take_messages().unwrap();
     assert_eq!(events.decode()?, [DomainEvent::Baked { index: 1, order }]);
 
     {
         let storage = tracing_storage.lock();
-        let captured_spans = storage.spans();
+        let mut captured_spans = storage.all_spans();
+        // Check that the capturing layer properly does filtering.
+        assert!(captured_spans.len() < 10, "{captured_spans:?}");
+
         let baking_timer = captured_spans
-            .iter()
             .find(|span| span.metadata().name() == "baking_timer")
             .unwrap();
         let stats = baking_timer.stats();
         assert!(stats.entered > 1, "{stats:?}");
         assert!(stats.is_closed);
-
-        // Check that the capturing layer properly does filtering.
-        assert!(captured_spans.len() < 10, "{captured_spans:?}");
     }
     Ok(())
 }
@@ -287,8 +283,7 @@ fn persisting_workflow() -> TestResult {
     {
         let storage = tracing_storage.lock();
         let delivery_timer = storage
-            .spans()
-            .iter()
+            .all_spans()
             .find(|span| span.metadata().name() == "delivery_timer")
             .unwrap();
         let stats = delivery_timer.stats();
@@ -320,8 +315,7 @@ fn untyped_workflow() -> TestResult {
         delivery_distance: 10,
     };
     handle[InboundChannel("orders")].send(Json.encode_value(order))?;
-    let receipt = manager.tick().unwrap().into_inner()?;
-    dbg!(&receipt);
+    manager.tick().unwrap().into_inner()?; // TODO: assert on receipt
 
     let mut handle = manager.workflow(workflow_id).unwrap().handle();
     let events = handle[OutboundChannel("events")].take_messages().unwrap();
