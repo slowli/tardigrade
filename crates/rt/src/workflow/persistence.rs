@@ -3,6 +3,7 @@
 use anyhow::{ensure, Context};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tracing_tunnel::PersistedMetadata;
 use wasmtime::Store;
 
 use std::{fmt, task::Poll};
@@ -154,11 +155,16 @@ pub struct PersistedWorkflow {
 }
 
 impl PersistedWorkflow {
-    pub(super) fn new(mut workflow: Workflow) -> Result<Self, PersistError> {
+    pub(super) fn new(
+        mut workflow: Workflow<'_>,
+        metadata: &mut PersistedMetadata,
+    ) -> Result<Self, PersistError> {
         workflow.store.data().check_persistence()?;
         let refs = Refs::new(&mut workflow.store);
         let memory = Memory::new(&workflow.store, workflow.data_section.as_deref());
-        let state = workflow.store.into_data().persist();
+        let data = workflow.store.into_data();
+        data.persist_trace_metadata(metadata);
+        let state = data.persist();
 
         Ok(Self {
             state,

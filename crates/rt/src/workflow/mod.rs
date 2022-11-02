@@ -4,6 +4,7 @@ use anyhow::Context;
 use wasmtime::{AsContextMut, Linker, Store, Trap};
 
 use std::{collections::HashMap, mem, sync::Arc};
+use tracing_tunnel::PersistedMetadata;
 
 mod persistence;
 
@@ -309,12 +310,11 @@ impl<'a> Workflow<'a> {
 
     /// Persists this workflow.
     ///
-    /// # Errors
+    /// # Panics
     ///
-    /// Returns an error if the workflow is in such a state that it cannot be persisted
-    /// right now.
-    pub(crate) fn persist(self) -> PersistedWorkflow {
-        PersistedWorkflow::new(self).unwrap()
+    /// Panics if the workflow is in such a state that it cannot be persisted right now.
+    pub(crate) fn persist(self, metadata: &mut PersistedMetadata) -> PersistedWorkflow {
+        PersistedWorkflow::new(self, metadata).unwrap()
     }
 
     fn copy_memory(&mut self, offset: usize, memory_contents: &[u8]) -> anyhow::Result<()> {

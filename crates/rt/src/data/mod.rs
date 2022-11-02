@@ -297,8 +297,10 @@ impl TracingFunctions {
         })?;
         tracing::trace!(?trace, "received client trace");
 
-        if let Some(tracing) = ctx.data_mut().services.tracer.as_deref_mut() {
-            tracing.handle_trace(trace);
+        if let Some(tracing) = ctx.data_mut().services.tracer.as_mut() {
+            if let Err(err) = tracing.try_receive(trace) {
+                tracing::warn!(%err, "received bogus tracing event");
+            }
         }
         Ok(())
     }

@@ -7,12 +7,12 @@
 use anyhow::Context;
 use chrono::{DateTime, Utc};
 use tracing::field;
-use tracing_tunnel::TracingEventReceiver;
+use tracing_tunnel::{LocalSpans, PersistedMetadata, PersistedSpans, TracingEventReceiver};
 
 use std::{
     borrow::Cow,
     collections::HashMap,
-    error, fmt,
+    error, fmt, mem,
     sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -212,23 +212,30 @@ impl fmt::Display for WouldBlock {
 
 impl error::Error for WouldBlock {}
 
+/// Temporary value holding parts necessary to restore a `Workflow`.
 #[derive(Debug)]
-struct RestorationTemplate<'a> {
+struct WorkflowSeed<'a> {
     clock: &'a dyn Clock,
     spawner: &'a WorkflowSpawner<()>,
     persisted: PersistedWorkflow,
+    tracing_metadata: PersistedMetadata,
 }
 
-impl<'a> RestorationTemplate<'a> {
+impl<'a> WorkflowSeed<'a> {
     fn restore(
         self,
         transaction: &'a Transaction,
-        tracer: &'a mut TracingEventReceiver,
+        spans: &'a mut PersistedSpans,
+        local_spans: &'a mut LocalSpans,
     ) -> Workflow<'a> {
         let services = Services {
             clock: self.clock,
             workflows: transaction,
-            tracer: Some(tracer),
+            tracer: Some(TracingEventReceiver::new(
+                self.tracing_metadata,
+                spans,
+                local_spans,
+            )),
         };
         self.persisted.restore(self.spawner, services).unwrap()
     }
@@ -256,30 +263,25 @@ impl Shared {
         &self,
         committed: &mut PersistedWorkflows,
         id: WorkflowId,
-    ) -> (RestorationTemplate<'_>, TracingEventReceiver) {
+    ) -> (WorkflowSeed<'_>, PersistedSpans) {
         let persisted = committed
             .workflows
             .get_mut(&id)
             .unwrap_or_else(|| panic!("workflow with ID {} is not persisted", id));
         let definition_id = &persisted.definition_id;
         tracing::Span::current().record("definition_id", definition_id);
-
         let spawner = &self.spawners[definition_id];
         tracing::debug!(?spawner, "using spawner to restore workflow");
-        let template = RestorationTemplate {
+
+        let tracing_metadata = committed.spawners[definition_id].tracing_metadata.clone();
+        let template = WorkflowSeed {
             clock: self.clock.as_ref(),
             spawner,
             persisted: persisted.workflow.clone(),
+            tracing_metadata,
         };
-        let consumer = TracingEventReceiver::new(
-            &mut committed
-                .spawners
-                .get_mut(definition_id)
-                .unwrap()
-                .tracing_metadata,
-            &mut persisted.tracing_spans,
-        );
-        (template, consumer)
+        let spans = mem::take(&mut persisted.tracing_spans);
+        (template, spans)
     }
 }
 
@@ -338,6 +340,7 @@ enum ChannelSide {
 pub struct WorkflowManager {
     shared: Shared,
     state: Mutex<PersistedWorkflows>,
+    local_spans: HashMap<WorkflowId, LocalSpans>,
 }
 
 impl WorkflowManager {
@@ -461,18 +464,19 @@ impl WorkflowManager {
     /// otherwise, the results are reverted.
     #[tracing::instrument(skip(self), err)]
     fn feed_message_to_workflow(
-        &self,
+        &mut self,
         channel_id: ChannelId,
         workflow_id: WorkflowId,
     ) -> Result<Receipt, ExecutionError> {
-        let mut state = self.lock();
+        let state = self.state.get_mut().unwrap();
         let (message, is_closed) = state.take_message(channel_id).expect("no message to feed");
         let workflow = &state.workflows[&workflow_id].workflow;
         let (child_id, channel_name) = workflow.find_inbound_channel(channel_id);
 
-        let (template, mut tracer) = self.shared.restore_workflow(&mut state, workflow_id);
-        let transaction = Transaction::new(&state, Some(workflow_id), self.shared.clone());
-        let mut workflow = template.restore(&transaction, &mut tracer);
+        let (template, mut spans) = self.shared.restore_workflow(state, workflow_id);
+        let transaction = Transaction::new(state, Some(workflow_id), self.shared.clone());
+        let local_spans = self.local_spans.entry(workflow_id).or_default();
+        let mut workflow = template.restore(&transaction, &mut spans, local_spans);
         let result = Self::push_message(&mut workflow, child_id, &channel_name, message.clone());
 
         if let Ok(receipt) = &result {
@@ -490,10 +494,11 @@ impl WorkflowManager {
             }
 
             {
-                let span = tracing::debug_span!("persist_workflow_and_messages");
+                let span = tracing::debug_span!("persist_workflow_and_messages", workflow_id);
                 let _entered = span.enter();
                 let messages = workflow.drain_messages();
-                state.persist_workflow(workflow_id, workflow.persist(), tracer);
+                state.persist_workflow(workflow_id, workflow);
+                state.persist_tracing_spans(workflow_id, spans);
                 state.commit(transaction, receipt);
                 state.push_messages(messages);
             }
@@ -544,16 +549,18 @@ impl WorkflowManager {
         workflow_id: WorkflowId,
     ) -> Result<Receipt, ExecutionError> {
         let state = self.state.get_mut().unwrap();
-        let (template, mut tracer) = self.shared.restore_workflow(state, workflow_id);
+        let (template, mut spans) = self.shared.restore_workflow(state, workflow_id);
         let transaction = Transaction::new(state, Some(workflow_id), self.shared.clone());
-        let mut workflow = template.restore(&transaction, &mut tracer);
+        let local_spans = self.local_spans.entry(workflow_id).or_default();
+        let mut workflow = template.restore(&transaction, &mut spans, local_spans);
 
         let result = workflow.tick();
         if let Ok(receipt) = &result {
-            let span = tracing::debug_span!("persist_workflow_and_messages");
+            let span = tracing::debug_span!("persist_workflow_and_messages", workflow_id);
             let _entered = span.enter();
             let messages = workflow.drain_messages();
-            state.persist_workflow(workflow_id, workflow.persist(), tracer);
+            state.persist_workflow(workflow_id, workflow);
+            state.persist_tracing_spans(workflow_id, spans);
             state.commit(transaction, receipt);
             state.push_messages(messages);
         }
@@ -661,6 +668,7 @@ impl WorkflowManagerBuilder {
         WorkflowManager {
             state: Mutex::new(PersistedWorkflows::new(spawner_ids)),
             shared: self.shared,
+            local_spans: HashMap::new(),
         }
     }
 
@@ -674,6 +682,7 @@ impl WorkflowManagerBuilder {
         let manager = WorkflowManager {
             shared: self.shared,
             state: Mutex::new(workflows),
+            local_spans: HashMap::new(),
         };
         manager.check_consistency()?;
         Ok(manager)

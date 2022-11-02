@@ -1,6 +1,6 @@
 //! Transactions for `WorkflowManager`.
 
-use tracing_tunnel::PersistedSpans;
+use tracing_tunnel::{PersistedMetadata, PersistedSpans};
 
 use std::{borrow::Cow, collections::HashMap, sync::Mutex};
 
@@ -47,7 +47,7 @@ impl TransactionInner {
             WorkflowWithMeta {
                 definition_id,
                 parent_id,
-                workflow: workflow.persist(),
+                workflow: workflow.persist(&mut PersistedMetadata::default()),
                 tracing_spans: PersistedSpans::default(),
             },
         );

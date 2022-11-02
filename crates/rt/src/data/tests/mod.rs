@@ -2,6 +2,7 @@
 
 use assert_matches::assert_matches;
 use mimicry::Answers;
+use tracing_tunnel::PersistedMetadata;
 use wasmtime::StoreContextMut;
 
 use std::{
@@ -167,7 +168,7 @@ fn starting_workflow() {
         }) if channel_name == "orders"
     );
 
-    workflow.persist();
+    workflow.persist(&mut PersistedMetadata::default());
 }
 
 #[test]
@@ -430,7 +431,7 @@ fn workflow_terminates_after_main_task_completion() {
     let task_result = last_execution.task_result.as_ref().unwrap();
     task_result.as_ref().unwrap();
 
-    let workflow = workflow.persist();
+    let workflow = workflow.persist(&mut PersistedMetadata::default());
     assert_matches!(workflow.result(), Poll::Ready(Ok(())));
 }
 
@@ -618,7 +619,7 @@ fn timers_basics() {
     assert!(timers[&1].completed_at().is_none());
 
     scheduler.set_now(scheduler.now() + chrono::Duration::seconds(1));
-    let mut persisted = workflow.persist();
+    let mut persisted = workflow.persist(&mut PersistedMetadata::default());
     persisted.set_current_time(scheduler.now());
     let mut workflow = restore_workflow(
         persisted,

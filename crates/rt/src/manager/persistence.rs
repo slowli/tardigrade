@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tracing_tunnel::{PersistedMetadata, PersistedSpans, TracingEventReceiver};
+use tracing_tunnel::{PersistedMetadata, PersistedSpans};
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -14,7 +14,7 @@ use crate::{
     manager::{transaction::Transaction, ChannelInfo, ChannelSide},
     receipt::Receipt,
     utils::{clone_join_error, Message},
-    workflow::ChannelIds,
+    workflow::{ChannelIds, Workflow},
     PersistedWorkflow,
 };
 use tardigrade::{channel::SendError, interface::ChannelKind, ChannelId, WorkflowId};
@@ -322,18 +322,23 @@ impl PersistedWorkflows {
         }
     }
 
-    pub(super) fn persist_workflow(
-        &mut self,
-        id: WorkflowId,
-        workflow: PersistedWorkflow,
-        tracer: TracingEventReceiver,
-    ) {
+    pub(super) fn persist_workflow(&mut self, id: WorkflowId, workflow: Workflow<'_>) {
         let persisted = self.workflows.get_mut(&id).unwrap();
-        persisted.workflow = workflow;
         let spawner_meta = self.spawners.get_mut(&persisted.definition_id).unwrap();
-        tracer.persist_metadata(&mut spawner_meta.tracing_metadata);
-        persisted.tracing_spans = tracer.persist_spans();
+        let workflow = workflow.persist(&mut spawner_meta.tracing_metadata);
+        tracing::debug!(
+            len = spawner_meta.tracing_metadata.len(),
+            "persisted tracing metadata"
+        );
+        persisted.workflow = workflow;
         self.handle_workflow_update(id);
+    }
+
+    pub(super) fn persist_tracing_spans(&mut self, id: WorkflowId, spans: PersistedSpans) {
+        if let Some(persisted) = self.workflows.get_mut(&id) {
+            tracing::debug!(len = spans.len(), "persisted tracing spans");
+            persisted.tracing_spans = spans;
+        }
     }
 
     pub(super) fn handle_workflow_update(&mut self, id: WorkflowId) {

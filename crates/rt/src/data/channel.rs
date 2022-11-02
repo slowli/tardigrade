@@ -20,8 +20,7 @@ use super::{
 };
 use crate::{
     receipt::WakeUpCause,
-    utils,
-    utils::{copy_bytes_from_wasm, copy_string_from_wasm, merge_vec, Message, WasmAllocator},
+    utils::{self, Message, WasmAllocator},
     workflow::ChannelIds,
 };
 use tardigrade::{
@@ -473,7 +472,7 @@ impl PersistedWorkflowData {
                     new_wakers.push(wakers);
                 }
                 if !messages.is_empty() {
-                    merge_vec(acc.entry(state.id()).or_default(), messages);
+                    utils::merge_vec(acc.entry(state.id()).or_default(), messages);
                 }
                 acc
             },
@@ -660,7 +659,7 @@ impl WorkflowFunctions {
     ) -> Result<Option<ExternRef>, Trap> {
         let memory = ctx.data().exports().memory;
         let channel_name =
-            copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
+            utils::copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
         let data = &mut ctx.data_mut().persisted;
         let (workflow_id, channels) = Self::channels(data, workflow.as_ref())?;
 
@@ -733,7 +732,7 @@ impl WorkflowFunctions {
     ) -> Result<Option<ExternRef>, Trap> {
         let memory = ctx.data().exports().memory;
         let channel_name =
-            copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
+            utils::copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
         let data = &mut ctx.data_mut().persisted;
         let (workflow_id, channels) = Self::channels(data, workflow.as_ref())?;
 
@@ -790,7 +789,7 @@ impl WorkflowFunctions {
     ) -> Result<i32, Trap> {
         let channel_ref = HostResource::from_ref(channel_ref.as_ref())?.as_outbound_channel()?;
         let memory = ctx.data().exports().memory;
-        let message = copy_bytes_from_wasm(&ctx, &memory, message_ptr, message_len)?;
+        let message = utils::copy_bytes_from_wasm(&ctx, &memory, message_ptr, message_len)?;
         tracing::Span::current().record("channel", field::debug(channel_ref));
 
         let result = ctx.data_mut().push_outbound_message(channel_ref, message);
