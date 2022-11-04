@@ -412,29 +412,32 @@ fn consume_message_from_child(
 
 #[test]
 fn consuming_message_from_child_workflow() {
-    let poll_fns = Answers::from_values([
-        spawn_child_workflow,
-        get_child_workflow_channel,
-        consume_message_from_child,
-    ]);
+    let (poll_fns, mut poll_fn_sx) = Answers::channel();
     let exports_guard = ExportsMock::prepare(poll_fns);
     let clock = MockScheduler::default();
     let mut manager = MockWorkflowManager::new();
-    let workflow = create_workflow_with_manager(Services {
-        clock: &clock,
-        workflows: Some(&mut manager),
-        tracer: None,
+    let workflow = poll_fn_sx.send(spawn_child_workflow).scope(|| {
+        create_workflow_with_manager(Services {
+            clock: &clock,
+            workflows: Some(&mut manager),
+            tracer: None,
+        })
     });
     let persisted = workflow.persist();
     let mut workflow = manager.init_single_child(persisted, &clock);
-    workflow.tick().unwrap(); // makes the workflow listen to the `traces` child channel
+    poll_fn_sx.send(get_child_workflow_channel).scope(|| {
+        workflow.tick().unwrap(); // makes the workflow listen to the `traces` child channel
+    });
 
     workflow
         .data_mut()
         .persisted
         .push_inbound_message(Some(1), "traces", b"trace #1".to_vec())
         .unwrap();
-    let receipt = workflow.tick().unwrap();
+    let receipt = poll_fn_sx
+        .send(consume_message_from_child)
+        .scope(|| workflow.tick())
+        .unwrap();
 
     let exports = exports_guard.into_inner();
     assert_eq!(exports.consumed_wakers.len(), 2); // child init + child `traces` handle

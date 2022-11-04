@@ -48,5 +48,6 @@ features = ["receiver"]
 [dev-dependencies]
 assert_matches = "1.5.0"
 async-std = { version = "1.12.0", features = ["attributes"] }
-mimicry = "0.1.0"
+#mimicry = "0.1.0"
+mimicry = { path = "../../../mimicry" }
 version-sync = "0.9.4"
