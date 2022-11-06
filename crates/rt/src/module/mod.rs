@@ -23,7 +23,7 @@ pub use self::services::Clock;
 pub(crate) use self::tests::{ExportsMock, MockPollFn};
 pub(crate) use self::{
     exports::ModuleExports,
-    services::{NoOpWorkflowManager, Services, WorkflowAndChannelIds},
+    services::{Services, StashWorkflows},
 };
 
 use self::imports::ModuleImports;

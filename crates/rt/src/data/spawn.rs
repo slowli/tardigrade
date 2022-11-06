@@ -5,7 +5,7 @@ use tracing::field;
 use wasmtime::{AsContextMut, ExternRef, StoreContextMut, Trap};
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     mem,
     sync::{Arc, Mutex},
     task::Poll,
@@ -34,6 +34,43 @@ type ChannelHandles = ChannelsConfig<ChannelId>;
 #[derive(Debug, Clone)]
 pub(super) struct SharedChannelHandles {
     inner: Arc<Mutex<ChannelHandles>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChildWorkflowStub {
+    #[serde(with = "utils::serde_poll")]
+    result: Poll<Result<WorkflowId, HostError>>,
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    wakes_on_init: HashSet<WakerId>,
+}
+
+impl Default for ChildWorkflowStub {
+    fn default() -> Self {
+        Self {
+            result: Poll::Pending,
+            wakes_on_init: HashSet::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(super) struct ChildWorkflowStubs {
+    stubs: HashMap<WorkflowId, ChildWorkflowStub>,
+    next_stub_id: WorkflowId,
+}
+
+impl ChildWorkflowStubs {
+    fn create(&mut self) -> WorkflowId {
+        let stub_id = self.next_stub_id;
+        self.stubs.insert(stub_id, ChildWorkflowStub::default());
+        self.next_stub_id += 1;
+        stub_id
+    }
+
+    pub fn insert_waker(&mut self, stub_id: WorkflowId, waker: WakerId) {
+        let stub = self.stubs.get_mut(&stub_id).unwrap();
+        stub.wakes_on_init.insert(waker);
+    }
 }
 
 /// State of child workflow as viewed by its parent.
@@ -115,6 +152,31 @@ impl PersistedWorkflowData {
         self.child_workflows.get(&id)
     }
 
+    pub fn notify_on_child_init(
+        &mut self,
+        stub_id: WorkflowId,
+        id: WorkflowId,
+        channels: &ChannelsConfig<ChannelId>,
+        mut channel_ids: ChannelIds,
+    ) {
+        let stub = self.child_workflow_stubs.stubs.get_mut(&stub_id).unwrap();
+        stub.result = Poll::Ready(Ok(id));
+        let wakers = mem::take(&mut stub.wakes_on_init);
+        self.schedule_wakers(wakers, WakeUpCause::InitWorkflow(stub_id));
+
+        mem::swap(&mut channel_ids.inbound, &mut channel_ids.outbound);
+        let mut child_state = ChildWorkflowState::new(&channel_ids);
+        child_state.acquire_non_captured_channels(channels);
+        self.child_workflows.insert(id, child_state);
+    }
+
+    pub fn notify_on_child_spawn_error(&mut self, stub_id: WorkflowId, err: HostError) {
+        let stub = self.child_workflow_stubs.stubs.get_mut(&stub_id).unwrap();
+        stub.result = Poll::Ready(Err(err));
+        let wakers = mem::take(&mut stub.wakes_on_init);
+        self.schedule_wakers(wakers, WakeUpCause::InitWorkflow(stub_id));
+    }
+
     pub fn notify_on_child_completion(&mut self, id: WorkflowId, result: Result<(), JoinError>) {
         let state = self.child_workflows.get_mut(&id).unwrap();
         debug_assert!(state.completion_result.is_pending());
@@ -130,7 +192,9 @@ impl WorkflowData<'_> {
         definition_id: &str,
         channels: &ChannelsConfig<ChannelId>,
     ) -> Result<(), Trap> {
-        if let Some(interface) = self.services.workflows.interface(definition_id) {
+        let workflows = self.services.workflows.as_deref();
+        let interface = workflows.and_then(|workflows| workflows.interface(definition_id));
+        if let Some(interface) = interface {
             for (name, _) in interface.inbound_channels() {
                 if !channels.inbound.contains_key(name) {
                     let message = format!("missing handle for inbound channel `{}`", name);
@@ -192,31 +256,34 @@ impl WorkflowData<'_> {
     }
 
     #[tracing::instrument(skip(args), ret, err, fields(args.len = args.len()))]
-    fn spawn_workflow(
+    fn stash_workflow(
         &mut self,
         definition_id: &str,
         args: Vec<u8>,
         channels: &ChannelsConfig<ChannelId>,
-    ) -> Result<WorkflowId, HostError> {
-        let result = self
+    ) -> Result<WorkflowId, Trap> {
+        let workflows = self
             .services
             .workflows
-            .create_workflow(definition_id, args, channels.clone());
-        let result = result.map(|mut ids| {
-            mem::swap(&mut ids.channel_ids.inbound, &mut ids.channel_ids.outbound);
-            let mut child_state = ChildWorkflowState::new(&ids.channel_ids);
-            child_state.acquire_non_captured_channels(channels);
+            .as_deref_mut()
+            .ok_or_else(|| Trap::new("no capability to spawn workflows"))?;
+        let stub_id = self.persisted.child_workflow_stubs.create();
+        workflows.stash_workflow(stub_id, definition_id, args, channels.clone());
+        Ok(stub_id)
+    }
 
-            self.persisted
-                .child_workflows
-                .insert(ids.workflow_id, child_state);
-            self.current_execution().push_resource_event(
-                ResourceId::Workflow(ids.workflow_id),
-                ResourceEventKind::Created,
-            );
-            ids.workflow_id
-        });
-        result.map_err(|err| HostError::new(err.to_string()))
+    fn poll_workflow_init(
+        &mut self,
+        stub_id: WorkflowId,
+        cx: &mut WasmContext,
+    ) -> Poll<Result<WorkflowId, HostError>> {
+        let stub = &self.persisted.child_workflow_stubs.stubs[&stub_id];
+        let poll_result = stub.result.clone();
+        self.current_execution().push_resource_event(
+            ResourceId::WorkflowStub(stub_id),
+            ResourceEventKind::Polled(utils::drop_value(&poll_result)),
+        );
+        poll_result.wake_if_pending(cx, || WakerPlacement::WorkflowInit(stub_id))
     }
 
     fn poll_workflow_completion(
@@ -241,6 +308,16 @@ impl WorkflowData<'_> {
         } else {
             None
         }
+    }
+
+    pub(super) fn handle_child_stub_drop(&mut self, stub_id: WorkflowId) -> HashSet<WakerId> {
+        self.current_execution().push_resource_event(
+            ResourceId::WorkflowStub(stub_id),
+            ResourceEventKind::Dropped,
+        );
+        let stubs = &mut self.persisted.child_workflow_stubs.stubs;
+        let stub = stubs.get_mut(&stub_id).unwrap();
+        mem::take(&mut stub.wakes_on_init)
     }
 
     /// Handles dropping the child workflow handle from the workflow side. Returns wakers
@@ -286,9 +363,9 @@ impl SpawnFunctions {
         let id = utils::copy_string_from_wasm(&ctx, &memory, id_ptr, id_len)?;
         tracing::Span::current().record("id", &id);
 
-        let workflows = &ctx.data().services.workflows;
+        let workflows = ctx.data().services.workflows.as_deref();
         let interface = workflows
-            .interface(&id)
+            .and_then(|workflows| workflows.interface(&id))
             .map(|interface| interface.to_bytes());
         tracing::Span::current().record("interface.is_some", interface.is_some());
 
@@ -376,7 +453,6 @@ impl SpawnFunctions {
         args_ptr: u32,
         args_len: u32,
         handles: Option<ExternRef>,
-        error_ptr: u32,
     ) -> Result<Option<ExternRef>, Trap> {
         let memory = ctx.data().exports().memory;
         let id = utils::copy_string_from_wasm(&ctx, &memory, id_ptr, id_len)?;
@@ -389,16 +465,33 @@ impl SpawnFunctions {
             .record("handles", field::debug(&handles));
 
         ctx.data().validate_handles(&id, &handles)?;
-        let mut workflow_id = None;
-        let result = ctx
-            .data_mut()
-            .spawn_workflow(&id, args, &handles)
-            .map(|id| {
-                workflow_id = Some(id);
-            });
-        utils::debug_result(&result);
+        let stub_id = ctx.data_mut().stash_workflow(&id, args, &handles)?;
 
-        Self::write_spawn_result(&mut ctx, result, error_ptr)?;
+        Ok(Some(HostResource::WorkflowStub(stub_id).into_ref()))
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, err, fields(stub_id))]
+    pub fn poll_workflow_init(
+        mut ctx: StoreContextMut<'_, WorkflowData>,
+        stub: Option<ExternRef>,
+        poll_cx: WasmContextPtr,
+        error_ptr: u32,
+    ) -> Result<Option<ExternRef>, Trap> {
+        let stub_id = HostResource::from_ref(stub.as_ref())?.as_workflow_stub()?;
+        tracing::Span::current().record("id", &stub_id);
+
+        let mut poll_cx = WasmContext::new(poll_cx);
+        let poll_result = ctx.data_mut().poll_workflow_init(stub_id, &mut poll_cx);
+        tracing::debug!(result = ?poll_result);
+        poll_cx.save_waker(&mut ctx)?;
+
+        let mut workflow_id = None;
+        let result = poll_result.map_ok(|id| {
+            workflow_id = Some(id);
+        });
+        if let Poll::Ready(result) = result {
+            Self::write_spawn_result(&mut ctx, result, error_ptr)?;
+        }
         Ok(workflow_id.map(|id| HostResource::Workflow(id).into_ref()))
     }
 
@@ -409,12 +502,13 @@ impl SpawnFunctions {
         poll_cx: WasmContextPtr,
     ) -> Result<i64, Trap> {
         let workflow_id = HostResource::from_ref(workflow.as_ref())?.as_workflow()?;
+        tracing::Span::current().record("workflow_id", workflow_id);
+
         let mut poll_cx = WasmContext::new(poll_cx);
         let poll_result = ctx
             .data_mut()
             .poll_workflow_completion(workflow_id, &mut poll_cx);
-        tracing::debug!(resul = ?poll_result);
-        tracing::Span::current().record("workflow_id", workflow_id);
+        tracing::debug!(result = ?poll_result);
 
         poll_cx.save_waker(&mut ctx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))

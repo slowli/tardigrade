@@ -176,7 +176,11 @@ impl ExtendLinker for SpawnFunctions {
                 "workflow::copy_sender_handle",
                 wrap4(&mut *store, Self::copy_sender_handle),
             ),
-            ("workflow::spawn", wrap6(&mut *store, Self::spawn)),
+            ("workflow::spawn", wrap5(&mut *store, Self::spawn)),
+            (
+                "workflow::poll_init",
+                wrap3(&mut *store, Self::poll_workflow_init),
+            ),
             (
                 "workflow::poll_completion",
                 wrap2(&mut *store, Self::poll_workflow_completion),
@@ -228,7 +232,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        module::{LowLevelExtendLinker, NoOpWorkflowManager, Services},
+        module::{LowLevelExtendLinker, Services},
         test::MockScheduler,
         workflow::ChannelIds,
     };
@@ -239,7 +243,7 @@ mod tests {
         let interface = Interface::default();
         let services = Services {
             clock: &MockScheduler::default(),
-            workflows: &NoOpWorkflowManager,
+            workflows: None,
             tracer: None,
         };
         let state = WorkflowData::new(&interface, &ChannelIds::default(), services);

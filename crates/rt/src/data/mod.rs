@@ -30,9 +30,14 @@ pub use self::{
     time::TimerState,
 };
 
-use self::{channel::ChannelStates, helpers::CurrentExecution, task::TaskQueue, time::Timers};
+use self::{
+    channel::ChannelStates,
+    helpers::{CurrentExecution, HostResource},
+    spawn::ChildWorkflowStubs,
+    task::TaskQueue,
+    time::Timers,
+};
 use crate::{
-    data::helpers::HostResource,
     module::{ModuleExports, Services},
     receipt::{PanicInfo, WakeUpCause},
     utils::copy_string_from_wasm,
@@ -52,6 +57,7 @@ enum ReportedErrorKind {
 pub(crate) struct PersistedWorkflowData {
     pub timers: Timers,
     pub tasks: HashMap<TaskId, TaskState>,
+    child_workflow_stubs: ChildWorkflowStubs,
     child_workflows: HashMap<WorkflowId, ChildWorkflowState>,
     channels: ChannelStates,
     pub waker_queue: Vec<Wakers>,
@@ -180,6 +186,7 @@ impl WorkflowFunctions {
             HostResource::OutboundChannel(channel_ref) => {
                 ctx.data_mut().handle_outbound_channel_drop(channel_ref)
             }
+            HostResource::WorkflowStub(stub_id) => ctx.data_mut().handle_child_stub_drop(*stub_id),
             HostResource::Workflow(workflow_id) => {
                 ctx.data_mut().handle_child_handle_drop(*workflow_id)
             }

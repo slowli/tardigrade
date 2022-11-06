@@ -429,7 +429,7 @@ impl fmt::Display for SendError {
 impl error::Error for SendError {}
 
 /// Errors generated on the host side and sent to a workflow.
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostError {
     message: String,
 }

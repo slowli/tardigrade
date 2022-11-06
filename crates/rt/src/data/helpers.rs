@@ -35,6 +35,7 @@ pub(super) enum HostResource {
     #[serde(skip)]
     ChannelHandles(SharedChannelHandles),
     Workflow(WorkflowId),
+    WorkflowStub(WorkflowId),
 }
 
 impl HostResource {
@@ -105,6 +106,18 @@ impl HostResource {
             Err(Trap::new(message))
         }
     }
+
+    pub fn as_workflow_stub(&self) -> Result<WorkflowId, Trap> {
+        if let Self::WorkflowStub(id) = self {
+            Ok(*id)
+        } else {
+            let message = format!(
+                "unexpected reference type: expected workflow stub handle, got {:?}",
+                self
+            );
+            Err(Trap::new(message))
+        }
+    }
 }
 
 impl From<SharedChannelHandles> for HostResource {
@@ -122,6 +135,7 @@ pub(super) enum WakerPlacement {
     OutboundChannel(ChannelRef),
     Timer(TimerId),
     TaskCompletion(TaskId),
+    WorkflowInit(WorkflowId),
     WorkflowCompletion(WorkflowId),
 }
 
@@ -439,6 +453,9 @@ impl WorkflowData<'_> {
             }
             WakerPlacement::TaskCompletion(task) => {
                 persisted.tasks.get_mut(task).unwrap().insert_waker(waker);
+            }
+            WakerPlacement::WorkflowInit(stub) => {
+                persisted.child_workflow_stubs.insert_waker(*stub, waker);
             }
             WakerPlacement::WorkflowCompletion(workflow) => {
                 persisted
