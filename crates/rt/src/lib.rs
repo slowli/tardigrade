@@ -134,6 +134,7 @@ mod data;
 pub mod manager;
 mod module;
 pub mod receipt;
+pub mod storage;
 pub mod test;
 mod utils;
 mod workflow;
