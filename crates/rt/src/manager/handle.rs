@@ -3,8 +3,8 @@
 use std::{fmt, marker::PhantomData, ops::Range};
 
 use crate::{
-    manager::{ChannelInfo, WorkflowManager},
-    module::WorkflowAndChannelIds,
+    manager::{WorkflowAndChannelIds, WorkflowManager},
+    storage::{ChannelRecord, Storage},
     utils::Message,
     PersistedWorkflow,
 };
@@ -57,13 +57,15 @@ use tardigrade::{
 /// # Ok(())
 /// # }
 /// ```
-pub struct WorkflowHandle<'a, W> {
-    manager: &'a WorkflowManager,
+pub struct WorkflowHandle<'a, W, S> {
+    manager: &'a WorkflowManager<S>,
     ids: WorkflowAndChannelIds,
+    interface: Interface,
+    persisted: PersistedWorkflow,
     _ty: PhantomData<fn(W)>,
 }
 
-impl<W> fmt::Debug for WorkflowHandle<'_, W> {
+impl<W, S> fmt::Debug for WorkflowHandle<'_, W, S> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("WorkflowEnv")
@@ -73,17 +75,25 @@ impl<W> fmt::Debug for WorkflowHandle<'_, W> {
     }
 }
 
-impl<'a> WorkflowHandle<'a, ()> {
-    pub(crate) fn new(manager: &'a WorkflowManager, ids: WorkflowAndChannelIds) -> Self {
+#[allow(clippy::mismatching_type_param_order)] // false positive
+impl<'a, S: Storage<'a>> WorkflowHandle<'a, (), S> {
+    pub(super) fn new(
+        manager: &'a WorkflowManager<S>,
+        ids: WorkflowAndChannelIds,
+        interface: Interface,
+        persisted: PersistedWorkflow,
+    ) -> Self {
         Self {
             manager,
             ids,
+            interface,
+            persisted,
             _ty: PhantomData,
         }
     }
 
     #[cfg(test)]
-    pub(crate) fn ids(&self) -> &WorkflowAndChannelIds {
+    pub(super) fn ids(&self) -> &WorkflowAndChannelIds {
         &self.ids
     }
 
@@ -93,33 +103,31 @@ impl<'a> WorkflowHandle<'a, ()> {
     ///
     /// Returns an error on workflow interface mismatch.
     #[allow(clippy::missing_panics_doc)] // false positive
-    pub fn downcast<W: GetInterface>(self) -> Result<WorkflowHandle<'a, W>, AccessError> {
-        let interface = self
-            .manager
-            .interface_for_workflow(self.ids.workflow_id)
-            .unwrap();
-        W::interface().check_compatibility(interface)?;
+    pub fn downcast<W: GetInterface>(self) -> Result<WorkflowHandle<'a, W, S>, AccessError> {
+        W::interface().check_compatibility(&self.interface)?;
         Ok(self.downcast_unchecked())
     }
 
-    pub(crate) fn downcast_unchecked<W>(self) -> WorkflowHandle<'a, W> {
+    pub(crate) fn downcast_unchecked<W>(self) -> WorkflowHandle<'a, W, S> {
         WorkflowHandle {
             manager: self.manager,
             ids: self.ids,
+            interface: self.interface,
+            persisted: self.persisted,
             _ty: PhantomData,
         }
     }
 }
 
-impl<W: TakeHandle<Self, Id = ()>> WorkflowHandle<'_, W> {
+impl<'a, W: TakeHandle<Self, Id = ()>, S: Storage<'a>> WorkflowHandle<'a, W, S> {
     /// Returns the ID of this workflow.
     pub fn id(&self) -> WorkflowId {
         self.ids.workflow_id
     }
 
     /// Returns the current persisted state of the workflow.
-    pub fn persisted(&self) -> PersistedWorkflow {
-        self.manager.persisted_workflow(self.ids.workflow_id)
+    pub fn persisted(&self) -> &PersistedWorkflow {
+        &self.persisted
     }
 
     /// Returns a handle for the workflow that allows interacting with its channels.
@@ -132,14 +140,14 @@ impl<W: TakeHandle<Self, Id = ()>> WorkflowHandle<'_, W> {
 /// Handle for an [inbound workflow channel](Receiver) that allows sending messages
 /// via the channel.
 #[derive(Debug)]
-pub struct MessageSender<'a, T, C> {
-    manager: &'a WorkflowManager,
+pub struct MessageSender<'a, T, C, S> {
+    manager: &'a WorkflowManager<S>,
     channel_id: ChannelId,
     pub(super) codec: C,
     _item: PhantomData<fn(T)>,
 }
 
-impl<'a, T, C: Encode<T>> MessageSender<'a, T, C> {
+impl<'a, T, C: Encode<T>, S: Storage<'a>> MessageSender<'a, T, C, S> {
     /// Returns the ID of the channel this sender is connected to.
     pub fn channel_id(&self) -> ChannelId {
         self.channel_id
@@ -147,8 +155,8 @@ impl<'a, T, C: Encode<T>> MessageSender<'a, T, C> {
 
     /// Returns the current state of the channel.
     #[allow(clippy::missing_panics_doc)] // false positive: channels are never removed
-    pub fn channel_info(&self) -> ChannelInfo {
-        self.manager.channel(self.channel_id).unwrap()
+    pub async fn channel_info(&self) -> ChannelRecord {
+        self.manager.channel(self.channel_id).await.unwrap()
     }
 
     /// Sends a message over the channel.
@@ -156,25 +164,31 @@ impl<'a, T, C: Encode<T>> MessageSender<'a, T, C> {
     /// # Errors
     ///
     /// Returns an error if the channel is full or closed.
-    pub fn send(&mut self, message: T) -> Result<(), SendError> {
+    pub async fn send(&mut self, message: T) -> Result<(), SendError> {
         let raw_message = self.codec.encode_value(message);
-        self.manager.send_message(self.channel_id, raw_message)
+        self.manager
+            .send_message(self.channel_id, raw_message)
+            .await
     }
 
     /// Closes this channel from the host side.
-    pub fn close(self) {
-        self.manager.close_host_sender(self.channel_id);
+    pub async fn close(self) {
+        self.manager.close_host_sender(self.channel_id).await;
     }
 }
 
-impl<'a, T, C, W> TakeHandle<WorkflowHandle<'a, W>> for Receiver<T, C>
+impl<'a, T, C, W, S> TakeHandle<WorkflowHandle<'a, W, S>> for Receiver<T, C>
 where
     C: Encode<T> + Default,
+    S: Storage<'a>,
 {
     type Id = str;
-    type Handle = MessageSender<'a, T, C>;
+    type Handle = MessageSender<'a, T, C, S>;
 
-    fn take_handle(env: &mut WorkflowHandle<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
+    fn take_handle(
+        env: &mut WorkflowHandle<'a, W, S>,
+        id: &str,
+    ) -> Result<Self::Handle, AccessError> {
         if let Some(channel_id) = env.ids.channel_ids.inbound.get(id).copied() {
             Ok(MessageSender {
                 manager: env.manager,
@@ -191,15 +205,15 @@ where
 /// Handle for an [outbound workflow channel](Sender) that allows taking messages
 /// from the channel.
 #[derive(Debug)]
-pub struct MessageReceiver<'a, T, C> {
-    manager: &'a WorkflowManager,
+pub struct MessageReceiver<'a, T, C, S> {
+    manager: &'a WorkflowManager<S>,
     channel_id: ChannelId,
     pub(super) can_receive_messages: bool,
     pub(super) codec: C,
     _item: PhantomData<fn() -> T>,
 }
 
-impl<T, C: Decode<T>> MessageReceiver<'_, T, C> {
+impl<'a, T, C: Decode<T>, S: Storage<'a>> MessageReceiver<'a, T, C, S> {
     /// Returns the ID of the channel this receiver is connected to.
     pub fn channel_id(&self) -> ChannelId {
         self.channel_id
@@ -207,8 +221,8 @@ impl<T, C: Decode<T>> MessageReceiver<'_, T, C> {
 
     /// Returns the current state of the channel.
     #[allow(clippy::missing_panics_doc)] // false positive: channels are never removed
-    pub fn channel_info(&self) -> ChannelInfo {
-        self.manager.channel(self.channel_id).unwrap()
+    pub async fn channel_info(&self) -> ChannelRecord {
+        self.manager.channel(self.channel_id).await.unwrap()
     }
 
     /// Checks whether this receiver can be used to receive messages from the channel.
@@ -219,15 +233,14 @@ impl<T, C: Decode<T>> MessageReceiver<'_, T, C> {
 
     /// Takes messages from the channel, or `None` if messages are not received by host
     /// (i.e., [`Self::can_receive_messages()`] returns `false`).
-    pub fn take_messages(&mut self) -> Option<TakenMessages<'_, T, C>> {
+    pub async fn take_messages(&mut self) -> Option<TakenMessages<'_, T, C>> {
         if !self.can_receive_messages {
             return None;
         }
 
-        let (start_idx, raw_messages) = self.manager.take_outbound_messages(self.channel_id);
         Some(TakenMessages {
-            start_idx,
-            raw_messages,
+            start_idx: 0,
+            raw_messages: vec![], // FIXME
             codec: &mut self.codec,
             _item: PhantomData,
         })
@@ -235,9 +248,9 @@ impl<T, C: Decode<T>> MessageReceiver<'_, T, C> {
 
     /// Closes this channel from the host side. If [`Self::can_receive_messages()`] returns `false`,
     /// this is a no-op.
-    pub fn close(self) {
+    pub async fn close(self) {
         if self.can_receive_messages {
-            self.manager.close_host_receiver(self.channel_id);
+            self.manager.close_host_receiver(self.channel_id).await;
         }
     }
 }
@@ -270,20 +283,23 @@ impl<T, C: Decode<T>> TakenMessages<'_, T, C> {
     }
 }
 
-impl<'a, T, C, W> TakeHandle<WorkflowHandle<'a, W>> for Sender<T, C>
+impl<'a, T, C, W, S> TakeHandle<WorkflowHandle<'a, W, S>> for Sender<T, C>
 where
     C: Decode<T> + Default,
+    S: Storage<'a>,
 {
     type Id = str;
-    type Handle = MessageReceiver<'a, T, C>;
+    type Handle = MessageReceiver<'a, T, C, S>;
 
-    fn take_handle(env: &mut WorkflowHandle<'a, W>, id: &str) -> Result<Self::Handle, AccessError> {
+    fn take_handle(
+        env: &mut WorkflowHandle<'a, W, S>,
+        id: &str,
+    ) -> Result<Self::Handle, AccessError> {
         if let Some(channel_id) = env.ids.channel_ids.outbound.get(id).copied() {
-            let channel_info = env.manager.channel(channel_id).unwrap();
             Ok(MessageReceiver {
                 manager: env.manager,
                 channel_id,
-                can_receive_messages: channel_info.receiver_workflow_id().is_none(),
+                can_receive_messages: true, // FIXME
                 codec: C::default(),
                 _item: PhantomData,
             })
@@ -293,30 +309,24 @@ where
     }
 }
 
-impl<'a> TakeHandle<WorkflowHandle<'a, ()>> for Interface {
+impl<'a, S: Storage<'a>> TakeHandle<WorkflowHandle<'a, (), S>> for Interface {
     type Id = ();
     type Handle = Self;
 
     fn take_handle(
-        env: &mut WorkflowHandle<'a, ()>,
+        env: &mut WorkflowHandle<'a, (), S>,
         _id: &Self::Id,
     ) -> Result<Self::Handle, AccessError> {
-        Ok(env
-            .manager
-            .interface_for_workflow(env.ids.workflow_id)
-            .cloned()
-            .unwrap())
-        // ^ `unwrap()` is safe by construction: we only hand over `WorkflowEnv` for
-        // existing workflows.
+        Ok(env.interface.clone())
     }
 }
 
-impl<'a> TakeHandle<WorkflowHandle<'a, ()>> for () {
+impl<'a, S: Storage<'a>> TakeHandle<WorkflowHandle<'a, (), S>> for () {
     type Id = ();
-    type Handle = UntypedHandle<WorkflowHandle<'a, ()>>;
+    type Handle = UntypedHandle<WorkflowHandle<'a, (), S>>;
 
     fn take_handle(
-        env: &mut WorkflowHandle<'a, ()>,
+        env: &mut WorkflowHandle<'a, (), S>,
         _id: &Self::Id,
     ) -> Result<Self::Handle, AccessError> {
         UntypedHandle::take_handle(env, &())

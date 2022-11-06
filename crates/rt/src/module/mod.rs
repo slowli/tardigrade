@@ -407,15 +407,4 @@ impl<W> WorkflowSpawner<W> {
     pub fn workflow_name(&self) -> &str {
         &self.workflow_name
     }
-
-    pub(crate) fn erase(self) -> WorkflowSpawner<()> {
-        WorkflowSpawner {
-            module: self.module,
-            interface: self.interface,
-            workflow_name: self.workflow_name,
-            linker_extensions: self.linker_extensions,
-            data_section: self.data_section,
-            _ty: PhantomData,
-        }
-    }
 }

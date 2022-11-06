@@ -17,6 +17,7 @@ use std::{
 use crate::{
     manager::{TickResult, WorkflowManager},
     receipt::ExecutionError,
+    storage::Storage,
 };
 use tardigrade::{ChannelId, Decode, Encode};
 
@@ -196,31 +197,25 @@ impl AsyncEnv {
     /// [`Self::drop_erroneous_messages()`] flag being set.
     ///
     /// [`select`]: futures::select
-    pub async fn run(
+    pub async fn run<'a, S: Storage<'a>>(
         &mut self,
-        manager: &mut WorkflowManager,
+        manager: &'a mut WorkflowManager<S>,
     ) -> Result<Termination, ExecutionError> {
         loop {
             if let Some(termination) = self.tick(manager).await? {
-                self.flush_outbound_messages(manager);
+                self.flush_outbound_messages(manager).await;
                 return Ok(termination);
             }
         }
     }
 
-    async fn tick(
+    async fn tick<'a, S: Storage<'a>>(
         &mut self,
-        manager: &mut WorkflowManager,
+        manager: &'a WorkflowManager<S>,
     ) -> Result<Option<Termination>, ExecutionError> {
-        if manager.is_empty() {
-            return Ok(Some(Termination::Finished));
-        }
-
-        let nearest_timer_expiration = self.tick_manager(manager)?;
-        self.gc(manager);
-        if manager.is_empty() {
-            return Ok(Some(Termination::Finished));
-        } else if nearest_timer_expiration.is_none() && self.inbound_channels.is_empty() {
+        let nearest_timer_expiration = self.tick_manager(manager).await?;
+        //self.gc(manager); FIXME
+        if nearest_timer_expiration.is_none() && self.inbound_channels.is_empty() {
             return Ok(Some(Termination::Stalled));
         }
 
@@ -242,33 +237,33 @@ impl AsyncEnv {
         match output {
             ListenedEventOutput::Channel { id, message } => {
                 if let Some(message) = message {
-                    manager.send_message(id, message).unwrap();
+                    manager.send_message(id, message).await.unwrap();
                 } else {
-                    manager.close_host_sender(id);
+                    manager.close_host_sender(id).await;
                 }
             }
 
             ListenedEventOutput::Timer(timestamp) => {
-                manager.set_current_time(timestamp);
+                manager.set_current_time(timestamp).await;
             }
         };
 
         Ok(None)
     }
 
-    fn tick_manager(
+    async fn tick_manager<'a, S: Storage<'a>>(
         &mut self,
-        manager: &mut WorkflowManager,
+        manager: &'a WorkflowManager<S>,
     ) -> Result<Option<DateTime<Utc>>, ExecutionError> {
         loop {
-            let tick_result = match manager.tick() {
+            let tick_result = match manager.tick().await {
                 Ok(result) => result,
                 Err(blocked) => break Ok(blocked.nearest_timer_expiration()),
             };
 
             let (tick_result, recovered_from_error) =
                 if self.drop_erroneous_messages && tick_result.can_drop_erroneous_message() {
-                    (tick_result.drop_erroneous_message(), true)
+                    (tick_result.drop_erroneous_message().await, true)
                 } else {
                     (tick_result.drop_extra(), false)
                 };
@@ -279,26 +274,19 @@ impl AsyncEnv {
                 sx.unbounded_send(tick_result).ok();
             }
 
-            self.flush_outbound_messages(manager);
+            self.flush_outbound_messages(manager).await;
         }
     }
 
     /// Flushes messages to the outbound channels until no messages are left.
-    fn flush_outbound_messages(&self, manager: &WorkflowManager) {
+    async fn flush_outbound_messages<'a, S: Storage<'a>>(&self, manager: &'a WorkflowManager<S>) {
         for (&id, sx) in &self.outbound_channels {
-            let (_, messages) = manager.take_outbound_messages(id);
+            let messages = manager.take_outbound_messages(id).await;
             for message in messages {
-                sx.unbounded_send(message.into()).ok();
+                sx.unbounded_send(message).ok();
                 // ^ We don't care if outbound messages are no longer listened to.
             }
         }
-    }
-
-    /// Garbage-collect receivers for closed inbound channels. This will signal
-    /// to the consumers that the channel cannot be written to.
-    fn gc(&mut self, manager: &WorkflowManager) {
-        self.inbound_channels
-            .retain(|&id, _| !manager.channel(id).unwrap().is_closed());
     }
 }
 
@@ -327,7 +315,7 @@ impl<T, C: Clone> Clone for MessageSender<T, C> {
     }
 }
 
-impl<T, C: Encode<T>> super::MessageSender<'_, T, C> {
+impl<'a, T, C: Encode<T>, S: Storage<'a>> super::MessageSender<'a, T, C, S> {
     /// Registers this sender in `env`, allowing to later asynchronously send messages.
     pub fn into_async(self, env: &mut AsyncEnv) -> MessageSender<T, C> {
         let (sx, rx) = mpsc::channel(1);
@@ -378,7 +366,7 @@ pin_project! {
     }
 }
 
-impl<T, C: Decode<T>> super::MessageReceiver<'_, T, C> {
+impl<'a, T, C: Decode<T>, S: Storage<'a>> super::MessageReceiver<'a, T, C, S> {
     /// Registers this receiver in `env`, allowing to later asynchronously receive messages.
     pub fn into_async(self, env: &mut AsyncEnv) -> MessageReceiver<T, C> {
         let (sx, rx) = mpsc::unbounded();

@@ -136,10 +136,6 @@ impl PersistedWorkflowData {
         }
     }
 
-    pub fn check_on_restore(&self, interface: &Interface) -> anyhow::Result<()> {
-        self.channels.check_on_restore(interface)
-    }
-
     pub fn restore<'a>(
         self,
         interface: &Interface,

@@ -135,10 +135,6 @@ impl InboundChannelState {
         self.channel_id
     }
 
-    pub(crate) fn waits_for_message(&self) -> bool {
-        !self.is_closed && !self.wakes_on_next_element.is_empty()
-    }
-
     fn acquire(&mut self) -> Result<(), AlreadyAcquired> {
         if mem::replace(&mut self.is_acquired, true) {
             Err(AlreadyAcquired)

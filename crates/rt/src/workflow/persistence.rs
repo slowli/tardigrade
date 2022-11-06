@@ -18,7 +18,11 @@ use crate::{
     utils::Message,
     workflow::{ChannelIds, Workflow},
 };
-use tardigrade::{task::JoinError, ChannelId, TaskId, TimerId, WorkflowId};
+use tardigrade::{
+    spawn::{ChannelsConfig, HostError},
+    task::JoinError,
+    ChannelId, TaskId, TimerId, WorkflowId,
+};
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -249,6 +253,23 @@ impl PersistedWorkflow {
         self.state.notify_on_child_completion(id, result);
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub(crate) fn notify_on_child_init(
+        &mut self,
+        stub_id: WorkflowId,
+        id: WorkflowId,
+        channels: &ChannelsConfig<ChannelId>,
+        channel_ids: ChannelIds,
+    ) {
+        self.state
+            .notify_on_child_init(stub_id, id, channels, channel_ids);
+    }
+
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub(crate) fn notify_on_child_spawn_error(&mut self, stub_id: WorkflowId, err: HostError) {
+        self.state.notify_on_child_spawn_error(stub_id, err);
+    }
+
     /// Checks whether the workflow is initialized.
     pub fn is_initialized(&self) -> bool {
         self.args.is_none()
@@ -291,10 +312,6 @@ impl PersistedWorkflow {
 
     pub(crate) fn channel_ids(&self) -> ChannelIds {
         self.state.channel_ids()
-    }
-
-    pub(crate) fn check_on_restore(&self, spawner: &WorkflowSpawner<()>) -> anyhow::Result<()> {
-        self.state.check_on_restore(spawner.interface())
     }
 
     /// Restores a workflow from the persisted state and the `spawner` defining the workflow.

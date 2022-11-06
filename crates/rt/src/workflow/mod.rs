@@ -1,10 +1,10 @@
 //! `Workflow` and tightly related types.
 
 use anyhow::Context;
+use tracing_tunnel::PersistedMetadata;
 use wasmtime::{AsContextMut, Linker, Store, Trap};
 
 use std::{collections::HashMap, mem, sync::Arc};
-use tracing_tunnel::PersistedMetadata;
 
 mod persistence;
 
@@ -19,11 +19,7 @@ use crate::{
     },
     utils::Message,
 };
-use tardigrade::{
-    spawn::{ChannelSpawnConfig, ChannelsConfig},
-    task::TaskResult,
-    ChannelId, TaskId, WorkflowId,
-};
+use tardigrade::{task::TaskResult, ChannelId, TaskId, WorkflowId};
 
 #[derive(Debug, Default)]
 struct ExecutionOutput {
@@ -35,33 +31,6 @@ struct ExecutionOutput {
 pub(crate) struct ChannelIds {
     pub inbound: HashMap<String, ChannelId>,
     pub outbound: HashMap<String, ChannelId>,
-}
-
-impl ChannelIds {
-    pub fn new(
-        channels: ChannelsConfig<ChannelId>,
-        mut new_channel: impl FnMut() -> ChannelId,
-    ) -> Self {
-        Self {
-            inbound: Self::map_channels(channels.inbound, &mut new_channel),
-            outbound: Self::map_channels(channels.outbound, new_channel),
-        }
-    }
-
-    fn map_channels(
-        config: HashMap<String, ChannelSpawnConfig<ChannelId>>,
-        mut new_channel: impl FnMut() -> ChannelId,
-    ) -> HashMap<String, ChannelId> {
-        let channel_ids = config.into_iter().map(|(name, config)| {
-            let channel_id = match config {
-                ChannelSpawnConfig::New => new_channel(),
-                ChannelSpawnConfig::Closed => 0,
-                ChannelSpawnConfig::Existing(id) => id,
-            };
-            (name, channel_id)
-        });
-        channel_ids.collect()
-    }
 }
 
 impl WorkflowSpawner<()> {
