@@ -1,5 +1,6 @@
 //! WASM bindings for spawning child workflows.
 
+use async_trait::async_trait;
 use externref::{externref, Resource};
 
 use std::{
@@ -47,11 +48,13 @@ impl ManageInterfaces for Workflows {
     }
 }
 
-impl ManageWorkflows<'_, ()> for Workflows {
+#[async_trait]
+impl ManageWorkflows<()> for Workflows {
     type Handle = super::RemoteWorkflow;
     type Error = HostError;
 
-    fn create_workflow(
+    // FIXME: use future here
+    async fn create_workflow(
         &self,
         definition_id: &str,
         args: Vec<u8>,

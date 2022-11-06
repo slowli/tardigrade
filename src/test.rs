@@ -476,11 +476,8 @@ impl Runtime {
 
         self.workflow_registry.insert::<W, _>(DEFINITION_ID);
         self.run(async {
-            let workflow = Workflows
-                .new_workflow::<W>(DEFINITION_ID, args)
-                .unwrap()
-                .build()
-                .expect("failed spawning workflow");
+            let builder = Workflows.new_workflow::<W>(DEFINITION_ID, args).unwrap();
+            let workflow = builder.build().await.expect("failed spawning workflow");
             task::yield_now().await; // allow the workflow to initialize
             test_fn(workflow.api).await;
         });

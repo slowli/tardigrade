@@ -1,5 +1,6 @@
 //! Mock implementations for spawning child workflows.
 
+use async_trait::async_trait;
 use pin_project_lite::pin_project;
 
 use std::{
@@ -35,12 +36,13 @@ impl ManageInterfaces for Workflows {
     }
 }
 
-impl ManageWorkflows<'_, ()> for Workflows {
+#[async_trait]
+impl<'a> ManageWorkflows<'a, ()> for Workflows {
     type Handle = super::RemoteWorkflow;
     type Error = HostError;
 
-    fn create_workflow(
-        &self,
+    async fn create_workflow(
+        &'a self,
         definition_id: &str,
         args: Vec<u8>,
         channels: ChannelsConfig<RawReceiver, RawSender>,
