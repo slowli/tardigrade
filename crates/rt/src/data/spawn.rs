@@ -156,26 +156,26 @@ impl PersistedWorkflowData {
     pub fn notify_on_child_init(
         &mut self,
         stub_id: WorkflowId,
-        id: WorkflowId,
+        workflow_id: WorkflowId,
         channels: &ChannelsConfig<ChannelId>,
         mut channel_ids: ChannelIds,
     ) {
         let stub = self.child_workflow_stubs.stubs.get_mut(&stub_id).unwrap();
-        stub.result = Poll::Ready(Ok(id));
+        stub.result = Poll::Ready(Ok(workflow_id));
         let wakers = mem::take(&mut stub.wakes_on_init);
-        self.schedule_wakers(wakers, WakeUpCause::InitWorkflow(stub_id));
+        self.schedule_wakers(wakers, WakeUpCause::InitWorkflow { stub_id });
 
         mem::swap(&mut channel_ids.inbound, &mut channel_ids.outbound);
         let mut child_state = ChildWorkflowState::new(&channel_ids);
         child_state.acquire_non_captured_channels(channels);
-        self.child_workflows.insert(id, child_state);
+        self.child_workflows.insert(workflow_id, child_state);
     }
 
     pub fn notify_on_child_spawn_error(&mut self, stub_id: WorkflowId, err: HostError) {
         let stub = self.child_workflow_stubs.stubs.get_mut(&stub_id).unwrap();
         stub.result = Poll::Ready(Err(err));
         let wakers = mem::take(&mut stub.wakes_on_init);
-        self.schedule_wakers(wakers, WakeUpCause::InitWorkflow(stub_id));
+        self.schedule_wakers(wakers, WakeUpCause::InitWorkflow { stub_id });
     }
 
     pub fn notify_on_child_completion(&mut self, id: WorkflowId, result: Result<(), JoinError>) {
