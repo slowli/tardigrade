@@ -53,10 +53,12 @@ impl<'a, T: WriteChannels + WriteWorkflows> PersistenceManager<'a, T> {
         workflow: PersistedWorkflow,
         tracing_spans: PersistedSpans,
     ) {
-        self.handle_workflow_update(id, parent_id, &workflow).await;
-        self.inner
-            .persist_workflow(id, workflow, tracing_spans)
-            .await;
+        let needs_persistence = self.handle_workflow_update(id, parent_id, &workflow).await;
+        if needs_persistence {
+            self.inner
+                .persist_workflow(id, workflow, tracing_spans)
+                .await;
+        }
     }
 
     /// Returns `true` if the workflow needs to be persisted (i.e., it's not completed).

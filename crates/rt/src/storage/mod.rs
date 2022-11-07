@@ -188,12 +188,11 @@ pub trait WriteWorkflows: ReadWorkflows {
     );
 
     /// Manipulates the persisted part of a workflow without restoring it.
-    // FIXME: make workflow optional
     async fn manipulate_workflow<F: FnOnce(&mut PersistedWorkflow) + Send>(
         &mut self,
         id: WorkflowId,
         action: F,
-    ) -> WorkflowRecord;
+    ) -> Option<WorkflowRecord>;
 
     async fn manipulate_all_workflows<F: FnMut(&mut PersistedWorkflow) + Send>(
         &mut self,

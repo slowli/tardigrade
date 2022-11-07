@@ -637,9 +637,11 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
                 persisted.abort();
             })
             .await;
-        PersistenceManager::new(&mut transaction)
-            .handle_workflow_update(workflow_id, record.parent_id, &record.persisted)
-            .await;
+        if let Some(record) = record {
+            PersistenceManager::new(&mut transaction)
+                .handle_workflow_update(workflow_id, record.parent_id, &record.persisted)
+                .await;
+        }
         transaction.commit().await;
     }
 

@@ -367,10 +367,10 @@ impl WriteWorkflows for LocalTransaction<'_> {
         &mut self,
         id: WorkflowId,
         action: F,
-    ) -> WorkflowRecord {
-        let record = self.inner.workflows.get_mut(&id).unwrap();
+    ) -> Option<WorkflowRecord> {
+        let record = self.inner.workflows.get_mut(&id)?;
         action(&mut record.persisted);
-        record.clone()
+        Some(record.clone())
     }
 
     async fn manipulate_all_workflows<F: FnMut(&mut PersistedWorkflow) + Send>(
