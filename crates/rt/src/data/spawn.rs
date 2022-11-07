@@ -103,6 +103,7 @@ impl ChildWorkflowState {
         }
     }
 
+    /// This is needed to prevent the workflow from capturing non-captured channel handles.
     fn acquire_non_captured_channels(&mut self, channels: &ChannelsConfig<ChannelId>) {
         for (name, config) in &channels.inbound {
             if matches!(config, ChannelSpawnConfig::Existing(_)) {

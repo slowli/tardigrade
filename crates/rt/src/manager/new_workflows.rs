@@ -1,5 +1,6 @@
 //! Transactions for `WorkflowManager`.
 
+use futures::{stream, Stream, StreamExt};
 use tracing_tunnel::PersistedSpans;
 
 use std::{borrow::Cow, collections::HashMap, mem};
@@ -31,24 +32,25 @@ impl ChannelState {
 }
 
 impl ChannelIds {
-    async fn new<T: WriteChannels>(
+    pub(crate) async fn new(
         channels: ChannelsConfig<ChannelId>,
-        persistence: &mut T,
+        new_channel_ids: impl Stream<Item = ChannelId>,
     ) -> Self {
+        futures::pin_mut!(new_channel_ids);
         Self {
-            inbound: Self::map_channels(channels.inbound, persistence).await,
-            outbound: Self::map_channels(channels.outbound, persistence).await,
+            inbound: Self::map_channels(channels.inbound, &mut new_channel_ids).await,
+            outbound: Self::map_channels(channels.outbound, &mut new_channel_ids).await,
         }
     }
 
-    async fn map_channels<T: WriteChannels>(
+    async fn map_channels(
         config: HashMap<String, ChannelSpawnConfig<ChannelId>>,
-        persistence: &mut T,
+        mut new_channel_ids: impl Stream<Item = ChannelId> + Unpin,
     ) -> HashMap<String, ChannelId> {
         let mut channel_ids = HashMap::with_capacity(config.len());
         for (name, spec) in config {
             let channel_id = match spec {
-                ChannelSpawnConfig::New => persistence.allocate_channel_id().await,
+                ChannelSpawnConfig::New => new_channel_ids.next().await.unwrap(),
                 ChannelSpawnConfig::Closed => 0,
                 ChannelSpawnConfig::Existing(id) => id,
             };
@@ -78,7 +80,11 @@ impl WorkflowStub {
             workflows: None,
             tracer: None,
         };
-        let channel_ids = ChannelIds::new(self.channels.clone(), persistence).await;
+        let new_channel_ids = stream::unfold(persistence, |persistence| async {
+            let id = persistence.allocate_channel_id().await;
+            Some((id, persistence))
+        });
+        let channel_ids = ChannelIds::new(self.channels.clone(), new_channel_ids).await;
         let args = mem::take(&mut self.args);
         let workflow = spawner.spawn(args, &channel_ids, services)?;
         let persisted = workflow.persist();
