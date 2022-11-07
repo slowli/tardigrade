@@ -1,12 +1,13 @@
 //! Handles for workflows in a [`WorkflowManager`] and their components (e.g., channels).
 
-use std::{fmt, marker::PhantomData, ops::Range};
+use futures::future;
 
-use crate::storage::ReadWorkflows;
+use std::{collections::HashSet, fmt, marker::PhantomData};
+
 use crate::{
     manager::{WorkflowAndChannelIds, WorkflowManager},
-    storage::{ChannelRecord, Storage},
-    utils::Message,
+    storage::{ChannelRecord, ReadChannels, ReadWorkflows, Storage, WorkflowRecord},
+    workflow::ChannelIds,
     PersistedWorkflow,
 };
 use tardigrade::{
@@ -69,7 +70,8 @@ pub enum HandleUpdateError {
 pub struct WorkflowHandle<'a, W, S> {
     manager: &'a WorkflowManager<S>,
     ids: WorkflowAndChannelIds,
-    interface: Interface,
+    valid_receiver_ids: HashSet<ChannelId>,
+    interface: &'a Interface,
     persisted: PersistedWorkflow,
     _ty: PhantomData<fn(W)>,
 }
@@ -86,19 +88,39 @@ impl<W, S> fmt::Debug for WorkflowHandle<'_, W, S> {
 
 #[allow(clippy::mismatching_type_param_order)] // false positive
 impl<'a, S: Storage<'a>> WorkflowHandle<'a, (), S> {
-    pub(super) fn new(
+    pub(super) async fn new(
         manager: &'a WorkflowManager<S>,
-        ids: WorkflowAndChannelIds,
-        interface: Interface,
-        persisted: PersistedWorkflow,
-    ) -> Self {
+        transaction: &S::ReadonlyTransaction,
+        interface: &'a Interface,
+        record: WorkflowRecord,
+    ) -> WorkflowHandle<'a, (), S> {
+        let ids = WorkflowAndChannelIds {
+            workflow_id: record.id,
+            channel_ids: record.persisted.channel_ids(),
+        };
+        let valid_receiver_ids = Self::find_valid_receiver_ids(transaction, &ids.channel_ids).await;
+
         Self {
             manager,
             ids,
+            valid_receiver_ids,
             interface,
-            persisted,
+            persisted: record.persisted,
             _ty: PhantomData,
         }
+    }
+
+    async fn find_valid_receiver_ids(
+        transaction: &S::ReadonlyTransaction,
+        channel_ids: &ChannelIds,
+    ) -> HashSet<ChannelId> {
+        let outbound_channel_ids = channel_ids.outbound.values();
+        let channel_tasks = outbound_channel_ids.map(|&id| async move {
+            let channel = transaction.channel(id).await.unwrap();
+            Some(id).filter(|_| channel.state.receiver_workflow_id.is_none())
+        });
+        let receivable_channels = future::join_all(channel_tasks).await;
+        receivable_channels.into_iter().flatten().collect()
     }
 
     #[cfg(test)]
@@ -113,7 +135,7 @@ impl<'a, S: Storage<'a>> WorkflowHandle<'a, (), S> {
     /// Returns an error on workflow interface mismatch.
     #[allow(clippy::missing_panics_doc)] // false positive
     pub fn downcast<W: GetInterface>(self) -> Result<WorkflowHandle<'a, W, S>, AccessError> {
-        W::interface().check_compatibility(&self.interface)?;
+        W::interface().check_compatibility(self.interface)?;
         Ok(self.downcast_unchecked())
     }
 
@@ -121,6 +143,7 @@ impl<'a, S: Storage<'a>> WorkflowHandle<'a, (), S> {
         WorkflowHandle {
             manager: self.manager,
             ids: self.ids,
+            valid_receiver_ids: self.valid_receiver_ids,
             interface: self.interface,
             persisted: self.persisted,
             _ty: PhantomData,
@@ -261,8 +284,7 @@ impl<'a, T, C: Decode<T>, S: Storage<'a>> MessageReceiver<'a, T, C, S> {
         }
 
         Some(TakenMessages {
-            start_idx: 0,
-            raw_messages: vec![], // FIXME
+            raw_messages: self.manager.take_outbound_messages(self.channel_id).await,
             codec: &mut self.codec,
             _item: PhantomData,
         })
@@ -280,18 +302,12 @@ impl<'a, T, C: Decode<T>, S: Storage<'a>> MessageReceiver<'a, T, C, S> {
 /// Result of taking messages from an outbound workflow channel.
 #[derive(Debug)]
 pub struct TakenMessages<'a, T, C> {
-    start_idx: usize,
-    raw_messages: Vec<Message>,
+    raw_messages: Vec<Vec<u8>>,
     codec: &'a mut C,
     _item: PhantomData<fn() -> T>,
 }
 
 impl<T, C: Decode<T>> TakenMessages<'_, T, C> {
-    /// Returns zero-based indices of the taken messages.
-    pub fn message_indices(&self) -> Range<usize> {
-        self.start_idx..(self.start_idx + self.raw_messages.len())
-    }
-
     /// Tries to decode the taken messages.
     ///
     /// # Errors
@@ -300,7 +316,7 @@ impl<T, C: Decode<T>> TakenMessages<'_, T, C> {
     pub fn decode(self) -> Result<Vec<T>, C::Error> {
         self.raw_messages
             .into_iter()
-            .map(|bytes| self.codec.try_decode_bytes(bytes.into()))
+            .map(|bytes| self.codec.try_decode_bytes(bytes))
             .collect()
     }
 }
@@ -321,7 +337,7 @@ where
             Ok(MessageReceiver {
                 manager: env.manager,
                 channel_id,
-                can_receive_messages: true, // FIXME
+                can_receive_messages: env.valid_receiver_ids.contains(&channel_id),
                 codec: C::default(),
                 _item: PhantomData,
             })

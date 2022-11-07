@@ -375,16 +375,12 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
     pub async fn workflow(&'a self, workflow_id: WorkflowId) -> Option<WorkflowHandle<'a, (), S>> {
         let transaction = self.storage.readonly_transaction().await;
         let record = transaction.workflow(workflow_id).await?;
-        let ids = WorkflowAndChannelIds {
-            workflow_id,
-            channel_ids: record.persisted.channel_ids(),
-        };
         let interface = self
             .spawners
             .get(&record.module_id, &record.name_in_module)
-            .interface()
-            .clone();
-        Some(WorkflowHandle::new(self, ids, interface, record.persisted))
+            .interface();
+        let handle = WorkflowHandle::new(self, &transaction, interface, record).await;
+        Some(handle)
     }
 
     pub(crate) async fn send_message(
