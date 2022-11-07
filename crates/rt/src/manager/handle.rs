@@ -2,6 +2,7 @@
 
 use std::{fmt, marker::PhantomData, ops::Range};
 
+use crate::storage::ReadWorkflows;
 use crate::{
     manager::{WorkflowAndChannelIds, WorkflowManager},
     storage::{ChannelRecord, Storage},
@@ -14,6 +15,14 @@ use tardigrade::{
     workflow::{GetInterface, TakeHandle, UntypedHandle},
     ChannelId, Decode, Encode, WorkflowId,
 };
+
+/// Error updating a [`WorkflowHandle`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum HandleUpdateError {
+    /// The workflow that the handle is associated with was terminated.
+    Terminated,
+}
 
 /// Handle to a workflow in a [`WorkflowManager`].
 ///
@@ -128,6 +137,19 @@ impl<'a, W: TakeHandle<Self, Id = ()>, S: Storage<'a>> WorkflowHandle<'a, W, S> 
     /// Returns the current persisted state of the workflow.
     pub fn persisted(&self) -> &PersistedWorkflow {
         &self.persisted
+    }
+
+    /// Updates the snapshot contained in this handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the workflow was terminated.
+    pub async fn update(&mut self) -> Result<(), HandleUpdateError> {
+        let transaction = self.manager.storage.readonly_transaction().await;
+        let record = transaction.workflow(self.ids.workflow_id).await;
+        let record = record.ok_or(HandleUpdateError::Terminated)?;
+        self.persisted = record.persisted;
+        Ok(())
     }
 
     /// Returns a handle for the workflow that allows interacting with its channels.

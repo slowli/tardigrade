@@ -5,7 +5,7 @@ use tracing_tunnel::PersistedSpans;
 
 use std::{borrow::Cow, collections::HashMap, mem};
 
-use super::{Shared, WorkflowAndChannelIds};
+use super::{Shared, WorkflowAndChannelIds, WorkflowSpawners};
 use crate::{
     module::{Services, StashWorkflows},
     storage::{ChannelState, WorkflowRecord, WriteChannels, WriteWorkflows},
@@ -71,12 +71,12 @@ impl WorkflowStub {
     // **NB.** Should be called only once per instance because `args` are taken out.
     async fn spawn<T: WriteChannels>(
         &mut self,
-        shared: &Shared,
+        shared: Shared<'_>,
         persistence: &mut T,
     ) -> anyhow::Result<(PersistedWorkflow, ChannelIds)> {
-        let spawner = &shared.spawners[&self.definition_id];
+        let spawner = shared.spawners.for_full_id(&self.definition_id).unwrap();
         let services = Services {
-            clock: shared.clock.as_ref(),
+            clock: shared.clock,
             workflows: None,
             tracer: None,
         };
@@ -93,14 +93,14 @@ impl WorkflowStub {
 }
 
 #[derive(Debug)]
-pub(super) struct NewWorkflows {
+pub(super) struct NewWorkflows<'a> {
     executing_workflow_id: Option<WorkflowId>,
-    shared: Shared,
+    shared: Shared<'a>,
     new_workflows: HashMap<WorkflowId, WorkflowStub>,
 }
 
-impl NewWorkflows {
-    pub fn new(executing_workflow_id: Option<WorkflowId>, shared: Shared) -> Self {
+impl<'a> NewWorkflows<'a> {
+    pub fn new(executing_workflow_id: Option<WorkflowId>, shared: Shared<'a>) -> Self {
         Self {
             executing_workflow_id,
             shared,
@@ -118,7 +118,7 @@ impl NewWorkflows {
         for (stub_id, mut child_stub) in self.new_workflows {
             let result = Self::commit_child(
                 executed_workflow_id,
-                &self.shared,
+                self.shared,
                 persistence,
                 &mut child_stub,
             );
@@ -146,13 +146,13 @@ impl NewWorkflows {
         debug_assert!(self.executing_workflow_id.is_none());
         debug_assert_eq!(self.new_workflows.len(), 1);
         let (_, mut child_stub) = self.new_workflows.into_iter().next().unwrap();
-        let child = Self::commit_child(None, &self.shared, persistence, &mut child_stub);
+        let child = Self::commit_child(None, self.shared, persistence, &mut child_stub);
         Ok(child.await?.workflow_id)
     }
 
     async fn commit_child<T: WriteChannels + WriteWorkflows>(
         executed_workflow_id: Option<WorkflowId>,
-        shared: &Shared,
+        shared: Shared<'_>,
         persistence: &mut T,
         child_stub: &mut WorkflowStub,
     ) -> anyhow::Result<WorkflowAndChannelIds> {
@@ -184,15 +184,17 @@ impl NewWorkflows {
             tracing::debug!(name, channel_id, ?state, "prepared outbound channel");
         }
 
+        let (module_id, name_in_module) =
+            WorkflowSpawners::split_full_id(&child_stub.definition_id).unwrap();
         let child_workflow = WorkflowRecord {
             id: child_id,
             parent_id: executed_workflow_id,
-            module_id: mem::take(&mut child_stub.definition_id),
-            name_in_module: String::new(), // FIXME
+            module_id: module_id.to_owned(),
+            name_in_module: name_in_module.to_owned(),
             persisted,
             tracing_spans: PersistedSpans::default(),
         };
-        persistence.create_workflow(child_workflow).await;
+        persistence.insert_workflow(child_workflow).await;
 
         Ok(WorkflowAndChannelIds {
             workflow_id: child_id,
@@ -201,13 +203,15 @@ impl NewWorkflows {
     }
 }
 
-impl ManageInterfaces for NewWorkflows {
+impl ManageInterfaces for NewWorkflows<'_> {
     fn interface(&self, id: &str) -> Option<Cow<'_, Interface>> {
-        Some(Cow::Borrowed(self.shared.spawners.get(id)?.interface()))
+        Some(Cow::Borrowed(
+            self.shared.spawners.for_full_id(id)?.interface(),
+        ))
     }
 }
 
-impl StashWorkflows for NewWorkflows {
+impl StashWorkflows for NewWorkflows<'_> {
     #[tracing::instrument(skip(self, args), fields(args.len = args.len()))]
     fn stash_workflow(
         &mut self,
@@ -217,7 +221,7 @@ impl StashWorkflows for NewWorkflows {
         channels: ChannelsConfig<ChannelId>,
     ) {
         debug_assert!(
-            self.shared.spawners.get(id).is_some(),
+            self.shared.spawners.for_full_id(id).is_some(),
             "workflow with ID `{id}` is not defined"
         );
 

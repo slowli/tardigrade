@@ -141,12 +141,13 @@ impl DataSection {
 
 /// Workflow module that combines a WASM module with the workflow logic and the declared
 /// workflow [`Interface`].
-pub struct WorkflowModule {
+pub struct WorkflowModule<'a> {
     pub(crate) inner: Module,
+    pub(crate) bytes: &'a [u8],
     interfaces: HashMap<String, Interface>,
 }
 
-impl fmt::Debug for WorkflowModule {
+impl fmt::Debug for WorkflowModule<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("WorkflowModule")
@@ -155,7 +156,7 @@ impl fmt::Debug for WorkflowModule {
     }
 }
 
-impl WorkflowModule {
+impl<'a> WorkflowModule<'a> {
     #[cfg_attr(test, mimicry::mock(using = "ExportsMock"))]
     fn interfaces_from_wasm(module_bytes: &[u8]) -> anyhow::Result<HashMap<String, Interface>> {
         const INTERFACE_SECTION: &str = "__tardigrade_spec";
@@ -271,7 +272,7 @@ impl WorkflowModule {
     ///   or a known function with an incorrect signature.
     /// - The module does not have necessary exports.
     /// - The module does not have a custom section with the workflow interface definition(s).
-    pub fn new(engine: &WorkflowEngine, module_bytes: &[u8]) -> anyhow::Result<Self> {
+    pub fn new(engine: &WorkflowEngine, module_bytes: &'a [u8]) -> anyhow::Result<Self> {
         let module =
             Module::from_binary(&engine.inner, module_bytes).context("cannot parse WASM module")?;
         let interfaces = WorkflowModule::interfaces_from_wasm(module_bytes)
@@ -279,6 +280,7 @@ impl WorkflowModule {
         WorkflowModule::validate_module(&module, &interfaces)?;
         Ok(Self {
             inner: module,
+            bytes: module_bytes,
             interfaces,
         })
     }
@@ -323,6 +325,14 @@ impl WorkflowModule {
             interface,
             workflow_name,
         ))
+    }
+
+    pub(crate) fn into_spawners(self) -> impl Iterator<Item = (String, WorkflowSpawner<()>)> {
+        let inner = self.inner;
+        self.interfaces.into_iter().map(move |(name, interface)| {
+            let spawner = WorkflowSpawner::new(inner.clone(), interface, &name);
+            (name, spawner)
+        })
     }
 }
 

@@ -7,19 +7,19 @@ use futures::{
     stream::{self, BoxStream},
     StreamExt,
 };
+use tracing_tunnel::{PersistedMetadata, PersistedSpans};
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    borrow::Cow,
+    collections::{BTreeMap, HashMap, HashSet},
     sync::atomic::{AtomicU64, Ordering},
 };
-use tracing_tunnel::{PersistedMetadata, PersistedSpans};
 
 use super::{
     ChannelRecord, ChannelState, MessageOperationError, MessageOrEof, ModuleRecord, ReadChannels,
     ReadModules, ReadWorkflows, Storage, StorageTransaction, WorkflowRecord,
-    WorkflowSelectionCriteria, WriteChannels, WriteWorkflows,
+    WorkflowSelectionCriteria, WriteChannels, WriteModules, WriteWorkflows,
 };
-use crate::storage::WriteModules;
 use crate::PersistedWorkflow;
 use tardigrade::{channel::SendError, ChannelId, WorkflowId};
 
@@ -69,11 +69,38 @@ impl LocalChannel {
     }
 }
 
+impl ModuleRecord<'_> {
+    fn into_owned(self) -> ModuleRecord<'static> {
+        ModuleRecord {
+            id: self.id,
+            bytes: Cow::Owned(self.bytes.into_owned()),
+            tracing_metadata: self.tracing_metadata,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Inner {
-    modules: HashMap<String, ModuleRecord>,
+    modules: HashMap<String, ModuleRecord<'static>>,
     channels: HashMap<ChannelId, LocalChannel>,
     workflows: HashMap<WorkflowId, WorkflowRecord>,
+}
+
+impl Default for Inner {
+    fn default() -> Self {
+        let closed_channel = LocalChannel::new(ChannelState {
+            receiver_workflow_id: None,
+            sender_workflow_ids: HashSet::new(),
+            has_external_sender: false,
+            is_closed: true,
+        });
+
+        Self {
+            modules: HashMap::new(),
+            channels: HashMap::from_iter([(0, closed_channel)]),
+            workflows: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -83,6 +110,16 @@ pub struct LocalStorage {
     next_workflow_id: AtomicU64,
 }
 
+impl Default for LocalStorage {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::default(),
+            next_channel_id: AtomicU64::new(1), // skip the closed channel
+            next_workflow_id: AtomicU64::new(0),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct LocalTransaction<'a> {
     inner: MutexGuard<'a, Inner>,
@@ -90,19 +127,40 @@ pub struct LocalTransaction<'a> {
     next_workflow_id: &'a AtomicU64,
 }
 
+impl LocalTransaction<'_> {
+    pub fn peek_channel(&self, channel_id: ChannelId) -> Option<impl Iterator<Item = &[u8]>> {
+        let channel = self.inner.channels.get(&channel_id)?;
+        let messages = channel.messages.values().filter_map(|message| {
+            if message.is_ready {
+                if let MessageOrEof::Message(payload) = &message.payload {
+                    return Some(payload.as_slice());
+                }
+            }
+            None
+        });
+        Some(messages)
+    }
+}
+
 #[async_trait]
 impl ReadModules for LocalTransaction<'_> {
-    async fn module(&self, id: &str) -> Option<ModuleRecord> {
+    async fn module(&self, id: &str) -> Option<ModuleRecord<'static>> {
         self.inner.modules.get(id).cloned()
     }
 
-    fn modules(&self) -> BoxStream<'_, ModuleRecord> {
+    fn modules(&self) -> BoxStream<'_, ModuleRecord<'static>> {
         stream::iter(self.inner.modules.values().cloned()).boxed()
     }
 }
 
 #[async_trait]
 impl WriteModules for LocalTransaction<'_> {
+    async fn insert_module(&mut self, module: ModuleRecord<'_>) {
+        self.inner
+            .modules
+            .insert(module.id.clone(), module.into_owned());
+    }
+
     async fn update_tracing_metadata(&mut self, module_id: &str, metadata: PersistedMetadata) {
         let module = self.inner.modules.get_mut(module_id).unwrap();
         module.tracing_metadata.extend(metadata);
@@ -290,7 +348,7 @@ impl WriteWorkflows for LocalTransaction<'_> {
         self.next_workflow_id.fetch_add(1, Ordering::SeqCst)
     }
 
-    async fn create_workflow(&mut self, state: WorkflowRecord) {
+    async fn insert_workflow(&mut self, state: WorkflowRecord) {
         self.inner.workflows.insert(state.id, state);
     }
 
@@ -327,7 +385,7 @@ impl WriteWorkflows for LocalTransaction<'_> {
         }
     }
 
-    async fn remove_workflow(&mut self, id: WorkflowId) {
+    async fn delete_workflow(&mut self, id: WorkflowId) {
         self.inner.workflows.remove(&id);
     }
 }

@@ -7,9 +7,11 @@ use chrono::{DateTime, Utc};
 use futures::stream::BoxStream;
 use tracing_tunnel::{PersistedMetadata, PersistedSpans};
 
-use std::collections::HashSet;
+use std::{borrow::Cow, collections::HashSet};
 
 mod local;
+
+pub use self::local::{LocalStorage, LocalToken, LocalTransaction};
 
 use crate::PersistedWorkflow;
 use tardigrade::{channel::SendError, ChannelId, WorkflowId};
@@ -35,21 +37,29 @@ pub trait StorageTransaction: Send + Sync + WriteModules + WriteChannels + Write
 #[async_trait]
 pub trait ReadModules {
     /// Retrieves a module with the specified ID.
-    // TODO: load module bytes optionally
-    async fn module(&self, id: &str) -> Option<ModuleRecord>;
+    async fn module(&self, id: &str) -> Option<ModuleRecord<'static>>;
     /// Streams all modules.
-    fn modules(&self) -> BoxStream<'_, ModuleRecord>;
+    fn modules(&self) -> BoxStream<'_, ModuleRecord<'static>>;
 }
 
 #[async_trait]
 pub trait WriteModules: ReadModules {
+    /// Inserts the module into the storage.
+    async fn insert_module(&mut self, module: ModuleRecord<'_>);
+
+    /// Updates tracing metadata for the module.
+    ///
+    /// It is acceptable to merge the provided metadata JSON to the current one to prevent edit
+    /// conflicts.
     async fn update_tracing_metadata(&mut self, module_id: &str, metadata: PersistedMetadata);
 }
 
 #[derive(Debug, Clone)]
-pub struct ModuleRecord {
+pub struct ModuleRecord<'a> {
+    /// ID of the module.
+    pub id: String,
     /// WASM module bytes.
-    pub bytes: Vec<u8>,
+    pub bytes: Cow<'a, [u8]>,
     /// Persisted metadata.
     pub tracing_metadata: PersistedMetadata,
 }
@@ -166,8 +176,9 @@ pub trait ReadWorkflows {
 pub trait WriteWorkflows: ReadWorkflows {
     /// Allocates a new unique ID for a workflow.
     async fn allocate_workflow_id(&mut self) -> WorkflowId;
-    /// Creates a new workflow.
-    async fn create_workflow(&mut self, state: WorkflowRecord);
+    /// Inserts a new workflow into the storage.
+    async fn insert_workflow(&mut self, state: WorkflowRecord);
+
     /// Persists a workflow with the specified ID.
     async fn persist_workflow(
         &mut self,
@@ -175,7 +186,9 @@ pub trait WriteWorkflows: ReadWorkflows {
         workflow: PersistedWorkflow,
         tracing_spans: PersistedSpans,
     );
+
     /// Manipulates the persisted part of a workflow without restoring it.
+    // FIXME: make workflow optional
     async fn manipulate_workflow<F: FnOnce(&mut PersistedWorkflow) + Send>(
         &mut self,
         id: WorkflowId,
@@ -188,8 +201,8 @@ pub trait WriteWorkflows: ReadWorkflows {
         action: F,
     );
 
-    /// Removes a workflow with the specified ID.
-    async fn remove_workflow(&mut self, id: WorkflowId);
+    /// Deletes a workflow with the specified ID.
+    async fn delete_workflow(&mut self, id: WorkflowId);
 }
 
 #[derive(Debug, Clone)]

@@ -4,9 +4,9 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use futures::{lock::Mutex, stream, StreamExt};
+use futures::{lock::Mutex, StreamExt};
 use tracing::field;
-use tracing_tunnel::{LocalSpans, TracingEventReceiver};
+use tracing_tunnel::{LocalSpans, PersistedMetadata, TracingEventReceiver};
 
 use std::{borrow::Cow, collections::HashMap, error, fmt, sync::Arc};
 
@@ -15,8 +15,8 @@ mod handle;
 mod new_workflows;
 mod persistence;
 
-//#[cfg(test)]
-//mod tests;
+#[cfg(test)]
+mod tests;
 
 pub use self::handle::{MessageReceiver, MessageSender, TakenMessages, WorkflowHandle};
 
@@ -205,20 +205,36 @@ impl<'a> WorkflowSeed<'a> {
     }
 }
 
-/// Part of the manager used during workflow instantiation.
-#[derive(Debug, Clone)]
-struct Shared {
-    clock: Arc<dyn Clock>,
-    spawners: Arc<HashMap<String, WorkflowSpawner<()>>>,
+#[derive(Debug, Default)]
+struct WorkflowSpawners {
+    inner: HashMap<String, HashMap<String, WorkflowSpawner<()>>>,
 }
 
-impl Default for Shared {
-    fn default() -> Self {
-        Self {
-            clock: Arc::new(Utc::now),
-            spawners: Arc::new(HashMap::new()),
-        }
+impl WorkflowSpawners {
+    fn get(&self, module_id: &str, name_in_module: &str) -> &WorkflowSpawner<()> {
+        &self.inner[module_id][name_in_module]
     }
+
+    fn split_full_id(full_id: &str) -> Option<(&str, &str)> {
+        full_id.split_once("::")
+    }
+
+    fn for_full_id(&self, full_id: &str) -> Option<&WorkflowSpawner<()>> {
+        let (module_id, name_in_module) = Self::split_full_id(full_id)?;
+        self.inner.get(module_id)?.get(name_in_module)
+    }
+
+    fn insert(&mut self, module_id: String, name_in_module: String, spawner: WorkflowSpawner<()>) {
+        let module_entry = self.inner.entry(module_id).or_default();
+        module_entry.insert(name_in_module, spawner);
+    }
+}
+
+/// Part of the manager used during workflow instantiation.
+#[derive(Debug, Clone, Copy)]
+struct Shared<'a> {
+    clock: &'a dyn Clock,
+    spawners: &'a WorkflowSpawners,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -273,7 +289,8 @@ enum ChannelSide {
 /// # }
 /// ```
 pub struct WorkflowManager<S> {
-    shared: Shared,
+    clock: Arc<dyn Clock>,
+    spawners: WorkflowSpawners,
     storage: S,
     local_spans: Mutex<HashMap<WorkflowId, LocalSpans>>,
 }
@@ -282,7 +299,7 @@ impl<S> fmt::Debug for WorkflowManager<S> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("WorkflowManager")
-            .field("shared", &self.shared)
+            .field("spawners", &self.spawners)
             .field("local_spans", &self.local_spans)
             .finish()
     }
@@ -299,37 +316,53 @@ impl<S: for<'a> Storage<'a>> WorkflowManager<S> {
     }
 
     async fn new(engine: &WorkflowEngine, clock: Arc<dyn Clock>, storage: S) -> Self {
-        let transaction = storage.readonly_transaction().await;
-        let spawners: HashMap<_, _> = transaction
-            .modules()
-            .flat_map(|module| stream::iter(create_spawners(engine, &module)))
-            .collect()
-            .await;
-        drop(transaction);
+        let spawners = {
+            let transaction = storage.readonly_transaction().await;
+            let mut spawners = WorkflowSpawners::default();
+            let mut module_records = transaction.modules();
+            while let Some(record) = module_records.next().await {
+                let module =
+                    WorkflowModule::new(engine, &record.bytes).expect("stored module is corrupted");
+                for (name, spawner) in module.into_spawners() {
+                    spawners.insert(record.id.clone(), name, spawner);
+                }
+            }
+            spawners
+        };
 
         Self {
-            shared: Shared {
-                clock,
-                spawners: Arc::new(spawners),
-            },
+            clock,
+            spawners,
             storage,
             local_spans: Mutex::default(),
         }
     }
 }
 
-fn create_spawners(
-    engine: &WorkflowEngine,
-    module: &ModuleRecord,
-) -> Vec<(String, WorkflowSpawner<()>)> {
-    let module = WorkflowModule::new(engine, &module.bytes).expect("stored module is corrupted");
-    module
-        .interfaces()
-        .map(|(name, _)| (name.to_owned(), module.for_untyped_workflow(name).unwrap()))
-        .collect()
-}
-
 impl<'a, S: Storage<'a>> WorkflowManager<S> {
+    fn shared(&'a self) -> Shared<'a> {
+        Shared {
+            clock: self.clock.as_ref(),
+            spawners: &self.spawners,
+        }
+    }
+
+    /// Inserts the specified module into the manager.
+    pub async fn insert_module(&'a mut self, id: &str, module: WorkflowModule<'_>) {
+        let mut transaction = self.storage.transaction().await;
+        let module_record = ModuleRecord {
+            id: id.to_owned(),
+            bytes: Cow::Borrowed(module.bytes),
+            tracing_metadata: PersistedMetadata::default(),
+        };
+        transaction.insert_module(module_record).await;
+
+        for (name, spawner) in module.into_spawners() {
+            self.spawners.insert(id.to_owned(), name, spawner);
+        }
+        transaction.commit().await;
+    }
+
     /// Returns current information about the channel with the specified ID, or `None` if a channel
     /// with this ID does not exist.
     pub async fn channel(&'a self, channel_id: ChannelId) -> Option<ChannelRecord> {
@@ -346,7 +379,11 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
             workflow_id,
             channel_ids: record.persisted.channel_ids(),
         };
-        let interface = self.shared.spawners[&record.module_id].interface().clone();
+        let interface = self
+            .spawners
+            .get(&record.module_id, &record.name_in_module)
+            .interface()
+            .clone();
         Some(WorkflowHandle::new(self, ids, interface, record.persisted))
     }
 
@@ -420,8 +457,7 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
         persistence: &S::Transaction,
         record: WorkflowRecord,
     ) -> (WorkflowSeed<'_>, TracingEventReceiver) {
-        let spawner = &self.shared.spawners[&record.name_in_module];
-        // FIXME: use name in module as well
+        let spawner = self.spawners.get(&record.module_id, &record.name_in_module);
         tracing::debug!(?spawner, "using spawner to restore workflow");
 
         let tracing_metadata = persistence
@@ -437,7 +473,7 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
             .unwrap_or_default();
         let tracer = TracingEventReceiver::new(tracing_metadata, record.tracing_spans, local_spans);
         let template = WorkflowSeed {
-            clock: self.shared.clock.as_ref(),
+            clock: self.clock.as_ref(),
             spawner,
             persisted: record.persisted,
         };
@@ -478,7 +514,7 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
         let parent_id = workflow.parent_id;
         let module_id = workflow.module_id.clone();
         let (seed, mut tracer) = self.restore_workflow(transaction, workflow).await;
-        let mut new_workflows = NewWorkflows::new(Some(workflow_id), self.shared.clone());
+        let mut new_workflows = NewWorkflows::new(Some(workflow_id), self.shared());
         let mut workflow = seed.restore(&mut new_workflows, &mut tracer);
         let result = Self::push_message(&mut workflow, child_id, &channel_name, message);
 
@@ -560,7 +596,7 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
         let parent_id = workflow.parent_id;
         let module_id = workflow.module_id.clone();
         let (template, mut tracer) = self.restore_workflow(transaction, workflow).await;
-        let mut children = NewWorkflows::new(Some(workflow_id), self.shared.clone());
+        let mut children = NewWorkflows::new(Some(workflow_id), self.shared());
         let mut workflow = template.restore(&mut children, &mut tracer);
 
         let result = workflow.tick();
@@ -693,7 +729,7 @@ impl<S: for<'a> Storage<'a>> WorkflowManagerBuilder<S> {
 impl<S> ManageInterfaces for WorkflowManager<S> {
     fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
         Some(Cow::Borrowed(
-            self.shared.spawners.get(definition_id)?.interface(),
+            self.spawners.for_full_id(definition_id)?.interface(),
         ))
     }
 }
@@ -714,7 +750,7 @@ impl<'a, W: WorkflowFn, S: Storage<'a>> ManageWorkflows<'a, W> for WorkflowManag
         args: Vec<u8>,
         channels: ChannelsConfig<ChannelId>,
     ) -> Result<Self::Handle, Self::Error> {
-        let mut new_workflows = NewWorkflows::new(None, self.shared.clone());
+        let mut new_workflows = NewWorkflows::new(None, self.shared());
         new_workflows.stash_workflow(0, definition_id, args, channels);
         let mut transaction = self.storage.transaction().await;
         let workflow_id = new_workflows.commit_external(&mut transaction).await?;

@@ -76,7 +76,7 @@ impl<'a, T: WriteChannels + WriteWorkflows> PersistenceManager<'a, T> {
                 self.close_channel_side(state.id(), ChannelSide::WorkflowSender(id))
                     .await;
             }
-            self.inner.remove_workflow(id).await;
+            self.inner.delete_workflow(id).await;
             parent_id.map(|id| (id, result.map_err(clone_join_error)))
         } else {
             None
@@ -116,25 +116,13 @@ impl<'a, T: WriteChannels + WriteWorkflows> PersistenceManager<'a, T> {
             })
             .await;
 
-        tracing::Span::current().record("closed", true);
-
-        // If the channel is closed by the receiver, no need to notify it again.
-        if !matches!(side, ChannelSide::Receiver) {
-            let channel_record = self.inner.channel(channel_id).await.unwrap();
-            if channel_record.is_empty() {
-                // We can notify the receiver immediately only if there are no unconsumed messages
-                // in the channel.
-                if let Some(receiver_workflow_id) = channel_state.receiver_workflow_id {
-                    self.inner
-                        .manipulate_workflow(receiver_workflow_id, |persisted| {
-                            let (child_id, name) = persisted.find_inbound_channel(channel_id);
-                            persisted.close_inbound_channel(child_id, &name);
-                        })
-                        .await;
-                }
-            }
+        tracing::info!(is_closed = channel_state.is_closed, "channel closed");
+        if !channel_state.is_closed {
+            return;
         }
 
+        // The receiver workflow doesn't need to be handled here: it will receive the channel EOF
+        // eventually.
         for &sender_workflow_id in &channel_state.sender_workflow_ids {
             // The workflow may be missing from `self.workflows` if it has just completed.
             self.inner
