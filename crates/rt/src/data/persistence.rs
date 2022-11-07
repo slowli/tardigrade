@@ -3,7 +3,6 @@
 use anyhow::{anyhow, ensure};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tracing_tunnel::PersistedMetadata;
 use wasmtime::{Store, Val};
 
 use std::{collections::HashMap, error, fmt};
@@ -180,12 +179,6 @@ impl WorkflowData<'_> {
             }
         }
         Ok(())
-    }
-
-    pub(crate) fn persist_trace_metadata(&self, metadata: &mut PersistedMetadata) {
-        if let Some(tracer) = &self.services.tracer {
-            tracer.persist_metadata(metadata);
-        }
     }
 
     // Must be preceded with `Self::check_persistence()`.

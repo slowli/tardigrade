@@ -1,6 +1,7 @@
 //! Local in-memory storage implementation.
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use futures::{
     lock::{Mutex, MutexGuard},
     stream::{self, BoxStream},
@@ -11,13 +12,14 @@ use std::{
     collections::{BTreeMap, HashMap},
     sync::atomic::{AtomicU64, Ordering},
 };
-use tracing_tunnel::PersistedSpans;
+use tracing_tunnel::{PersistedMetadata, PersistedSpans};
 
 use super::{
     ChannelRecord, ChannelState, MessageOperationError, MessageOrEof, ModuleRecord, ReadChannels,
     ReadModules, ReadWorkflows, Storage, StorageTransaction, WorkflowRecord,
     WorkflowSelectionCriteria, WriteChannels, WriteWorkflows,
 };
+use crate::storage::WriteModules;
 use crate::PersistedWorkflow;
 use tardigrade::{channel::SendError, ChannelId, WorkflowId};
 
@@ -96,6 +98,14 @@ impl ReadModules for LocalTransaction<'_> {
 
     fn modules(&self) -> BoxStream<'_, ModuleRecord> {
         stream::iter(self.inner.modules.values().cloned()).boxed()
+    }
+}
+
+#[async_trait]
+impl WriteModules for LocalTransaction<'_> {
+    async fn update_tracing_metadata(&mut self, module_id: &str, metadata: PersistedMetadata) {
+        let module = self.inner.modules.get_mut(module_id).unwrap();
+        module.tracing_metadata.extend(metadata);
     }
 }
 
@@ -265,6 +275,12 @@ impl ReadWorkflows for LocalTransaction<'_> {
             }
             None
         })
+    }
+
+    async fn nearest_timer_expiration(&self) -> Option<DateTime<Utc>> {
+        let workflows = self.inner.workflows.values();
+        let timers = workflows.flat_map(|record| record.persisted.timers());
+        timers.map(|(_, timer)| timer.definition().expires_at).min()
     }
 }
 

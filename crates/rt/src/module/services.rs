@@ -53,7 +53,7 @@ pub(crate) trait StashWorkflows: Send + Sync + ManageInterfaces {
 pub(crate) struct Services<'a> {
     pub clock: &'a dyn Clock,
     pub workflows: Option<&'a mut dyn StashWorkflows>,
-    pub tracer: Option<TracingEventReceiver<'a>>,
+    pub tracer: Option<&'a mut TracingEventReceiver>,
 }
 
 impl fmt::Debug for Services<'_> {

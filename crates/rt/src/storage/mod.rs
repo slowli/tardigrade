@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::stream::BoxStream;
-use tracing_tunnel::PersistedSpans;
+use tracing_tunnel::{PersistedMetadata, PersistedSpans};
 
 use std::collections::HashSet;
 
@@ -27,7 +27,7 @@ pub trait Storage<'a>: 'a + Send + Sync {
 
 #[async_trait]
 #[must_use = "transactions should be committed to take effect"]
-pub trait StorageTransaction: Send + Sync + ReadModules + WriteChannels + WriteWorkflows {
+pub trait StorageTransaction: Send + Sync + WriteModules + WriteChannels + WriteWorkflows {
     // TODO: errors?
     async fn commit(self);
 }
@@ -35,15 +35,23 @@ pub trait StorageTransaction: Send + Sync + ReadModules + WriteChannels + WriteW
 #[async_trait]
 pub trait ReadModules {
     /// Retrieves a module with the specified ID.
+    // TODO: load module bytes optionally
     async fn module(&self, id: &str) -> Option<ModuleRecord>;
     /// Streams all modules.
     fn modules(&self) -> BoxStream<'_, ModuleRecord>;
+}
+
+#[async_trait]
+pub trait WriteModules: ReadModules {
+    async fn update_tracing_metadata(&mut self, module_id: &str, metadata: PersistedMetadata);
 }
 
 #[derive(Debug, Clone)]
 pub struct ModuleRecord {
     /// WASM module bytes.
     pub bytes: Vec<u8>,
+    /// Persisted metadata.
+    pub tracing_metadata: PersistedMetadata,
 }
 
 #[async_trait]
@@ -150,6 +158,8 @@ pub trait ReadWorkflows {
     async fn find_workflow_with_pending_tasks(&self) -> Option<WorkflowRecord>;
     /// Selects a workflow to which a message can be sent for execution.
     async fn find_consumable_channel(&self) -> Option<(ChannelId, WorkflowRecord)>;
+    /// Finds the nearest timer expiration in all active workflows.
+    async fn nearest_timer_expiration(&self) -> Option<DateTime<Utc>>;
 }
 
 #[async_trait]

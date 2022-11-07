@@ -1,7 +1,6 @@
 //! `Workflow` and tightly related types.
 
 use anyhow::Context;
-use tracing_tunnel::PersistedMetadata;
 use wasmtime::{AsContextMut, Linker, Store, Trap};
 
 use std::{collections::HashMap, mem, sync::Arc};
@@ -282,8 +281,8 @@ impl<'a> Workflow<'a> {
     /// # Panics
     ///
     /// Panics if the workflow is in such a state that it cannot be persisted right now.
-    pub(crate) fn persist(self, metadata: &mut PersistedMetadata) -> PersistedWorkflow {
-        PersistedWorkflow::new(self, metadata).unwrap()
+    pub(crate) fn persist(self) -> PersistedWorkflow {
+        PersistedWorkflow::new(self).unwrap()
     }
 
     fn copy_memory(&mut self, offset: usize, memory_contents: &[u8]) -> anyhow::Result<()> {

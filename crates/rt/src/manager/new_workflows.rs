@@ -1,6 +1,6 @@
 //! Transactions for `WorkflowManager`.
 
-use tracing_tunnel::{PersistedMetadata, PersistedSpans};
+use tracing_tunnel::PersistedSpans;
 
 use std::{borrow::Cow, collections::HashMap, mem};
 
@@ -81,7 +81,7 @@ impl WorkflowStub {
         let channel_ids = ChannelIds::new(self.channels.clone(), persistence).await;
         let args = mem::take(&mut self.args);
         let workflow = spawner.spawn(args, &channel_ids, services)?;
-        let persisted = workflow.persist(&mut PersistedMetadata::default());
+        let persisted = workflow.persist();
         Ok((persisted, channel_ids))
     }
 }
