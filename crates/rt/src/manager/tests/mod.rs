@@ -157,7 +157,7 @@ async fn test_initializing_workflow(
     assert!(transaction.find_consumable_channel().await.is_none());
     let traces = transaction.channel(traces_id).await.unwrap();
     assert_eq!(traces.received_messages(), 1);
-    let (message, _) = transaction.receive_message(traces_id).await.unwrap();
+    let (message, _) = transaction.pop_message(traces_id).await.unwrap();
     assert_matches!(message, MessageOrEof::Message(payload) if payload == b"trace #1");
 }
 
@@ -345,15 +345,6 @@ async fn test_closing_inbound_channel_from_host_side(with_message: bool) {
             ]
         );
     }
-
-    // The channel contains the EOF marker at this point.
-    assert_eq!(
-        find_consumable_channel(&manager).await,
-        Some((orders_id, workflow_id))
-    );
-    feed_message(&manager, orders_id, workflow_id)
-        .await
-        .unwrap();
 
     workflow.update().await.unwrap();
     let pending_events = workflow.persisted().pending_events().collect::<Vec<_>>();

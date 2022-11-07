@@ -185,6 +185,16 @@ impl ReadChannels for LocalTransaction<'_> {
             next_message_idx: channel.next_message_idx,
         })
     }
+
+    async fn has_messages(&self, id: ChannelId) -> bool {
+        if let Some(channel) = self.inner.channels.get(&id) {
+            channel.messages.values().any(|message| {
+                message.is_ready && matches!(message.payload, MessageOrEof::Message(_))
+            })
+        } else {
+            false
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -246,7 +256,7 @@ impl WriteChannels for LocalTransaction<'_> {
         Ok(())
     }
 
-    async fn receive_message(&mut self, id: ChannelId) -> Option<(MessageOrEof, Self::Token)> {
+    async fn pop_message(&mut self, id: ChannelId) -> Option<(MessageOrEof, Self::Token)> {
         let channel = self.inner.channels.get_mut(&id)?;
         channel.messages.iter_mut().find_map(|(&idx, record)| {
             if record.is_ready {
@@ -264,7 +274,10 @@ impl WriteChannels for LocalTransaction<'_> {
         })
     }
 
-    async fn remove_message(&mut self, token: Self::Token) -> Result<(), MessageOperationError> {
+    async fn confirm_message_removal(
+        &mut self,
+        token: Self::Token,
+    ) -> Result<(), MessageOperationError> {
         let channel = self
             .inner
             .channels
@@ -283,7 +296,10 @@ impl WriteChannels for LocalTransaction<'_> {
         }
     }
 
-    async fn revert_message(&mut self, token: Self::Token) -> Result<(), MessageOperationError> {
+    async fn revert_message_removal(
+        &mut self,
+        token: Self::Token,
+    ) -> Result<(), MessageOperationError> {
         let channel = self
             .inner
             .channels

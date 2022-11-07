@@ -54,8 +54,8 @@ struct DropMessageAction {
 impl DropMessageAction {
     async fn execute<'a, S: Storage<'a>>(self, manager: &'a WorkflowManager<S>) {
         let mut transaction = manager.storage.transaction().await;
-        if let Some((_, token)) = transaction.receive_message(self.channel_id).await {
-            transaction.remove_message(token).await.ok();
+        if let Some((_, token)) = transaction.pop_message(self.channel_id).await {
+            transaction.confirm_message_removal(token).await.ok();
         }
     }
 }
@@ -429,11 +429,11 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
         );
 
         let mut messages = vec![];
-        while let Some((message, token)) = transaction.receive_message(channel_id).await {
+        while let Some((message, token)) = transaction.pop_message(channel_id).await {
             if let MessageOrEof::Message(payload) = message {
                 messages.push(payload);
             }
-            transaction.remove_message(token).await.ok();
+            transaction.confirm_message_removal(token).await.ok();
         }
         transaction.commit().await;
         messages
@@ -488,7 +488,7 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
     ) -> Result<Receipt, ExecutionError> {
         let workflow_id = workflow.id;
         let (message_or_eof, message_token) = transaction
-            .receive_message(channel_id)
+            .pop_message(channel_id)
             .await
             .expect("no message to feed");
         let (child_id, channel_name) = workflow.persisted.find_inbound_channel(channel_id);
@@ -497,12 +497,15 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
             MessageOrEof::Eof => {
                 // Signal to the workflow that the channel is closed. This can be performed
                 // on a persisted workflow, without executing it.
+                let mut persisted = workflow.persisted;
+                persisted.close_inbound_channel(child_id, &channel_name);
                 transaction
-                    .manipulate_workflow(workflow_id, |persisted| {
-                        persisted.close_inbound_channel(child_id, &channel_name);
-                    })
+                    .persist_workflow(workflow_id, persisted, workflow.tracing_spans)
                     .await;
-                transaction.remove_message(message_token).await.ok();
+                transaction
+                    .confirm_message_removal(message_token)
+                    .await
+                    .ok();
                 return Ok(Receipt::default());
             }
         };
@@ -520,9 +523,12 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
                 // consume wakers (otherwise, we would loop indefinitely), and place the message
                 // back to the channel.
                 tracing::warn!("message was not consumed by workflow; placing the message back");
-                transaction.revert_message(message_token).await.ok();
+                transaction.revert_message_removal(message_token).await.ok();
             } else {
-                transaction.remove_message(message_token).await.ok();
+                transaction
+                    .confirm_message_removal(message_token)
+                    .await
+                    .ok();
             }
 
             {
@@ -551,7 +557,7 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
             }
         } else {
             // Do not commit the execution result. Instead, put the message back to the channel.
-            transaction.revert_message(message_token).await.ok();
+            transaction.revert_message_removal(message_token).await.ok();
         }
         result
     }

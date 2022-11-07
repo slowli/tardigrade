@@ -350,16 +350,6 @@ async fn test_child_workflow_channel_management(complete_child: bool) {
     let channel_info = manager.channel(traces_id).await.unwrap();
     assert!(channel_info.is_closed());
 
-    // Feed child traces EOF to the parent workflow.
-    assert_eq!(
-        find_consumable_channel(&manager).await,
-        Some((traces_id, workflow_id))
-    );
-    let receipt = feed_message(&manager, traces_id, workflow_id)
-        .await
-        .unwrap();
-    assert!(receipt.executions().is_empty());
-
     workflow.update().await.unwrap();
     let child_state = workflow.persisted().child_workflow(child_id).unwrap();
     if complete_child {
@@ -370,12 +360,13 @@ async fn test_child_workflow_channel_management(complete_child: bool) {
 
     let events: Vec<_> = workflow.persisted().pending_events().collect();
     assert_matches!(
-        events.last().unwrap(),
+        events[0],
         WakeUpCause::ChannelClosed { workflow_id: Some(CHILD_ID), channel_name }
             if channel_name == "traces"
     );
     if complete_child {
-        assert_matches!(events[0], WakeUpCause::CompletedWorkflow(CHILD_ID));
+        assert_eq!(events.len(), 2);
+        assert_matches!(events[1], WakeUpCause::CompletedWorkflow(CHILD_ID));
     } else {
         assert_eq!(events.len(), 1);
     }
@@ -750,7 +741,7 @@ fn check_aborted_child_completion(
     let child_events = Some(WorkflowData::inbound_channel_ref(Some(CHILD_ID), "events"));
     let poll_result =
         WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), child_events, POLL_CX)?;
-    // assert_eq!(poll_result, -2); // Poll::Ready(None)
+    assert_eq!(poll_result, -2); // Poll::Ready(None)
 
     Ok(Poll::Pending)
 }
@@ -855,7 +846,7 @@ async fn aborting_parent() {
         let orders = Some(WorkflowData::inbound_channel_ref(None, "orders"));
         let poll_result =
             WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
-        // assert_eq!(poll_result, -2); // Poll::Ready(None)
+        assert_eq!(poll_result, -2); // Poll::Ready(None)
 
         let events = Some(WorkflowData::outbound_channel_ref(None, "events"));
         let (message_ptr, message_len) =

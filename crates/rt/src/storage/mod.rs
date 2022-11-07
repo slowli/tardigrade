@@ -67,6 +67,8 @@ pub struct ModuleRecord<'a> {
 #[async_trait]
 pub trait ReadChannels {
     async fn channel(&self, id: ChannelId) -> Option<ChannelRecord>;
+    /// Checks whether a channel with the specified ID has unconsumed messages.
+    async fn has_messages(&self, id: ChannelId) -> bool;
 }
 
 #[async_trait]
@@ -91,15 +93,21 @@ pub trait WriteChannels: ReadChannels {
         messages: Vec<Vec<u8>>,
     ) -> Result<(), SendError>;
 
-    /// Receives a message from the channel.
+    /// Pops a message from the channel.
     // TODO: lease timeout?
-    async fn receive_message(&mut self, id: ChannelId) -> Option<(MessageOrEof, Self::Token)>;
+    async fn pop_message(&mut self, id: ChannelId) -> Option<(MessageOrEof, Self::Token)>;
 
     /// Removes a previously received message from the channel.
-    async fn remove_message(&mut self, token: Self::Token) -> Result<(), MessageOperationError>;
+    async fn confirm_message_removal(
+        &mut self,
+        token: Self::Token,
+    ) -> Result<(), MessageOperationError>;
 
     /// Places a previously received message back to the channel.
-    async fn revert_message(&mut self, token: Self::Token) -> Result<(), MessageOperationError>;
+    async fn revert_message_removal(
+        &mut self,
+        token: Self::Token,
+    ) -> Result<(), MessageOperationError>;
 }
 
 #[derive(Debug, Clone)]

@@ -123,8 +123,23 @@ impl<'a, T: WriteChannels + WriteWorkflows> PersistenceManager<'a, T> {
             return;
         }
 
-        // The receiver workflow doesn't need to be handled here: it will receive the channel EOF
-        // eventually.
+        // If the channel is closed by the receiver, no need to notify it again.
+        if !matches!(side, ChannelSide::Receiver) {
+            let has_messages = self.inner.has_messages(channel_id).await;
+            if !has_messages {
+                // We can notify the receiver immediately only if there are no unconsumed messages
+                // in the channel.
+                if let Some(receiver_workflow_id) = channel_state.receiver_workflow_id {
+                    self.inner
+                        .manipulate_workflow(receiver_workflow_id, |persisted| {
+                            let (child_id, name) = persisted.find_inbound_channel(channel_id);
+                            persisted.close_inbound_channel(child_id, &name);
+                        })
+                        .await;
+                }
+            }
+        }
+
         for &sender_workflow_id in &channel_state.sender_workflow_ids {
             // The workflow may be missing from `self.workflows` if it has just completed.
             self.inner
