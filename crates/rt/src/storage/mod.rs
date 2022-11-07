@@ -4,15 +4,15 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use futures::Stream;
-use tracing_tunnel::{PersistedMetadata, PersistedSpans};
+use futures::stream::BoxStream;
+use tracing_tunnel::PersistedSpans;
 
-use std::{collections::HashSet, pin::Pin};
+use std::collections::HashSet;
+
+mod local;
 
 use crate::PersistedWorkflow;
 use tardigrade::{channel::SendError, ChannelId, WorkflowId};
-
-pub type BoxedStream<'a, T> = Pin<Box<dyn Stream<Item = T> + Send + 'a>>;
 
 #[async_trait]
 pub trait Storage<'a>: 'a + Send + Sync {
@@ -37,15 +37,13 @@ pub trait ReadModules {
     /// Retrieves a module with the specified ID.
     async fn module(&self, id: &str) -> Option<ModuleRecord>;
     /// Streams all modules.
-    fn modules(&self) -> BoxedStream<'_, ModuleRecord>;
+    fn modules(&self) -> BoxStream<'_, ModuleRecord>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ModuleRecord {
     /// WASM module bytes.
     pub bytes: Vec<u8>,
-    /// Tracing metadata associated with the module.
-    pub metadata: PersistedMetadata,
 }
 
 #[async_trait]
@@ -60,18 +58,18 @@ pub trait WriteChannels: ReadChannels {
     /// Allocates a new unique ID for a channel.
     async fn allocate_channel_id(&mut self) -> ChannelId;
     /// Creates a new channel with the provided `spec`.
-    async fn get_or_insert_channel(&mut self, id: ChannelId, spec: ChannelState) -> ChannelState;
+    async fn get_or_insert_channel(&mut self, id: ChannelId, state: ChannelState) -> ChannelState;
     /// Changes the channel state and selects it for further updates.
-    async fn manipulate_channel(
+    async fn manipulate_channel<F: FnOnce(&mut ChannelState) + Send>(
         &mut self,
         id: ChannelId,
-        action: impl FnOnce(&mut ChannelState),
+        action: F,
     ) -> ChannelState;
 
     /// Pushes one or more messages into the channel.
     async fn push_messages(
         &mut self,
-        channel_id: ChannelId,
+        id: ChannelId,
         messages: Vec<Vec<u8>>,
     ) -> Result<(), SendError>;
 
@@ -80,13 +78,13 @@ pub trait WriteChannels: ReadChannels {
     async fn receive_message(&mut self, id: ChannelId) -> Option<(MessageOrEof, Self::Token)>;
 
     /// Removes a previously received message from the channel.
-    async fn remove_message(&mut self, token: Self::Token) -> Result<(), RemoveError>;
+    async fn remove_message(&mut self, token: Self::Token) -> Result<(), MessageOperationError>;
 
     /// Places a previously received message back to the channel.
-    async fn revert_message(&mut self, token: Self::Token) -> Result<(), RemoveError>;
+    async fn revert_message(&mut self, token: Self::Token) -> Result<(), MessageOperationError>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum MessageOrEof {
     Message(Vec<u8>),
     Eof,
@@ -137,7 +135,9 @@ impl ChannelRecord {
 
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum RemoveError {
+pub enum MessageOperationError {
+    InvalidToken,
+    AlreadyRemoved,
     ExpiredToken,
 }
 
@@ -166,23 +166,23 @@ pub trait WriteWorkflows: ReadWorkflows {
         tracing_spans: PersistedSpans,
     );
     /// Manipulates the persisted part of a workflow without restoring it.
-    async fn manipulate_workflow(
+    async fn manipulate_workflow<F: FnOnce(&mut PersistedWorkflow) + Send>(
         &mut self,
         id: WorkflowId,
-        action: impl FnOnce(&mut PersistedWorkflow),
+        action: F,
     ) -> WorkflowRecord;
 
-    async fn manipulate_all_workflows(
+    async fn manipulate_all_workflows<F: FnMut(&mut PersistedWorkflow) + Send>(
         &mut self,
         criteria: WorkflowSelectionCriteria,
-        action: impl FnMut(&mut PersistedWorkflow),
+        action: F,
     );
 
     /// Removes a workflow with the specified ID.
     async fn remove_workflow(&mut self, id: WorkflowId);
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WorkflowRecord {
     pub id: WorkflowId,
     pub parent_id: Option<WorkflowId>,
@@ -195,4 +195,15 @@ pub struct WorkflowRecord {
 #[derive(Debug)]
 pub enum WorkflowSelectionCriteria {
     HasTimerBefore(DateTime<Utc>),
+}
+
+impl WorkflowSelectionCriteria {
+    pub(crate) fn matches(&self, record: &WorkflowRecord) -> bool {
+        match self {
+            Self::HasTimerBefore(time) => record
+                .persisted
+                .timers()
+                .any(|(_, timer)| timer.definition().expires_at < *time),
+        }
+    }
 }

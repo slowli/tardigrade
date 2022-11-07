@@ -12,15 +12,15 @@ use std::{borrow::Cow, collections::HashMap, error, fmt, sync::Arc};
 
 pub mod future; // FIXME: rename `driver`?
 mod handle;
-mod persistence;
 mod new_workflows;
+mod persistence;
 
 //#[cfg(test)]
 //mod tests;
 
 pub use self::handle::{MessageReceiver, MessageSender, TakenMessages, WorkflowHandle};
 
-use self::{persistence::PersistenceManager, new_workflows::NewWorkflows};
+use self::{new_workflows::NewWorkflows, persistence::PersistenceManager};
 use crate::module::StashWorkflows;
 use crate::{
     module::{Clock, Services},
