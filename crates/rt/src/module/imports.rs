@@ -138,7 +138,8 @@ impl SpawnFunctions {
             "workflow::copy_sender_handle" => {
                 ensure_func_ty::<(Ref, i32, i32, Ref), ()>(ty, fn_name)
             }
-            "workflow::spawn" => ensure_func_ty::<(u32, u32, u32, u32, Ref, u32), Ref>(ty, fn_name),
+            "workflow::spawn" => ensure_func_ty::<(u32, u32, u32, u32, Ref), Ref>(ty, fn_name),
+            "workflow::poll_init" => ensure_func_ty::<(Ref, WasmContextPtr, u32), Ref>(ty, fn_name),
             "workflow::poll_completion" => {
                 ensure_func_ty::<(Ref, WasmContextPtr), i64>(ty, fn_name)
             }

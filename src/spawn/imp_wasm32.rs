@@ -24,7 +24,7 @@ use crate::{
     task::{JoinError, TaskError},
 };
 
-static mut SPAWN_ERROR_PAD: i64 = 0;
+static mut HOST_ERROR_PAD: i64 = 0;
 
 impl ManageInterfaces for Workflows {
     fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
@@ -49,13 +49,12 @@ impl ManageInterfaces for Workflows {
 }
 
 #[async_trait]
-impl ManageWorkflows<()> for Workflows {
+impl<'a> ManageWorkflows<'a, ()> for Workflows {
     type Handle = super::RemoteWorkflow;
     type Error = HostError;
 
-    // FIXME: use future here
     async fn create_workflow(
-        &self,
+        &'a self,
         definition_id: &str,
         args: Vec<u8>,
         channels: ChannelsConfig<RawReceiver, RawSender>,
@@ -70,24 +69,57 @@ impl ManageWorkflows<()> for Workflows {
                 args_ptr: *const u8,
                 args_len: usize,
                 handles: Resource<ChannelsConfig<RawReceiver, RawSender>>,
-                error_ptr: *mut i64,
-            ) -> Option<Resource<RemoteWorkflow>>;
+            ) -> Resource<RemoteWorkflow>;
         }
 
-        let result = unsafe {
-            let workflow = spawn(
+        let stub = unsafe {
+            spawn(
                 definition_id.as_ptr(),
                 definition_id.len(),
                 args.as_ptr(),
                 args.len(),
                 channels.into_resource(),
-                &mut SPAWN_ERROR_PAD,
-            );
-            Result::<(), HostError>::from_abi_in_wasm(SPAWN_ERROR_PAD).map(|()| RemoteWorkflow {
-                resource: workflow.unwrap(),
-            })
+            )
         };
-        result.map(|inner| super::RemoteWorkflow { inner })
+        WorkflowInit { stub }.await
+    }
+}
+
+#[derive(Debug)]
+struct WorkflowInit {
+    stub: Resource<RemoteWorkflow>,
+}
+
+impl Future for WorkflowInit {
+    type Output = Result<super::RemoteWorkflow, HostError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        #[externref]
+        #[link(wasm_import_module = "tardigrade_rt")]
+        #[allow(improper_ctypes)]
+        extern "C" {
+            #[link_name = "workflow::poll_init"]
+            fn poll_init(
+                stub: &Resource<RemoteWorkflow>,
+                cx: *mut Context<'_>,
+                error_ptr: *mut i64,
+            ) -> Option<Resource<RemoteWorkflow>>;
+        }
+
+        unsafe {
+            let poll_result = poll_init(&self.stub, cx, &mut HOST_ERROR_PAD);
+            if let Some(resource) = poll_result {
+                Poll::Ready(Ok(super::RemoteWorkflow {
+                    inner: RemoteWorkflow { resource },
+                }))
+            } else {
+                let host_result = Result::<(), HostError>::from_abi_in_wasm(HOST_ERROR_PAD);
+                match host_result {
+                    Ok(()) => Poll::Pending,
+                    Err(err) => Poll::Ready(Err(err)),
+                }
+            }
+        }
     }
 }
 
