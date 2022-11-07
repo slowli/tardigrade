@@ -6,7 +6,7 @@ use wasmtime::{AsContextMut, StoreContextMut, Trap};
 
 use std::{collections::HashSet, task::Poll};
 
-//mod spawn;
+mod spawn;
 
 use super::*;
 use crate::{
@@ -17,8 +17,8 @@ use crate::{
     utils::WasmAllocator,
     WorkflowEngine, WorkflowModule,
 };
-use tardigrade::abi::AllocateBytes;
 use tardigrade::{
+    abi::AllocateBytes,
     interface::{InboundChannel, OutboundChannel},
     spawn::ManageWorkflowsExt,
 };

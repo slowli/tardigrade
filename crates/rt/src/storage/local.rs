@@ -140,6 +140,10 @@ impl LocalTransaction<'_> {
         });
         Some(messages)
     }
+
+    pub fn peek_workflows(&self) -> &HashMap<WorkflowId, WorkflowRecord> {
+        &self.inner.workflows
+    }
 }
 
 #[async_trait]
