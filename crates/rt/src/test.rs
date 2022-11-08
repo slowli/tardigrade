@@ -25,6 +25,7 @@
 //! ```
 
 use chrono::{DateTime, Utc};
+use externref::processor::Processor;
 use futures::{channel::mpsc, Stream};
 
 use std::{
@@ -41,6 +42,13 @@ use crate::{
 use tardigrade::test::MockScheduler as SchedulerBase;
 
 /// Options for the `wasm-opt` optimizer.
+///
+/// Note that `wasm-opt` before and including version 109 [mangles table exports][export-bug],
+/// which most probably will result in the module validation error ("`externrefs` export is not
+/// a table of `externref`s"). The first release of `wasm-opt` to include the fix is [version 110].
+///
+/// [export-bug]: https://github.com/WebAssembly/binaryen/pull/4736
+/// [version 110]: https://github.com/WebAssembly/binaryen/releases/tag/version_110
 #[derive(Debug)]
 pub struct WasmOpt {
     wasm_opt_command: String,
@@ -56,6 +64,7 @@ impl Default for WasmOpt {
             args: vec![
                 "-Os".to_string(),
                 "--enable-mutable-globals".to_string(),
+                "--enable-reference-types".to_string(),
                 "--strip-debug".to_string(),
             ],
         }
@@ -180,8 +189,32 @@ impl ModuleCompiler {
         self.wasm_file()
     }
 
+    fn process_refs(wasm_file: &Path) -> PathBuf {
+        let module_bytes = fs::read(wasm_file).unwrap_or_else(|err| {
+            panic!(
+                "Error reading file `{}`: {err}",
+                wasm_file.to_string_lossy()
+            )
+        });
+        let processed_bytes = Processor::default()
+            .set_drop_fn("tardigrade_rt", "drop_ref")
+            .process_bytes(&module_bytes)
+            .unwrap();
+
+        let mut ref_wasm_file = PathBuf::from(wasm_file);
+        ref_wasm_file.set_extension("ref.wasm");
+        fs::write(&ref_wasm_file, &processed_bytes).unwrap_or_else(|err| {
+            panic!(
+                "Error writing externref-processed module to file `{}`: {err}",
+                wasm_file.to_string_lossy()
+            )
+        });
+        ref_wasm_file
+    }
+
     fn do_compile(&self) -> PathBuf {
         let wasm_file = self.compile_wasm();
+        let wasm_file = Self::process_refs(&wasm_file);
         if let Some(wasm_opt) = &self.wasm_opt {
             wasm_opt.optimize_wasm(&wasm_file)
         } else {
