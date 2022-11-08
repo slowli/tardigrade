@@ -31,18 +31,12 @@ impl ManageInterfaces for Workflows {
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
             #[link_name = "workflow::interface"]
-            fn get_workflow_interface(id_ptr: *const u8, id_len: usize) -> u64;
+            fn get_workflow_interface(id_ptr: *const u8, id_len: usize) -> i64;
         }
 
         let raw_interface = unsafe {
             let raw = get_workflow_interface(definition_id.as_ptr(), definition_id.len());
-            if raw == 0 {
-                None
-            } else {
-                let ptr = (raw >> 32) as *mut u8;
-                let len = (raw & 0xffff_ffff) as usize;
-                Some(Vec::from_raw_parts(ptr, len, len))
-            }
+            Option::<Vec<u8>>::from_abi_in_wasm(raw)
         };
         raw_interface.map(|bytes| Cow::Owned(Interface::from_bytes(&bytes)))
     }
