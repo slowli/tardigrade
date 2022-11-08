@@ -235,7 +235,7 @@ impl WorkflowSelectionCriteria {
             Self::HasTimerBefore(time) => record
                 .persisted
                 .timers()
-                .any(|(_, timer)| timer.definition().expires_at < *time),
+                .any(|(_, timer)| timer.definition().expires_at <= *time),
         }
     }
 }

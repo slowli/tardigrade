@@ -362,7 +362,14 @@ impl ReadWorkflows for LocalTransaction<'_> {
     async fn nearest_timer_expiration(&self) -> Option<DateTime<Utc>> {
         let workflows = self.inner.workflows.values();
         let timers = workflows.flat_map(|record| record.persisted.timers());
-        timers.map(|(_, timer)| timer.definition().expires_at).min()
+        let expirations = timers.filter_map(|(_, state)| {
+            if state.completed_at().is_none() {
+                Some(state.definition().expires_at)
+            } else {
+                None
+            }
+        });
+        expirations.min()
     }
 }
 
