@@ -1,6 +1,6 @@
 //! E2E tests for sample workflows.
 
-use externref::processor::Processor;
+use async_std::task;
 use once_cell::sync::Lazy;
 use tracing::{subscriber::DefaultGuard, Level, Subscriber};
 use tracing_capture::{CaptureLayer, SharedStorage};
@@ -21,22 +21,24 @@ mod spawn;
 mod sync_env;
 mod tasks;
 
-static MODULE: Lazy<WorkflowModule> = Lazy::new(|| {
+static MODULE_BYTES: Lazy<Vec<u8>> = Lazy::new(|| {
     // Since this closure is called once, it is a good place to do other initialization
-    //tracing::subscriber::set_global_default(create_fmt_subscriber()).ok();
+    tracing::subscriber::set_global_default(create_fmt_subscriber()).ok();
 
-    let module_bytes = ModuleCompiler::new(env!("CARGO_PKG_NAME"))
+    ModuleCompiler::new(env!("CARGO_PKG_NAME"))
         .set_current_dir(env!("CARGO_MANIFEST_DIR"))
         .set_profile("wasm")
         .set_wasm_opt(WasmOpt::default())
-        .compile();
-    let module_bytes = Processor::default()
-        .set_drop_fn("tardigrade_rt", "drop_ref")
-        .process_bytes(&module_bytes)
-        .unwrap();
-    let engine = WorkflowEngine::default();
-    WorkflowModule::new(&engine, &module_bytes).unwrap()
+        .compile()
 });
+static MODULE: Lazy<WorkflowModule<'static>> = Lazy::new(|| {
+    let engine = WorkflowEngine::default();
+    WorkflowModule::new(&engine, &MODULE_BYTES).unwrap()
+});
+
+async fn create_module() -> WorkflowModule<'static> {
+    task::spawn_blocking(|| &*MODULE).await.clone()
+}
 
 type TestResult<T = ()> = Result<T, Box<dyn error::Error>>;
 

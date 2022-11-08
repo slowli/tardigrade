@@ -2,7 +2,7 @@
 
 use futures::future;
 
-use std::{collections::HashSet, fmt, marker::PhantomData};
+use std::{collections::HashSet, error, fmt, marker::PhantomData};
 
 use crate::{
     manager::{WorkflowAndChannelIds, WorkflowManager},
@@ -24,6 +24,18 @@ pub enum HandleUpdateError {
     /// The workflow that the handle is associated with was terminated.
     Terminated,
 }
+
+impl fmt::Display for HandleUpdateError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Terminated => {
+                formatter.write_str("workflow that the handle is associated with was terminated")
+            }
+        }
+    }
+}
+
+impl error::Error for HandleUpdateError {}
 
 /// Handle to a workflow in a [`WorkflowManager`].
 ///

@@ -13,36 +13,35 @@ use tardigrade_rt::{
         WorkflowManager,
     },
     receipt::{Event, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
-    WorkflowModule,
+    storage::LocalStorage,
 };
 use tardigrade_test_basic::{
     spawn::{Baking, PizzaDeliveryWithSpawning},
     Args, DomainEvent, PizzaKind, PizzaOrder,
 };
 
-use super::{TestResult, MODULE};
+use super::{create_module, TestResult};
 
-fn create_manager(module: &WorkflowModule) -> TestResult<WorkflowManager> {
-    Ok(WorkflowManager::builder()
-        .with_spawner("baking", module.for_workflow::<Baking>()?)
-        .with_spawner("pizza", module.for_workflow::<PizzaDeliveryWithSpawning>()?)
-        .build())
-}
+const PARENT_DEF: &str = "test::PizzaDeliveryWithSpawning";
 
 #[async_std::test]
 async fn spawning_child_workflows() -> TestResult {
     const READY: Poll<()> = Poll::Ready(());
 
-    let module = task::spawn_blocking(|| &*MODULE).await;
-    let mut manager = create_manager(module)?;
+    let module = create_module().await;
+    let mut manager = WorkflowManager::builder(LocalStorage::default())
+        .build()
+        .await;
+    manager.insert_module("test", module).await;
 
     let inputs = Args {
         oven_count: 2,
         deliverer_count: 1,
     };
     let mut workflow = manager
-        .new_workflow::<PizzaDeliveryWithSpawning>("pizza", inputs)?
-        .build()?;
+        .new_workflow::<PizzaDeliveryWithSpawning>(PARENT_DEF, inputs)?
+        .build()
+        .await?;
 
     let handle = workflow.handle();
     let mut env = AsyncEnv::new(AsyncIoScheduler);
@@ -101,6 +100,7 @@ async fn spawning_child_workflows() -> TestResult {
             acc
         },
     );
+    dbg!(&workflow_events_by_kind);
 
     assert_eq!(workflow_events_by_kind[&ResourceEventKind::Created], 2);
     assert_eq!(workflow_events_by_kind[&ResourceEventKind::Dropped], 2);
@@ -114,16 +114,20 @@ async fn spawning_child_workflows() -> TestResult {
 
 #[async_std::test]
 async fn accessing_handles_in_child_workflows() -> TestResult {
-    let module = task::spawn_blocking(|| &*MODULE).await;
-    let mut manager = create_manager(module)?;
+    let module = create_module().await;
+    let mut manager = WorkflowManager::builder(LocalStorage::default())
+        .build()
+        .await;
+    manager.insert_module("test", module).await;
 
     let inputs = Args {
         oven_count: 2,
         deliverer_count: 1,
     };
     let mut workflow = manager
-        .new_workflow::<PizzaDeliveryWithSpawning>("pizza", inputs)?
-        .build()?;
+        .new_workflow::<PizzaDeliveryWithSpawning>(PARENT_DEF, inputs)?
+        .build()
+        .await?;
     let mut handle = workflow.handle();
 
     let orders = [
@@ -137,12 +141,12 @@ async fn accessing_handles_in_child_workflows() -> TestResult {
         },
     ];
     for order in orders {
-        handle.orders.send(order)?;
+        handle.orders.send(order).await?;
     }
     let parent_events_id = handle.shared.events.channel_id();
 
     let mut child_ids = vec![];
-    while let Ok(tick_result) = manager.tick() {
+    while let Ok(tick_result) = manager.tick().await {
         let receipt = tick_result.into_inner()?;
         let new_child_ids = receipt.events().filter_map(|event| {
             if let Event::Resource(ResourceEvent {
@@ -165,7 +169,7 @@ async fn accessing_handles_in_child_workflows() -> TestResult {
     let mut env = AsyncEnv::new(AsyncIoScheduler);
     let mut child_events_rxs = vec![];
     for &child_id in &child_ids {
-        let child = manager.workflow(child_id).unwrap();
+        let child = manager.workflow(child_id).await.unwrap();
         let child_handle = child.downcast::<Baking>()?.handle();
         assert!(child_handle.events.can_receive_messages());
         assert_eq!(child_handle.events.channel_id(), parent_events_id);

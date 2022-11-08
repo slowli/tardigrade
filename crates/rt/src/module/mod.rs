@@ -141,6 +141,7 @@ impl DataSection {
 
 /// Workflow module that combines a WASM module with the workflow logic and the declared
 /// workflow [`Interface`].
+#[derive(Clone)]
 pub struct WorkflowModule<'a> {
     pub(crate) inner: Module,
     pub(crate) bytes: &'a [u8],

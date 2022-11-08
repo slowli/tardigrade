@@ -23,6 +23,8 @@ impl WorkflowFn for PizzaDeliveryWithSpawning {
 
 impl PizzaDeliveryHandle {
     async fn spawn_with_child_workflows(self, args: Args) -> TaskResult {
+        const DEFINITION_ID: &str = "test::Baking";
+
         let mut counter = 0;
         self.orders
             .map(Ok)
@@ -30,10 +32,12 @@ impl PizzaDeliveryHandle {
                 counter += 1;
                 let events = self.shared.events.clone();
                 async move {
-                    let builder = Workflows.new_workflow::<Baking>("baking", (counter, order))?;
+                    let builder =
+                        Workflows.new_workflow::<Baking>(DEFINITION_ID, (counter, order))?;
                     builder.handle().events.copy_from(events);
                     // FIXME: add another outbound channel to close?
-                    builder.build()?.workflow.await.map_err(TaskError::from)
+                    let handle = builder.build().await?;
+                    handle.workflow.await.map_err(TaskError::from)
                 }
             })
             .await

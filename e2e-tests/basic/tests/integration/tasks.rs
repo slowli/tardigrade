@@ -20,6 +20,7 @@ use tardigrade_rt::{
     receipt::{
         Event, ExecutedFunction, Execution, Receipt, ResourceEvent, ResourceEventKind, ResourceId,
     },
+    storage::LocalStorage,
     test::MockScheduler,
 };
 use tardigrade_test_basic::{
@@ -27,7 +28,7 @@ use tardigrade_test_basic::{
     DomainEvent, PizzaKind, PizzaOrder,
 };
 
-use crate::{TestResult, MODULE};
+use crate::{create_module, TestResult};
 
 pub(crate) async fn send_orders(
     mut orders_sx: MessageSender<PizzaOrder, Json>,
@@ -112,18 +113,19 @@ async fn setup_workflow(
     args: Args,
     order_count: usize,
 ) -> TestResult<(Vec<DomainEvent>, Vec<Receipt>)> {
-    let module = task::spawn_blocking(|| &*MODULE).await;
-    let spawner = module.for_workflow::<PizzaDeliveryWithTasks>()?;
+    let module = create_module().await;
     let (scheduler, mut expirations) = MockScheduler::with_expirations();
     let scheduler = Arc::new(scheduler);
-    let mut manager = WorkflowManager::builder()
-        .with_spawner("pizza", spawner)
+    let mut manager = WorkflowManager::builder(LocalStorage::default())
         .with_clock(Arc::clone(&scheduler))
-        .build();
+        .build()
+        .await;
+    manager.insert_module("test", module).await;
 
     let mut workflow = manager
-        .new_workflow::<PizzaDeliveryWithTasks>("pizza", args)?
-        .build()?;
+        .new_workflow::<PizzaDeliveryWithTasks>("test::PizzaDeliveryWithTasks", args)?
+        .build()
+        .await?;
     let handle = workflow.handle();
     let mut env = AsyncEnv::new(Arc::clone(&scheduler));
     let orders_sx = handle.orders.into_async(&mut env);

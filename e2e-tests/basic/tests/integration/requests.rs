@@ -7,18 +7,24 @@ use futures::{channel::mpsc, future, stream, SinkExt, StreamExt, TryStreamExt};
 use std::cmp;
 
 use tardigrade::{channel::WithId, spawn::ManageWorkflowsExt};
-use tardigrade_rt::manager::{
-    future::{AsyncEnv, AsyncIoScheduler, Termination},
-    WorkflowManager,
+use tardigrade_rt::{
+    manager::{
+        future::{AsyncEnv, AsyncIoScheduler, Termination},
+        WorkflowManager,
+    },
+    storage::LocalStorage,
 };
 use tardigrade_test_basic::{
     requests::{Args, PizzaDeliveryWithRequests},
     DomainEvent, PizzaKind, PizzaOrder,
 };
 
+const DEFINITION_ID: &str = "test::PizzaDeliveryWithRequests";
+
 use crate::{
+    create_module,
     tasks::{assert_event_completeness, assert_event_concurrency, send_orders},
-    TestResult, MODULE,
+    TestResult,
 };
 
 async fn test_external_tasks(
@@ -26,15 +32,16 @@ async fn test_external_tasks(
     order_count: usize,
     task_concurrency: Option<usize>,
 ) -> TestResult {
-    let module = task::spawn_blocking(|| &*MODULE).await;
-    let spawner = module.for_workflow::<PizzaDeliveryWithRequests>()?;
-    let mut manager = WorkflowManager::builder()
-        .with_spawner("pizza", spawner)
-        .build();
+    let module = create_module().await;
+    let mut manager = WorkflowManager::builder(LocalStorage::default())
+        .build()
+        .await;
+    manager.insert_module("test", module).await;
 
     let mut workflow = manager
-        .new_workflow::<PizzaDeliveryWithRequests>("pizza", Args { oven_count })?
-        .build()?;
+        .new_workflow::<PizzaDeliveryWithRequests>(DEFINITION_ID, Args { oven_count })?
+        .build()
+        .await?;
     let handle = workflow.handle();
     let mut env = AsyncEnv::new(AsyncIoScheduler);
     let responses_sx = handle.baking_responses.into_async(&mut env);
@@ -106,15 +113,16 @@ async fn closing_task_responses_on_host() -> TestResult {
     const ORDER_COUNT: usize = 10;
     const SUCCESSFUL_TASK_COUNT: usize = 3;
 
-    let module = task::spawn_blocking(|| &*MODULE).await;
-    let spawner = module.for_workflow::<PizzaDeliveryWithRequests>()?;
-    let mut manager = WorkflowManager::builder()
-        .with_spawner("pizza", spawner)
-        .build();
+    let module = create_module().await;
+    let mut manager = WorkflowManager::builder(LocalStorage::default())
+        .build()
+        .await;
+    manager.insert_module("test", module).await;
 
     let mut workflow = manager
-        .new_workflow::<PizzaDeliveryWithRequests>("pizza", Args { oven_count: 2 })?
-        .build()?;
+        .new_workflow::<PizzaDeliveryWithRequests>(DEFINITION_ID, Args { oven_count: 2 })?
+        .build()
+        .await?;
 
     let mut env = AsyncEnv::new(AsyncIoScheduler);
     let handle = workflow.handle();
