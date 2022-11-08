@@ -169,6 +169,8 @@ pub enum MessageOperationError {
 
 #[async_trait]
 pub trait ReadWorkflows {
+    /// Returns the number of active workflows.
+    async fn count_workflows(&self) -> usize;
     /// Retrieves a snapshot of the workflow with the specified ID.
     async fn workflow(&self, id: WorkflowId) -> Option<WorkflowRecord>;
 

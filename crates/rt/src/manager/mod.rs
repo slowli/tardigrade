@@ -383,6 +383,12 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
         Some(handle)
     }
 
+    /// Returns the number of non-completed workflows.
+    pub async fn workflow_count(&'a self) -> usize {
+        let transaction = self.storage.readonly_transaction().await;
+        transaction.count_workflows().await
+    }
+
     pub(crate) async fn send_message(
         &'a self,
         channel_id: ChannelId,
@@ -564,7 +570,11 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
 
     /// Returns `Ok(None)` if the message cannot be consumed right now (the workflow channel
     /// does not listen to it).
-    #[tracing::instrument(level = "debug", skip(workflow))]
+    #[tracing::instrument(
+        level = "debug",
+        skip(workflow, message),
+        fields(message.len = message.len())
+    )]
     fn push_message(
         workflow: &mut Workflow,
         child_id: Option<WorkflowId>,

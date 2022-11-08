@@ -321,6 +321,10 @@ impl WriteChannels for LocalTransaction<'_> {
 
 #[async_trait]
 impl ReadWorkflows for LocalTransaction<'_> {
+    async fn count_workflows(&self) -> usize {
+        self.inner.workflows.len()
+    }
+
     async fn workflow(&self, id: WorkflowId) -> Option<WorkflowRecord> {
         self.inner.workflows.get(&id).cloned()
     }

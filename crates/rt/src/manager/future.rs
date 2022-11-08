@@ -209,14 +209,20 @@ impl AsyncEnv {
         }
     }
 
+    #[tracing::instrument(level = "debug", skip_all, err)]
     async fn tick<'a, S: Storage<'a>>(
         &mut self,
         manager: &'a WorkflowManager<S>,
     ) -> Result<Option<Termination>, ExecutionError> {
         let nearest_timer_expiration = self.tick_manager(manager).await?;
-        //self.gc(manager); FIXME
+        self.gc(manager).await;
         if nearest_timer_expiration.is_none() && self.inbound_channels.is_empty() {
-            return Ok(Some(Termination::Stalled));
+            let termination = if manager.workflow_count().await == 0 {
+                Termination::Finished
+            } else {
+                Termination::Stalled
+            };
+            return Ok(Some(termination));
         }
 
         // Determine external events listened by the workflow.
@@ -286,6 +292,26 @@ impl AsyncEnv {
                 sx.unbounded_send(message).ok();
                 // ^ We don't care if outbound messages are no longer listened to.
             }
+        }
+    }
+
+    /// Garbage-collect receivers for closed inbound channels. This will signal
+    /// to the consumers that the channel cannot be written to.
+    #[tracing::instrument(level = "debug", skip_all)]
+    async fn gc<'a, S: Storage<'a>>(&mut self, manager: &'a WorkflowManager<S>) {
+        let channel_ids = self.inbound_channels.keys();
+        let check_closed_tasks = channel_ids.map(|&id| async move {
+            let is_closed = manager
+                .channel(id)
+                .await
+                .map_or(true, |channel| channel.is_closed());
+            Some(id).filter(|_| is_closed)
+        });
+        let closed_channels = future::join_all(check_closed_tasks).await;
+
+        for id in closed_channels.into_iter().flatten() {
+            self.inbound_channels.remove(&id);
+            tracing::debug!(id, "removed closed inbound channel");
         }
     }
 }
