@@ -30,6 +30,7 @@ use tardigrade::{
 };
 
 type ChannelHandles = ChannelsConfig<ChannelId>;
+type PollStub = Poll<Result<WorkflowId, HostError>>;
 
 #[derive(Debug, Clone)]
 pub(super) struct SharedChannelHandles {
@@ -270,6 +271,11 @@ impl WorkflowData<'_> {
             .ok_or_else(|| Trap::new("no capability to spawn workflows"))?;
         let stub_id = self.persisted.child_workflow_stubs.create();
         workflows.stash_workflow(stub_id, definition_id, args, channels.clone());
+
+        self.current_execution().push_resource_event(
+            ResourceId::WorkflowStub(stub_id),
+            ResourceEventKind::Created,
+        );
         Ok(stub_id)
     }
 
@@ -277,14 +283,29 @@ impl WorkflowData<'_> {
         &mut self,
         stub_id: WorkflowId,
         cx: &mut WasmContext,
-    ) -> Poll<Result<WorkflowId, HostError>> {
-        let stub = &self.persisted.child_workflow_stubs.stubs[&stub_id];
+    ) -> Result<PollStub, Trap> {
+        let stubs = &mut self.persisted.child_workflow_stubs.stubs;
+        let stub = stubs
+            .get(&stub_id)
+            .ok_or_else(|| Trap::new(format!("stub {stub_id} polled after completion")))?;
         let poll_result = stub.result.clone();
+        if poll_result.is_ready() {
+            // We don't want to create aliased workflow resources; thus, we prevent repeated
+            // stub polling after completion.
+            stubs.remove(&stub_id);
+        }
+
         self.current_execution().push_resource_event(
             ResourceId::WorkflowStub(stub_id),
             ResourceEventKind::Polled(utils::drop_value(&poll_result)),
         );
-        poll_result.wake_if_pending(cx, || WakerPlacement::WorkflowInit(stub_id))
+        if let Poll::Ready(Ok(workflow_id)) = &poll_result {
+            self.current_execution().push_resource_event(
+                ResourceId::Workflow(*workflow_id),
+                ResourceEventKind::Created,
+            );
+        }
+        Ok(poll_result.wake_if_pending(cx, || WakerPlacement::WorkflowInit(stub_id)))
     }
 
     fn poll_workflow_completion(
@@ -317,8 +338,9 @@ impl WorkflowData<'_> {
             ResourceEventKind::Dropped,
         );
         let stubs = &mut self.persisted.child_workflow_stubs.stubs;
-        let stub = stubs.get_mut(&stub_id).unwrap();
-        mem::take(&mut stub.wakes_on_init)
+        stubs
+            .get_mut(&stub_id)
+            .map_or_else(HashSet::default, |stub| mem::take(&mut stub.wakes_on_init))
     }
 
     /// Handles dropping the child workflow handle from the workflow side. Returns wakers
@@ -482,7 +504,7 @@ impl SpawnFunctions {
         tracing::Span::current().record("id", &stub_id);
 
         let mut poll_cx = WasmContext::new(poll_cx);
-        let poll_result = ctx.data_mut().poll_workflow_init(stub_id, &mut poll_cx);
+        let poll_result = ctx.data_mut().poll_workflow_init(stub_id, &mut poll_cx)?;
         tracing::debug!(result = ?poll_result);
         poll_cx.save_waker(&mut ctx)?;
 
