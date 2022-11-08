@@ -46,6 +46,13 @@ impl<'a, T: WriteChannels + WriteWorkflows> PersistenceManager<'a, T> {
         Self { inner }
     }
 
+    #[tracing::instrument(
+        skip(self, workflow, tracing_spans),
+        fields(
+            workflow.result = ?workflow.result(),
+            tracing_spans.len = tracing_spans.len()
+        )
+    )]
     pub async fn persist_workflow(
         &mut self,
         id: WorkflowId,
@@ -53,8 +60,8 @@ impl<'a, T: WriteChannels + WriteWorkflows> PersistenceManager<'a, T> {
         workflow: PersistedWorkflow,
         tracing_spans: PersistedSpans,
     ) {
-        let needs_persistence = self.handle_workflow_update(id, parent_id, &workflow).await;
-        if needs_persistence {
+        self.handle_workflow_update(id, parent_id, &workflow).await;
+        if workflow.result().is_pending() {
             self.inner
                 .persist_workflow(id, workflow, tracing_spans)
                 .await;
@@ -67,7 +74,7 @@ impl<'a, T: WriteChannels + WriteWorkflows> PersistenceManager<'a, T> {
         id: WorkflowId,
         parent_id: Option<WorkflowId>,
         workflow: &PersistedWorkflow,
-    ) -> bool {
+    ) {
         let completion_notification = if let Poll::Ready(result) = workflow.result() {
             // Close all channels linked to the workflow.
             for (.., state) in workflow.inbound_channels() {
@@ -90,9 +97,6 @@ impl<'a, T: WriteChannels + WriteWorkflows> PersistenceManager<'a, T> {
                     persisted.notify_on_child_completion(id, result);
                 })
                 .await;
-            false
-        } else {
-            true
         }
     }
 
@@ -108,7 +112,7 @@ impl<'a, T: WriteChannels + WriteWorkflows> PersistenceManager<'a, T> {
     }
 
     // TODO: potential bottleneck (multiple workflows touched). Rework as tx outbox?
-    #[tracing::instrument(skip(self), fields(closed = false))]
+    #[tracing::instrument(skip(self))]
     pub async fn close_channel_side(&mut self, channel_id: ChannelId, side: ChannelSide) {
         let channel_state = self
             .inner
