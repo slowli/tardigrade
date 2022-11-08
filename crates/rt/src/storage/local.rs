@@ -7,6 +7,7 @@ use futures::{
     stream::{self, BoxStream},
     StreamExt,
 };
+use serde::{Deserialize, Serialize};
 use tracing_tunnel::{PersistedMetadata, PersistedSpans};
 
 use std::{
@@ -23,11 +24,31 @@ use super::{
 use crate::PersistedWorkflow;
 use tardigrade::{channel::SendError, ChannelId, WorkflowId};
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct LocalMessageRecord {
+    #[serde(
+        default = "helpers::default_ready",
+        skip_serializing_if = "helpers::flip_bool"
+    )]
     is_ready: bool,
+    #[serde(default, skip_serializing_if = "helpers::is_zero")]
     received_count: usize,
     payload: MessageOrEof,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // required by serde
+mod helpers {
+    pub(super) const fn default_ready() -> bool {
+        true
+    }
+
+    pub(super) fn flip_bool(&value: &bool) -> bool {
+        !value
+    }
+
+    pub(super) fn is_zero(&received_count: &usize) -> bool {
+        received_count == 0
+    }
 }
 
 impl LocalMessageRecord {
@@ -48,7 +69,7 @@ impl LocalMessageRecord {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct LocalChannel {
     state: ChannelState,
     messages: BTreeMap<usize, LocalMessageRecord>,
@@ -79,7 +100,7 @@ impl ModuleRecord<'_> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Inner {
     modules: HashMap<String, ModuleRecord<'static>>,
     channels: HashMap<ChannelId, LocalChannel>,
@@ -103,6 +124,13 @@ impl Default for Inner {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LocalStorageSnapshot<'a> {
+    next_channel_id: u64,
+    next_workflow_id: u64,
+    inner: Cow<'a, Inner>,
+}
+
 #[derive(Debug)]
 pub struct LocalStorage {
     inner: Mutex<Inner>,
@@ -116,6 +144,26 @@ impl Default for LocalStorage {
             inner: Mutex::default(),
             next_channel_id: AtomicU64::new(1), // skip the closed channel
             next_workflow_id: AtomicU64::new(0),
+        }
+    }
+}
+
+impl LocalStorage {
+    pub fn snapshot(&mut self) -> LocalStorageSnapshot<'_> {
+        LocalStorageSnapshot {
+            inner: Cow::Borrowed(self.inner.get_mut()),
+            next_channel_id: *self.next_channel_id.get_mut(),
+            next_workflow_id: *self.next_workflow_id.get_mut(),
+        }
+    }
+}
+
+impl From<LocalStorageSnapshot<'_>> for LocalStorage {
+    fn from(snapshot: LocalStorageSnapshot<'_>) -> Self {
+        Self {
+            inner: Mutex::new(snapshot.inner.into_owned()),
+            next_channel_id: AtomicU64::new(snapshot.next_channel_id),
+            next_workflow_id: AtomicU64::new(snapshot.next_workflow_id),
         }
     }
 }

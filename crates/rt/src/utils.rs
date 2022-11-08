@@ -231,9 +231,9 @@ pub(crate) mod serde_b64 {
         D: Deserializer<'de>,
         T: From<Vec<u8>>,
     {
-        struct HexVisitor;
+        struct Base64Visitor;
 
-        impl<'de> Visitor<'de> for HexVisitor {
+        impl<'de> Visitor<'de> for Base64Visitor {
             type Value = Vec<u8>;
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -269,7 +269,7 @@ pub(crate) mod serde_b64 {
         }
 
         let maybe_bytes = if deserializer.is_human_readable() {
-            deserializer.deserialize_str(HexVisitor)
+            deserializer.deserialize_str(Base64Visitor)
         } else {
             deserializer.deserialize_byte_buf(BytesVisitor)
         };

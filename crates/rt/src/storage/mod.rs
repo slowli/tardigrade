@@ -5,15 +5,16 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::stream::BoxStream;
+use serde::{Deserialize, Serialize};
 use tracing_tunnel::{PersistedMetadata, PersistedSpans};
 
 use std::{borrow::Cow, collections::HashSet};
 
 mod local;
 
-pub use self::local::{LocalStorage, LocalToken, LocalTransaction};
+pub use self::local::{LocalStorage, LocalStorageSnapshot, LocalToken, LocalTransaction};
 
-use crate::PersistedWorkflow;
+use crate::{utils::serde_b64, PersistedWorkflow};
 use tardigrade::{channel::SendError, ChannelId, WorkflowId};
 
 #[async_trait]
@@ -54,11 +55,12 @@ pub trait WriteModules: ReadModules {
     async fn update_tracing_metadata(&mut self, module_id: &str, metadata: PersistedMetadata);
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModuleRecord<'a> {
     /// ID of the module.
     pub id: String,
     /// WASM module bytes.
+    #[serde(with = "serde_b64")]
     pub bytes: Cow<'a, [u8]>,
     /// Persisted metadata.
     pub tracing_metadata: PersistedMetadata,
@@ -110,13 +112,14 @@ pub trait WriteChannels: ReadChannels {
     ) -> Result<(), MessageOperationError>;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum MessageOrEof {
-    Message(Vec<u8>),
+    Message(#[serde(with = "serde_b64")] Vec<u8>),
     Eof,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelState {
     pub(crate) receiver_workflow_id: Option<WorkflowId>,
     pub(crate) sender_workflow_ids: HashSet<WorkflowId>,
@@ -214,7 +217,7 @@ pub trait WriteWorkflows: ReadWorkflows {
     async fn delete_workflow(&mut self, id: WorkflowId);
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowRecord {
     pub id: WorkflowId,
     pub parent_id: Option<WorkflowId>,
