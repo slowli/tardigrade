@@ -1,25 +1,28 @@
 //! Tests for the `PizzaDelivery` workflow that use `WorkflowEnv`.
 
 use assert_matches::assert_matches;
+use async_trait::async_trait;
 
 use std::{sync::Arc, task::Poll};
 
+use crate::create_module;
 use tardigrade::{
     interface::{InboundChannel, OutboundChannel},
     spawn::ManageWorkflowsExt,
     Decode, Encode, Json,
 };
+use tardigrade_rt::storage::{LocalStorageSnapshot, ModuleRecord};
 use tardigrade_rt::{
-    manager::WorkflowManager,
+    manager::{CreateModule, WorkflowManager},
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, ExecutionError, WakeUpCause,
     },
-    storage::LocalStorage,
     test::MockScheduler,
+    WorkflowModule,
 };
 use tardigrade_test_basic::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOrder};
 
-use super::{create_module, enable_tracing_assertions, TestResult};
+use super::{create_manager, enable_tracing_assertions, TestResult};
 
 const DEFINITION_ID: &str = "test::PizzaDelivery";
 
@@ -27,12 +30,7 @@ const DEFINITION_ID: &str = "test::PizzaDelivery";
 async fn basic_workflow() -> TestResult {
     let (_guard, tracing_storage) = enable_tracing_assertions();
     let clock = Arc::new(MockScheduler::default());
-    let module = create_module().await;
-    let mut manager = WorkflowManager::builder(LocalStorage::default())
-        .with_clock(clock.clone())
-        .build()
-        .await;
-    manager.insert_module("test", module).await;
+    let manager = create_manager(Some(&clock)).await?;
 
     let inputs = Args {
         oven_count: 1,
@@ -148,11 +146,7 @@ async fn basic_workflow() -> TestResult {
 
 #[async_std::test]
 async fn workflow_with_concurrency() -> TestResult {
-    let module = create_module().await;
-    let mut manager = WorkflowManager::builder(LocalStorage::default())
-        .build()
-        .await;
-    manager.insert_module("test", module).await;
+    let manager = create_manager(None).await?;
 
     let inputs = Args {
         oven_count: 2,
@@ -199,27 +193,39 @@ async fn workflow_with_concurrency() -> TestResult {
     Ok(())
 }
 
-/*
+/// Workflow module creator that reuses the statically allocated module.
+#[derive(Debug)]
+struct DummyModuleCreator;
+
+#[async_trait]
+impl CreateModule for DummyModuleCreator {
+    async fn create_module<'a>(
+        &self,
+        module: &'a ModuleRecord<'_>,
+    ) -> anyhow::Result<WorkflowModule<'a>> {
+        assert_eq!(module.id, "test");
+        Ok(create_module().await)
+    }
+}
+
 #[async_std::test]
 async fn persisting_workflow() -> TestResult {
     let (_guard, tracing_storage) = enable_tracing_assertions();
     let clock = Arc::new(MockScheduler::default());
-    let mut manager = WorkflowManager::builder(LocalStorage::default())
-        .with_clock(Arc::clone(&clock))
-        .build()
-        .await;
+    let manager = create_manager(Some(&clock)).await?;
 
     let inputs = Args {
         oven_count: 1,
         deliverer_count: 1,
     };
     let mut workflow = manager
-        .new_workflow::<PizzaDelivery>("pizza", inputs)?
+        .new_workflow::<PizzaDelivery>(DEFINITION_ID, inputs)?
         .build()
         .await?;
+    let workflow_id = workflow.id();
+    let mut handle = workflow.handle();
     manager.tick().await?.into_inner()?;
 
-    let mut handle = workflow.handle();
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,
         delivery_distance: 10,
@@ -233,35 +239,45 @@ async fn persisting_workflow() -> TestResult {
         [DomainEvent::OrderTaken { index: 1, order }]
     );
 
-    let persisted_json = serde_json::to_string(&manager.into_storage())?;
-    assert!(persisted_json.len() < 5_000, "{}", persisted_json);
-    let persisted = serde_json::from_str(&persisted_json)?;
-    let mut manager = WorkflowManager::builder()
-        .with_clock(Arc::clone(&clock))
-        .with_spawner("pizza", MODULE.for_workflow::<PizzaDelivery>()?)
-        .restore(persisted)?;
+    let mut storage = manager.into_storage();
+    let mut snapshot = storage.snapshot();
+    snapshot.replace_module_bytes(|module| {
+        assert_eq!(module.id, "test");
+        Some(vec![])
+    });
+    let persisted_json = serde_json::to_string(&snapshot)?;
+    assert!(persisted_json.len() < 5_000, "{persisted_json}");
+    let snapshot: LocalStorageSnapshot<'_> = serde_json::from_str(&persisted_json)?;
+    storage = snapshot.into();
 
-    assert!(!manager.tick()?.into_inner()?.executions().is_empty());
+    let manager = WorkflowManager::builder(storage)
+        .with_clock(Arc::clone(&clock))
+        .with_module_creator(DummyModuleCreator)
+        .build()
+        .await?;
+
+    assert!(!manager.tick().await?.into_inner()?.executions().is_empty());
     let new_time = clock.now() + chrono::Duration::milliseconds(100);
     clock.set_now(new_time);
-    manager.set_current_time(new_time);
-    assert!(!manager.tick()?.into_inner()?.executions().is_empty());
+    manager.set_current_time(new_time).await;
+    assert!(!manager.tick().await?.into_inner()?.executions().is_empty());
 
     // Check that the pizza is ready now.
-    let mut handle = get_workflow(&manager, workflow_id).handle();
-    let events = handle.shared.events.take_messages().unwrap();
+    let workflow = manager.workflow(workflow_id).await.unwrap();
+    let mut workflow = workflow.downcast::<PizzaDelivery>()?;
+    let mut handle = workflow.handle();
+    let events = handle.shared.events.take_messages().await.unwrap();
     assert_eq!(events.decode()?, [DomainEvent::Baked { index: 1, order }]);
 
     // We need to flush a second time to get the "started delivering" event.
-    manager.tick()?.into_inner()?;
-    let mut handle = get_workflow(&manager, workflow_id).handle();
-    let events = handle.shared.events.take_messages().unwrap();
+    manager.tick().await?.into_inner()?;
+    let events = handle.shared.events.take_messages().await.unwrap();
     assert_eq!(
         events.decode()?,
         [DomainEvent::StartedDelivering { index: 1, order }]
     );
     // ...and flush again to activate the delivery timer
-    manager.tick()?.into_inner()?;
+    manager.tick().await?.into_inner()?;
 
     // Check that the delivery timer is now active.
     {
@@ -276,15 +292,10 @@ async fn persisting_workflow() -> TestResult {
     }
     Ok(())
 }
-*/
 
 #[async_std::test]
 async fn untyped_workflow() -> TestResult {
-    let module = create_module().await;
-    let mut manager = WorkflowManager::builder(LocalStorage::default())
-        .build()
-        .await;
-    manager.insert_module("test", module).await;
+    let manager = create_manager(None).await?;
 
     let data = Json.encode_value(Args {
         oven_count: 1,
@@ -330,11 +341,7 @@ async fn untyped_workflow() -> TestResult {
 async fn workflow_recovery_after_trap() -> TestResult {
     const SAMPLES: usize = 5;
 
-    let module = create_module().await;
-    let mut manager = WorkflowManager::builder(LocalStorage::default())
-        .build()
-        .await;
-    manager.insert_module("test", module).await;
+    let manager = create_manager(None).await?;
 
     let data = Json.encode_value(Args {
         oven_count: SAMPLES,

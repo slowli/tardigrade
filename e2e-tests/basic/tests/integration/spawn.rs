@@ -8,19 +8,15 @@ use std::{collections::HashMap, task::Poll};
 
 use tardigrade::spawn::ManageWorkflowsExt;
 use tardigrade_rt::{
-    manager::{
-        future::{AsyncEnv, AsyncIoScheduler, Termination},
-        WorkflowManager,
-    },
+    manager::future::{AsyncEnv, AsyncIoScheduler, Termination},
     receipt::{Event, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
-    storage::LocalStorage,
 };
 use tardigrade_test_basic::{
     spawn::{Baking, PizzaDeliveryWithSpawning},
     Args, DomainEvent, PizzaKind, PizzaOrder,
 };
 
-use super::{create_module, TestResult};
+use crate::{create_manager, TestResult};
 
 const PARENT_DEF: &str = "test::PizzaDeliveryWithSpawning";
 
@@ -28,11 +24,7 @@ const PARENT_DEF: &str = "test::PizzaDeliveryWithSpawning";
 async fn spawning_child_workflows() -> TestResult {
     const READY: Poll<()> = Poll::Ready(());
 
-    let module = create_module().await;
-    let mut manager = WorkflowManager::builder(LocalStorage::default())
-        .build()
-        .await;
-    manager.insert_module("test", module).await;
+    let mut manager = create_manager(None).await?;
 
     let inputs = Args {
         oven_count: 2,
@@ -114,11 +106,7 @@ async fn spawning_child_workflows() -> TestResult {
 
 #[async_std::test]
 async fn accessing_handles_in_child_workflows() -> TestResult {
-    let module = create_module().await;
-    let mut manager = WorkflowManager::builder(LocalStorage::default())
-        .build()
-        .await;
-    manager.insert_module("test", module).await;
+    let mut manager = create_manager(None).await?;
 
     let inputs = Args {
         oven_count: 2,

@@ -33,7 +33,7 @@ use tardigrade_rt::{
 };
 use tardigrade_test_basic::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOrder};
 
-use super::{create_module, enable_tracing_assertions, TestResult};
+use super::{create_manager, enable_tracing_assertions, TestResult};
 
 fn spawn_traced_task<T: Send + 'static>(
     future: impl Future<Output = T> + Send + 'static,
@@ -49,11 +49,7 @@ fn drain_stream(stream: &mut (impl Stream + Unpin)) {
 
 async fn test_async_handle(cancel_workflow: bool) -> TestResult {
     let (_guard, tracing_storage) = enable_tracing_assertions();
-    let module = create_module().await;
-    let mut manager = WorkflowManager::builder(LocalStorage::default())
-        .build()
-        .await;
-    manager.insert_module("test", module).await;
+    let mut manager = create_manager(None).await?;
 
     let inputs = Args {
         oven_count: 1,
@@ -143,12 +139,7 @@ async fn test_async_handle_with_concurrency(inputs: Args) -> TestResult {
 
     println!("testing async handle with {:?}", inputs);
 
-    let module = create_module().await;
-    let mut manager = WorkflowManager::builder(LocalStorage::default())
-        .build()
-        .await;
-    manager.insert_module("test", module).await;
-
+    let mut manager = create_manager(None).await?;
     let mut workflow = manager
         .new_workflow::<PizzaDelivery>("test::PizzaDelivery", inputs)?
         .build()
@@ -255,14 +246,9 @@ struct AsyncRig {
 }
 
 async fn initialize_workflow() -> TestResult<AsyncRig> {
-    let module = create_module().await;
     let (scheduler, expirations) = MockScheduler::with_expirations();
     let scheduler = Arc::new(scheduler);
-    let mut manager = WorkflowManager::builder(LocalStorage::default())
-        .with_clock(Arc::clone(&scheduler))
-        .build()
-        .await;
-    manager.insert_module("test", module).await;
+    let mut manager = create_manager(Some(&scheduler)).await?;
 
     let inputs = Args {
         oven_count: 2,
@@ -427,14 +413,9 @@ struct CancellableWorkflow {
 }
 
 async fn spawn_cancellable_workflow() -> TestResult<CancellableWorkflow> {
-    let module = create_module().await;
     let (scheduler, expirations) = MockScheduler::with_expirations();
     let scheduler = Arc::new(scheduler);
-    let mut manager = WorkflowManager::builder(LocalStorage::default())
-        .with_clock(Arc::clone(&scheduler))
-        .build()
-        .await;
-    manager.insert_module("test", module).await;
+    let mut manager = create_manager(Some(&scheduler)).await?;
 
     let inputs = Args {
         oven_count: 1,
@@ -467,9 +448,8 @@ async fn spawn_cancellable_workflow() -> TestResult<CancellableWorkflow> {
     })
 }
 
-/*
 #[async_std::test]
-async fn persisting_workflow() -> TestResult {
+async fn launching_env_after_pause() -> TestResult {
     let (_guard, tracing_storage) = enable_tracing_assertions();
 
     let CancellableWorkflow {
@@ -501,7 +481,11 @@ async fn persisting_workflow() -> TestResult {
     let mut manager = join_handle.await;
 
     // Restore the persisted workflow and launch it again.
-    let mut workflow = manager.workflow(0).unwrap().downcast::<PizzaDelivery>()?;
+    let mut workflow = manager
+        .workflow(0)
+        .await
+        .unwrap()
+        .downcast::<PizzaDelivery>()?;
     let mut env = AsyncEnv::new(Arc::clone(&scheduler));
     let handle = workflow.handle();
     let orders_sx = handle.orders.into_async(&mut env);
@@ -515,15 +499,10 @@ async fn persisting_workflow() -> TestResult {
     assert_completed_spans(&tracing_storage.lock());
     Ok(())
 }
-*/
 
 #[async_std::test]
 async fn dynamically_typed_async_handle() -> TestResult {
-    let module = create_module().await;
-    let mut manager = WorkflowManager::builder(LocalStorage::default())
-        .build()
-        .await;
-    manager.insert_module("test", module).await;
+    let mut manager = create_manager(None).await?;
 
     let data = Json.encode_value(Args {
         oven_count: 1,
@@ -577,11 +556,7 @@ async fn dynamically_typed_async_handle() -> TestResult {
 
 #[async_std::test]
 async fn rollbacks_on_trap() -> TestResult {
-    let module = create_module().await;
-    let mut manager = WorkflowManager::builder(LocalStorage::default())
-        .build()
-        .await;
-    manager.insert_module("test", module).await;
+    let mut manager = create_manager(None).await?;
 
     let data = Json.encode_value(Args {
         oven_count: 1,

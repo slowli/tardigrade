@@ -8,10 +8,12 @@ use tracing_subscriber::{
     filter::Targets, layer::SubscriberExt, registry::LookupSpan, FmtSubscriber,
 };
 
-use std::{collections::HashMap, error};
+use std::{collections::HashMap, error, sync::Arc};
 
 use tardigrade_rt::{
-    test::{ModuleCompiler, WasmOpt},
+    manager::WorkflowManager,
+    storage::LocalStorage,
+    test::{MockScheduler, ModuleCompiler, WasmOpt},
     WorkflowEngine, WorkflowModule,
 };
 
@@ -20,6 +22,8 @@ mod requests;
 mod spawn;
 mod sync_env;
 mod tasks;
+
+type TestResult<T = ()> = Result<T, Box<dyn error::Error>>;
 
 static MODULE_BYTES: Lazy<Vec<u8>> = Lazy::new(|| {
     // Since this closure is called once, it is a good place to do other initialization
@@ -40,7 +44,18 @@ async fn create_module() -> WorkflowModule<'static> {
     task::spawn_blocking(|| &*MODULE).await.clone()
 }
 
-type TestResult<T = ()> = Result<T, Box<dyn error::Error>>;
+async fn create_manager(
+    clock: Option<&Arc<MockScheduler>>,
+) -> TestResult<WorkflowManager<LocalStorage>> {
+    let module = create_module().await;
+    let mut builder = WorkflowManager::builder(LocalStorage::default());
+    if let Some(clock) = clock {
+        builder = builder.with_clock(Arc::clone(clock));
+    }
+    let mut manager = builder.build().await?;
+    manager.insert_module("test", module).await;
+    Ok(manager)
+}
 
 fn create_fmt_subscriber() -> impl Subscriber + for<'a> LookupSpan<'a> {
     const FILTER: &str = "tardigrade_test_basic=debug,\

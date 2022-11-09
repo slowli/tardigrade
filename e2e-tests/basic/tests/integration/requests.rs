@@ -7,13 +7,7 @@ use futures::{channel::mpsc, future, stream, SinkExt, StreamExt, TryStreamExt};
 use std::cmp;
 
 use tardigrade::{channel::WithId, spawn::ManageWorkflowsExt};
-use tardigrade_rt::{
-    manager::{
-        future::{AsyncEnv, AsyncIoScheduler, Termination},
-        WorkflowManager,
-    },
-    storage::LocalStorage,
-};
+use tardigrade_rt::manager::future::{AsyncEnv, AsyncIoScheduler, Termination};
 use tardigrade_test_basic::{
     requests::{Args, PizzaDeliveryWithRequests},
     DomainEvent, PizzaKind, PizzaOrder,
@@ -22,7 +16,7 @@ use tardigrade_test_basic::{
 const DEFINITION_ID: &str = "test::PizzaDeliveryWithRequests";
 
 use crate::{
-    create_module,
+    create_manager,
     tasks::{assert_event_completeness, assert_event_concurrency, send_orders},
     TestResult,
 };
@@ -32,11 +26,7 @@ async fn test_external_tasks(
     order_count: usize,
     task_concurrency: Option<usize>,
 ) -> TestResult {
-    let module = create_module().await;
-    let mut manager = WorkflowManager::builder(LocalStorage::default())
-        .build()
-        .await;
-    manager.insert_module("test", module).await;
+    let mut manager = create_manager(None).await?;
 
     let mut workflow = manager
         .new_workflow::<PizzaDeliveryWithRequests>(DEFINITION_ID, Args { oven_count })?
@@ -113,12 +103,7 @@ async fn closing_task_responses_on_host() -> TestResult {
     const ORDER_COUNT: usize = 10;
     const SUCCESSFUL_TASK_COUNT: usize = 3;
 
-    let module = create_module().await;
-    let mut manager = WorkflowManager::builder(LocalStorage::default())
-        .build()
-        .await;
-    manager.insert_module("test", module).await;
-
+    let mut manager = create_manager(None).await?;
     let mut workflow = manager
         .new_workflow::<PizzaDeliveryWithRequests>(DEFINITION_ID, Args { oven_count: 2 })?
         .build()

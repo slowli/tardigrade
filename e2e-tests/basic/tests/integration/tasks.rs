@@ -13,14 +13,10 @@ use std::{
 
 use tardigrade::{spawn::ManageWorkflowsExt, Json, TaskId};
 use tardigrade_rt::{
-    manager::{
-        future::{AsyncEnv, MessageSender, Termination},
-        WorkflowManager,
-    },
+    manager::future::{AsyncEnv, MessageSender, Termination},
     receipt::{
         Event, ExecutedFunction, Execution, Receipt, ResourceEvent, ResourceEventKind, ResourceId,
     },
-    storage::LocalStorage,
     test::MockScheduler,
 };
 use tardigrade_test_basic::{
@@ -28,7 +24,7 @@ use tardigrade_test_basic::{
     DomainEvent, PizzaKind, PizzaOrder,
 };
 
-use crate::{create_module, TestResult};
+use crate::{create_manager, TestResult};
 
 pub(crate) async fn send_orders(
     mut orders_sx: MessageSender<PizzaOrder, Json>,
@@ -113,14 +109,9 @@ async fn setup_workflow(
     args: Args,
     order_count: usize,
 ) -> TestResult<(Vec<DomainEvent>, Vec<Receipt>)> {
-    let module = create_module().await;
     let (scheduler, mut expirations) = MockScheduler::with_expirations();
     let scheduler = Arc::new(scheduler);
-    let mut manager = WorkflowManager::builder(LocalStorage::default())
-        .with_clock(Arc::clone(&scheduler))
-        .build()
-        .await;
-    manager.insert_module("test", module).await;
+    let mut manager = create_manager(Some(&scheduler)).await?;
 
     let mut workflow = manager
         .new_workflow::<PizzaDeliveryWithTasks>("test::PizzaDeliveryWithTasks", args)?
