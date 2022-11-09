@@ -23,6 +23,7 @@ use tardigrade::{
 /// Unique reference to a channel within a workflow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct ChannelRef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_id: Option<WorkflowId>,
     pub name: String,
 }
@@ -32,7 +33,7 @@ pub(super) struct ChannelRef {
 pub(super) enum HostResource {
     InboundChannel(ChannelRef),
     OutboundChannel(ChannelRef),
-    #[serde(skip)]
+    #[serde(skip)] // FIXME: why is this allowed?
     ChannelHandles(SharedChannelHandles),
     Workflow(WorkflowId),
     WorkflowStub(WorkflowId),

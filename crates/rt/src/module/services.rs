@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use tracing_tunnel::TracingEventReceiver;
 
-use std::fmt;
+use std::{fmt, future::Future, pin::Pin};
 
 use tardigrade::{
     spawn::{ChannelsConfig, ManageInterfaces},
@@ -35,6 +35,21 @@ impl fmt::Debug for dyn Clock {
         formatter.debug_struct("Clock").finish_non_exhaustive()
     }
 }
+
+/// Scheduler that allows creating futures completing at the specified timestamp.
+pub trait Schedule: Clock {
+    /// Creates a timer with the specified expiration timestamp.
+    fn create_timer(&self, expires_at: DateTime<Utc>) -> TimerFuture;
+}
+
+impl fmt::Debug for dyn Schedule {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("Schedule").finish_non_exhaustive()
+    }
+}
+
+/// Future for [`Clock::create_timer()`].
+pub type TimerFuture = Pin<Box<dyn Future<Output = DateTime<Utc>> + Send>>;
 
 /// Similar to [`tardigrade::ManageWorkflows`], but mutable and synchronous.
 /// The returned handle is stored in a `Workflow` and, before it's persisted, exchanged for

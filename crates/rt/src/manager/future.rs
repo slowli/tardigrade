@@ -6,11 +6,8 @@ use pin_project_lite::pin_project;
 
 use std::{
     collections::HashMap,
-    fmt,
-    future::Future,
     marker::PhantomData,
     pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -20,58 +17,6 @@ use crate::{
     storage::Storage,
 };
 use tardigrade::{ChannelId, Decode, Encode};
-
-/// Future for [`Schedule::create_timer()`].
-pub type TimerFuture = Pin<Box<dyn Future<Output = DateTime<Utc>> + Send>>;
-
-/// Scheduler that allows creating futures completing at the specified timestamp.
-pub trait Schedule: Send + Sync + 'static {
-    /// Creates a timer with the specified expiration timestamp.
-    fn create_timer(&self, expires_at: DateTime<Utc>) -> TimerFuture;
-}
-
-impl fmt::Debug for dyn Schedule {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_struct("Schedule").finish_non_exhaustive()
-    }
-}
-
-impl<T: Schedule + ?Sized> Schedule for Arc<T> {
-    fn create_timer(&self, expires_at: DateTime<Utc>) -> TimerFuture {
-        (**self).create_timer(expires_at)
-    }
-}
-
-/// [Scheduler](Schedule) implementation from [`async-io`] (a part of [`async-std`] suite).
-///
-/// [`async-io`]: https://docs.rs/async-io/
-/// [`async-std`]: https://docs.rs/async-std/
-#[cfg(feature = "async-io")]
-#[cfg_attr(docsrs, doc(cfg(feature = "async-io")))]
-#[derive(Debug)]
-pub struct AsyncIoScheduler;
-
-#[cfg(feature = "async-io")]
-impl Schedule for AsyncIoScheduler {
-    fn create_timer(&self, timestamp: DateTime<Utc>) -> TimerFuture {
-        use async_io::Timer;
-        use std::time::{Instant, SystemTime};
-
-        let timestamp = SystemTime::from(timestamp);
-        let (now_instant, now) = (Instant::now(), SystemTime::now());
-        match timestamp.duration_since(now) {
-            Ok(diff) => {
-                let timer = Timer::at(now_instant + diff);
-                let timer = FutureExt::map(timer, move |instant| {
-                    let new_time = now + (instant - now_instant);
-                    new_time.into()
-                });
-                Box::pin(timer)
-            }
-            Err(_) => Box::pin(future::ready(now.into())),
-        }
-    }
-}
 
 #[derive(Debug)]
 enum ListenedEventOutput {
@@ -113,7 +58,7 @@ pub enum Termination {
 /// use tardigrade::interface::{InboundChannel, OutboundChannel};
 /// # use tardigrade::WorkflowId;
 /// use tardigrade_rt::manager::{
-///     future::{AsyncEnv, AsyncIoScheduler}, WorkflowHandle, WorkflowManager,
+///     future::{Driver, AsyncIoScheduler}, WorkflowHandle, WorkflowManager,
 /// };
 ///
 /// # async fn test_wrapper(
@@ -126,7 +71,7 @@ pub enum Termination {
 /// let mut workflow = manager.workflow(workflow_id).unwrap();
 ///
 /// // First, create an environment to execute the workflow in.
-/// let mut env = AsyncEnv::new(AsyncIoScheduler);
+/// let mut env = Driver::new(AsyncIoScheduler);
 /// // Take relevant channels from the workflow and convert them to async form.
 /// let mut handle = workflow.handle();
 /// let mut commands_sx = handle.remove(InboundChannel("commands"))
@@ -137,7 +82,7 @@ pub enum Termination {
 ///     .into_async(&mut env);
 ///
 /// // Run the environment in a separate task.
-/// task::spawn(async move { env.run(&mut manager).await });
+/// task::spawn(async move { env.drive(&mut manager).await });
 /// // Let's send a message via an inbound channel...
 /// let message = b"hello".to_vec();
 /// commands_sx.send(message).await?;
@@ -149,26 +94,19 @@ pub enum Termination {
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug)]
-pub struct AsyncEnv {
-    scheduler: Box<dyn Schedule>,
+#[derive(Debug, Default)]
+pub struct Driver {
     inbound_channels: HashMap<ChannelId, mpsc::Receiver<Vec<u8>>>,
     outbound_channels: HashMap<ChannelId, mpsc::UnboundedSender<Vec<u8>>>,
     results_sx: Option<mpsc::UnboundedSender<TickResult<()>>>,
     drop_erroneous_messages: bool,
 }
 
-impl AsyncEnv {
+impl Driver {
     /// Creates an async environment for a `workflow` that uses the specified `scheduler`
     /// for timers.
-    pub fn new(scheduler: impl Schedule) -> Self {
-        Self {
-            scheduler: Box::new(scheduler),
-            inbound_channels: HashMap::new(),
-            outbound_channels: HashMap::new(),
-            results_sx: None,
-            drop_erroneous_messages: false,
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Returns the receiver of [`TickResult`]s generated during workflow execution.
@@ -197,7 +135,7 @@ impl AsyncEnv {
     /// [`Self::drop_erroneous_messages()`] flag being set.
     ///
     /// [`select`]: futures::select
-    pub async fn run<'a, S: Storage<'a>>(
+    pub async fn drive<'a, S: Storage<'a>>(
         &mut self,
         manager: &'a mut WorkflowManager<S>,
     ) -> Result<Termination, ExecutionError> {
@@ -214,6 +152,11 @@ impl AsyncEnv {
         &mut self,
         manager: &'a WorkflowManager<S>,
     ) -> Result<Option<Termination>, ExecutionError> {
+        let scheduler = manager
+            .clock
+            .as_scheduler()
+            .expect("manager does not provide scheduler");
+
         let nearest_timer_expiration = self.tick_manager(manager).await?;
         self.gc(manager).await;
         if nearest_timer_expiration.is_none() && self.inbound_channels.is_empty() {
@@ -234,7 +177,7 @@ impl AsyncEnv {
 
         // TODO: cache `timer_event`?
         let timer_event = nearest_timer_expiration.map(|timestamp| {
-            let timer = self.scheduler.create_timer(timestamp);
+            let timer = scheduler.create_timer(timestamp);
             timer.map(ListenedEventOutput::Timer).right_future()
         });
         let all_futures = channel_futures.chain(timer_event);
@@ -342,10 +285,10 @@ impl<T, C: Clone> Clone for MessageSender<T, C> {
 }
 
 impl<'a, T, C: Encode<T>, S: Storage<'a>> super::MessageSender<'a, T, C, S> {
-    /// Registers this sender in `env`, allowing to later asynchronously send messages.
-    pub fn into_async(self, env: &mut AsyncEnv) -> MessageSender<T, C> {
+    /// Registers this sender in `driver`, allowing to later asynchronously send messages.
+    pub fn into_sink(self, driver: &mut Driver) -> MessageSender<T, C> {
         let (sx, rx) = mpsc::channel(1);
-        env.inbound_channels.insert(self.channel_id(), rx);
+        driver.inbound_channels.insert(self.channel_id(), rx);
         MessageSender {
             raw_sender: sx,
             codec: self.codec,
@@ -393,11 +336,11 @@ pin_project! {
 }
 
 impl<'a, T, C: Decode<T>, S: Storage<'a>> super::MessageReceiver<'a, T, C, S> {
-    /// Registers this receiver in `env`, allowing to later asynchronously receive messages.
-    pub fn into_async(self, env: &mut AsyncEnv) -> MessageReceiver<T, C> {
+    /// Registers this receiver in `driver`, allowing to later asynchronously receive messages.
+    pub fn into_stream(self, driver: &mut Driver) -> MessageReceiver<T, C> {
         let (sx, rx) = mpsc::unbounded();
         if self.can_receive_messages {
-            env.outbound_channels.insert(self.channel_id(), sx);
+            driver.outbound_channels.insert(self.channel_id(), sx);
             // If the channel cannot receive messages, `sx` is immediately dropped,
             // thus, we don't improperly remove messages from the channel.
         }

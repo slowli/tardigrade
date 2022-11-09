@@ -22,7 +22,7 @@ pub use self::handle::{MessageReceiver, MessageSender, TakenMessages, WorkflowHa
 
 use self::{new_workflows::NewWorkflows, persistence::PersistenceManager};
 use crate::{
-    module::{Clock, Services, StashWorkflows},
+    module::{Clock, Schedule, Services, StashWorkflows},
     receipt::{ChannelEvent, ChannelEventKind, ExecutionError, Receipt},
     storage::{
         ChannelRecord, MessageOrEof, ModuleRecord, ReadChannels, ReadModules, ReadWorkflows,
@@ -185,7 +185,7 @@ impl error::Error for WouldBlock {}
 /// Temporary value holding parts necessary to restore a `Workflow`.
 #[derive(Debug)]
 struct WorkflowSeed<'a> {
-    clock: &'a dyn Clock,
+    clock: &'a ClockOrScheduler,
     spawner: &'a WorkflowSpawner<()>,
     persisted: PersistedWorkflow,
 }
@@ -233,7 +233,7 @@ impl WorkflowSpawners {
 /// Part of the manager used during workflow instantiation.
 #[derive(Debug, Clone, Copy)]
 struct Shared<'a> {
-    clock: &'a dyn Clock,
+    clock: &'a ClockOrScheduler,
     spawners: &'a WorkflowSpawners,
 }
 
@@ -242,6 +242,36 @@ enum ChannelSide {
     HostSender,
     WorkflowSender(WorkflowId),
     Receiver,
+}
+
+#[derive(Debug)]
+enum ClockOrScheduler {
+    Clock(Arc<dyn Clock>),
+    Scheduler(Arc<dyn Schedule>),
+}
+
+impl Default for ClockOrScheduler {
+    fn default() -> Self {
+        Self::Clock(Arc::new(Utc::now))
+    }
+}
+
+impl Clock for ClockOrScheduler {
+    fn now(&self) -> DateTime<Utc> {
+        match self {
+            Self::Clock(clock) => clock.now(),
+            Self::Scheduler(scheduler) => scheduler.now(),
+        }
+    }
+}
+
+impl ClockOrScheduler {
+    fn as_scheduler(&self) -> Option<&dyn Schedule> {
+        match self {
+            Self::Scheduler(scheduler) => Some(scheduler.as_ref()),
+            Self::Clock(_) => None,
+        }
+    }
 }
 
 /// Simple in-memory implementation of a workflow manager.
@@ -289,7 +319,7 @@ enum ChannelSide {
 /// # }
 /// ```
 pub struct WorkflowManager<S> {
-    clock: Arc<dyn Clock>,
+    clock: ClockOrScheduler,
     spawners: WorkflowSpawners,
     storage: S,
     local_spans: Mutex<HashMap<WorkflowId, LocalSpans>>,
@@ -299,6 +329,7 @@ impl<S> fmt::Debug for WorkflowManager<S> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("WorkflowManager")
+            .field("clock", &self.clock)
             .field("spawners", &self.spawners)
             .field("local_spans", &self.local_spans)
             .finish()
@@ -310,13 +341,13 @@ impl<S: for<'a> Storage<'a>> WorkflowManager<S> {
     pub fn builder(storage: S) -> WorkflowManagerBuilder<'static, S> {
         WorkflowManagerBuilder {
             module_creator: Box::new(WorkflowEngine::default()),
-            clock: Arc::new(Utc::now),
+            clock: ClockOrScheduler::default(),
             storage,
         }
     }
 
     async fn new(
-        clock: Arc<dyn Clock>,
+        clock: ClockOrScheduler,
         storage: S,
         module_creator: &dyn CreateModule,
     ) -> anyhow::Result<Self> {
@@ -350,7 +381,7 @@ impl<S: for<'a> Storage<'a>> WorkflowManager<S> {
 impl<'a, S: Storage<'a>> WorkflowManager<S> {
     fn shared(&'a self) -> Shared<'a> {
         Shared {
-            clock: self.clock.as_ref(),
+            clock: &self.clock,
             spawners: &self.spawners,
         }
     }
@@ -483,7 +514,7 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
             .unwrap_or_default();
         let tracer = TracingEventReceiver::new(tracing_metadata, record.tracing_spans, local_spans);
         let template = WorkflowSeed {
-            clock: self.clock.as_ref(),
+            clock: &self.clock,
             spawner,
             persisted: record.persisted,
         };
@@ -762,7 +793,7 @@ impl CreateModule for WorkflowEngine {
 /// Builder for a [`WorkflowManager`].
 #[derive(Debug)]
 pub struct WorkflowManagerBuilder<'r, S> {
-    clock: Arc<dyn Clock>,
+    clock: ClockOrScheduler,
     module_creator: Box<dyn CreateModule + 'r>,
     storage: S,
 }
@@ -771,7 +802,14 @@ impl<'r, S: for<'a> Storage<'a>> WorkflowManagerBuilder<'r, S> {
     /// Sets the wall clock to be used in the manager.
     #[must_use]
     pub fn with_clock(mut self, clock: Arc<impl Clock>) -> Self {
-        self.clock = clock;
+        self.clock = ClockOrScheduler::Clock(clock);
+        self
+    }
+
+    /// Sets the scheduler to be used in the manager.
+    #[must_use]
+    pub fn with_scheduler(mut self, scheduler: Arc<impl Schedule>) -> Self {
+        self.clock = ClockOrScheduler::Scheduler(scheduler);
         self
     }
 

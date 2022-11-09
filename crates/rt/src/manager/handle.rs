@@ -198,7 +198,7 @@ impl<'a, W: TakeHandle<Self, Id = ()>, S: Storage<'a>> WorkflowHandle<'a, W, S> 
 /// via the channel.
 #[derive(Debug)]
 pub struct MessageSender<'a, T, C, S> {
-    manager: &'a WorkflowManager<S>,
+    pub(super) manager: &'a WorkflowManager<S>,
     channel_id: ChannelId,
     pub(super) codec: C,
     _item: PhantomData<fn(T)>,
@@ -263,7 +263,7 @@ where
 /// from the channel.
 #[derive(Debug)]
 pub struct MessageReceiver<'a, T, C, S> {
-    manager: &'a WorkflowManager<S>,
+    pub(super) manager: &'a WorkflowManager<S>,
     channel_id: ChannelId,
     pub(super) can_receive_messages: bool,
     pub(super) codec: C,

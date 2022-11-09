@@ -35,10 +35,7 @@ use std::{
     sync::Mutex,
 };
 
-use crate::{
-    manager::future::{Schedule, TimerFuture},
-    module::Clock,
-};
+use crate::module::{Clock, Schedule, TimerFuture};
 use tardigrade::test::MockScheduler as SchedulerBase;
 
 /// Options for the `wasm-opt` optimizer.
@@ -254,7 +251,7 @@ impl ModuleCompiler {
 /// # use std::sync::Arc;
 /// use tardigrade::{interface::OutboundChannel, spawn::ManageWorkflowsExt};
 /// use tardigrade_rt::{test::MockScheduler, WorkflowModule};
-/// use tardigrade_rt::manager::{future::AsyncEnv, WorkflowHandle, WorkflowManager};
+/// use tardigrade_rt::manager::{future::Driver, WorkflowHandle, WorkflowManager};
 ///
 /// # async fn test_wrapper(module: WorkflowModule) -> anyhow::Result<()> {
 /// let scheduler = Arc::new(MockScheduler::default());
@@ -269,12 +266,12 @@ impl ModuleCompiler {
 ///     manager.new_workflow::<()>("test", inputs)?.build()?;
 ///
 /// // Spin up the environment to execute the `workflow`.
-/// let mut env = AsyncEnv::new(scheduler.clone());
+/// let mut env = Driver::new(scheduler.clone());
 /// let mut handle = workflow.handle();
 /// let mut events_rx = handle.remove(OutboundChannel("events"))
 ///     .unwrap()
 ///     .into_async(&mut env);
-/// task::spawn(async move { env.run(&mut manager).await });
+/// task::spawn(async move { env.drive(&mut manager).await });
 ///
 /// // Advance mocked wall clock.
 /// let now = scheduler.now();

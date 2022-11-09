@@ -18,7 +18,7 @@ mod services;
 #[cfg(test)]
 mod tests;
 
-pub use self::services::Clock;
+pub use self::services::{Clock, Schedule, TimerFuture};
 #[cfg(test)]
 pub(crate) use self::tests::{ExportsMock, MockPollFn};
 pub(crate) use self::{

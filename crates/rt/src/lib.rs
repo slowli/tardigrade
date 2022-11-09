@@ -130,6 +130,7 @@
 #![warn(clippy::all, clippy::pedantic)]
 #![allow(clippy::must_use_candidate, clippy::module_name_repetitions)]
 
+mod backends;
 mod data;
 pub mod manager;
 mod module;
@@ -139,8 +140,12 @@ pub mod test;
 mod utils;
 mod workflow;
 
+#[cfg(feature = "async-io")]
+pub use crate::backends::AsyncIoScheduler;
 pub use crate::{
     data::{ChildWorkflowState, InboundChannelState, OutboundChannelState, TaskState, TimerState},
-    module::{Clock, ExtendLinker, WorkflowEngine, WorkflowModule, WorkflowSpawner},
+    module::{
+        Clock, ExtendLinker, Schedule, TimerFuture, WorkflowEngine, WorkflowModule, WorkflowSpawner,
+    },
     workflow::PersistedWorkflow,
 };
