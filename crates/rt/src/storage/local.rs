@@ -124,11 +124,28 @@ impl Default for Inner {
     }
 }
 
+/// Serializable snapshot of a [`LocalStorage`].
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LocalStorageSnapshot<'a> {
     next_channel_id: u64,
     next_workflow_id: u64,
     inner: Cow<'a, Inner>,
+}
+
+impl LocalStorageSnapshot<'_> {
+    /// Provides mutable access to all contained modules. This could be useful to decrease
+    /// serialized snapshot size, e.g. by removing module bytes or replacing them with
+    /// cryptographic hashes.
+    pub fn replace_module_bytes<F>(&mut self, mut replace_fn: F)
+    where
+        F: FnMut(&ModuleRecord<'static>) -> Option<Vec<u8>>,
+    {
+        for module in self.inner.to_mut().modules.values_mut() {
+            if let Some(replacement) = replace_fn(module) {
+                module.bytes = Cow::Owned(replacement);
+            }
+        }
+    }
 }
 
 #[derive(Debug)]

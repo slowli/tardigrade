@@ -29,7 +29,8 @@ const DEFINITION_ID: &str = "test@latest::TestWorkflow";
 async fn create_test_manager() -> WorkflowManager<LocalStorage> {
     let mut manager = WorkflowManager::builder(LocalStorage::default())
         .build()
-        .await;
+        .await
+        .unwrap();
     let module =
         WorkflowModule::new(&WorkflowEngine::default(), ExportsMock::MOCK_MODULE_BYTES).unwrap();
     manager.insert_module("test@latest", module).await;

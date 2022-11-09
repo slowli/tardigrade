@@ -307,22 +307,25 @@ impl<S> fmt::Debug for WorkflowManager<S> {
 
 impl<S: for<'a> Storage<'a>> WorkflowManager<S> {
     /// Creates a builder that will use the specified storage.
-    pub fn builder(storage: S) -> WorkflowManagerBuilder<S> {
+    pub fn builder(storage: S) -> WorkflowManagerBuilder<'static, S> {
         WorkflowManagerBuilder {
-            engine: WorkflowEngine::default(),
+            module_creator: Box::new(WorkflowEngine::default()),
             clock: Arc::new(Utc::now),
             storage,
         }
     }
 
-    async fn new(engine: &WorkflowEngine, clock: Arc<dyn Clock>, storage: S) -> Self {
+    async fn new(
+        clock: Arc<dyn Clock>,
+        storage: S,
+        module_creator: &dyn CreateModule,
+    ) -> anyhow::Result<Self> {
         let spawners = {
             let transaction = storage.readonly_transaction().await;
             let mut spawners = WorkflowSpawners::default();
             let mut module_records = transaction.modules();
             while let Some(record) = module_records.next().await {
-                let module =
-                    WorkflowModule::new(engine, &record.bytes).expect("stored module is corrupted");
+                let module = module_creator.create_module(&record).await?;
                 for (name, spawner) in module.into_spawners() {
                     spawners.insert(record.id.clone(), name, spawner);
                 }
@@ -330,12 +333,17 @@ impl<S: for<'a> Storage<'a>> WorkflowManager<S> {
             spawners
         };
 
-        Self {
+        Ok(Self {
             clock,
             spawners,
             storage,
             local_spans: Mutex::default(),
-        }
+        })
+    }
+
+    /// Returns the encapsulated storage.
+    pub fn into_storage(self) -> S {
+        self.storage
     }
 }
 
@@ -718,15 +726,48 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
     }
 }
 
+/// Customizable [`WorkflowModule`] instantiation logic.
+#[async_trait]
+pub trait CreateModule {
+    /// Restores module from a [`ModuleRecord`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if instantiation fails for whatever reason. This error will bubble up
+    /// in [`WorkflowManagerBuilder::build()`].
+    async fn create_module<'a>(
+        &self,
+        module: &'a ModuleRecord<'_>,
+    ) -> anyhow::Result<WorkflowModule<'a>>;
+}
+
+impl fmt::Debug for dyn CreateModule + '_ {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CreateModule")
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl CreateModule for WorkflowEngine {
+    async fn create_module<'a>(
+        &self,
+        module: &'a ModuleRecord<'_>,
+    ) -> anyhow::Result<WorkflowModule<'a>> {
+        WorkflowModule::new(self, module.bytes.as_ref())
+    }
+}
+
 /// Builder for a [`WorkflowManager`].
 #[derive(Debug)]
-pub struct WorkflowManagerBuilder<S> {
-    engine: WorkflowEngine,
+pub struct WorkflowManagerBuilder<'r, S> {
     clock: Arc<dyn Clock>,
+    module_creator: Box<dyn CreateModule + 'r>,
     storage: S,
 }
 
-impl<S: for<'a> Storage<'a>> WorkflowManagerBuilder<S> {
+impl<'r, S: for<'a> Storage<'a>> WorkflowManagerBuilder<'r, S> {
     /// Sets the wall clock to be used in the manager.
     #[must_use]
     pub fn with_clock(mut self, clock: Arc<impl Clock>) -> Self {
@@ -734,9 +775,20 @@ impl<S: for<'a> Storage<'a>> WorkflowManagerBuilder<S> {
         self
     }
 
+    /// Specifies the [module creator](CreateModule) to use.
+    #[must_use]
+    pub fn with_module_creator(mut self, creator: impl CreateModule + 'r) -> Self {
+        self.module_creator = Box::new(creator);
+        self
+    }
+
     /// Finishes building the manager.
-    pub async fn build(self) -> WorkflowManager<S> {
-        WorkflowManager::new(&self.engine, self.clock, self.storage).await
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [module instantiation](CreateModule) fails.
+    pub async fn build(self) -> anyhow::Result<WorkflowManager<S>> {
+        WorkflowManager::new(self.clock, self.storage, self.module_creator.as_ref()).await
     }
 }
 
