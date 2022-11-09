@@ -8,8 +8,9 @@ use std::{collections::HashMap, task::Poll};
 
 use tardigrade::spawn::ManageWorkflowsExt;
 use tardigrade_rt::{
-    manager::future::{AsyncEnv, AsyncIoScheduler, Termination},
+    manager::future::{Driver, Termination},
     receipt::{Event, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
+    AsyncIoScheduler,
 };
 use tardigrade_test_basic::{
     spawn::{Baking, PizzaDeliveryWithSpawning},
@@ -24,7 +25,7 @@ const PARENT_DEF: &str = "test::PizzaDeliveryWithSpawning";
 async fn spawning_child_workflows() -> TestResult {
     const READY: Poll<()> = Poll::Ready(());
 
-    let mut manager = create_manager(None).await?;
+    let mut manager = create_manager(AsyncIoScheduler).await?;
 
     let inputs = Args {
         oven_count: 2,
@@ -36,11 +37,11 @@ async fn spawning_child_workflows() -> TestResult {
         .await?;
 
     let handle = workflow.handle();
-    let mut env = AsyncEnv::new(AsyncIoScheduler);
-    let results = env.tick_results();
-    let mut orders_sx = handle.orders.into_async(&mut env);
-    let events_rx = handle.shared.events.into_async(&mut env);
-    let join_handle = task::spawn(async move { env.run(&mut manager).await });
+    let mut driver = Driver::new();
+    let results = driver.tick_results();
+    let mut orders_sx = handle.orders.into_sink(&mut driver);
+    let events_rx = handle.shared.events.into_stream(&mut driver);
+    let join_handle = task::spawn(async move { driver.drive(&mut manager).await });
 
     let orders = [
         PizzaOrder {
@@ -106,7 +107,7 @@ async fn spawning_child_workflows() -> TestResult {
 
 #[async_std::test]
 async fn accessing_handles_in_child_workflows() -> TestResult {
-    let mut manager = create_manager(None).await?;
+    let mut manager = create_manager(AsyncIoScheduler).await?;
 
     let inputs = Args {
         oven_count: 2,
@@ -154,20 +155,20 @@ async fn accessing_handles_in_child_workflows() -> TestResult {
     // At this point, 2 child workflows should be spawned and initialized.
     assert_eq!(child_ids.len(), 2);
 
-    let mut env = AsyncEnv::new(AsyncIoScheduler);
+    let mut driver = Driver::new();
     let mut child_events_rxs = vec![];
     for &child_id in &child_ids {
         let child = manager.workflow(child_id).await.unwrap();
         let child_handle = child.downcast::<Baking>()?.handle();
         assert!(child_handle.events.can_receive_messages());
         assert_eq!(child_handle.events.channel_id(), parent_events_id);
-        child_events_rxs.push(child_handle.events.into_async(&mut env));
+        child_events_rxs.push(child_handle.events.into_stream(&mut driver));
     }
 
     // The aliased channels should be immediately disconnected.
     assert!(child_events_rxs[0].try_next().await?.is_none());
 
-    task::spawn(async move { env.run(&mut manager).await });
+    task::spawn(async move { driver.drive(&mut manager).await });
     // The pre-closed channels should be disconnected as well, but this happens
     // on first tick.
     let events: Vec<_> = child_events_rxs[1].by_ref().try_collect().await?;

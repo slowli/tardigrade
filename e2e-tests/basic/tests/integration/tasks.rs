@@ -7,13 +7,12 @@ use futures::{stream, SinkExt, StreamExt, TryStreamExt};
 use std::{
     cmp,
     collections::{HashMap, HashSet},
-    sync::Arc,
     task::Poll,
 };
 
 use tardigrade::{spawn::ManageWorkflowsExt, Json, TaskId};
 use tardigrade_rt::{
-    manager::future::{AsyncEnv, MessageSender, Termination},
+    manager::future::{Driver, MessageSender, Termination},
     receipt::{
         Event, ExecutedFunction, Execution, Receipt, ResourceEvent, ResourceEventKind, ResourceId,
     },
@@ -110,21 +109,20 @@ async fn setup_workflow(
     order_count: usize,
 ) -> TestResult<(Vec<DomainEvent>, Vec<Receipt>)> {
     let (scheduler, mut expirations) = MockScheduler::with_expirations();
-    let scheduler = Arc::new(scheduler);
-    let mut manager = create_manager(Some(&scheduler)).await?;
+    let mut manager = create_manager(scheduler.clone()).await?;
 
     let mut workflow = manager
         .new_workflow::<PizzaDeliveryWithTasks>("test::PizzaDeliveryWithTasks", args)?
         .build()
         .await?;
     let handle = workflow.handle();
-    let mut env = AsyncEnv::new(Arc::clone(&scheduler));
-    let orders_sx = handle.orders.into_async(&mut env);
-    let events_rx = handle.shared.events.into_async(&mut env);
-    let receipts_rx = env
+    let mut driver = Driver::new();
+    let orders_sx = handle.orders.into_sink(&mut driver);
+    let events_rx = handle.shared.events.into_stream(&mut driver);
+    let receipts_rx = driver
         .tick_results()
         .map(|result| result.into_inner().unwrap());
-    let join_handle = task::spawn(async move { env.run(&mut manager).await });
+    let join_handle = task::spawn(async move { driver.drive(&mut manager).await });
 
     // We want to have precise control over time (in order to deterministically fail subtasks).
     task::spawn(async move {

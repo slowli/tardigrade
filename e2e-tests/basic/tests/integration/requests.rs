@@ -7,7 +7,10 @@ use futures::{channel::mpsc, future, stream, SinkExt, StreamExt, TryStreamExt};
 use std::cmp;
 
 use tardigrade::{channel::WithId, spawn::ManageWorkflowsExt};
-use tardigrade_rt::manager::future::{AsyncEnv, AsyncIoScheduler, Termination};
+use tardigrade_rt::{
+    manager::future::{Driver, Termination},
+    AsyncIoScheduler,
+};
 use tardigrade_test_basic::{
     requests::{Args, PizzaDeliveryWithRequests},
     DomainEvent, PizzaKind, PizzaOrder,
@@ -26,19 +29,19 @@ async fn test_external_tasks(
     order_count: usize,
     task_concurrency: Option<usize>,
 ) -> TestResult {
-    let mut manager = create_manager(None).await?;
+    let mut manager = create_manager(AsyncIoScheduler).await?;
 
     let mut workflow = manager
         .new_workflow::<PizzaDeliveryWithRequests>(DEFINITION_ID, Args { oven_count })?
         .build()
         .await?;
     let handle = workflow.handle();
-    let mut env = AsyncEnv::new(AsyncIoScheduler);
-    let responses_sx = handle.baking_responses.into_async(&mut env);
-    let baking_tasks_rx = handle.baking_tasks.into_async(&mut env);
-    let orders_sx = handle.orders.into_async(&mut env);
-    let events_rx = handle.shared.events.into_async(&mut env);
-    let join_handle = task::spawn(async move { env.run(&mut manager).await });
+    let mut driver = Driver::new();
+    let responses_sx = handle.baking_responses.into_sink(&mut driver);
+    let baking_tasks_rx = handle.baking_tasks.into_stream(&mut driver);
+    let orders_sx = handle.orders.into_sink(&mut driver);
+    let events_rx = handle.shared.events.into_stream(&mut driver);
+    let join_handle = task::spawn(async move { driver.drive(&mut manager).await });
 
     let (executor_events_sx, executor_events_rx) = mpsc::unbounded();
     let tasks_stream = baking_tasks_rx.try_for_each_concurrent(
@@ -103,19 +106,19 @@ async fn closing_task_responses_on_host() -> TestResult {
     const ORDER_COUNT: usize = 10;
     const SUCCESSFUL_TASK_COUNT: usize = 3;
 
-    let mut manager = create_manager(None).await?;
+    let mut manager = create_manager(AsyncIoScheduler).await?;
     let mut workflow = manager
         .new_workflow::<PizzaDeliveryWithRequests>(DEFINITION_ID, Args { oven_count: 2 })?
         .build()
         .await?;
 
-    let mut env = AsyncEnv::new(AsyncIoScheduler);
+    let mut driver = Driver::new();
     let handle = workflow.handle();
-    let responses_sx = handle.baking_responses.into_async(&mut env);
-    let baking_tasks_rx = handle.baking_tasks.into_async(&mut env);
-    let mut orders_sx = handle.orders.into_async(&mut env);
-    let events_rx = handle.shared.events.into_async(&mut env);
-    let join_handle = task::spawn(async move { env.run(&mut manager).await });
+    let responses_sx = handle.baking_responses.into_sink(&mut driver);
+    let baking_tasks_rx = handle.baking_tasks.into_stream(&mut driver);
+    let mut orders_sx = handle.orders.into_sink(&mut driver);
+    let events_rx = handle.shared.events.into_stream(&mut driver);
+    let join_handle = task::spawn(async move { driver.drive(&mut manager).await });
 
     let tasks_stream = baking_tasks_rx.map(move |res| {
         let WithId { id, data: order } = res.unwrap();

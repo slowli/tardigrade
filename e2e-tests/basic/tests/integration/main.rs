@@ -8,13 +8,13 @@ use tracing_subscriber::{
     filter::Targets, layer::SubscriberExt, registry::LookupSpan, FmtSubscriber,
 };
 
-use std::{collections::HashMap, error, sync::Arc};
+use std::{collections::HashMap, error};
 
 use tardigrade_rt::{
     manager::WorkflowManager,
     storage::LocalStorage,
-    test::{MockScheduler, ModuleCompiler, WasmOpt},
-    WorkflowEngine, WorkflowModule,
+    test::{ModuleCompiler, WasmOpt},
+    Clock, WorkflowEngine, WorkflowModule,
 };
 
 mod async_env;
@@ -24,6 +24,7 @@ mod sync_env;
 mod tasks;
 
 type TestResult<T = ()> = Result<T, Box<dyn error::Error>>;
+type LocalManager<C> = WorkflowManager<C, LocalStorage>;
 
 static MODULE_BYTES: Lazy<Vec<u8>> = Lazy::new(|| {
     // Since this closure is called once, it is a good place to do other initialization
@@ -44,15 +45,12 @@ async fn create_module() -> WorkflowModule<'static> {
     task::spawn_blocking(|| &*MODULE).await.clone()
 }
 
-async fn create_manager(
-    clock: Option<&Arc<MockScheduler>>,
-) -> TestResult<WorkflowManager<LocalStorage>> {
+async fn create_manager<C: Clock>(clock: C) -> TestResult<LocalManager<C>> {
     let module = create_module().await;
-    let mut builder = WorkflowManager::builder(LocalStorage::default());
-    if let Some(clock) = clock {
-        builder = builder.with_clock(Arc::clone(clock));
-    }
-    let mut manager = builder.build().await?;
+    let mut manager = WorkflowManager::builder(LocalStorage::default())
+        .with_clock(clock)
+        .build()
+        .await?;
     manager.insert_module("test", module).await;
     Ok(manager)
 }

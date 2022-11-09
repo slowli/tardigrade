@@ -14,9 +14,9 @@ use tracing_capture::Storage;
 use std::{
     collections::{HashMap, HashSet},
     future::Future,
-    sync::Arc,
 };
 
+use crate::LocalManager;
 use tardigrade::{
     interface::{InboundChannel, OutboundChannel},
     spawn::ManageWorkflowsExt,
@@ -24,12 +24,12 @@ use tardigrade::{
 };
 use tardigrade_rt::{
     manager::{
-        future::{AsyncEnv, AsyncIoScheduler, MessageReceiver, MessageSender, Termination},
-        TickResult, WorkflowManager,
+        future::{Driver, MessageReceiver, MessageSender, Termination},
+        TickResult,
     },
     receipt::{Event, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
-    storage::LocalStorage,
     test::MockScheduler,
+    AsyncIoScheduler,
 };
 use tardigrade_test_basic::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOrder};
 
@@ -49,7 +49,7 @@ fn drain_stream(stream: &mut (impl Stream + Unpin)) {
 
 async fn test_async_handle(cancel_workflow: bool) -> TestResult {
     let (_guard, tracing_storage) = enable_tracing_assertions();
-    let mut manager = create_manager(None).await?;
+    let mut manager = create_manager(AsyncIoScheduler).await?;
 
     let inputs = Args {
         oven_count: 1,
@@ -61,14 +61,14 @@ async fn test_async_handle(cancel_workflow: bool) -> TestResult {
         .await?;
     let workflow_id = workflow.id();
     let handle = workflow.handle();
-    let mut env = AsyncEnv::new(AsyncIoScheduler);
-    let mut orders = handle.orders.into_async(&mut env);
-    let events = handle.shared.events.into_async(&mut env);
+    let mut driver = Driver::new();
+    let mut orders = handle.orders.into_sink(&mut driver);
+    let events = handle.shared.events.into_stream(&mut driver);
 
     let (cancel_sx, mut cancel_rx) = oneshot::channel::<()>();
     let join_handle = spawn_traced_task(async move {
         futures::select! {
-            term = env.run(&mut manager).fuse() => Either::Left(term),
+            term = driver.drive(&mut manager).fuse() => Either::Left(term),
             _ = cancel_rx => Either::Right(manager),
         }
     });
@@ -139,16 +139,16 @@ async fn test_async_handle_with_concurrency(inputs: Args) -> TestResult {
 
     println!("testing async handle with {:?}", inputs);
 
-    let mut manager = create_manager(None).await?;
+    let mut manager = create_manager(AsyncIoScheduler).await?;
     let mut workflow = manager
         .new_workflow::<PizzaDelivery>("test::PizzaDelivery", inputs)?
         .build()
         .await?;
     let handle = workflow.handle();
-    let mut env = AsyncEnv::new(AsyncIoScheduler);
-    let mut orders_sx = handle.orders.into_async(&mut env);
-    let events_rx = handle.shared.events.into_async(&mut env);
-    let join_handle = spawn_traced_task(async move { env.run(&mut manager).await });
+    let mut driver = Driver::new();
+    let mut orders_sx = handle.orders.into_sink(&mut driver);
+    let events_rx = handle.shared.events.into_stream(&mut driver);
+    let join_handle = spawn_traced_task(async move { driver.drive(&mut manager).await });
 
     let orders = (0..ORDER_COUNT).map(|i| PizzaOrder {
         kind: PizzaKind::Pepperoni,
@@ -239,7 +239,7 @@ async fn wait_timer(
 }
 
 struct AsyncRig {
-    scheduler: Arc<MockScheduler>,
+    scheduler: MockScheduler,
     scheduler_expirations: Box<dyn Stream<Item = DateTime<Utc>> + Unpin>,
     events: MessageReceiver<DomainEvent, Json>,
     results: mpsc::UnboundedReceiver<TickResult<()>>,
@@ -247,8 +247,7 @@ struct AsyncRig {
 
 async fn initialize_workflow() -> TestResult<AsyncRig> {
     let (scheduler, expirations) = MockScheduler::with_expirations();
-    let scheduler = Arc::new(scheduler);
-    let mut manager = create_manager(Some(&scheduler)).await?;
+    let mut manager = create_manager(scheduler.clone()).await?;
 
     let inputs = Args {
         oven_count: 2,
@@ -259,11 +258,11 @@ async fn initialize_workflow() -> TestResult<AsyncRig> {
         .build()
         .await?;
     let handle = workflow.handle();
-    let mut env = AsyncEnv::new(Arc::clone(&scheduler));
-    let mut orders_sx = handle.orders.into_async(&mut env);
-    let mut events_rx = handle.shared.events.into_async(&mut env);
-    let results = env.tick_results();
-    spawn_traced_task(async move { env.run(&mut manager).await });
+    let mut driver = Driver::new();
+    let mut orders_sx = handle.orders.into_sink(&mut driver);
+    let mut events_rx = handle.shared.events.into_stream(&mut driver);
+    let results = driver.tick_results();
+    spawn_traced_task(async move { driver.drive(&mut manager).await });
 
     let orders = [
         PizzaOrder {
@@ -406,16 +405,15 @@ async fn async_handle_with_mock_scheduler_and_bulk_update() -> TestResult {
 struct CancellableWorkflow {
     orders_sx: MessageSender<PizzaOrder, Json>,
     events_rx: MessageReceiver<DomainEvent, Json>,
-    join_handle: task::JoinHandle<WorkflowManager<LocalStorage>>,
-    scheduler: Arc<MockScheduler>,
+    join_handle: task::JoinHandle<LocalManager<MockScheduler>>,
+    scheduler: MockScheduler,
     scheduler_expirations: Box<dyn Stream<Item = DateTime<Utc>> + Unpin>,
     cancel_sx: oneshot::Sender<()>,
 }
 
 async fn spawn_cancellable_workflow() -> TestResult<CancellableWorkflow> {
     let (scheduler, expirations) = MockScheduler::with_expirations();
-    let scheduler = Arc::new(scheduler);
-    let mut manager = create_manager(Some(&scheduler)).await?;
+    let mut manager = create_manager(scheduler.clone()).await?;
 
     let inputs = Args {
         oven_count: 1,
@@ -426,14 +424,15 @@ async fn spawn_cancellable_workflow() -> TestResult<CancellableWorkflow> {
         .build()
         .await?;
     let handle = workflow.handle();
-    let mut env = AsyncEnv::new(Arc::clone(&scheduler));
-    let orders_sx = handle.orders.into_async(&mut env);
-    let events_rx = handle.shared.events.into_async(&mut env);
+    let mut driver = Driver::new();
+    let orders_sx = handle.orders.into_sink(&mut driver);
+    let events_rx = handle.shared.events.into_stream(&mut driver);
 
     let (cancel_sx, mut cancel_rx) = oneshot::channel::<()>();
     let join_handle = spawn_traced_task(async move {
         futures::select! {
-            _ = env.run(&mut manager).fuse() => unreachable!("workflow should not be completed"),
+            _ = driver.drive(&mut manager).fuse() =>
+                unreachable!("workflow should not be completed"),
             _ = cancel_rx => manager,
         }
     });
@@ -486,10 +485,10 @@ async fn launching_env_after_pause() -> TestResult {
         .await
         .unwrap()
         .downcast::<PizzaDelivery>()?;
-    let mut env = AsyncEnv::new(Arc::clone(&scheduler));
+    let mut env = Driver::new();
     let handle = workflow.handle();
-    let orders_sx = handle.orders.into_async(&mut env);
-    let join_handle = spawn_traced_task(async move { env.run(&mut manager).await });
+    let orders_sx = handle.orders.into_sink(&mut env);
+    let join_handle = spawn_traced_task(async move { env.drive(&mut manager).await });
 
     drop(orders_sx); // should terminate the workflow once the delivery timer is expired
     let next_timer = scheduler_expirations.next().await.unwrap();
@@ -502,7 +501,7 @@ async fn launching_env_after_pause() -> TestResult {
 
 #[async_std::test]
 async fn dynamically_typed_async_handle() -> TestResult {
-    let mut manager = create_manager(None).await?;
+    let mut manager = create_manager(AsyncIoScheduler).await?;
 
     let data = Json.encode_value(Args {
         oven_count: 1,
@@ -513,16 +512,16 @@ async fn dynamically_typed_async_handle() -> TestResult {
         .build()
         .await?;
     let mut handle = workflow.handle();
-    let mut env = AsyncEnv::new(AsyncIoScheduler);
+    let mut env = Driver::new();
     let orders_sx = handle.remove(InboundChannel("orders")).unwrap();
     let orders_id = orders_sx.channel_id();
-    let mut orders_sx = orders_sx.into_async(&mut env);
+    let mut orders_sx = orders_sx.into_sink(&mut env);
     let events_rx = handle.remove(OutboundChannel("events")).unwrap();
     let events_id = events_rx.channel_id();
-    let events_rx = events_rx.into_async(&mut env);
+    let events_rx = events_rx.into_stream(&mut env);
 
     let join_handle =
-        spawn_traced_task(async move { env.run(&mut manager).await.map(|_| manager) });
+        spawn_traced_task(async move { env.drive(&mut manager).await.map(|_| manager) });
 
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,
@@ -556,7 +555,7 @@ async fn dynamically_typed_async_handle() -> TestResult {
 
 #[async_std::test]
 async fn rollbacks_on_trap() -> TestResult {
-    let mut manager = create_manager(None).await?;
+    let mut manager = create_manager(AsyncIoScheduler).await?;
 
     let data = Json.encode_value(Args {
         oven_count: 1,
@@ -567,12 +566,12 @@ async fn rollbacks_on_trap() -> TestResult {
         .build()
         .await?;
     let mut handle = workflow.handle();
-    let mut env = AsyncEnv::new(AsyncIoScheduler);
+    let mut env = Driver::new();
     env.drop_erroneous_messages();
     let orders_sx = handle.remove(InboundChannel("orders")).unwrap();
-    let mut orders_sx = orders_sx.into_async(&mut env);
+    let mut orders_sx = orders_sx.into_sink(&mut env);
     let results = env.tick_results();
-    let join_handle = spawn_traced_task(async move { env.run(&mut manager).await });
+    let join_handle = spawn_traced_task(async move { env.drive(&mut manager).await });
 
     orders_sx.send(b"invalid".to_vec()).await?;
     drop(orders_sx); // to terminate the workflow
@@ -584,7 +583,7 @@ async fn rollbacks_on_trap() -> TestResult {
             Err(err), // receiving message
             Ok(_), // closing inbound channel
         ] => err,
-        _ => panic!("unexpected results: {:#?}", results),
+        _ => panic!("unexpected results: {results:#?}"),
     };
     let panic_info = err.panic_info().unwrap();
     let panic_message = panic_info.message.as_ref().unwrap();

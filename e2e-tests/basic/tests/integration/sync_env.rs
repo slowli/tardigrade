@@ -3,7 +3,7 @@
 use assert_matches::assert_matches;
 use async_trait::async_trait;
 
-use std::{sync::Arc, task::Poll};
+use std::task::Poll;
 
 use crate::create_module;
 use tardigrade::{
@@ -29,8 +29,8 @@ const DEFINITION_ID: &str = "test::PizzaDelivery";
 #[async_std::test]
 async fn basic_workflow() -> TestResult {
     let (_guard, tracing_storage) = enable_tracing_assertions();
-    let clock = Arc::new(MockScheduler::default());
-    let manager = create_manager(Some(&clock)).await?;
+    let scheduler = MockScheduler::default();
+    let manager = create_manager(scheduler.clone()).await?;
 
     let inputs = Args {
         oven_count: 1,
@@ -121,7 +121,7 @@ async fn basic_workflow() -> TestResult {
         assert!(timer.definition().expires_at > persisted.current_time());
         timer.definition().expires_at
     };
-    clock.set_now(new_time);
+    scheduler.set_now(new_time);
     manager.set_current_time(new_time).await;
 
     manager.tick().await?.into_inner()?; // TODO: assert on receipt
@@ -146,7 +146,7 @@ async fn basic_workflow() -> TestResult {
 
 #[async_std::test]
 async fn workflow_with_concurrency() -> TestResult {
-    let manager = create_manager(None).await?;
+    let manager = create_manager(()).await?;
 
     let inputs = Args {
         oven_count: 2,
@@ -211,8 +211,8 @@ impl CreateModule for DummyModuleCreator {
 #[async_std::test]
 async fn persisting_workflow() -> TestResult {
     let (_guard, tracing_storage) = enable_tracing_assertions();
-    let clock = Arc::new(MockScheduler::default());
-    let manager = create_manager(Some(&clock)).await?;
+    let clock = MockScheduler::default();
+    let manager = create_manager(clock.clone()).await?;
 
     let inputs = Args {
         oven_count: 1,
@@ -251,7 +251,7 @@ async fn persisting_workflow() -> TestResult {
     storage = snapshot.into();
 
     let manager = WorkflowManager::builder(storage)
-        .with_clock(Arc::clone(&clock))
+        .with_clock(clock.clone())
         .with_module_creator(DummyModuleCreator)
         .build()
         .await?;
@@ -295,7 +295,7 @@ async fn persisting_workflow() -> TestResult {
 
 #[async_std::test]
 async fn untyped_workflow() -> TestResult {
-    let manager = create_manager(None).await?;
+    let manager = create_manager(()).await?;
 
     let data = Json.encode_value(Args {
         oven_count: 1,
@@ -341,7 +341,7 @@ async fn untyped_workflow() -> TestResult {
 async fn workflow_recovery_after_trap() -> TestResult {
     const SAMPLES: usize = 5;
 
-    let manager = create_manager(None).await?;
+    let manager = create_manager(()).await?;
 
     let data = Json.encode_value(Args {
         oven_count: SAMPLES,
