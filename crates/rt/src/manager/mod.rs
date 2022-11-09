@@ -8,7 +8,7 @@ use futures::{lock::Mutex, StreamExt};
 use tracing::field;
 use tracing_tunnel::{LocalSpans, PersistedMetadata, TracingEventReceiver};
 
-use std::{borrow::Cow, collections::HashMap, error, fmt, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, error, fmt};
 
 pub mod future; // FIXME: rename `driver`?
 mod handle;
@@ -20,9 +20,9 @@ mod tests;
 
 pub use self::handle::{MessageReceiver, MessageSender, TakenMessages, WorkflowHandle};
 
-use self::{new_workflows::NewWorkflows, persistence::PersistenceManager};
+use self::{new_workflows::NewWorkflows, persistence::StorageHelper};
 use crate::{
-    module::{Clock, Schedule, Services, StashWorkflows},
+    module::{Clock, Services, StashWorkflows},
     receipt::{ChannelEvent, ChannelEventKind, ExecutionError, Receipt},
     storage::{
         ChannelRecord, MessageOrEof, ModuleRecord, ReadChannels, ReadModules, ReadWorkflows,
@@ -52,8 +52,8 @@ struct DropMessageAction {
 }
 
 impl DropMessageAction {
-    async fn execute<'a, S: Storage<'a>>(self, manager: &'a WorkflowManager<S>) {
-        let mut transaction = manager.storage.transaction().await;
+    async fn execute<M: AsManager>(self, manager: &M) {
+        let mut transaction = manager.as_manager().storage.transaction().await;
         if let Some((_, token)) = transaction.pop_message(self.channel_id).await {
             transaction.confirm_message_removal(token).await.ok();
         }
@@ -99,14 +99,14 @@ impl<T> TickResult<T> {
 /// Actions that can be performed on a [`WorkflowManager`]. Used within the [`TickResult`]
 /// wrapper.
 #[derive(Debug)]
-pub struct Actions<'a, S> {
-    manager: &'a WorkflowManager<S>,
+pub struct Actions<'a, M> {
+    manager: &'a M,
     abort_action: bool,
     drop_message_action: Option<DropMessageAction>,
 }
 
-impl<'a, S> Actions<'a, S> {
-    fn new(manager: &'a WorkflowManager<S>, abort_action: bool) -> Self {
+impl<'a, M> Actions<'a, M> {
+    fn new(manager: &'a M, abort_action: bool) -> Self {
         Self {
             manager,
             abort_action,
@@ -119,7 +119,7 @@ impl<'a, S> Actions<'a, S> {
     }
 }
 
-impl<'a, S: Storage<'a>> TickResult<Actions<'a, S>> {
+impl<'a, M: AsManager> TickResult<Actions<'a, M>> {
     /// Returns true if the workflow execution failed and the execution was triggered
     /// by consuming a message from a certain channel.
     pub fn can_drop_erroneous_message(&self) -> bool {
@@ -137,7 +137,11 @@ impl<'a, S: Storage<'a>> TickResult<Actions<'a, S>> {
             self.extra.abort_action,
             "cannot abort workflow because it did not error"
         );
-        self.extra.manager.abort_workflow(self.workflow_id).await;
+        self.extra
+            .manager
+            .as_manager()
+            .abort_workflow(self.workflow_id)
+            .await;
         self.drop_extra()
     }
 
@@ -185,7 +189,7 @@ impl error::Error for WouldBlock {}
 /// Temporary value holding parts necessary to restore a `Workflow`.
 #[derive(Debug)]
 struct WorkflowSeed<'a> {
-    clock: &'a ClockOrScheduler,
+    clock: &'a dyn Clock,
     spawner: &'a WorkflowSpawner<()>,
     persisted: PersistedWorkflow,
 }
@@ -233,7 +237,7 @@ impl WorkflowSpawners {
 /// Part of the manager used during workflow instantiation.
 #[derive(Debug, Clone, Copy)]
 struct Shared<'a> {
-    clock: &'a ClockOrScheduler,
+    clock: &'a dyn Clock,
     spawners: &'a WorkflowSpawners,
 }
 
@@ -242,36 +246,6 @@ enum ChannelSide {
     HostSender,
     WorkflowSender(WorkflowId),
     Receiver,
-}
-
-#[derive(Debug)]
-enum ClockOrScheduler {
-    Clock(Arc<dyn Clock>),
-    Scheduler(Arc<dyn Schedule>),
-}
-
-impl Default for ClockOrScheduler {
-    fn default() -> Self {
-        Self::Clock(Arc::new(Utc::now))
-    }
-}
-
-impl Clock for ClockOrScheduler {
-    fn now(&self) -> DateTime<Utc> {
-        match self {
-            Self::Clock(clock) => clock.now(),
-            Self::Scheduler(scheduler) => scheduler.now(),
-        }
-    }
-}
-
-impl ClockOrScheduler {
-    fn as_scheduler(&self) -> Option<&dyn Schedule> {
-        match self {
-            Self::Scheduler(scheduler) => Some(scheduler.as_ref()),
-            Self::Clock(_) => None,
-        }
-    }
 }
 
 /// Simple in-memory implementation of a workflow manager.
@@ -318,39 +292,28 @@ impl ClockOrScheduler {
 /// # Ok(())
 /// # }
 /// ```
-pub struct WorkflowManager<S> {
-    clock: ClockOrScheduler,
+#[derive(Debug)]
+pub struct WorkflowManager<C, S> {
+    clock: C,
     spawners: WorkflowSpawners,
     storage: S,
     local_spans: Mutex<HashMap<WorkflowId, LocalSpans>>,
 }
 
-impl<S> fmt::Debug for WorkflowManager<S> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("WorkflowManager")
-            .field("clock", &self.clock)
-            .field("spawners", &self.spawners)
-            .field("local_spans", &self.local_spans)
-            .finish()
-    }
-}
-
-impl<S: for<'a> Storage<'a>> WorkflowManager<S> {
+#[allow(clippy::mismatching_type_param_order)] // false positive
+impl<S: for<'a> Storage<'a>> WorkflowManager<(), S> {
     /// Creates a builder that will use the specified storage.
-    pub fn builder(storage: S) -> WorkflowManagerBuilder<'static, S> {
+    pub fn builder(storage: S) -> WorkflowManagerBuilder<'static, (), S> {
         WorkflowManagerBuilder {
             module_creator: Box::new(WorkflowEngine::default()),
-            clock: ClockOrScheduler::default(),
+            clock: (),
             storage,
         }
     }
+}
 
-    async fn new(
-        clock: ClockOrScheduler,
-        storage: S,
-        module_creator: &dyn CreateModule,
-    ) -> anyhow::Result<Self> {
+impl<C: Clock, S: for<'a> Storage<'a>> WorkflowManager<C, S> {
+    async fn new(clock: C, storage: S, module_creator: &dyn CreateModule) -> anyhow::Result<Self> {
         let spawners = {
             let transaction = storage.readonly_transaction().await;
             let mut spawners = WorkflowSpawners::default();
@@ -372,22 +335,8 @@ impl<S: for<'a> Storage<'a>> WorkflowManager<S> {
         })
     }
 
-    /// Returns the encapsulated storage.
-    pub fn into_storage(self) -> S {
-        self.storage
-    }
-}
-
-impl<'a, S: Storage<'a>> WorkflowManager<S> {
-    fn shared(&'a self) -> Shared<'a> {
-        Shared {
-            clock: &self.clock,
-            spawners: &self.spawners,
-        }
-    }
-
     /// Inserts the specified module into the manager.
-    pub async fn insert_module(&'a mut self, id: &str, module: WorkflowModule<'_>) {
+    pub async fn insert_module(&mut self, id: &str, module: WorkflowModule<'_>) {
         let mut transaction = self.storage.transaction().await;
         let module_record = ModuleRecord {
             id: id.to_owned(),
@@ -404,14 +353,14 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
 
     /// Returns current information about the channel with the specified ID, or `None` if a channel
     /// with this ID does not exist.
-    pub async fn channel(&'a self, channel_id: ChannelId) -> Option<ChannelRecord> {
+    pub async fn channel(&self, channel_id: ChannelId) -> Option<ChannelRecord> {
         let transaction = self.storage.readonly_transaction().await;
         let record = transaction.channel(channel_id).await?;
         Some(record)
     }
 
     /// Returns a handle to a workflow with the specified ID.
-    pub async fn workflow(&'a self, workflow_id: WorkflowId) -> Option<WorkflowHandle<'a, (), S>> {
+    pub async fn workflow(&self, workflow_id: WorkflowId) -> Option<WorkflowHandle<'_, (), Self>> {
         let transaction = self.storage.readonly_transaction().await;
         let record = transaction.workflow(workflow_id).await?;
         let interface = self
@@ -423,9 +372,23 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
     }
 
     /// Returns the number of non-completed workflows.
-    pub async fn workflow_count(&'a self) -> usize {
+    pub async fn workflow_count(&self) -> usize {
         let transaction = self.storage.readonly_transaction().await;
         transaction.count_workflows().await
+    }
+
+    /// Returns the encapsulated storage.
+    pub fn into_storage(self) -> S {
+        self.storage
+    }
+}
+
+impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
+    fn shared(&'a self) -> Shared<'a> {
+        Shared {
+            clock: &self.clock,
+            spawners: &self.spawners,
+        }
     }
 
     pub(crate) async fn send_message(
@@ -441,7 +404,7 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
 
     pub(crate) async fn close_host_sender(&'a self, channel_id: ChannelId) {
         let mut transaction = self.storage.transaction().await;
-        PersistenceManager::new(&mut transaction)
+        StorageHelper::new(&mut transaction)
             .close_channel_side(channel_id, ChannelSide::HostSender)
             .await;
         transaction.commit().await;
@@ -457,7 +420,7 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
                 channel_id
             );
         }
-        PersistenceManager::new(&mut transaction)
+        StorageHelper::new(&mut transaction)
             .close_channel_side(channel_id, ChannelSide::Receiver)
             .await;
         transaction.commit().await;
@@ -585,7 +548,7 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
                 let tracing_metadata = tracer.persist_metadata();
                 let (spans, local_spans) = tracer.persist();
 
-                let mut persistence = PersistenceManager::new(transaction);
+                let mut persistence = StorageHelper::new(transaction);
                 persistence
                     .persist_workflow(workflow_id, parent_id, persisted, spans)
                     .await;
@@ -631,7 +594,7 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
     #[tracing::instrument(skip(self))]
     pub async fn set_current_time(&'a self, time: DateTime<Utc>) {
         let mut transaction = self.storage.transaction().await;
-        PersistenceManager::new(&mut transaction)
+        StorageHelper::new(&mut transaction)
             .set_current_time(time)
             .await;
         transaction.commit().await;
@@ -660,7 +623,7 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
             let tracing_metadata = tracer.persist_metadata();
             let (spans, local_spans) = tracer.persist();
 
-            let mut persistence = PersistenceManager::new(transaction);
+            let mut persistence = StorageHelper::new(transaction);
             persistence
                 .persist_workflow(workflow_id, parent_id, persisted, spans)
                 .await;
@@ -693,7 +656,7 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
             })
             .await;
         if let Some(record) = record {
-            PersistenceManager::new(&mut transaction)
+            StorageHelper::new(&mut transaction)
                 .handle_workflow_update(workflow_id, record.parent_id, &record.persisted)
                 .await;
         }
@@ -710,7 +673,7 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
     /// # Errors
     ///
     /// Returns an error if the manager cannot be progressed.
-    pub async fn tick(&'a self) -> Result<TickResult<Actions<'a, S>>, WouldBlock> {
+    pub async fn tick(&'a self) -> Result<TickResult<Actions<'a, Self>>, WouldBlock> {
         let span = tracing::info_span!("tick", workflow_id = field::Empty, err = field::Empty);
         let _entered = span.enter();
         let mut transaction = self.storage.transaction().await;
@@ -757,6 +720,27 @@ impl<'a, S: Storage<'a>> WorkflowManager<S> {
     }
 }
 
+/// Trait encapsulating all type params of a [`WorkflowManager`].
+pub trait AsManager {
+    /// Storage used by the manager.
+    type Storage: for<'a> Storage<'a>;
+    /// Clock used by the manager.
+    type Clock: Clock;
+
+    #[doc(hidden)] // implementation detail
+    fn as_manager(&self) -> &WorkflowManager<Self::Clock, Self::Storage>;
+}
+
+impl<C: Clock, S: for<'a> Storage<'a>> AsManager for WorkflowManager<C, S> {
+    type Storage = S;
+    type Clock = C;
+
+    #[inline]
+    fn as_manager(&self) -> &WorkflowManager<Self::Clock, Self::Storage> {
+        self
+    }
+}
+
 /// Customizable [`WorkflowModule`] instantiation logic.
 #[async_trait]
 pub trait CreateModule {
@@ -792,27 +776,26 @@ impl CreateModule for WorkflowEngine {
 
 /// Builder for a [`WorkflowManager`].
 #[derive(Debug)]
-pub struct WorkflowManagerBuilder<'r, S> {
-    clock: ClockOrScheduler,
+pub struct WorkflowManagerBuilder<'r, C, S> {
+    clock: C,
     module_creator: Box<dyn CreateModule + 'r>,
     storage: S,
 }
 
-impl<'r, S: for<'a> Storage<'a>> WorkflowManagerBuilder<'r, S> {
+#[allow(clippy::mismatching_type_param_order)] // false positive
+impl<'r, S: for<'a> Storage<'a>> WorkflowManagerBuilder<'r, (), S> {
     /// Sets the wall clock to be used in the manager.
     #[must_use]
-    pub fn with_clock(mut self, clock: Arc<impl Clock>) -> Self {
-        self.clock = ClockOrScheduler::Clock(clock);
-        self
+    pub fn with_clock<C: Clock>(self, clock: C) -> WorkflowManagerBuilder<'r, C, S> {
+        WorkflowManagerBuilder {
+            clock,
+            module_creator: self.module_creator,
+            storage: self.storage,
+        }
     }
+}
 
-    /// Sets the scheduler to be used in the manager.
-    #[must_use]
-    pub fn with_scheduler(mut self, scheduler: Arc<impl Schedule>) -> Self {
-        self.clock = ClockOrScheduler::Scheduler(scheduler);
-        self
-    }
-
+impl<'r, C: Clock, S: for<'a> Storage<'a>> WorkflowManagerBuilder<'r, C, S> {
     /// Specifies the [module creator](CreateModule) to use.
     #[must_use]
     pub fn with_module_creator(mut self, creator: impl CreateModule + 'r) -> Self {
@@ -825,12 +808,12 @@ impl<'r, S: for<'a> Storage<'a>> WorkflowManagerBuilder<'r, S> {
     /// # Errors
     ///
     /// Returns an error if [module instantiation](CreateModule) fails.
-    pub async fn build(self) -> anyhow::Result<WorkflowManager<S>> {
+    pub async fn build(self) -> anyhow::Result<WorkflowManager<C, S>> {
         WorkflowManager::new(self.clock, self.storage, self.module_creator.as_ref()).await
     }
 }
 
-impl<S> ManageInterfaces for WorkflowManager<S> {
+impl<C: Clock, S> ManageInterfaces for WorkflowManager<C, S> {
     fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
         Some(Cow::Borrowed(
             self.spawners.for_full_id(definition_id)?.interface(),
@@ -838,14 +821,19 @@ impl<S> ManageInterfaces for WorkflowManager<S> {
     }
 }
 
-impl<S> SpecifyWorkflowChannels for WorkflowManager<S> {
+impl<C: Clock, S> SpecifyWorkflowChannels for WorkflowManager<C, S> {
     type Inbound = ChannelId;
     type Outbound = ChannelId;
 }
 
 #[async_trait]
-impl<'a, W: WorkflowFn, S: Storage<'a>> ManageWorkflows<'a, W> for WorkflowManager<S> {
-    type Handle = WorkflowHandle<'a, W, S>;
+impl<'a, W, C, S> ManageWorkflows<'a, W> for WorkflowManager<C, S>
+where
+    W: WorkflowFn,
+    C: Clock,
+    S: for<'s> Storage<'s>,
+{
+    type Handle = WorkflowHandle<'a, W, Self>;
     type Error = anyhow::Error;
 
     async fn create_workflow(

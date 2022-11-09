@@ -37,11 +37,11 @@ impl ChannelState {
 }
 
 #[derive(Debug)]
-pub(super) struct PersistenceManager<'a, T> {
+pub(super) struct StorageHelper<'a, T> {
     inner: &'a mut T,
 }
 
-impl<'a, T: WriteChannels + WriteWorkflows> PersistenceManager<'a, T> {
+impl<'a, T: WriteChannels + WriteWorkflows> StorageHelper<'a, T> {
     pub fn new(inner: &'a mut T) -> Self {
         Self { inner }
     }

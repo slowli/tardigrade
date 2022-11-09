@@ -32,7 +32,7 @@ use std::{
     env, fs, ops,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 use crate::module::{Clock, Schedule, TimerFuture};
@@ -282,16 +282,16 @@ impl ModuleCompiler {
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MockScheduler {
-    inner: Mutex<SchedulerBase>,
+    inner: Arc<Mutex<SchedulerBase>>,
     new_expirations_sx: mpsc::UnboundedSender<DateTime<Utc>>,
 }
 
 impl Default for MockScheduler {
     fn default() -> Self {
         Self {
-            inner: Mutex::default(),
+            inner: Arc::default(),
             new_expirations_sx: mpsc::unbounded().0,
         }
     }
@@ -303,7 +303,7 @@ impl MockScheduler {
     pub fn with_expirations() -> (Self, impl Stream<Item = DateTime<Utc>> + Unpin) {
         let (new_expirations_sx, rx) = mpsc::unbounded();
         let this = Self {
-            inner: Mutex::default(),
+            inner: Arc::default(),
             new_expirations_sx,
         };
         (this, rx)

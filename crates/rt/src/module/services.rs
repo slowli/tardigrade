@@ -21,18 +21,15 @@ pub trait Clock: Send + Sync + 'static {
     fn now(&self) -> DateTime<Utc>;
 }
 
-impl<F> Clock for F
-where
-    F: Fn() -> DateTime<Utc> + Send + Sync + 'static,
-{
-    fn now(&self) -> DateTime<Utc> {
-        self()
-    }
-}
-
 impl fmt::Debug for dyn Clock {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.debug_struct("Clock").finish_non_exhaustive()
+    }
+}
+
+impl Clock for () {
+    fn now(&self) -> DateTime<Utc> {
+        Utc::now()
     }
 }
 

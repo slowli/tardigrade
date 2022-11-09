@@ -26,7 +26,9 @@ use tardigrade::{
 const POLL_CX: WasmContextPtr = 123;
 const DEFINITION_ID: &str = "test@latest::TestWorkflow";
 
-async fn create_test_manager() -> WorkflowManager<LocalStorage> {
+type LocalManager = WorkflowManager<(), LocalStorage>;
+
+async fn create_test_manager() -> LocalManager {
     let mut manager = WorkflowManager::builder(LocalStorage::default())
         .build()
         .await
@@ -37,9 +39,7 @@ async fn create_test_manager() -> WorkflowManager<LocalStorage> {
     manager
 }
 
-async fn create_test_workflow(
-    manager: &WorkflowManager<LocalStorage>,
-) -> WorkflowHandle<'_, (), LocalStorage> {
+async fn create_test_workflow(manager: &LocalManager) -> WorkflowHandle<'_, (), LocalManager> {
     manager
         .new_workflow(DEFINITION_ID, b"test_input".to_vec())
         .unwrap()
@@ -48,10 +48,7 @@ async fn create_test_workflow(
         .unwrap()
 }
 
-async fn tick_workflow(
-    manager: &WorkflowManager<LocalStorage>,
-    id: WorkflowId,
-) -> Result<Receipt, ExecutionError> {
+async fn tick_workflow(manager: &LocalManager, id: WorkflowId) -> Result<Receipt, ExecutionError> {
     let mut transaction = manager.storage.transaction().await;
     let record = transaction.workflow(id).await.unwrap();
     let result = manager.tick_workflow(&mut transaction, record).await;
@@ -60,7 +57,7 @@ async fn tick_workflow(
 }
 
 async fn find_consumable_channel(
-    manager: &WorkflowManager<LocalStorage>,
+    manager: &WorkflowManager<(), LocalStorage>,
 ) -> Option<(ChannelId, WorkflowId)> {
     let transaction = manager.storage.readonly_transaction().await;
     let (channel_id, workflow) = transaction.find_consumable_channel().await?;
@@ -68,7 +65,7 @@ async fn find_consumable_channel(
 }
 
 async fn feed_message(
-    manager: &WorkflowManager<LocalStorage>,
+    manager: &WorkflowManager<(), LocalStorage>,
     channel_id: ChannelId,
     workflow_id: WorkflowId,
 ) -> Result<Receipt, ExecutionError> {
@@ -137,7 +134,7 @@ async fn instantiating_workflow() {
 }
 
 async fn test_initializing_workflow(
-    manager: &WorkflowManager<LocalStorage>,
+    manager: &WorkflowManager<(), LocalStorage>,
     ids: &WorkflowAndChannelIds,
 ) {
     let mut transaction = manager.storage.transaction().await;

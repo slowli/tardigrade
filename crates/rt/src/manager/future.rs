@@ -12,9 +12,9 @@ use std::{
 };
 
 use crate::{
-    manager::{TickResult, WorkflowManager},
+    manager::{AsManager, TickResult},
     receipt::ExecutionError,
-    storage::Storage,
+    Schedule,
 };
 use tardigrade::{ChannelId, Decode, Encode};
 
@@ -135,10 +135,11 @@ impl Driver {
     /// [`Self::drop_erroneous_messages()`] flag being set.
     ///
     /// [`select`]: futures::select
-    pub async fn drive<'a, S: Storage<'a>>(
-        &mut self,
-        manager: &'a mut WorkflowManager<S>,
-    ) -> Result<Termination, ExecutionError> {
+    pub async fn drive<M>(&mut self, manager: &mut M) -> Result<Termination, ExecutionError>
+    where
+        M: AsManager,
+        M::Clock: Schedule,
+    {
         loop {
             if let Some(termination) = self.tick(manager).await? {
                 self.flush_outbound_messages(manager).await;
@@ -148,19 +149,16 @@ impl Driver {
     }
 
     #[tracing::instrument(level = "debug", skip_all, err)]
-    async fn tick<'a, S: Storage<'a>>(
-        &mut self,
-        manager: &'a WorkflowManager<S>,
-    ) -> Result<Option<Termination>, ExecutionError> {
-        let scheduler = manager
-            .clock
-            .as_scheduler()
-            .expect("manager does not provide scheduler");
-
+    async fn tick<M>(&mut self, manager: &M) -> Result<Option<Termination>, ExecutionError>
+    where
+        M: AsManager,
+        M::Clock: Schedule,
+    {
+        let manager_ref = manager.as_manager();
         let nearest_timer_expiration = self.tick_manager(manager).await?;
         self.gc(manager).await;
         if nearest_timer_expiration.is_none() && self.inbound_channels.is_empty() {
-            let termination = if manager.workflow_count().await == 0 {
+            let termination = if manager_ref.workflow_count().await == 0 {
                 Termination::Finished
             } else {
                 Termination::Stalled
@@ -177,7 +175,7 @@ impl Driver {
 
         // TODO: cache `timer_event`?
         let timer_event = nearest_timer_expiration.map(|timestamp| {
-            let timer = scheduler.create_timer(timestamp);
+            let timer = manager_ref.clock.create_timer(timestamp);
             timer.map(ListenedEventOutput::Timer).right_future()
         });
         let all_futures = channel_futures.chain(timer_event);
@@ -186,26 +184,26 @@ impl Driver {
         match output {
             ListenedEventOutput::Channel { id, message } => {
                 if let Some(message) = message {
-                    manager.send_message(id, message).await.unwrap();
+                    manager_ref.send_message(id, message).await.unwrap();
                 } else {
-                    manager.close_host_sender(id).await;
+                    manager_ref.close_host_sender(id).await;
                 }
             }
 
             ListenedEventOutput::Timer(timestamp) => {
-                manager.set_current_time(timestamp).await;
+                manager_ref.set_current_time(timestamp).await;
             }
         };
 
         Ok(None)
     }
 
-    async fn tick_manager<'a, S: Storage<'a>>(
+    async fn tick_manager<M: AsManager>(
         &mut self,
-        manager: &'a WorkflowManager<S>,
+        manager: &M,
     ) -> Result<Option<DateTime<Utc>>, ExecutionError> {
         loop {
-            let tick_result = match manager.tick().await {
+            let tick_result = match manager.as_manager().tick().await {
                 Ok(result) => result,
                 Err(blocked) => break Ok(blocked.nearest_timer_expiration()),
             };
@@ -228,7 +226,8 @@ impl Driver {
     }
 
     /// Flushes messages to the outbound channels until no messages are left.
-    async fn flush_outbound_messages<'a, S: Storage<'a>>(&self, manager: &'a WorkflowManager<S>) {
+    async fn flush_outbound_messages<M: AsManager>(&self, manager: &M) {
+        let manager = manager.as_manager();
         for (&id, sx) in &self.outbound_channels {
             let messages = manager.take_outbound_messages(id).await;
             for message in messages {
@@ -241,7 +240,8 @@ impl Driver {
     /// Garbage-collect receivers for closed inbound channels. This will signal
     /// to the consumers that the channel cannot be written to.
     #[tracing::instrument(level = "debug", skip_all)]
-    async fn gc<'a, S: Storage<'a>>(&mut self, manager: &'a WorkflowManager<S>) {
+    async fn gc<M: AsManager>(&mut self, manager: &M) {
+        let manager = manager.as_manager();
         let channel_ids = self.inbound_channels.keys();
         let check_closed_tasks = channel_ids.map(|&id| async move {
             let is_closed = manager
@@ -284,7 +284,7 @@ impl<T, C: Clone> Clone for MessageSender<T, C> {
     }
 }
 
-impl<'a, T, C: Encode<T>, S: Storage<'a>> super::MessageSender<'a, T, C, S> {
+impl<T, C: Encode<T>, M: AsManager> super::MessageSender<'_, T, C, M> {
     /// Registers this sender in `driver`, allowing to later asynchronously send messages.
     pub fn into_sink(self, driver: &mut Driver) -> MessageSender<T, C> {
         let (sx, rx) = mpsc::channel(1);
@@ -335,7 +335,7 @@ pin_project! {
     }
 }
 
-impl<'a, T, C: Decode<T>, S: Storage<'a>> super::MessageReceiver<'a, T, C, S> {
+impl<T, C: Decode<T>, M: AsManager> super::MessageReceiver<'_, T, C, M> {
     /// Registers this receiver in `driver`, allowing to later asynchronously receive messages.
     pub fn into_stream(self, driver: &mut Driver) -> MessageReceiver<T, C> {
         let (sx, rx) = mpsc::unbounded();

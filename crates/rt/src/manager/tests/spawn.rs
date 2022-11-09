@@ -778,7 +778,7 @@ async fn completing_child_with_panic() {
 }
 
 async fn assert_child_abort(
-    manager: &WorkflowManager<LocalStorage>,
+    manager: &WorkflowManager<(), LocalStorage>,
     workflow_id: WorkflowId,
     child_events_id: ChannelId,
 ) {
