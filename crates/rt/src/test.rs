@@ -251,7 +251,7 @@ impl ModuleCompiler {
 /// # use std::sync::Arc;
 /// use tardigrade::{interface::OutboundChannel, spawn::ManageWorkflowsExt};
 /// use tardigrade_rt::{test::MockScheduler, WorkflowModule};
-/// use tardigrade_rt::manager::{future::Driver, WorkflowHandle, WorkflowManager};
+/// use tardigrade_rt::manager::{driver::Driver, WorkflowHandle, WorkflowManager};
 ///
 /// # async fn test_wrapper(module: WorkflowModule) -> anyhow::Result<()> {
 /// let scheduler = Arc::new(MockScheduler::default());

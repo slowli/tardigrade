@@ -12,7 +12,9 @@ use super::*;
 use crate::{
     data::{WasmContextPtr, WorkflowData, WorkflowFunctions},
     module::{ExportsMock, MockPollFn},
-    receipt::{ExecutedFunction, WakeUpCause},
+    receipt::{
+        ChannelEvent, ChannelEventKind, ExecutedFunction, ExecutionError, Receipt, WakeUpCause,
+    },
     storage::LocalStorage,
     utils::WasmAllocator,
     WorkflowEngine, WorkflowModule,
@@ -342,6 +344,11 @@ async fn test_closing_inbound_channel_from_host_side(with_message: bool) {
                 },
             ]
         );
+
+        // Feed the EOF as well.
+        feed_message(&manager, orders_id, workflow_id)
+            .await
+            .unwrap();
     }
 
     workflow.update().await.unwrap();

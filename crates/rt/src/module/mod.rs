@@ -23,7 +23,7 @@ pub use self::services::{Clock, Schedule, TimerFuture};
 pub(crate) use self::tests::{ExportsMock, MockPollFn};
 pub(crate) use self::{
     exports::ModuleExports,
-    services::{Services, StashWorkflows},
+    services::{Services, StashWorkflow},
 };
 
 use self::imports::ModuleImports;

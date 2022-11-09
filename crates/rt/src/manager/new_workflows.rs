@@ -1,19 +1,26 @@
 //! Transactions for `WorkflowManager`.
 
+use async_trait::async_trait;
 use futures::{stream, Stream, StreamExt};
 use tracing_tunnel::PersistedSpans;
 
 use std::{borrow::Cow, collections::HashMap, mem};
 
-use super::{Shared, WorkflowAndChannelIds, WorkflowSpawners};
+use super::{Shared, WorkflowAndChannelIds, WorkflowHandle, WorkflowManager, WorkflowSpawners};
 use crate::{
-    module::{Services, StashWorkflows},
-    storage::{ChannelState, WorkflowRecord, WriteChannels, WriteWorkflows},
+    module::{Clock, Services, StashWorkflow},
+    storage::{
+        ChannelState, Storage, StorageTransaction, WorkflowRecord, WriteChannels, WriteWorkflows,
+    },
     workflow::{ChannelIds, PersistedWorkflow},
 };
 use tardigrade::{
     interface::Interface,
-    spawn::{ChannelSpawnConfig, ChannelsConfig, HostError, ManageInterfaces},
+    spawn::{
+        ChannelSpawnConfig, ChannelsConfig, HostError, ManageInterfaces, ManageWorkflows,
+        SpecifyWorkflowChannels,
+    },
+    workflow::WorkflowFn,
     ChannelId, WorkflowId,
 };
 
@@ -139,7 +146,7 @@ impl<'a> NewWorkflows<'a> {
         }
     }
 
-    pub async fn commit_external<T: WriteChannels + WriteWorkflows>(
+    async fn commit_external<T: WriteChannels + WriteWorkflows>(
         self,
         persistence: &mut T,
     ) -> anyhow::Result<WorkflowId> {
@@ -157,7 +164,6 @@ impl<'a> NewWorkflows<'a> {
         child_stub: &mut WorkflowStub,
     ) -> anyhow::Result<WorkflowAndChannelIds> {
         let (mut persisted, channel_ids) = child_stub.spawn(shared, persistence).await?;
-
         let child_id = persistence.allocate_workflow_id().await;
 
         tracing::debug!(?channel_ids, "handling channels for new workflow");
@@ -211,7 +217,7 @@ impl ManageInterfaces for NewWorkflows<'_> {
     }
 }
 
-impl StashWorkflows for NewWorkflows<'_> {
+impl StashWorkflow for NewWorkflows<'_> {
     #[tracing::instrument(skip(self, args), fields(args.len = args.len()))]
     fn stash_workflow(
         &mut self,
@@ -233,5 +239,47 @@ impl StashWorkflows for NewWorkflows<'_> {
                 channels,
             },
         );
+    }
+}
+
+impl<C: Clock, S> ManageInterfaces for WorkflowManager<C, S> {
+    fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
+        Some(Cow::Borrowed(
+            self.spawners.for_full_id(definition_id)?.interface(),
+        ))
+    }
+}
+
+impl<C: Clock, S> SpecifyWorkflowChannels for WorkflowManager<C, S> {
+    type Inbound = ChannelId;
+    type Outbound = ChannelId;
+}
+
+#[async_trait]
+impl<'a, W, C, S> ManageWorkflows<'a, W> for WorkflowManager<C, S>
+where
+    W: WorkflowFn,
+    C: Clock,
+    S: for<'s> Storage<'s>,
+{
+    type Handle = WorkflowHandle<'a, W, Self>;
+    type Error = anyhow::Error;
+
+    async fn create_workflow(
+        &'a self,
+        definition_id: &str,
+        args: Vec<u8>,
+        channels: ChannelsConfig<ChannelId>,
+    ) -> Result<Self::Handle, Self::Error> {
+        let mut new_workflows = NewWorkflows::new(None, self.shared());
+        new_workflows.stash_workflow(0, definition_id, args, channels);
+        let mut transaction = self.storage.transaction().await;
+        let workflow_id = new_workflows.commit_external(&mut transaction).await?;
+        transaction.commit().await;
+        Ok(self
+            .workflow(workflow_id)
+            .await
+            .unwrap()
+            .downcast_unchecked())
     }
 }

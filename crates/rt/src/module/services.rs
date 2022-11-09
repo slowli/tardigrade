@@ -51,7 +51,7 @@ pub type TimerFuture = Pin<Box<dyn Future<Output = DateTime<Utc>> + Send>>;
 /// Similar to [`tardigrade::ManageWorkflows`], but mutable and synchronous.
 /// The returned handle is stored in a `Workflow` and, before it's persisted, exchanged for
 /// a `WorkflowId`.
-pub(crate) trait StashWorkflows: Send + Sync + ManageInterfaces {
+pub(crate) trait StashWorkflow: Send + Sync + ManageInterfaces {
     fn stash_workflow(
         &mut self,
         stub_id: WorkflowId,
@@ -64,7 +64,7 @@ pub(crate) trait StashWorkflows: Send + Sync + ManageInterfaces {
 /// Dynamically dispatched services available to workflows.
 pub(crate) struct Services<'a> {
     pub clock: &'a dyn Clock,
-    pub workflows: Option<&'a mut dyn StashWorkflows>,
+    pub workflows: Option<&'a mut dyn StashWorkflow>,
     pub tracer: Option<&'a mut TracingEventReceiver>,
 }
 

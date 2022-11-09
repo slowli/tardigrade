@@ -5,7 +5,7 @@ use wasmtime::ExternRef;
 use std::borrow::Cow;
 
 use super::*;
-use crate::{data::SpawnFunctions, module::StashWorkflows, utils::copy_bytes_from_wasm};
+use crate::{data::SpawnFunctions, module::StashWorkflow, utils::copy_bytes_from_wasm};
 use tardigrade::{
     abi::TryFromWasm,
     interface::{ChannelKind, Interface},
@@ -78,7 +78,7 @@ impl ManageInterfaces for MockWorkflowManager {
     }
 }
 
-impl StashWorkflows for MockWorkflowManager {
+impl StashWorkflow for MockWorkflowManager {
     fn stash_workflow(
         &mut self,
         stub_id: WorkflowId,

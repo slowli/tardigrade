@@ -5,7 +5,7 @@ use wasmtime::ExternRef;
 use super::*;
 use crate::{
     data::{tests::complete_task_with_error, SpawnFunctions},
-    receipt::{ResourceEvent, ResourceEventKind, ResourceId},
+    receipt::{ChannelEventKind, ResourceEvent, ResourceEventKind, ResourceId},
     utils::{copy_string_from_wasm, decode_string},
 };
 use tardigrade::{abi::TryFromWasm, interface::ChannelKind};

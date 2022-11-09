@@ -58,7 +58,7 @@ pub enum Termination {
 /// use tardigrade::interface::{InboundChannel, OutboundChannel};
 /// # use tardigrade::WorkflowId;
 /// use tardigrade_rt::manager::{
-///     future::{Driver, AsyncIoScheduler}, WorkflowHandle, WorkflowManager,
+///     driver::{Driver, AsyncIoScheduler}, WorkflowHandle, WorkflowManager,
 /// };
 ///
 /// # async fn test_wrapper(

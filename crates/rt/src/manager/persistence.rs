@@ -7,7 +7,7 @@ use std::{collections::HashMap, task::Poll};
 
 use crate::{
     manager::ChannelSide,
-    receipt::Receipt,
+    receipt::{ChannelEvent, ChannelEventKind, Receipt},
     storage::{ChannelState, WorkflowSelectionCriteria, WriteChannels, WriteWorkflows},
     utils::{clone_join_error, Message},
     PersistedWorkflow,
@@ -167,5 +167,42 @@ impl<'a, T: WriteChannels + WriteWorkflows> StorageHelper<'a, T> {
         self.inner
             .manipulate_all_workflows(criteria, |persisted| persisted.set_current_time(time))
             .await;
+    }
+}
+
+impl Receipt {
+    fn closed_channel_ids(&self) -> impl Iterator<Item = (ChannelKind, ChannelId)> + '_ {
+        self.events().filter_map(|event| {
+            if let Some(ChannelEvent { kind, .. }) = event.as_channel_event() {
+                return match kind {
+                    ChannelEventKind::InboundChannelClosed(channel_id) => {
+                        Some((ChannelKind::Inbound, *channel_id))
+                    }
+                    ChannelEventKind::OutboundChannelClosed {
+                        channel_id,
+                        remaining_alias_count: 0,
+                    } => Some((ChannelKind::Outbound, *channel_id)),
+                    _ => None,
+                };
+            }
+            None
+        })
+    }
+}
+
+impl PersistedWorkflow {
+    pub(super) fn find_inbound_channel(
+        &self,
+        channel_id: ChannelId,
+    ) -> (Option<WorkflowId>, String) {
+        self.inbound_channels()
+            .find_map(|(child_id, name, state)| {
+                if state.id() == channel_id {
+                    Some((child_id, name.to_owned()))
+                } else {
+                    None
+                }
+            })
+            .unwrap()
     }
 }
