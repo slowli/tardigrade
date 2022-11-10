@@ -1,17 +1,26 @@
 //! Tests related to interaction among workflows.
 
+use futures::future;
 use wasmtime::ExternRef;
 
 use super::*;
 use crate::{
     data::{tests::complete_task_with_error, SpawnFunctions},
     receipt::{ChannelEventKind, ResourceEvent, ResourceEventKind, ResourceId},
+    storage::LocalTransaction,
     utils::{copy_string_from_wasm, decode_string},
 };
 use tardigrade::{abi::TryFromWasm, interface::ChannelKind};
 
 const CHILD_ID: WorkflowId = 1;
 const ERROR_PTR: u32 = 1_024;
+
+async fn peek_channel(transaction: &LocalTransaction<'_>, channel_id: ChannelId) -> Vec<Vec<u8>> {
+    let channel = transaction.channel(channel_id).await.unwrap();
+    let len = channel.received_messages();
+    let messages = (0..len).map(|idx| transaction.channel_message(channel_id, idx));
+    future::try_join_all(messages).await.unwrap()
+}
 
 fn configure_handle(
     mut ctx: StoreContextMut<'_, WorkflowData>,
@@ -163,7 +172,7 @@ async fn spawning_child_workflow() {
         .unwrap();
     assert_eq!(
         find_consumable_channel(&manager).await,
-        Some((traces_id, workflow_id))
+        Some((traces_id, 0, workflow_id))
     );
 
     let receipt = feed_message(&manager, traces_id, workflow_id)
@@ -184,10 +193,9 @@ async fn spawning_child_workflow() {
     child_orders.send(b"test".to_vec()).await.unwrap();
     child_orders.close().await; // no-op: a channel sender is not owned by the host
 
-    let mut child_events = handle.remove(OutboundChannel("events")).unwrap();
+    let child_events = handle.remove(OutboundChannel("events")).unwrap();
     let child_events_id = child_events.channel_id();
-    assert!(!child_events.can_receive_messages());
-    assert!(child_events.take_messages().await.is_none());
+    assert!(!child_events.can_manipulate());
     child_events.close().await; // no-op: the channel receiver is not owned by the host
 
     let transaction = manager.storage.readonly_transaction().await;
@@ -256,7 +264,7 @@ async fn sending_message_to_child() {
     let child_orders_id = child_channel_ids.inbound["orders"];
     {
         let transaction = manager.storage.readonly_transaction().await;
-        let child_orders: Vec<_> = transaction.peek_channel(child_orders_id).unwrap().collect();
+        let child_orders = peek_channel(&transaction, child_orders_id).await;
         assert_eq!(child_orders.len(), 1);
         assert_eq!(child_orders[0], b"child_order");
     }
@@ -264,7 +272,7 @@ async fn sending_message_to_child() {
     tick_workflow(&manager, CHILD_ID).await.unwrap();
     assert_eq!(
         find_consumable_channel(&manager).await,
-        Some((child_orders_id, CHILD_ID))
+        Some((child_orders_id, 0, CHILD_ID))
     );
     feed_message(&manager, child_orders_id, CHILD_ID)
         .await
@@ -510,13 +518,9 @@ async fn spawning_child_with_copied_outbound_channel() {
         HashSet::from_iter([workflow_id])
     );
     assert_eq!(events_channel.state.receiver_workflow_id, None);
-    assert_eq!(events_channel.message_count, 1);
 
     let transaction = manager.storage.readonly_transaction().await;
-    let events: Vec<_> = transaction
-        .peek_channel(child_events_id.unwrap())
-        .unwrap()
-        .collect();
+    let events = peek_channel(&transaction, events_id).await;
     assert_eq!(events, [b"child_event"]);
 }
 
@@ -635,7 +639,7 @@ async fn test_child_with_aliased_outbound_channel(complete_child: bool) {
         HashSet::from_iter([workflow_id, CHILD_ID])
     );
     let transaction = manager.storage.readonly_transaction().await;
-    let outbound_messages: Vec<_> = transaction.peek_channel(events_id).unwrap().collect();
+    let outbound_messages: Vec<_> = peek_channel(&transaction, events_id).await;
     assert_eq!(outbound_messages, [b"child_event" as &[u8], b"child_trace"]);
     drop(transaction);
 

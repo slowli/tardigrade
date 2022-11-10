@@ -7,12 +7,13 @@ use tracing_tunnel::TracingEventReceiver;
 use std::{error, fmt};
 
 use super::{new_workflows::NewWorkflows, persistence::StorageHelper, AsManager, WorkflowManager};
+use crate::storage::MessageError;
 use crate::{
     module::{Clock, Services},
     receipt::{ExecutionError, Receipt},
     storage::{
-        MessageOrEof, ReadModules, ReadWorkflows, Storage, StorageTransaction, WorkflowRecord,
-        WriteChannels, WriteModules, WriteWorkflows,
+        ReadChannels, ReadModules, ReadWorkflows, Storage, StorageTransaction, WorkflowRecord,
+        WriteModules, WriteWorkflows,
     },
     workflow::Workflow,
     PersistedWorkflow, WorkflowSpawner,
@@ -22,15 +23,24 @@ use tardigrade::{ChannelId, WorkflowId};
 #[derive(Debug)]
 struct DropMessageAction {
     channel_id: ChannelId,
-    // TODO: add message index to protect against edit conflicts
+    message_idx: usize,
 }
 
 impl DropMessageAction {
-    async fn execute<M: AsManager>(self, manager: &M) {
+    async fn execute<M: AsManager>(self, manager: &M, workflow_id: WorkflowId) {
         let mut transaction = manager.as_manager().storage.transaction().await;
-        if let Some((_, token)) = transaction.pop_message(self.channel_id).await {
-            transaction.confirm_message_removal(token).await.ok();
-        }
+        transaction
+            .manipulate_workflow(workflow_id, |persisted| {
+                let (child_id, name, state) = persisted.find_inbound_channel(self.channel_id);
+                if state.received_message_count() == self.message_idx {
+                    let name = name.to_owned();
+                    persisted.drop_inbound_message(child_id, &name);
+                } else {
+                    tracing::warn!(?self, workflow_id, "failed dropping inbound message");
+                }
+            })
+            .await;
+        transaction.commit().await;
     }
 }
 
@@ -88,8 +98,11 @@ impl<'a, M> Actions<'a, M> {
         }
     }
 
-    fn allow_dropping_message(&mut self, channel_id: ChannelId) {
-        self.drop_message_action = Some(DropMessageAction { channel_id });
+    fn allow_dropping_message(&mut self, channel_id: ChannelId, message_idx: usize) {
+        self.drop_message_action = Some(DropMessageAction {
+            channel_id,
+            message_idx,
+        });
     }
 }
 
@@ -130,7 +143,7 @@ impl<'a, M: AsManager> TickResult<Actions<'a, M>> {
             .drop_message_action
             .take()
             .expect("cannot drop message");
-        action.execute(self.extra.manager).await;
+        action.execute(self.extra.manager, self.workflow_id).await;
         self.drop_extra()
     }
 }
@@ -229,17 +242,18 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
         &'a self,
         transaction: &mut S::Transaction,
         channel_id: ChannelId,
-        workflow: WorkflowRecord,
+        message_idx: usize,
+        mut workflow: WorkflowRecord,
     ) -> Result<Receipt, ExecutionError> {
         let workflow_id = workflow.id;
-        let (message_or_eof, message_token) = transaction
-            .pop_message(channel_id)
-            .await
-            .expect("no message to feed");
-        let (child_id, channel_name) = workflow.persisted.find_inbound_channel(channel_id);
+        let (child_id, channel_name, state) = workflow.persisted.find_inbound_channel(channel_id);
+        let channel_name = channel_name.to_owned();
+        debug_assert_eq!(message_idx, state.received_message_count());
+
+        let message_or_eof = transaction.channel_message(channel_id, message_idx).await;
         let message = match message_or_eof {
-            MessageOrEof::Message(message) => message,
-            MessageOrEof::Eof => {
+            Ok(message) => message,
+            Err(MessageError::NonExistingIndex { is_closed: true }) => {
                 // Signal to the workflow that the channel is closed. This can be performed
                 // on a persisted workflow, without executing it.
                 let mut persisted = workflow.persisted;
@@ -247,20 +261,22 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
                 transaction
                     .persist_workflow(workflow_id, persisted, workflow.tracing_spans)
                     .await;
-                transaction
-                    .confirm_message_removal(message_token)
-                    .await
-                    .ok();
                 return Ok(Receipt::default());
             }
+            Err(err) => panic!("unexpected error receiving message: {err}"),
         };
+        workflow
+            .persisted
+            .push_inbound_message(child_id, &channel_name, message)
+            .unwrap();
+        // ^ `unwrap()` is safe: no messages can be persisted
 
         let parent_id = workflow.parent_id;
         let module_id = workflow.module_id.clone();
         let (seed, mut tracer) = self.restore_workflow(transaction, workflow).await;
         let mut new_workflows = NewWorkflows::new(Some(workflow_id), self.shared());
         let mut workflow = seed.restore(&mut new_workflows, &mut tracer);
-        let result = Self::push_message(&mut workflow, child_id, &channel_name, message);
+        let result = workflow.tick();
 
         if let Ok(receipt) = &result {
             if workflow.take_pending_inbound_message(child_id, &channel_name) {
@@ -268,62 +284,34 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
                 // consume wakers (otherwise, we would loop indefinitely), and place the message
                 // back to the channel.
                 tracing::warn!("message was not consumed by workflow; placing the message back");
-                transaction.revert_message_removal(message_token).await.ok();
-            } else {
-                transaction
-                    .confirm_message_removal(message_token)
-                    .await
-                    .ok();
             }
 
-            {
-                let span = tracing::debug_span!("persist_workflow_and_messages", workflow_id);
-                let _entered = span.enter();
-                let messages = workflow.drain_messages();
-                let mut persisted = workflow.persist();
-                new_workflows.commit(transaction, &mut persisted).await;
-                let tracing_metadata = tracer.persist_metadata();
-                let (spans, local_spans) = tracer.persist();
+            let span = tracing::debug_span!("persist_workflow_and_messages", workflow_id);
+            let _entered = span.enter();
+            let messages = workflow.drain_messages();
+            let mut persisted = workflow.persist();
+            new_workflows.commit(transaction, &mut persisted).await;
+            let tracing_metadata = tracer.persist_metadata();
+            let (spans, local_spans) = tracer.persist();
 
-                let mut persistence = StorageHelper::new(transaction);
-                persistence
-                    .persist_workflow(workflow_id, parent_id, persisted, spans)
-                    .await;
-                persistence.close_channels(workflow_id, receipt).await;
-                persistence.push_messages(messages).await;
+            let mut persistence = StorageHelper::new(transaction);
+            persistence
+                .persist_workflow(workflow_id, parent_id, persisted, spans)
+                .await;
+            persistence.close_channels(workflow_id, receipt).await;
+            persistence.push_messages(messages).await;
 
-                self.local_spans
-                    .lock()
-                    .await
-                    .insert(workflow_id, local_spans);
-                transaction
-                    .update_tracing_metadata(&module_id, tracing_metadata)
-                    .await;
-            }
+            self.local_spans
+                .lock()
+                .await
+                .insert(workflow_id, local_spans);
+            transaction
+                .update_tracing_metadata(&module_id, tracing_metadata)
+                .await;
         } else {
-            // Do not commit the execution result. Instead, put the message back to the channel.
-            transaction.revert_message_removal(message_token).await.ok();
+            // Do not commit the execution result.
         }
         result
-    }
-
-    /// Returns `Ok(None)` if the message cannot be consumed right now (the workflow channel
-    /// does not listen to it).
-    #[tracing::instrument(
-        level = "debug",
-        skip(workflow, message),
-        fields(message.len = message.len())
-    )]
-    fn push_message(
-        workflow: &mut Workflow,
-        child_id: Option<WorkflowId>,
-        channel_name: &str,
-        message: Vec<u8>,
-    ) -> Result<Receipt, ExecutionError> {
-        workflow
-            .push_inbound_message(child_id, channel_name, message)
-            .unwrap();
-        workflow.tick()
     }
 
     #[tracing::instrument(skip_all, err)]
@@ -397,17 +385,17 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
         }
 
         let channel_info = transaction.find_consumable_channel().await;
-        if let Some((channel_id, workflow)) = channel_info {
+        if let Some((channel_id, message_idx, workflow)) = channel_info {
             let workflow_id = workflow.id;
             span.record("workflow_id", workflow_id);
 
             let result = self
-                .feed_message_to_workflow(&mut transaction, channel_id, workflow)
+                .feed_message_to_workflow(&mut transaction, channel_id, message_idx, workflow)
                 .await;
             transaction.commit().await;
             let mut actions = Actions::new(self, result.is_err());
             if result.is_err() {
-                actions.allow_dropping_message(channel_id);
+                actions.allow_dropping_message(channel_id, message_idx);
             }
             return Ok(TickResult {
                 workflow_id,

@@ -140,6 +140,14 @@ fn restore_workflow(persisted: PersistedWorkflow, services: Services<'_>) -> Wor
     persisted.restore(&spawner, services).unwrap()
 }
 
+fn push_inbound_message(workflow: &mut Workflow<'_>, channel_name: &str, message: &[u8]) {
+    workflow
+        .data_mut()
+        .persisted
+        .push_inbound_message(None, channel_name, message.to_vec())
+        .unwrap();
+}
+
 #[test]
 fn starting_workflow() {
     let poll_fns = Answers::from_value(initialize_task as MockPollFn);
@@ -186,9 +194,7 @@ fn receiving_inbound_message() {
         tracer: None,
     });
 
-    workflow
-        .push_inbound_message(None, "orders", b"order #1".to_vec())
-        .unwrap();
+    push_inbound_message(&mut workflow, "orders", b"order #1");
     let receipt = workflow.tick().unwrap();
 
     let exports = exports_guard.into_inner();
@@ -363,9 +369,7 @@ fn spawning_and_cancelling_task() {
     assert_matches!(new_task.result(), Poll::Pending);
 
     // Push the message in order to tick the main task.
-    workflow
-        .push_inbound_message(None, "orders", b"order #1".to_vec())
-        .unwrap();
+    push_inbound_message(&mut workflow, "orders", b"order #1");
     let receipt = workflow.tick().unwrap();
 
     assert_matches!(
@@ -457,9 +461,7 @@ fn rolling_back_task_spawning() {
     });
 
     // Push the message in order to tick the main task.
-    workflow
-        .push_inbound_message(None, "orders", b"order #1".to_vec())
-        .unwrap();
+    push_inbound_message(&mut workflow, "orders", b"order #1");
     let err = workflow.tick().unwrap_err();
     assert_matches!(
         err.receipt().executions(),
@@ -496,9 +498,7 @@ fn rolling_back_task_abort() {
     });
 
     // Push the message in order to tick the main task.
-    workflow
-        .push_inbound_message(None, "orders", b"order #1".to_vec())
-        .unwrap();
+    push_inbound_message(&mut workflow, "orders", b"order #1");
     let err = workflow.tick().unwrap_err();
     assert_eq!(err.receipt().executions().len(), 2);
     let err_message = err.trap().to_string();
@@ -538,9 +538,7 @@ fn rolling_back_emitting_messages_on_trap() {
     });
 
     // Push the message in order to tick the main task.
-    workflow
-        .push_inbound_message(None, "orders", b"order #1".to_vec())
-        .unwrap();
+    push_inbound_message(&mut workflow, "orders", b"order #1");
     workflow.tick().unwrap_err();
 
     let messages = workflow.data_mut().drain_messages();
@@ -563,9 +561,7 @@ fn rolling_back_placing_waker_on_trap() {
     });
 
     // Push the message in order to tick the main task.
-    workflow
-        .push_inbound_message(None, "orders", b"order #1".to_vec())
-        .unwrap();
+    push_inbound_message(&mut workflow, "orders", b"order #1");
     workflow.tick().unwrap_err();
 
     let outbound_channels = workflow.data().persisted.channels.outbound.values();

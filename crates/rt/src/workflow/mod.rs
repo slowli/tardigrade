@@ -10,7 +10,7 @@ mod persistence;
 pub use self::persistence::PersistedWorkflow;
 
 use crate::{
-    data::{ConsumeError, WorkflowData},
+    data::WorkflowData,
     module::{DataSection, ModuleExports, Services, WorkflowSpawner},
     receipt::{
         Event, ExecutedFunction, Execution, ExecutionError, Receipt, ResourceEventKind, ResourceId,
@@ -247,18 +247,6 @@ impl<'a> Workflow<'a> {
             self.wake_tasks(receipt)?;
         }
         Ok(())
-    }
-
-    #[tracing::instrument(level = "debug", skip(self, message), err, fields(message.len = message.len()))]
-    pub(crate) fn push_inbound_message(
-        &mut self,
-        workflow_id: Option<WorkflowId>,
-        channel_name: &str,
-        message: Vec<u8>,
-    ) -> Result<(), ConsumeError> {
-        self.store
-            .data_mut()
-            .push_inbound_message(workflow_id, channel_name, message)
     }
 
     pub(crate) fn take_pending_inbound_message(

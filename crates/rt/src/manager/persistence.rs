@@ -1,14 +1,18 @@
 //! Persistence for `WorkflowManager`.
 
 use chrono::{DateTime, Utc};
+use futures::future::BoxFuture;
 use tracing_tunnel::PersistedSpans;
 
 use std::{collections::HashMap, task::Poll};
 
 use crate::{
-    manager::ChannelSide,
+    manager::{AsManager, ChannelSide},
     receipt::{ChannelEvent, ChannelEventKind, Receipt},
-    storage::{ChannelState, WorkflowSelectionCriteria, WriteChannels, WriteWorkflows},
+    storage::{
+        ChannelState, Storage, StorageTransaction, WorkflowSelectionCriteria, WriteChannels,
+        WriteWorkflows,
+    },
     utils::{clone_join_error, Message},
     PersistedWorkflow,
 };
@@ -34,6 +38,17 @@ impl ChannelState {
             self.is_closed = true;
         }
     }
+}
+
+pub(super) async fn in_transaction<'a, M, F, R>(manager: &'a M, action: F) -> R
+where
+    M: AsManager,
+    F: for<'tx> FnOnce(&'tx mut <M::Storage as Storage<'a>>::Transaction) -> BoxFuture<'tx, R>,
+{
+    let mut transaction = manager.as_manager().storage.transaction().await;
+    let output = action(&mut transaction).await;
+    transaction.commit().await;
+    output
 }
 
 #[derive(Debug)]
@@ -129,14 +144,18 @@ impl<'a, T: WriteChannels + WriteWorkflows> StorageHelper<'a, T> {
 
         // If the channel is closed by the receiver, no need to notify it again.
         if !matches!(side, ChannelSide::Receiver) {
-            let has_messages = self.inner.has_messages(channel_id).await;
+            let has_messages = self
+                .inner
+                .has_messages_for_receiver_workflow(channel_id)
+                .await;
             if !has_messages {
                 // We can notify the receiver immediately only if there are no unconsumed messages
                 // in the channel.
                 if let Some(receiver_workflow_id) = channel_state.receiver_workflow_id {
                     self.inner
                         .manipulate_workflow(receiver_workflow_id, |persisted| {
-                            let (child_id, name) = persisted.find_inbound_channel(channel_id);
+                            let (child_id, name, _) = persisted.find_inbound_channel(channel_id);
+                            let name = name.to_owned();
                             persisted.close_inbound_channel(child_id, &name);
                         })
                         .await;
@@ -187,22 +206,5 @@ impl Receipt {
             }
             None
         })
-    }
-}
-
-impl PersistedWorkflow {
-    pub(super) fn find_inbound_channel(
-        &self,
-        channel_id: ChannelId,
-    ) -> (Option<WorkflowId>, String) {
-        self.inbound_channels()
-            .find_map(|(child_id, name, state)| {
-                if state.id() == channel_id {
-                    Some((child_id, name.to_owned()))
-                } else {
-                    None
-                }
-            })
-            .unwrap()
     }
 }

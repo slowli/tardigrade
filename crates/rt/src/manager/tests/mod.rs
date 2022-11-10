@@ -60,10 +60,10 @@ async fn tick_workflow(manager: &LocalManager, id: WorkflowId) -> Result<Receipt
 
 async fn find_consumable_channel(
     manager: &WorkflowManager<(), LocalStorage>,
-) -> Option<(ChannelId, WorkflowId)> {
+) -> Option<(ChannelId, usize, WorkflowId)> {
     let transaction = manager.storage.readonly_transaction().await;
-    let (channel_id, workflow) = transaction.find_consumable_channel().await?;
-    Some((channel_id, workflow.id))
+    let (channel_id, idx, workflow) = transaction.find_consumable_channel().await?;
+    Some((channel_id, idx, workflow.id))
 }
 
 async fn feed_message(
@@ -73,8 +73,10 @@ async fn feed_message(
 ) -> Result<Receipt, ExecutionError> {
     let mut transaction = manager.storage.transaction().await;
     let workflow = transaction.workflow(workflow_id).await.unwrap();
+    let (.., channel_state) = workflow.persisted.find_inbound_channel(channel_id);
+    let message_idx = channel_state.received_message_count();
     let result = manager
-        .feed_message_to_workflow(&mut transaction, channel_id, workflow)
+        .feed_message_to_workflow(&mut transaction, channel_id, message_idx, workflow)
         .await;
     transaction.commit().await;
     result
@@ -157,8 +159,8 @@ async fn test_initializing_workflow(
     assert!(transaction.find_consumable_channel().await.is_none());
     let traces = transaction.channel(traces_id).await.unwrap();
     assert_eq!(traces.received_messages(), 1);
-    let (message, _) = transaction.pop_message(traces_id).await.unwrap();
-    assert_matches!(message, MessageOrEof::Message(payload) if payload == b"trace #1");
+    let message = transaction.channel_message(traces_id, 0).await.unwrap();
+    assert_eq!(message, b"trace #1");
 }
 
 #[async_std::test]
@@ -195,7 +197,6 @@ async fn initializing_workflow_with_closed_channels() {
     let channel_info = handle[InboundChannel("orders")].channel_info().await;
     assert!(channel_info.is_closed());
     assert_eq!(channel_info.received_messages(), 0);
-    assert_eq!(channel_info.flushed_messages(), 0);
     let channel_info = handle[OutboundChannel("traces")].channel_info().await;
     assert!(channel_info.is_closed());
 
@@ -419,7 +420,7 @@ async fn sending_message_to_workflow() {
     let poll_fns = Answers::from_values([poll_receiver as MockPollFn, consume_message]);
     let _guard = ExportsMock::prepare(poll_fns);
     let manager = create_test_manager().await;
-    let workflow = create_test_workflow(&manager).await;
+    let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
     let orders_id = workflow.ids().channel_ids.inbound["orders"];
 
@@ -431,13 +432,18 @@ async fn sending_message_to_workflow() {
 
     {
         let transaction = manager.storage.readonly_transaction().await;
-        let orders: Vec<_> = transaction.peek_channel(orders_id).unwrap().collect();
-        assert_eq!(orders.len(), 1);
-        assert_eq!(orders[0], b"order #1");
+        let order_count = transaction
+            .channel(orders_id)
+            .await
+            .unwrap()
+            .received_messages();
+        assert_eq!(order_count, 1);
+        let order = transaction.channel_message(orders_id, 0).await.unwrap();
+        assert_eq!(order, b"order #1");
     }
     assert_eq!(
         find_consumable_channel(&manager).await,
-        Some((orders_id, workflow_id))
+        Some((orders_id, 0, workflow_id))
     );
 
     let receipt = feed_message(&manager, orders_id, workflow_id)
@@ -453,9 +459,9 @@ async fn sending_message_to_workflow() {
         }
     );
 
-    let transaction = manager.storage.readonly_transaction().await;
-    let mut orders = transaction.peek_channel(orders_id).unwrap();
-    assert_eq!(orders.next(), None);
+    workflow.update().await.unwrap();
+    let (.., orders_state) = workflow.persisted().find_inbound_channel(orders_id);
+    assert_eq!(orders_state.received_message_count(), 1);
 }
 
 #[async_std::test]
@@ -492,7 +498,6 @@ async fn error_processing_inbound_message_in_workflow() {
     let channel_info = manager.channel(orders_id).await.unwrap();
     assert!(!channel_info.is_closed());
     assert_eq!(channel_info.received_messages(), 1);
-    assert_eq!(channel_info.flushed_messages(), 0);
 }
 
 #[async_std::test]
@@ -515,8 +520,10 @@ async fn workflow_not_consuming_inbound_message() {
         .unwrap();
 
     let transaction = manager.storage.readonly_transaction().await;
-    let orders: Vec<_> = transaction.peek_channel(orders_id).unwrap().collect();
-    assert_eq!(orders, [b"order #1"]);
+    let orders_channel = transaction.channel(orders_id).await.unwrap();
+    assert_eq!(orders_channel.received_messages(), 1);
+    let order = transaction.channel_message(orders_id, 0).await.unwrap();
+    assert_eq!(order, b"order #1");
     drop(transaction);
 
     // Workflow wakers should be consumed to not trigger the infinite loop.

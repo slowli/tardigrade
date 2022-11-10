@@ -430,6 +430,8 @@ fn consuming_message_from_child_workflow() {
     workflow.tick().unwrap(); // makes the workflow listen to the `traces` child channel
 
     workflow
+        .data_mut()
+        .persisted
         .push_inbound_message(Some(1), "traces", b"trace #1".to_vec())
         .unwrap();
     let receipt = workflow.tick().unwrap();

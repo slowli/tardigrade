@@ -19,7 +19,7 @@ mod traits;
 mod tests;
 
 pub use self::{
-    handle::{MessageReceiver, MessageSender, TakenMessages, WorkflowHandle},
+    handle::{MessageReceiver, MessageSender, ReceivedMessage, WorkflowHandle},
     tick::{Actions, TickResult, WouldBlock},
     traits::{AsManager, CreateModule},
 };
@@ -28,8 +28,8 @@ use self::persistence::StorageHelper;
 use crate::{
     module::Clock,
     storage::{
-        ChannelRecord, MessageOrEof, ModuleRecord, ReadChannels, ReadModules, ReadWorkflows,
-        Storage, StorageTransaction, WriteChannels, WriteModules, WriteWorkflows,
+        ChannelRecord, ModuleRecord, ReadChannels, ReadModules, ReadWorkflows, Storage,
+        StorageTransaction, WriteChannels, WriteModules, WriteWorkflows,
     },
     workflow::ChannelIds,
     WorkflowEngine, WorkflowModule, WorkflowSpawner,
@@ -257,27 +257,6 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
             .close_channel_side(channel_id, ChannelSide::Receiver)
             .await;
         transaction.commit().await;
-    }
-
-    // TODO: remove in favor of more granular message handling
-    #[tracing::instrument(level = "debug", skip(self))]
-    pub(crate) async fn take_outbound_messages(&'a self, channel_id: ChannelId) -> Vec<Vec<u8>> {
-        let mut transaction = self.storage.transaction().await;
-        let channel_state = transaction.channel(channel_id).await.unwrap().state;
-        assert!(
-            channel_state.receiver_workflow_id.is_none(),
-            "cannot receive a message for a channel with the receiver connected to a workflow"
-        );
-
-        let mut messages = vec![];
-        while let Some((message, token)) = transaction.pop_message(channel_id).await {
-            if let MessageOrEof::Message(payload) = message {
-                messages.push(payload);
-            }
-            transaction.confirm_message_removal(token).await.ok();
-        }
-        transaction.commit().await;
-        messages
     }
 
     /// Sets the current time for this manager. This may expire timers in some of the contained

@@ -11,6 +11,7 @@ use std::{
     task::{Context, Poll},
 };
 
+use crate::storage::{MessageError, ReadChannels, Storage};
 use crate::{
     manager::{AsManager, TickResult},
     receipt::ExecutionError,
@@ -25,6 +26,33 @@ enum ListenedEventOutput {
         message: Option<Vec<u8>>,
     },
     Timer(DateTime<Utc>),
+}
+
+#[derive(Debug)]
+struct OutboundChannel {
+    sender: mpsc::UnboundedSender<Vec<u8>>,
+    cursor: usize,
+}
+
+impl OutboundChannel {
+    /// Returns `true` if the channel should be removed (e.g., if the EOF marker is reached,
+    /// or if it's not listened to by the client.
+    async fn send_messages(&mut self, id: ChannelId, transaction: &impl ReadChannels) -> bool {
+        loop {
+            match transaction.channel_message(id, self.cursor).await {
+                Ok(message) => {
+                    if self.sender.unbounded_send(message).is_err() {
+                        break true;
+                    }
+                }
+                Err(MessageError::NonExistingIndex { is_closed }) => break is_closed,
+                Err(err) => {
+                    tracing::warn!(%err, "unexpected error when sending messages");
+                    break true;
+                }
+            }
+        }
+    }
 }
 
 /// Terminal status of a [`WorkflowManager`].
@@ -97,7 +125,7 @@ pub enum Termination {
 #[derive(Debug, Default)]
 pub struct Driver {
     inbound_channels: HashMap<ChannelId, mpsc::Receiver<Vec<u8>>>,
-    outbound_channels: HashMap<ChannelId, mpsc::UnboundedSender<Vec<u8>>>,
+    outbound_channels: HashMap<ChannelId, OutboundChannel>,
     results_sx: Option<mpsc::UnboundedSender<TickResult<()>>>,
     drop_erroneous_messages: bool,
 }
@@ -226,14 +254,18 @@ impl Driver {
     }
 
     /// Flushes messages to the outbound channels until no messages are left.
-    async fn flush_outbound_messages<M: AsManager>(&self, manager: &M) {
+    async fn flush_outbound_messages<M: AsManager>(&mut self, manager: &M) {
         let manager = manager.as_manager();
-        for (&id, sx) in &self.outbound_channels {
-            let messages = manager.take_outbound_messages(id).await;
-            for message in messages {
-                sx.unbounded_send(message).ok();
-                // ^ We don't care if outbound messages are no longer listened to.
-            }
+        let transaction = &manager.storage.readonly_transaction().await;
+
+        let channels = self.outbound_channels.iter_mut();
+        let channel_tasks = channels.map(|(&id, channel)| async move {
+            let should_drop = channel.send_messages(id, transaction).await;
+            Some(id).filter(|_| should_drop)
+        });
+        let dropped_channels = future::join_all(channel_tasks).await;
+        for id in dropped_channels.into_iter().flatten() {
+            self.outbound_channels.remove(&id);
         }
     }
 
@@ -335,15 +367,15 @@ pin_project! {
     }
 }
 
-impl<T, C: Decode<T>, M: AsManager> super::MessageReceiver<'_, T, C, M> {
+impl<T, C: Decode<T> + Default, M: AsManager> super::MessageReceiver<'_, T, C, M> {
     /// Registers this receiver in `driver`, allowing to later asynchronously receive messages.
     pub fn into_stream(self, driver: &mut Driver) -> MessageReceiver<T, C> {
         let (sx, rx) = mpsc::unbounded();
-        if self.can_receive_messages {
-            driver.outbound_channels.insert(self.channel_id(), sx);
-            // If the channel cannot receive messages, `sx` is immediately dropped,
-            // thus, we don't improperly remove messages from the channel.
-        }
+        let state = OutboundChannel {
+            cursor: 0,
+            sender: sx,
+        };
+        driver.outbound_channels.insert(self.channel_id(), state);
         MessageReceiver {
             raw_receiver: rx,
             codec: self.codec,

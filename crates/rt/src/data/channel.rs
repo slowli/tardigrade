@@ -130,9 +130,14 @@ impl InboundChannelState {
         }
     }
 
-    /// Returns ID of the channel.
+    /// Returns the ID of the channel.
     pub fn id(&self) -> ChannelId {
         self.channel_id
+    }
+
+    /// Returns the number of messages received over the channel.
+    pub fn received_message_count(&self) -> usize {
+        self.received_messages
     }
 
     pub(crate) fn waits_for_message(&self) -> bool {
@@ -282,7 +287,7 @@ impl PersistedWorkflowData {
         }
     }
 
-    fn push_inbound_message(
+    pub(crate) fn push_inbound_message(
         &mut self,
         workflow_id: Option<WorkflowId>,
         channel_name: &str,
@@ -293,7 +298,6 @@ impl PersistedWorkflowData {
             .inbound
             .get_mut(channel_name)
             .unwrap();
-        // ^ `unwrap()` safety is guaranteed by previous checks.
 
         if channel_state.is_closed {
             return Err(ConsumeError::Closed);
@@ -323,6 +327,19 @@ impl PersistedWorkflowData {
         Ok(())
     }
 
+    pub(crate) fn drop_inbound_message(
+        &mut self,
+        workflow_id: Option<WorkflowId>,
+        channel_name: &str,
+    ) {
+        let channel_state = self
+            .channels_mut(workflow_id)
+            .inbound
+            .get_mut(channel_name)
+            .unwrap();
+        channel_state.received_messages += 1;
+    }
+
     pub(crate) fn close_inbound_channel(
         &mut self,
         workflow_id: Option<WorkflowId>,
@@ -344,6 +361,7 @@ impl PersistedWorkflowData {
             channel_name
         );
         channel_state.is_closed = true;
+        channel_state.received_messages += 1; // EOF is a considered a message as well
 
         let wakers = mem::take(&mut channel_state.wakes_on_next_element);
         self.schedule_wakers(
@@ -388,9 +406,9 @@ impl PersistedWorkflowData {
         let workflow_channels = self
             .child_workflows
             .iter()
-            .flat_map(|(&workflow_id, workflow)| {
+            .flat_map(|(&child_id, workflow)| {
                 let channels = workflow.channels.inbound.iter();
-                channels.map(move |(name, state)| (Some(workflow_id), name.as_str(), state))
+                channels.map(move |(name, state)| (Some(child_id), name.as_str(), state))
             });
         local_channels.chain(workflow_channels)
     }
@@ -412,6 +430,15 @@ impl PersistedWorkflowData {
             .values_mut()
             .flat_map(|workflow| workflow.channels.inbound.values_mut());
         self.channels.inbound.values_mut().chain(workflow_channels)
+    }
+
+    pub(crate) fn find_inbound_channel(
+        &self,
+        channel_id: ChannelId,
+    ) -> (Option<WorkflowId>, &str, &InboundChannelState) {
+        self.inbound_channels()
+            .find(|(.., state)| state.channel_id == channel_id)
+            .expect("channel not found")
     }
 
     pub(super) fn outbound_channel(
@@ -531,16 +558,6 @@ impl WorkflowData<'_> {
             );
         }
         wakers
-    }
-
-    pub(crate) fn push_inbound_message(
-        &mut self,
-        workflow_id: Option<WorkflowId>,
-        channel_name: &str,
-        message: Vec<u8>,
-    ) -> Result<(), ConsumeError> {
-        self.persisted
-            .push_inbound_message(workflow_id, channel_name, message)
     }
 
     pub(crate) fn take_pending_inbound_message(

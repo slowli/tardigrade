@@ -9,7 +9,7 @@ use std::{fmt, task::Poll};
 
 use crate::{
     data::{
-        ChildWorkflowState, InboundChannelState, OutboundChannelState, PersistError,
+        ChildWorkflowState, ConsumeError, InboundChannelState, OutboundChannelState, PersistError,
         PersistedWorkflowData, Refs, TaskState, TimerState, Wakers, WorkflowData,
     },
     module::{DataSection, Services, WorkflowSpawner},
@@ -177,10 +177,37 @@ impl PersistedWorkflow {
         self.state.inbound_channels()
     }
 
+    pub(crate) fn find_inbound_channel(
+        &self,
+        channel_id: ChannelId,
+    ) -> (Option<WorkflowId>, &str, &InboundChannelState) {
+        self.state.find_inbound_channel(channel_id)
+    }
+
     pub(crate) fn outbound_channels(
         &self,
     ) -> impl Iterator<Item = (Option<WorkflowId>, &str, &OutboundChannelState)> + '_ {
         self.state.outbound_channels()
+    }
+
+    #[tracing::instrument(level = "debug", skip(self, message), err, fields(message.len = message.len()))]
+    pub(crate) fn push_inbound_message(
+        &mut self,
+        workflow_id: Option<WorkflowId>,
+        channel_name: &str,
+        message: Vec<u8>,
+    ) -> Result<(), ConsumeError> {
+        self.state
+            .push_inbound_message(workflow_id, channel_name, message)
+    }
+
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub(crate) fn drop_inbound_message(
+        &mut self,
+        workflow_id: Option<WorkflowId>,
+        channel_name: &str,
+    ) {
+        self.state.drop_inbound_message(workflow_id, channel_name);
     }
 
     #[tracing::instrument(level = "debug", skip(self))]

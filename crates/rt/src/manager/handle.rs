@@ -5,8 +5,8 @@ use futures::future;
 use std::{collections::HashSet, error, fmt, marker::PhantomData};
 
 use crate::{
-    manager::{AsManager, WorkflowAndChannelIds},
-    storage::{ChannelRecord, ReadChannels, ReadWorkflows, Storage, WorkflowRecord},
+    manager::{persistence::in_transaction, AsManager, WorkflowAndChannelIds},
+    storage::{ChannelRecord, MessageError, ReadChannels, ReadWorkflows, Storage, WorkflowRecord},
     workflow::ChannelIds,
     PersistedWorkflow,
 };
@@ -82,7 +82,7 @@ impl error::Error for HandleUpdateError {}
 pub struct WorkflowHandle<'a, W, M> {
     manager: &'a M,
     ids: WorkflowAndChannelIds,
-    valid_receiver_ids: HashSet<ChannelId>,
+    host_receiver_channels: HashSet<ChannelId>,
     interface: &'a Interface,
     persisted: PersistedWorkflow,
     _ty: PhantomData<fn(W)>,
@@ -110,19 +110,20 @@ impl<'a, M: AsManager> WorkflowHandle<'a, (), M> {
             workflow_id: record.id,
             channel_ids: record.persisted.channel_ids(),
         };
-        let valid_receiver_ids = Self::find_valid_receiver_ids(transaction, &ids.channel_ids).await;
+        let host_receiver_channels =
+            Self::find_host_receiver_channels(transaction, &ids.channel_ids).await;
 
         Self {
             manager,
             ids,
-            valid_receiver_ids,
+            host_receiver_channels,
             interface,
             persisted: record.persisted,
             _ty: PhantomData,
         }
     }
 
-    async fn find_valid_receiver_ids(
+    async fn find_host_receiver_channels(
         transaction: &impl ReadChannels,
         channel_ids: &ChannelIds,
     ) -> HashSet<ChannelId> {
@@ -131,8 +132,8 @@ impl<'a, M: AsManager> WorkflowHandle<'a, (), M> {
             let channel = transaction.channel(id).await.unwrap();
             Some(id).filter(|_| channel.state.receiver_workflow_id.is_none())
         });
-        let receivable_channels = future::join_all(channel_tasks).await;
-        receivable_channels.into_iter().flatten().collect()
+        let host_receiver_channels = future::join_all(channel_tasks).await;
+        host_receiver_channels.into_iter().flatten().collect()
     }
 
     #[cfg(test)]
@@ -155,7 +156,7 @@ impl<'a, M: AsManager> WorkflowHandle<'a, (), M> {
         WorkflowHandle {
             manager: self.manager,
             ids: self.ids,
-            valid_receiver_ids: self.valid_receiver_ids,
+            host_receiver_channels: self.host_receiver_channels,
             interface: self.interface,
             persisted: self.persisted,
             _ty: PhantomData,
@@ -267,12 +268,12 @@ where
 pub struct MessageReceiver<'a, T, C, M> {
     manager: &'a M,
     channel_id: ChannelId,
-    pub(super) can_receive_messages: bool,
+    pub(super) can_manipulate: bool,
     pub(super) codec: C,
     _item: PhantomData<fn() -> T>,
 }
 
-impl<T, C: Decode<T>, M: AsManager> MessageReceiver<'_, T, C, M> {
+impl<T, C: Decode<T> + Default, M: AsManager> MessageReceiver<'_, T, C, M> {
     /// Returns the ID of the channel this receiver is connected to.
     pub fn channel_id(&self) -> ChannelId {
         self.channel_id
@@ -285,56 +286,66 @@ impl<T, C: Decode<T>, M: AsManager> MessageReceiver<'_, T, C, M> {
         manager.channel(self.channel_id).await.unwrap()
     }
 
-    /// Checks whether this receiver can be used to receive messages from the channel.
+    /// Checks whether this receiver can be used to manipulate the channel (e.g., close it).
     /// This is possible if the channel receiver is not held by a workflow.
-    pub fn can_receive_messages(&self) -> bool {
-        self.can_receive_messages
+    pub fn can_manipulate(&self) -> bool {
+        self.can_manipulate
     }
 
-    /// Takes messages from the channel, or `None` if messages are not received by host
-    /// (i.e., [`Self::can_receive_messages()`] returns `false`).
-    pub async fn take_messages(&mut self) -> Option<TakenMessages<'_, T, C>> {
-        if !self.can_receive_messages {
-            return None;
-        }
+    /// Takes a message with the specified index from the channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the message is not available.
+    pub async fn receive_message(
+        &mut self,
+        index: usize,
+    ) -> Result<ReceivedMessage<T, C>, MessageError> {
+        let raw_message = in_transaction(self.manager, |transaction| {
+            transaction.channel_message(self.channel_id, index)
+        })
+        .await?;
 
-        let manager = self.manager.as_manager();
-        Some(TakenMessages {
-            raw_messages: manager.take_outbound_messages(self.channel_id).await,
-            codec: &mut self.codec,
+        Ok(ReceivedMessage {
+            index,
+            raw_message,
+            codec: C::default(),
             _item: PhantomData,
         })
     }
 
-    /// Closes this channel from the host side. If [`Self::can_receive_messages()`] returns `false`,
+    /// Closes this channel from the host side. If [`Self::can_manipulate()`] returns `false`,
     /// this is a no-op.
     pub async fn close(self) {
-        if self.can_receive_messages {
+        if self.can_manipulate {
             let manager = self.manager.as_manager();
             manager.close_host_receiver(self.channel_id).await;
         }
     }
 }
 
-/// Result of taking messages from an outbound workflow channel.
+/// Message or end of stream received from an outbound workflow channel.
 #[derive(Debug)]
-pub struct TakenMessages<'a, T, C> {
-    raw_messages: Vec<Vec<u8>>,
-    codec: &'a mut C,
+pub struct ReceivedMessage<T, C> {
+    index: usize,
+    raw_message: Vec<u8>,
+    codec: C,
     _item: PhantomData<fn() -> T>,
 }
 
-impl<T, C: Decode<T>> TakenMessages<'_, T, C> {
-    /// Tries to decode the taken messages.
+impl<T, C: Decode<T>> ReceivedMessage<T, C> {
+    /// Returns zero-based message index.
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    /// Tries to decode the message. Returns `None` if this is the end of stream marker.
     ///
     /// # Errors
     ///
     /// Returns a decoding error, if any.
-    pub fn decode(self) -> Result<Vec<T>, C::Error> {
-        self.raw_messages
-            .into_iter()
-            .map(|bytes| self.codec.try_decode_bytes(bytes))
-            .collect()
+    pub fn decode(&mut self) -> Result<T, C::Error> {
+        self.codec.try_decode_bytes(self.raw_message.clone())
     }
 }
 
@@ -354,7 +365,7 @@ where
             Ok(MessageReceiver {
                 manager: env.manager,
                 channel_id,
-                can_receive_messages: env.valid_receiver_ids.contains(&channel_id),
+                can_manipulate: env.host_receiver_channels.contains(&channel_id),
                 codec: C::default(),
                 _item: PhantomData,
             })

@@ -8,19 +8,19 @@ use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 use tracing_tunnel::{PersistedMetadata, PersistedSpans};
 
-use std::{borrow::Cow, collections::HashSet};
+use std::{borrow::Cow, collections::HashSet, error, fmt};
 
 mod local;
 
-pub use self::local::{LocalStorage, LocalStorageSnapshot, LocalToken, LocalTransaction};
+pub use self::local::{LocalStorage, LocalStorageSnapshot, LocalTransaction};
 
 use crate::{utils::serde_b64, PersistedWorkflow};
 use tardigrade::{channel::SendError, ChannelId, WorkflowId};
 
 #[async_trait]
 pub trait Storage<'a>: 'a + Send + Sync {
-    type Transaction: StorageTransaction;
-    type ReadonlyTransaction: Send + Sync + ReadModules + ReadChannels + ReadWorkflows;
+    type Transaction: 'a + StorageTransaction;
+    type ReadonlyTransaction: 'a + Send + Sync + ReadModules + ReadChannels + ReadWorkflows;
 
     // FIXME: specify drop behavior etc.
     async fn transaction(&'a self) -> Self::Transaction;
@@ -28,8 +28,8 @@ pub trait Storage<'a>: 'a + Send + Sync {
     async fn readonly_transaction(&'a self) -> Self::ReadonlyTransaction;
 }
 
-#[async_trait]
 #[must_use = "transactions should be committed to take effect"]
+#[async_trait]
 pub trait StorageTransaction: Send + Sync + WriteModules + WriteChannels + WriteWorkflows {
     // TODO: errors?
     async fn commit(self);
@@ -69,17 +69,18 @@ pub struct ModuleRecord<'a> {
 #[async_trait]
 pub trait ReadChannels {
     async fn channel(&self, id: ChannelId) -> Option<ChannelRecord>;
-    /// Checks whether a channel with the specified ID has unconsumed messages.
-    async fn has_messages(&self, id: ChannelId) -> bool;
+    /// Checks whether the specified channel has messages unconsumed by the receiver workflow.
+    /// If there is no receiver workflow for the channel, returns `false`.
+    async fn has_messages_for_receiver_workflow(&self, id: ChannelId) -> bool;
+    /// Receives a message from the channel.
+    async fn channel_message(&self, id: ChannelId, index: usize) -> Result<Vec<u8>, MessageError>;
 }
 
 #[async_trait]
 pub trait WriteChannels: ReadChannels {
-    type Token: Send + Sync + 'static;
-
     /// Allocates a new unique ID for a channel.
     async fn allocate_channel_id(&mut self) -> ChannelId;
-    /// Creates a new channel with the provided `spec`.
+    /// Creates a new channel with the provided `state`.
     async fn get_or_insert_channel(&mut self, id: ChannelId, state: ChannelState) -> ChannelState;
     /// Changes the channel state and selects it for further updates.
     async fn manipulate_channel<F: FnOnce(&mut ChannelState) + Send>(
@@ -95,29 +96,40 @@ pub trait WriteChannels: ReadChannels {
         messages: Vec<Vec<u8>>,
     ) -> Result<(), SendError>;
 
-    /// Pops a message from the channel.
-    // TODO: lease timeout?
-    async fn pop_message(&mut self, id: ChannelId) -> Option<(MessageOrEof, Self::Token)>;
-
-    /// Removes a previously received message from the channel.
-    async fn confirm_message_removal(
-        &mut self,
-        token: Self::Token,
-    ) -> Result<(), MessageOperationError>;
-
-    /// Places a previously received message back to the channel.
-    async fn revert_message_removal(
-        &mut self,
-        token: Self::Token,
-    ) -> Result<(), MessageOperationError>;
+    /// Truncates the channel so that `min_index` is the minimum retained index.
+    async fn truncate_channel(&mut self, id: ChannelId, min_index: usize);
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum MessageOrEof {
-    Message(#[serde(with = "serde_b64")] Vec<u8>),
-    Eof,
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum MessageError {
+    UnknownChannelId,
+    /// Requested index with an index larger than the maximum stored index.
+    NonExistingIndex {
+        /// Is the channel closed?
+        is_closed: bool,
+    },
+    /// Requested index with an index lesser than the minimum stored index.
+    Truncated,
 }
+
+impl fmt::Display for MessageError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownChannelId => formatter.write_str("unknown channel ID"),
+            Self::NonExistingIndex { is_closed } => {
+                formatter.write_str("non-existing message index")?;
+                if *is_closed {
+                    formatter.write_str(" for closed channel")?;
+                }
+                Ok(())
+            }
+            Self::Truncated => formatter.write_str("message was truncated"),
+        }
+    }
+}
+
+impl error::Error for MessageError {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelState {
@@ -130,7 +142,6 @@ pub struct ChannelState {
 #[derive(Debug)]
 pub struct ChannelRecord {
     pub state: ChannelState,
-    pub message_count: usize,
     pub next_message_idx: usize,
 }
 
@@ -140,19 +151,9 @@ impl ChannelRecord {
         self.state.is_closed
     }
 
-    /// Checks if this channel has no pending messages.
-    pub fn is_empty(&self) -> bool {
-        self.message_count == 0
-    }
-
     /// Returns the number of messages written to the channel.
     pub fn received_messages(&self) -> usize {
         self.next_message_idx
-    }
-
-    /// Returns the number of messages consumed by the channel receiver.
-    pub fn flushed_messages(&self) -> usize {
-        self.next_message_idx - self.message_count
     }
 
     /// Returns the ID of a workflow that holds the receiver end of this channel, or `None`
@@ -160,14 +161,6 @@ impl ChannelRecord {
     pub fn receiver_workflow_id(&self) -> Option<WorkflowId> {
         self.state.receiver_workflow_id
     }
-}
-
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum MessageOperationError {
-    InvalidToken,
-    AlreadyRemoved,
-    ExpiredToken,
 }
 
 #[async_trait]
@@ -180,7 +173,7 @@ pub trait ReadWorkflows {
     /// Selects a workflow with pending tasks for execution.
     async fn find_workflow_with_pending_tasks(&self) -> Option<WorkflowRecord>;
     /// Selects a workflow to which a message can be sent for execution.
-    async fn find_consumable_channel(&self) -> Option<(ChannelId, WorkflowRecord)>;
+    async fn find_consumable_channel(&self) -> Option<(ChannelId, usize, WorkflowRecord)>;
     /// Finds the nearest timer expiration in all active workflows.
     async fn nearest_timer_expiration(&self) -> Option<DateTime<Utc>>;
 }

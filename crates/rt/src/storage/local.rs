@@ -12,67 +12,23 @@ use tracing_tunnel::{PersistedMetadata, PersistedSpans};
 
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, HashMap, HashSet},
+    cmp,
+    collections::{HashMap, HashSet, VecDeque},
     sync::atomic::{AtomicU64, Ordering},
 };
 
 use super::{
-    ChannelRecord, ChannelState, MessageOperationError, MessageOrEof, ModuleRecord, ReadChannels,
-    ReadModules, ReadWorkflows, Storage, StorageTransaction, WorkflowRecord,
-    WorkflowSelectionCriteria, WriteChannels, WriteModules, WriteWorkflows,
+    ChannelRecord, ChannelState, MessageError, ModuleRecord, ReadChannels, ReadModules,
+    ReadWorkflows, Storage, StorageTransaction, WorkflowRecord, WorkflowSelectionCriteria,
+    WriteChannels, WriteModules, WriteWorkflows,
 };
 use crate::PersistedWorkflow;
 use tardigrade::{channel::SendError, ChannelId, WorkflowId};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct LocalMessageRecord {
-    #[serde(
-        default = "helpers::default_ready",
-        skip_serializing_if = "helpers::flip_bool"
-    )]
-    is_ready: bool,
-    #[serde(default, skip_serializing_if = "helpers::is_zero")]
-    received_count: usize,
-    payload: MessageOrEof,
-}
-
-#[allow(clippy::trivially_copy_pass_by_ref)] // required by serde
-mod helpers {
-    pub(super) const fn default_ready() -> bool {
-        true
-    }
-
-    pub(super) fn flip_bool(&value: &bool) -> bool {
-        !value
-    }
-
-    pub(super) fn is_zero(&received_count: &usize) -> bool {
-        received_count == 0
-    }
-}
-
-impl LocalMessageRecord {
-    fn new(payload: Vec<u8>) -> Self {
-        Self {
-            is_ready: true,
-            received_count: 0,
-            payload: MessageOrEof::Message(payload),
-        }
-    }
-
-    fn eof() -> Self {
-        Self {
-            is_ready: true,
-            received_count: 0,
-            payload: MessageOrEof::Eof,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 struct LocalChannel {
     state: ChannelState,
-    messages: BTreeMap<usize, LocalMessageRecord>,
+    messages: VecDeque<Vec<u8>>,
     next_message_idx: usize,
 }
 
@@ -80,13 +36,14 @@ impl LocalChannel {
     fn new(state: ChannelState) -> Self {
         Self {
             state,
-            messages: BTreeMap::new(),
+            messages: VecDeque::new(),
             next_message_idx: 0,
         }
     }
 
-    fn has_message(&self) -> bool {
-        self.messages.values().any(|message| message.is_ready)
+    fn contains_index(&self, idx: usize) -> bool {
+        let start_idx = self.next_message_idx - self.messages.len();
+        (start_idx..self.next_message_idx).contains(&idx)
     }
 }
 
@@ -193,19 +150,6 @@ pub struct LocalTransaction<'a> {
 }
 
 impl LocalTransaction<'_> {
-    pub fn peek_channel(&self, channel_id: ChannelId) -> Option<impl Iterator<Item = &[u8]>> {
-        let channel = self.inner.channels.get(&channel_id)?;
-        let messages = channel.messages.values().filter_map(|message| {
-            if message.is_ready {
-                if let MessageOrEof::Message(payload) = &message.payload {
-                    return Some(payload.as_slice());
-                }
-            }
-            None
-        });
-        Some(messages)
-    }
-
     pub fn peek_workflows(&self) -> &HashMap<WorkflowId, WorkflowRecord> {
         &self.inner.workflows
     }
@@ -242,37 +186,43 @@ impl ReadChannels for LocalTransaction<'_> {
         let channel = self.inner.channels.get(&id)?;
         Some(ChannelRecord {
             state: channel.state.clone(),
-            message_count: channel
-                .messages
-                .values()
-                .filter(|message| message.is_ready)
-                .count(),
             next_message_idx: channel.next_message_idx,
         })
     }
 
-    async fn has_messages(&self, id: ChannelId) -> bool {
+    async fn has_messages_for_receiver_workflow(&self, id: ChannelId) -> bool {
         if let Some(channel) = self.inner.channels.get(&id) {
-            channel.messages.values().any(|message| {
-                message.is_ready && matches!(message.payload, MessageOrEof::Message(_))
-            })
-        } else {
-            false
+            if let Some(workflow_id) = channel.state.receiver_workflow_id {
+                let workflow = &self.inner.workflows[&workflow_id].persisted;
+                let (.., state) = workflow.find_inbound_channel(id);
+                return state.received_message_count() < channel.next_message_idx;
+            }
         }
+        false
     }
-}
 
-#[derive(Debug)]
-pub struct LocalToken {
-    channel_id: ChannelId,
-    message_idx: usize,
-    received_count: usize,
+    async fn channel_message(&self, id: ChannelId, index: usize) -> Result<Vec<u8>, MessageError> {
+        let channel = self
+            .inner
+            .channels
+            .get(&id)
+            .ok_or(MessageError::UnknownChannelId)?;
+
+        let start_idx = channel.next_message_idx - channel.messages.len();
+        let idx_in_channel = index
+            .checked_sub(start_idx)
+            .ok_or(MessageError::Truncated)?;
+        let is_closed = channel.state.is_closed;
+        channel
+            .messages
+            .get(idx_in_channel)
+            .cloned()
+            .ok_or(MessageError::NonExistingIndex { is_closed })
+    }
 }
 
 #[async_trait]
 impl WriteChannels for LocalTransaction<'_> {
-    type Token = LocalToken;
-
     async fn allocate_channel_id(&mut self) -> ChannelId {
         ChannelId::from(self.next_channel_id.fetch_add(1, Ordering::SeqCst))
     }
@@ -292,14 +242,7 @@ impl WriteChannels for LocalTransaction<'_> {
         action: F,
     ) -> ChannelState {
         let channel = self.inner.channels.get_mut(&id).unwrap();
-        let was_closed = channel.state.is_closed;
         action(&mut channel.state);
-
-        if channel.state.is_closed && !was_closed {
-            channel
-                .messages
-                .insert(channel.next_message_idx, LocalMessageRecord::eof());
-        }
         channel.state.clone()
     }
 
@@ -314,72 +257,17 @@ impl WriteChannels for LocalTransaction<'_> {
         }
 
         let len = messages.len();
-        let indices = channel.next_message_idx..(channel.next_message_idx + len);
-        let messages = messages.into_iter().map(LocalMessageRecord::new);
-        channel.messages.extend(indices.zip(messages));
+        channel.messages.extend(messages);
         channel.next_message_idx += len;
         Ok(())
     }
 
-    async fn pop_message(&mut self, id: ChannelId) -> Option<(MessageOrEof, Self::Token)> {
-        let channel = self.inner.channels.get_mut(&id)?;
-        channel.messages.iter_mut().find_map(|(&idx, record)| {
-            if record.is_ready {
-                record.received_count += 1;
-                record.is_ready = false;
-                let token = LocalToken {
-                    channel_id: id,
-                    message_idx: idx,
-                    received_count: record.received_count,
-                };
-                Some((record.payload.clone(), token))
-            } else {
-                None
-            }
-        })
-    }
-
-    async fn confirm_message_removal(
-        &mut self,
-        token: Self::Token,
-    ) -> Result<(), MessageOperationError> {
-        let channel = self
-            .inner
-            .channels
-            .get_mut(&token.channel_id)
-            .ok_or(MessageOperationError::InvalidToken)?;
-        let message = channel
-            .messages
-            .get(&token.message_idx)
-            .ok_or(MessageOperationError::AlreadyRemoved)?;
-
-        if !message.is_ready && message.received_count == token.received_count {
-            channel.messages.remove(&token.message_idx);
-            Ok(())
-        } else {
-            Err(MessageOperationError::ExpiredToken)
-        }
-    }
-
-    async fn revert_message_removal(
-        &mut self,
-        token: Self::Token,
-    ) -> Result<(), MessageOperationError> {
-        let channel = self
-            .inner
-            .channels
-            .get_mut(&token.channel_id)
-            .ok_or(MessageOperationError::InvalidToken)?;
-        let message = channel
-            .messages
-            .get_mut(&token.message_idx)
-            .ok_or(MessageOperationError::AlreadyRemoved)?;
-
-        if !message.is_ready && message.received_count == token.received_count {
-            message.is_ready = true;
-            Ok(())
-        } else {
-            Err(MessageOperationError::ExpiredToken)
+    async fn truncate_channel(&mut self, id: ChannelId, min_index: usize) {
+        if let Some(channel) = self.inner.channels.get_mut(&id) {
+            let start_idx = channel.next_message_idx - channel.messages.len();
+            let messages_to_truncate = min_index.saturating_sub(start_idx);
+            let messages_to_truncate = cmp::min(messages_to_truncate, channel.messages.len());
+            channel.messages = channel.messages.split_off(messages_to_truncate);
         }
     }
 }
@@ -405,7 +293,7 @@ impl ReadWorkflows for LocalTransaction<'_> {
             .cloned()
     }
 
-    async fn find_consumable_channel(&self) -> Option<(ChannelId, WorkflowRecord)> {
+    async fn find_consumable_channel(&self) -> Option<(ChannelId, usize, WorkflowRecord)> {
         let workflows = self.inner.workflows.values();
         let mut all_channels = workflows.flat_map(|record| {
             record
@@ -416,8 +304,9 @@ impl ReadWorkflows for LocalTransaction<'_> {
         all_channels.find_map(|(record, state)| {
             if state.waits_for_message() {
                 let channel_id = state.id();
-                if self.inner.channels[&channel_id].has_message() {
-                    return Some((channel_id, record.clone()));
+                let next_message_idx = state.received_message_count();
+                if self.inner.channels[&channel_id].contains_index(next_message_idx) {
+                    return Some((channel_id, next_message_idx, record.clone()));
                 }
             }
             None
@@ -509,5 +398,53 @@ impl<'a> Storage<'a> for LocalStorage {
 
     async fn readonly_transaction(&'a self) -> Self::ReadonlyTransaction {
         self.transaction().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use assert_matches::assert_matches;
+
+    use super::*;
+
+    #[async_std::test]
+    async fn truncating_channel() {
+        let storage = LocalStorage::default();
+        let mut transaction = storage.transaction().await;
+        transaction.truncate_channel(1, 42).await;
+        let err = transaction.channel_message(1, 0).await.unwrap_err();
+        assert_matches!(err, MessageError::UnknownChannelId);
+
+        let channel_state = ChannelState {
+            receiver_workflow_id: Some(1),
+            sender_workflow_ids: HashSet::new(),
+            has_external_sender: true,
+            is_closed: false,
+        };
+        transaction.get_or_insert_channel(1, channel_state).await;
+
+        transaction
+            .push_messages(1, vec![b"test".to_vec()])
+            .await
+            .unwrap();
+        let message = transaction.channel_message(1, 0).await.unwrap();
+        assert_eq!(message, b"test");
+        let err = transaction.channel_message(1, 1).await.unwrap_err();
+        assert_matches!(err, MessageError::NonExistingIndex { is_closed: false });
+
+        transaction
+            .push_messages(1, vec![b"other".to_vec()])
+            .await
+            .unwrap();
+        let message = transaction.channel_message(1, 0).await.unwrap();
+        assert_eq!(message, b"test");
+        let message = transaction.channel_message(1, 1).await.unwrap();
+        assert_eq!(message, b"other");
+
+        transaction.truncate_channel(1, 1).await;
+        let message = transaction.channel_message(1, 1).await.unwrap();
+        assert_eq!(message, b"other");
+        let err = transaction.channel_message(1, 0).await.unwrap_err();
+        assert_matches!(err, MessageError::Truncated);
     }
 }
