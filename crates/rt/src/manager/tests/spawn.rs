@@ -7,7 +7,7 @@ use super::*;
 use crate::{
     data::{tests::complete_task_with_error, SpawnFunctions},
     receipt::{ChannelEventKind, ResourceEvent, ResourceEventKind, ResourceId},
-    storage::LocalTransaction,
+    storage::{LocalTransaction, Readonly},
     utils::{copy_string_from_wasm, decode_string},
 };
 use tardigrade::{abi::TryFromWasm, interface::ChannelKind};
@@ -15,7 +15,10 @@ use tardigrade::{abi::TryFromWasm, interface::ChannelKind};
 const CHILD_ID: WorkflowId = 1;
 const ERROR_PTR: u32 = 1_024;
 
-async fn peek_channel(transaction: &LocalTransaction<'_>, channel_id: ChannelId) -> Vec<Vec<u8>> {
+async fn peek_channel(
+    transaction: &Readonly<LocalTransaction<'_>>,
+    channel_id: ChannelId,
+) -> Vec<Vec<u8>> {
     let channel = transaction.channel(channel_id).await.unwrap();
     let len = channel.received_messages;
     let messages = (0..len).map(|idx| transaction.channel_message(channel_id, idx));
@@ -149,9 +152,8 @@ async fn spawning_child_workflow() {
 
     {
         let transaction = manager.storage.readonly_transaction().await;
-        let workflows = transaction.peek_workflows();
-        assert_eq!(workflows.len(), 2);
-        assert!(workflows.contains_key(&child_id));
+        assert_eq!(transaction.count_workflows().await, 2);
+        assert!(transaction.workflow(child_id).await.is_some());
 
         let traces = transaction.channel(traces_id).await.unwrap();
         assert_eq!(traces.receiver_workflow_id, Some(workflow_id));

@@ -24,7 +24,7 @@ use std::{
 use super::{
     ChannelRecord, MessageError, ModuleRecord, ReadChannels, ReadModules, ReadWorkflows, Storage,
     StorageTransaction, WorkflowRecord, WorkflowSelectionCriteria, WriteChannels, WriteModules,
-    WriteWorkflows,
+    WriteWorkflows, Readonly,
 };
 use crate::{utils::Message, PersistedWorkflow};
 use tardigrade::{channel::SendError, ChannelId, WorkflowId};
@@ -215,20 +215,20 @@ impl From<LocalStorageSnapshot<'_>> for LocalStorage {
 }
 
 /// Transactions used by [`LocalStorage`].
-// TODO: use foolproof approach w/ cloning the state
 #[derive(Debug)]
 pub struct LocalTransaction<'a> {
-    inner: MutexGuard<'a, Inner>,
+    // Alternatively, we could manipulate the guarded data directly.
+    // This wouldn't break isolation because of the `Mutex`, and wouldn't break atomicity
+    // in `WorkflowManager` because there are no rollbacks, and all storage operations
+    // are synchronous. That is, there are no wait points in the `WorkflowManager`-produced futures
+    // at which the future may be cancelled to observe a partially applied transaction.
+    // However, this approach is hard to reason about in the general case; it is not cancel-safe
+    // if used together with "true" async operations. Hence, foolproof cloning of `Inner`.
+    target: MutexGuard<'a, Inner>,
+    inner: Inner,
     next_channel_id: &'a AtomicU64,
     next_workflow_id: &'a AtomicU64,
     truncate_messages: bool,
-}
-
-impl LocalTransaction<'_> {
-    #[cfg(test)]
-    pub(crate) fn peek_workflows(&self) -> &HashMap<WorkflowId, WorkflowRecord> {
-        &self.inner.workflows
-    }
 }
 
 #[async_trait]
@@ -453,7 +453,7 @@ impl WriteWorkflows for LocalTransaction<'_> {
 impl StorageTransaction for LocalTransaction<'_> {
     async fn commit(mut self) {
         if self.truncate_messages {
-            let inner = &mut *self.inner;
+            let inner = &mut self.inner;
             for (&id, channel) in &mut inner.channels {
                 if let Some(workflow_id) = channel.record.receiver_workflow_id {
                     let workflow = &inner.workflows[&workflow_id].persisted;
@@ -462,18 +462,20 @@ impl StorageTransaction for LocalTransaction<'_> {
                 }
             }
         }
+        *self.target = self.inner;
     }
 }
 
 #[async_trait]
 impl<'a> Storage<'a> for LocalStorage {
     type Transaction = LocalTransaction<'a>;
-    type ReadonlyTransaction = LocalTransaction<'a>;
+    type ReadonlyTransaction = Readonly<LocalTransaction<'a>>;
 
     async fn transaction(&'a self) -> Self::Transaction {
-        let inner = self.inner.lock().await;
+        let target = self.inner.lock().await;
         LocalTransaction {
-            inner,
+            inner: target.clone(),
+            target,
             next_channel_id: &self.next_channel_id,
             next_workflow_id: &self.next_workflow_id,
             truncate_messages: self.truncate_messages,
@@ -481,7 +483,7 @@ impl<'a> Storage<'a> for LocalStorage {
     }
 
     async fn readonly_transaction(&'a self) -> Self::ReadonlyTransaction {
-        self.transaction().await
+        Readonly::from(self.transaction().await)
     }
 }
 

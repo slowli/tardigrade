@@ -24,13 +24,24 @@ pub trait Storage<'a>: 'a + Send + Sync {
     /// transaction semantics.
     type Transaction: 'a + StorageTransaction;
     /// Readonly transaction for the storage.
-    type ReadonlyTransaction: 'a + Send + Sync + ReadModules + ReadChannels + ReadWorkflows;
+    type ReadonlyTransaction: 'a + StorageReadonlyTransaction;
 
     /// Creates a new read/write transaction.
     async fn transaction(&'a self) -> Self::Transaction;
     /// Creates a new readonly transaction.
     async fn readonly_transaction(&'a self) -> Self::ReadonlyTransaction;
 }
+
+/// [`Storage`] transaction with readonly access to the storage.
+pub trait StorageReadonlyTransaction:
+    Send + Sync + ReadModules + ReadChannels + ReadWorkflows
+{
+}
+
+impl<T> StorageReadonlyTransaction for T
+where
+    T: Send + Sync + ReadModules + ReadChannels + ReadWorkflows,
+{}
 
 /// [`Storage`] transaction with read/write access to the storage.
 ///
@@ -279,5 +290,65 @@ impl WorkflowSelectionCriteria {
                 .timers()
                 .any(|(_, timer)| timer.definition().expires_at <= *time),
         }
+    }
+}
+
+/// Wrapper for [`StorageTransaction`] implementations that allows safely using them
+/// as readonly transactions.
+#[derive(Debug)]
+pub struct Readonly<T>(T);
+
+impl<T: StorageReadonlyTransaction> From<T> for Readonly<T> {
+    fn from(inner: T) -> Self {
+        Self(inner)
+    }
+}
+
+#[async_trait]
+impl<T: StorageReadonlyTransaction> ReadModules for Readonly<T> {
+    async fn module(&self, id: &str) -> Option<ModuleRecord> {
+        self.0.module(id).await
+    }
+
+    fn modules(&self) -> BoxStream<'_, ModuleRecord> {
+        self.0.modules()
+    }
+}
+
+#[async_trait]
+impl<T: StorageReadonlyTransaction> ReadChannels for Readonly<T> {
+    async fn channel(&self, id: ChannelId) -> Option<ChannelRecord> {
+        self.0.channel(id).await
+    }
+
+    async fn has_messages_for_receiver_workflow(&self, id: ChannelId) -> bool {
+        self.0.has_messages_for_receiver_workflow(id).await
+    }
+
+    async fn channel_message(&self, id: ChannelId, index: usize) -> Result<Vec<u8>, MessageError> {
+        self.0.channel_message(id, index).await
+    }
+}
+
+#[async_trait]
+impl<T: StorageReadonlyTransaction> ReadWorkflows for Readonly<T> {
+    async fn count_workflows(&self) -> usize {
+        self.0.count_workflows().await
+    }
+
+    async fn workflow(&self, id: WorkflowId) -> Option<WorkflowRecord> {
+        self.0.workflow(id).await
+    }
+
+    async fn find_pending_workflow(&self) -> Option<WorkflowRecord> {
+        self.0.find_pending_workflow().await
+    }
+
+    async fn find_consumable_channel(&self) -> Option<(ChannelId, usize, WorkflowRecord)> {
+        self.0.find_consumable_channel().await
+    }
+
+    async fn nearest_timer_expiration(&self) -> Option<DateTime<Utc>> {
+        self.0.nearest_timer_expiration().await
     }
 }
