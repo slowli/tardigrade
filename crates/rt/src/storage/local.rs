@@ -14,7 +14,11 @@ use std::{
     borrow::Cow,
     cmp,
     collections::{HashMap, HashSet, VecDeque},
-    sync::atomic::{AtomicU64, Ordering},
+    ops,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
 };
 
 use super::{
@@ -80,6 +84,28 @@ impl Default for Inner {
     }
 }
 
+/// Thin wrapper around [`ModuleRecord`] that allows accessing its fields and changing
+/// only module bytes.
+#[derive(Debug)]
+pub struct ModuleRecordMut<'a> {
+    inner: &'a mut ModuleRecord,
+}
+
+impl ModuleRecordMut<'_> {
+    /// Replaces bytes for this module.
+    pub fn set_bytes(&mut self, bytes: impl Into<Arc<[u8]>>) {
+        self.inner.bytes = bytes.into();
+    }
+}
+
+impl ops::Deref for ModuleRecordMut<'_> {
+    type Target = ModuleRecord;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner
+    }
+}
+
 /// Serializable snapshot of a [`LocalStorage`].
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LocalStorageSnapshot<'a> {
@@ -92,16 +118,9 @@ impl LocalStorageSnapshot<'_> {
     /// Provides mutable access to all contained modules. This could be useful to decrease
     /// serialized snapshot size, e.g. by removing module bytes or replacing them with
     /// cryptographic hashes.
-    // TODO: rework to make more user-friendly
-    pub fn replace_module_bytes<F>(&mut self, mut replace_fn: F)
-    where
-        F: FnMut(&ModuleRecord) -> Option<Vec<u8>>,
-    {
-        for module in self.inner.to_mut().modules.values_mut() {
-            if let Some(replacement) = replace_fn(module) {
-                module.bytes = replacement.into();
-            }
-        }
+    pub fn modules_mut(&mut self) -> impl Iterator<Item = ModuleRecordMut<'_>> + '_ {
+        let modules = self.inner.to_mut().modules.values_mut();
+        modules.map(|inner| ModuleRecordMut { inner })
     }
 }
 
@@ -117,6 +136,8 @@ impl LocalStorageSnapshot<'_> {
 /// # Examples
 ///
 /// ```
+/// # use async_std::fs;
+/// # use std::str;
 /// # use tardigrade_rt::{manager::WorkflowManager, storage::{LocalStorage, LocalStorageSnapshot}};
 /// # async fn test_wrapper() -> anyhow::Result<()> {
 /// let mut storage = LocalStorage::default();
@@ -126,11 +147,22 @@ impl LocalStorageSnapshot<'_> {
 /// // Do something with the manager...
 ///
 /// let mut storage = manager.into_storage();
-/// let snapshot = storage.snapshot();
+/// let mut snapshot = storage.snapshot();
+/// for mut module in snapshot.modules_mut() {
+///     // Save modules to the file system, rather than using the storage.
+///     let filename = format!("{}.wasm", module.id);
+///     fs::write(&filename, &module.bytes).await?;
+///     module.set_bytes(filename.into_bytes());
+/// }
 /// let serialized = serde_json::to_string_pretty(&snapshot)?;
 ///
 /// // Restoring the storage:
-/// let snapshot: LocalStorageSnapshot<'_> = serde_json::from_str(&serialized)?;
+/// let mut snapshot: LocalStorageSnapshot<'_> =
+///     serde_json::from_str(&serialized)?;
+/// for mut module in snapshot.modules_mut() {
+///     let filename = str::from_utf8(&module.bytes)?;
+///     module.set_bytes(fs::read(filename).await?);
+/// }
 /// let storage = LocalStorage::from(snapshot);
 /// # Ok(())
 /// # }

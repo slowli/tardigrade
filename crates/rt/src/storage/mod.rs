@@ -10,7 +10,7 @@ use std::{collections::HashSet, error, fmt, sync::Arc};
 
 mod local;
 
-pub use self::local::{LocalStorage, LocalStorageSnapshot, LocalTransaction};
+pub use self::local::{LocalStorage, LocalStorageSnapshot, LocalTransaction, ModuleRecordMut};
 
 use crate::{utils::serde_b64, PersistedWorkflow};
 use tardigrade::{channel::SendError, ChannelId, WorkflowId};
