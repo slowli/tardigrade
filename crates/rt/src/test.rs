@@ -9,14 +9,14 @@
 //! use once_cell::sync::Lazy;
 //! use tardigrade_rt::{test::*, WorkflowEngine, WorkflowModule};
 //!
-//! static MODULE: Lazy<Vec<u8>> = Lazy::new(|| {
+//! static MODULE: Lazy<WorkflowModule> = Lazy::new(|| {
 //!     let module_bytes = ModuleCompiler::new(env!("CARGO_PKG_NAME"))
 //!         .set_current_dir(env!("CARGO_MANIFEST_DIR"))
 //!         .set_profile("wasm")
 //!         .set_wasm_opt(WasmOpt::default())
 //!         .compile();
 //!     let engine = WorkflowEngine::default();
-//!     WorkflowModule::new(&engine, &module_bytes).unwrap()
+//!     WorkflowModule::new(&engine, module_bytes).unwrap()
 //! });
 //! // The module can then be used in tests
 //! ```
@@ -248,7 +248,7 @@ impl ModuleCompiler {
 /// # use tardigrade_rt::{test::MockScheduler, storage::LocalStorage, WorkflowModule};
 /// # use tardigrade_rt::manager::{driver::Driver, WorkflowHandle, WorkflowManager};
 ///
-/// # async fn test_wrapper(module: WorkflowModule<'_>) -> anyhow::Result<()> {
+/// # async fn test_wrapper(module: WorkflowModule) -> anyhow::Result<()> {
 /// let scheduler = MockScheduler::default();
 /// // Set the mocked wall clock for the workflow manager.
 /// let storage = LocalStorage::default();

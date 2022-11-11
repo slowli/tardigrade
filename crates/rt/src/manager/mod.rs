@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use futures::{lock::Mutex, StreamExt};
 use tracing_tunnel::{LocalSpans, PersistedMetadata};
 
-use std::{borrow::Cow, collections::HashMap};
+use std::{collections::HashMap, sync::Arc};
 
 pub mod driver;
 mod handle;
@@ -105,7 +105,7 @@ enum ChannelSide {
 /// #     manager::{WorkflowHandle, WorkflowManager},
 /// #     storage::LocalStorage, AsyncIoScheduler, WorkflowModule,
 /// # };
-/// # async fn test_wrapper(module: WorkflowModule<'_>) -> anyhow::Result<()> {
+/// # async fn test_wrapper(module: WorkflowModule) -> anyhow::Result<()> {
 /// // A manager is instantiated using the builder pattern:
 /// let storage = LocalStorage::default();
 /// let mut manager = WorkflowManager::builder(storage)
@@ -183,11 +183,11 @@ impl<C: Clock, S: for<'a> Storage<'a>> WorkflowManager<C, S> {
     }
 
     /// Inserts the specified module into the manager.
-    pub async fn insert_module(&mut self, id: &str, module: WorkflowModule<'_>) {
+    pub async fn insert_module(&mut self, id: &str, module: WorkflowModule) {
         let mut transaction = self.storage.transaction().await;
         let module_record = ModuleRecord {
             id: id.to_owned(),
-            bytes: Cow::Borrowed(module.bytes),
+            bytes: Arc::clone(&module.bytes),
             tracing_metadata: PersistedMetadata::default(),
         };
         transaction.insert_module(module_record).await;

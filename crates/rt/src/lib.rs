@@ -50,7 +50,7 @@
 //! let module_bytes: Vec<u8> = // e.g., take from a file
 //! #   vec![];
 //! let engine = WorkflowEngine::default();
-//! let module = WorkflowModule::new(&engine, &module_bytes)?;
+//! let module = WorkflowModule::new(&engine, module_bytes)?;
 //! // It is possible to inspect module definitions:
 //! for (workflow_name, interface) in module.interfaces() {
 //!     println!("{}: {:?}", workflow_name, interface);

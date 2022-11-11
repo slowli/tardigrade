@@ -6,7 +6,7 @@ use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 use tracing_tunnel::{PersistedMetadata, PersistedSpans};
 
-use std::{borrow::Cow, collections::HashSet, error, fmt};
+use std::{collections::HashSet, error, fmt, sync::Arc};
 
 mod local;
 
@@ -58,17 +58,17 @@ pub trait StorageTransaction: Send + Sync + WriteModules + WriteChannels + Write
 #[async_trait]
 pub trait ReadModules {
     /// Retrieves a module with the specified ID.
-    async fn module(&self, id: &str) -> Option<ModuleRecord<'static>>;
+    async fn module(&self, id: &str) -> Option<ModuleRecord>;
 
     /// Streams all modules.
-    fn modules(&self) -> BoxStream<'_, ModuleRecord<'static>>;
+    fn modules(&self) -> BoxStream<'_, ModuleRecord>;
 }
 
 /// Allows modifying stored information about [`WorkflowModule`](crate::WorkflowModule)s.
 #[async_trait]
 pub trait WriteModules: ReadModules {
     /// Inserts the module into the storage.
-    async fn insert_module(&mut self, module: ModuleRecord<'_>);
+    async fn insert_module(&mut self, module: ModuleRecord);
 
     /// Updates tracing metadata for the module.
     ///
@@ -79,17 +79,17 @@ pub trait WriteModules: ReadModules {
 
 /// Storage record for a [`WorkflowModule`](crate::WorkflowModule).
 #[derive(Clone, Serialize, Deserialize)]
-pub struct ModuleRecord<'a> {
+pub struct ModuleRecord {
     /// ID of the module. This should be the primary key of the module.
     pub id: String,
     /// WASM module bytes.
     #[serde(with = "serde_b64")]
-    pub bytes: Cow<'a, [u8]>,
+    pub bytes: Arc<[u8]>,
     /// Persisted metadata.
     pub tracing_metadata: PersistedMetadata,
 }
 
-impl fmt::Debug for ModuleRecord<'_> {
+impl fmt::Debug for ModuleRecord {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ModuleRecord")

@@ -55,19 +55,9 @@ impl LocalChannel {
     }
 }
 
-impl ModuleRecord<'_> {
-    fn into_owned(self) -> ModuleRecord<'static> {
-        ModuleRecord {
-            id: self.id,
-            bytes: Cow::Owned(self.bytes.into_owned()),
-            tracing_metadata: self.tracing_metadata,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Inner {
-    modules: HashMap<String, ModuleRecord<'static>>,
+    modules: HashMap<String, ModuleRecord>,
     channels: HashMap<ChannelId, LocalChannel>,
     workflows: HashMap<WorkflowId, WorkflowRecord>,
 }
@@ -105,11 +95,11 @@ impl LocalStorageSnapshot<'_> {
     // TODO: rework to make more user-friendly
     pub fn replace_module_bytes<F>(&mut self, mut replace_fn: F)
     where
-        F: FnMut(&ModuleRecord<'static>) -> Option<Vec<u8>>,
+        F: FnMut(&ModuleRecord) -> Option<Vec<u8>>,
     {
         for module in self.inner.to_mut().modules.values_mut() {
             if let Some(replacement) = replace_fn(module) {
-                module.bytes = Cow::Owned(replacement);
+                module.bytes = replacement.into();
             }
         }
     }
@@ -212,21 +202,19 @@ impl LocalTransaction<'_> {
 
 #[async_trait]
 impl ReadModules for LocalTransaction<'_> {
-    async fn module(&self, id: &str) -> Option<ModuleRecord<'static>> {
+    async fn module(&self, id: &str) -> Option<ModuleRecord> {
         self.inner.modules.get(id).cloned()
     }
 
-    fn modules(&self) -> BoxStream<'_, ModuleRecord<'static>> {
+    fn modules(&self) -> BoxStream<'_, ModuleRecord> {
         stream::iter(self.inner.modules.values().cloned()).boxed()
     }
 }
 
 #[async_trait]
 impl WriteModules for LocalTransaction<'_> {
-    async fn insert_module(&mut self, module: ModuleRecord<'_>) {
-        self.inner
-            .modules
-            .insert(module.id.clone(), module.into_owned());
+    async fn insert_module(&mut self, module: ModuleRecord) {
+        self.inner.modules.insert(module.id.clone(), module);
     }
 
     async fn update_tracing_metadata(&mut self, module_id: &str, metadata: PersistedMetadata) {

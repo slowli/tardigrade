@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 use super::WorkflowManager;
 use crate::{
@@ -43,10 +43,7 @@ pub trait CreateModule {
     /// in [`WorkflowManagerBuilder::build()`].
     ///
     /// [`WorkflowManagerBuilder::build()`]: crate::manager::WorkflowManagerBuilder::build()
-    async fn create_module<'a>(
-        &self,
-        module: &'a ModuleRecord<'_>,
-    ) -> anyhow::Result<WorkflowModule<'a>>;
+    async fn create_module(&self, module: &ModuleRecord) -> anyhow::Result<WorkflowModule>;
 }
 
 impl fmt::Debug for dyn CreateModule + '_ {
@@ -59,10 +56,7 @@ impl fmt::Debug for dyn CreateModule + '_ {
 
 #[async_trait]
 impl CreateModule for WorkflowEngine {
-    async fn create_module<'a>(
-        &self,
-        module: &'a ModuleRecord<'_>,
-    ) -> anyhow::Result<WorkflowModule<'a>> {
-        WorkflowModule::new(self, module.bytes.as_ref())
+    async fn create_module(&self, module: &ModuleRecord) -> anyhow::Result<WorkflowModule> {
+        WorkflowModule::new(self, Arc::clone(&module.bytes))
     }
 }

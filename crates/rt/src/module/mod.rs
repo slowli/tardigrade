@@ -142,22 +142,23 @@ impl DataSection {
 /// Workflow module that combines a WASM module with the workflow logic and the declared
 /// workflow [`Interface`].
 #[derive(Clone)]
-pub struct WorkflowModule<'a> {
+pub struct WorkflowModule {
     pub(crate) inner: Module,
-    pub(crate) bytes: &'a [u8],
+    pub(crate) bytes: Arc<[u8]>,
     interfaces: HashMap<String, Interface>,
 }
 
-impl fmt::Debug for WorkflowModule<'_> {
+impl fmt::Debug for WorkflowModule {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("WorkflowModule")
+            .field("bytes_len", &self.bytes.len())
             .field("interfaces", &self.interfaces)
             .finish_non_exhaustive()
     }
 }
 
-impl<'a> WorkflowModule<'a> {
+impl WorkflowModule {
     #[cfg_attr(test, mimicry::mock(using = "ExportsMock"))]
     fn interfaces_from_wasm(module_bytes: &[u8]) -> anyhow::Result<HashMap<String, Interface>> {
         const INTERFACE_SECTION: &str = "__tardigrade_spec";
@@ -273,10 +274,14 @@ impl<'a> WorkflowModule<'a> {
     ///   or a known function with an incorrect signature.
     /// - The module does not have necessary exports.
     /// - The module does not have a custom section with the workflow interface definition(s).
-    pub fn new(engine: &WorkflowEngine, module_bytes: &'a [u8]) -> anyhow::Result<Self> {
-        let module =
-            Module::from_binary(&engine.inner, module_bytes).context("cannot parse WASM module")?;
-        let interfaces = WorkflowModule::interfaces_from_wasm(module_bytes)
+    pub fn new(
+        engine: &WorkflowEngine,
+        module_bytes: impl Into<Arc<[u8]>>,
+    ) -> anyhow::Result<Self> {
+        let module_bytes = module_bytes.into();
+        let module = Module::from_binary(&engine.inner, &module_bytes)
+            .context("cannot parse WASM module")?;
+        let interfaces = WorkflowModule::interfaces_from_wasm(&module_bytes)
             .context("cannot extract workflow interface from WASM module")?;
         WorkflowModule::validate_module(&module, &interfaces)?;
         Ok(Self {
