@@ -102,6 +102,7 @@ impl LocalStorageSnapshot<'_> {
     /// Provides mutable access to all contained modules. This could be useful to decrease
     /// serialized snapshot size, e.g. by removing module bytes or replacing them with
     /// cryptographic hashes.
+    // TODO: rework to make more user-friendly
     pub fn replace_module_bytes<F>(&mut self, mut replace_fn: F)
     where
         F: FnMut(&ModuleRecord<'static>) -> Option<Vec<u8>>,
@@ -114,6 +115,38 @@ impl LocalStorageSnapshot<'_> {
     }
 }
 
+/// Local in-memory [`Storage`].
+///
+/// `LocalStorage` can be [serialized] by taking a [snapshot](LocalStorageSnapshot)
+/// and then restored from it. Since workflow module bytes constitute the largest serialization
+/// part, the snapshot provides [a method](LocalStorageSnapshot::replace_module_bytes())
+/// to manipulate them, e.g. in order to store module bytes separately.
+///
+/// [serialized]: https://docs.rs/serde/1/serde
+///
+/// # Examples
+///
+/// ```
+/// # use tardigrade_rt::{manager::WorkflowManager, storage::{LocalStorage, LocalStorageSnapshot}};
+/// # async fn test_wrapper() -> anyhow::Result<()> {
+/// let mut storage = LocalStorage::default();
+/// // Remove messages consumed by workflows.
+/// storage.truncate_workflow_messages();
+/// let manager = WorkflowManager::builder(storage).build().await?;
+/// // Do something with the manager...
+///
+/// let mut storage = manager.into_storage();
+/// let snapshot = storage.snapshot();
+/// let serialized = serde_json::to_string_pretty(&snapshot)?;
+///
+/// // Restoring the storage:
+/// let snapshot: LocalStorageSnapshot<'_> = serde_json::from_str(&serialized)?;
+/// let storage = LocalStorage::from(snapshot);
+/// # Ok(())
+/// # }
+/// ```
+///
+/// [(de)serialized]: https://docs.rs/serde/1/serde/
 #[derive(Debug)]
 pub struct LocalStorage {
     inner: Mutex<Inner>,
@@ -134,6 +167,7 @@ impl Default for LocalStorage {
 }
 
 impl LocalStorage {
+    /// Returns a snapshot of the storage. The returned snapshot can be (de)serialized with `serde`.
     pub fn snapshot(&mut self) -> LocalStorageSnapshot<'_> {
         LocalStorageSnapshot {
             inner: Cow::Borrowed(self.inner.get_mut()),
@@ -159,6 +193,8 @@ impl From<LocalStorageSnapshot<'_>> for LocalStorage {
     }
 }
 
+/// Transactions used by [`LocalStorage`].
+// TODO: use foolproof approach w/ cloning the state
 #[derive(Debug)]
 pub struct LocalTransaction<'a> {
     inner: MutexGuard<'a, Inner>,
@@ -168,7 +204,8 @@ pub struct LocalTransaction<'a> {
 }
 
 impl LocalTransaction<'_> {
-    pub fn peek_workflows(&self) -> &HashMap<WorkflowId, WorkflowRecord> {
+    #[cfg(test)]
+    pub(crate) fn peek_workflows(&self) -> &HashMap<WorkflowId, WorkflowRecord> {
         &self.inner.workflows
     }
 }

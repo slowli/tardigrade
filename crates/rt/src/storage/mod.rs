@@ -1,4 +1,4 @@
-//! Storage abstraction for storing workflows and channel state.
+//! Async, transactional storage abstraction for storing workflows and channel state.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -15,32 +15,56 @@ pub use self::local::{LocalStorage, LocalStorageSnapshot, LocalTransaction};
 use crate::{utils::serde_b64, PersistedWorkflow};
 use tardigrade::{channel::SendError, ChannelId, WorkflowId};
 
+/// Async, transactional storage for workflows and workflow channels.
+///
+/// A storage is required to instantiate a [`WorkflowManager`](crate::manager::WorkflowManager).
 #[async_trait]
 pub trait Storage<'a>: 'a + Send + Sync {
+    /// Read/write transaction for the storage. See [`StorageTransaction`] for required
+    /// transaction semantics.
     type Transaction: 'a + StorageTransaction;
+    /// Readonly transaction for the storage.
     type ReadonlyTransaction: 'a + Send + Sync + ReadModules + ReadChannels + ReadWorkflows;
 
-    // FIXME: specify drop behavior etc.
+    /// Creates a new read/write transaction.
     async fn transaction(&'a self) -> Self::Transaction;
-
+    /// Creates a new readonly transaction.
     async fn readonly_transaction(&'a self) -> Self::ReadonlyTransaction;
 }
 
-#[must_use = "transactions should be committed to take effect"]
+/// [`Storage`] transaction with read/write access to the storage.
+///
+/// Transactions must satisfy the ACID semantics. In particular, they must apply atomically
+/// and be isolated (i.e., not visible to other transactions until committed).
+///
+/// [`Self::commit()`] must be called for before the transaction is dropped.
+/// Explicit transaction rollback support is not required; all transactions instantiated
+/// by a [`WorkflowManager`] are guaranteed to eventually be committed (save for corner cases,
+/// e.g., panicking when the transaction is active).
+/// If rollback *is* supported by the storage, it is assumed to be the default behavior
+/// on transaction drop. It would be an error to commit transactions on drop,
+/// since this would produce errors in the aforementioned corner cases.
+///
+/// [`WorkflowManager`]: crate::manager::WorkflowManager
+#[must_use = "transactions must be committed to take effect"]
 #[async_trait]
 pub trait StorageTransaction: Send + Sync + WriteModules + WriteChannels + WriteWorkflows {
-    // TODO: errors?
+    /// Commits this transaction to the storage. This method must be called
+    /// to (atomically) apply transaction changes.
     async fn commit(self);
 }
 
+/// Allows reading stored information about [`WorkflowModule`](crate::WorkflowModule)s.
 #[async_trait]
 pub trait ReadModules {
     /// Retrieves a module with the specified ID.
     async fn module(&self, id: &str) -> Option<ModuleRecord<'static>>;
+
     /// Streams all modules.
     fn modules(&self) -> BoxStream<'_, ModuleRecord<'static>>;
 }
 
+/// Allows modifying stored information about [`WorkflowModule`](crate::WorkflowModule)s.
 #[async_trait]
 pub trait WriteModules: ReadModules {
     /// Inserts the module into the storage.
@@ -53,9 +77,10 @@ pub trait WriteModules: ReadModules {
     async fn update_tracing_metadata(&mut self, module_id: &str, metadata: PersistedMetadata);
 }
 
+/// Storage record for a [`WorkflowModule`](crate::WorkflowModule).
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ModuleRecord<'a> {
-    /// ID of the module.
+    /// ID of the module. This should be the primary key of the module.
     pub id: String,
     /// WASM module bytes.
     #[serde(with = "serde_b64")]
@@ -75,16 +100,25 @@ impl fmt::Debug for ModuleRecord<'_> {
     }
 }
 
+/// Allows reading stored information about workflow channels.
 #[async_trait]
 pub trait ReadChannels {
+    /// Retrieves information about the channel with the specified ID.
     async fn channel(&self, id: ChannelId) -> Option<ChannelRecord>;
+
     /// Checks whether the specified channel has messages unconsumed by the receiver workflow.
     /// If there is no receiver workflow for the channel, returns `false`.
     async fn has_messages_for_receiver_workflow(&self, id: ChannelId) -> bool;
-    /// Receives a message from the channel.
+
+    /// Receives a message with the specified 0-based index from the specified channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the message cannot be retrieved.
     async fn channel_message(&self, id: ChannelId, index: usize) -> Result<Vec<u8>, MessageError>;
 }
 
+/// Allows modifying stored information about channels.
 #[async_trait]
 pub trait WriteChannels: ReadChannels {
     /// Allocates a new unique ID for a channel.
@@ -113,9 +147,12 @@ pub trait WriteChannels: ReadChannels {
     async fn truncate_channel(&mut self, id: ChannelId, min_index: usize);
 }
 
+/// Error retrieving a message from a workflow channel. Returned by
+/// [`ReadChannels::channel_message()`].
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum MessageError {
+    /// A channel with the specified channel ID does not exist.
     UnknownChannelId,
     /// Requested index with an index larger than the maximum stored index.
     NonExistingIndex {
@@ -144,6 +181,7 @@ impl fmt::Display for MessageError {
 
 impl error::Error for MessageError {}
 
+/// State of a workflow channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelRecord {
     /// ID of the receiver workflow, or `None` if the receiver is external.
@@ -174,6 +212,7 @@ pub trait ReadWorkflows {
     async fn nearest_timer_expiration(&self) -> Option<DateTime<Utc>>;
 }
 
+/// Allows modifying stored information about workflows.
 #[async_trait]
 pub trait WriteWorkflows: ReadWorkflows {
     /// Allocates a new unique ID for a workflow.
@@ -189,13 +228,14 @@ pub trait WriteWorkflows: ReadWorkflows {
         tracing_spans: PersistedSpans,
     );
 
-    /// Manipulates the persisted part of a workflow without restoring it.
+    /// Manipulates the persisted part of a workflow.
     async fn manipulate_workflow<F: FnOnce(&mut PersistedWorkflow) + Send>(
         &mut self,
         id: WorkflowId,
         action: F,
     ) -> Option<WorkflowRecord>;
 
+    /// Manipulates the persisted part of all matching workflows.
     async fn manipulate_all_workflows<F: FnMut(&mut PersistedWorkflow) + Send>(
         &mut self,
         criteria: WorkflowSelectionCriteria,
@@ -206,23 +246,33 @@ pub trait WriteWorkflows: ReadWorkflows {
     async fn delete_workflow(&mut self, id: WorkflowId);
 }
 
+/// State of a workflow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowRecord {
+    /// ID of the workflow.
     pub id: WorkflowId,
+    /// ID of the parent workflow, or `None` if this is a root workflow.
     pub parent_id: Option<WorkflowId>,
+    /// ID of the module in which the workflow is defined.
     pub module_id: String,
+    /// Name of the workflow in the module.
     pub name_in_module: String,
+    /// Persisted workflow state.
     pub persisted: PersistedWorkflow,
+    /// Tracing spans associated with the workflow.
     pub tracing_spans: PersistedSpans,
 }
 
+/// Workflow selection criteria used in [`WriteWorkflows::manipulate_all_workflows()`].
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum WorkflowSelectionCriteria {
+    /// Workflow has an active timer before the specified timestamp.
     HasTimerBefore(DateTime<Utc>),
 }
 
 impl WorkflowSelectionCriteria {
-    pub(crate) fn matches(&self, record: &WorkflowRecord) -> bool {
+    fn matches(&self, record: &WorkflowRecord) -> bool {
         match self {
             Self::HasTimerBefore(time) => record
                 .persisted
