@@ -6,7 +6,10 @@ use std::{collections::HashSet, error, fmt, marker::PhantomData};
 
 use crate::{
     manager::{persistence::in_transaction, AsManager, WorkflowAndChannelIds},
-    storage::{ChannelRecord, MessageError, ReadChannels, ReadWorkflows, Storage, WorkflowRecord},
+    storage::{
+        ChannelRecord, MessageError, ReadChannels, ReadWorkflows, Storage, StorageTransaction,
+        WorkflowRecord, WriteChannels,
+    },
     workflow::ChannelIds,
     PersistedWorkflow,
 };
@@ -312,6 +315,19 @@ impl<T, C: Decode<T> + Default, M: AsManager> MessageReceiver<'_, T, C, M> {
             codec: C::default(),
             _item: PhantomData,
         })
+    }
+
+    /// Truncates this channel so that its minimum message index is no less than `min_index`.
+    /// If [`Self::can_manipulate()`] returns `false`, this is a no-op.
+    pub async fn truncate(&self, min_index: usize) {
+        if self.can_manipulate {
+            let manager = self.manager.as_manager();
+            let mut transaction = manager.storage.transaction().await;
+            transaction
+                .truncate_channel(self.channel_id, min_index)
+                .await;
+            transaction.commit().await;
+        }
     }
 
     /// Closes this channel from the host side. If [`Self::can_manipulate()`] returns `false`,

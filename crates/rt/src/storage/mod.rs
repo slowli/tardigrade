@@ -55,7 +55,7 @@ pub trait WriteModules: ReadModules {
     async fn update_tracing_metadata(&mut self, module_id: &str, metadata: PersistedMetadata);
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ModuleRecord<'a> {
     /// ID of the module.
     pub id: String,
@@ -64,6 +64,17 @@ pub struct ModuleRecord<'a> {
     pub bytes: Cow<'a, [u8]>,
     /// Persisted metadata.
     pub tracing_metadata: PersistedMetadata,
+}
+
+impl fmt::Debug for ModuleRecord<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ModuleRecord")
+            .field("id", &self.id)
+            .field("bytes_len", &self.bytes.len())
+            .field("tracing_metadata", &self.tracing_metadata)
+            .finish()
+    }
 }
 
 #[async_trait]

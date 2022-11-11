@@ -46,6 +46,13 @@ impl LocalChannel {
         (start_idx..self.next_message_idx).contains(&idx)
             || (self.state.is_closed && idx == self.next_message_idx) // EOF marker
     }
+
+    fn truncate(&mut self, min_index: usize) {
+        let start_idx = self.next_message_idx - self.messages.len();
+        let messages_to_truncate = min_index.saturating_sub(start_idx);
+        let messages_to_truncate = cmp::min(messages_to_truncate, self.messages.len());
+        self.messages = self.messages.split_off(messages_to_truncate);
+    }
 }
 
 impl ModuleRecord<'_> {
@@ -111,6 +118,7 @@ pub struct LocalStorage {
     inner: Mutex<Inner>,
     next_channel_id: AtomicU64,
     next_workflow_id: AtomicU64,
+    truncate_messages: bool,
 }
 
 impl Default for LocalStorage {
@@ -119,6 +127,7 @@ impl Default for LocalStorage {
             inner: Mutex::default(),
             next_channel_id: AtomicU64::new(1), // skip the closed channel
             next_workflow_id: AtomicU64::new(0),
+            truncate_messages: false,
         }
     }
 }
@@ -131,6 +140,11 @@ impl LocalStorage {
             next_workflow_id: *self.next_workflow_id.get_mut(),
         }
     }
+
+    /// Automatically truncates messages received by workflows.
+    pub fn truncate_workflow_messages(&mut self) {
+        self.truncate_messages = true;
+    }
 }
 
 impl From<LocalStorageSnapshot<'_>> for LocalStorage {
@@ -139,6 +153,7 @@ impl From<LocalStorageSnapshot<'_>> for LocalStorage {
             inner: Mutex::new(snapshot.inner.into_owned()),
             next_channel_id: AtomicU64::new(snapshot.next_channel_id),
             next_workflow_id: AtomicU64::new(snapshot.next_workflow_id),
+            truncate_messages: false,
         }
     }
 }
@@ -148,6 +163,7 @@ pub struct LocalTransaction<'a> {
     inner: MutexGuard<'a, Inner>,
     next_channel_id: &'a AtomicU64,
     next_workflow_id: &'a AtomicU64,
+    truncate_messages: bool,
 }
 
 impl LocalTransaction<'_> {
@@ -267,10 +283,7 @@ impl WriteChannels for LocalTransaction<'_> {
 
     async fn truncate_channel(&mut self, id: ChannelId, min_index: usize) {
         if let Some(channel) = self.inner.channels.get_mut(&id) {
-            let start_idx = channel.next_message_idx - channel.messages.len();
-            let messages_to_truncate = min_index.saturating_sub(start_idx);
-            let messages_to_truncate = cmp::min(messages_to_truncate, channel.messages.len());
-            channel.messages = channel.messages.split_off(messages_to_truncate);
+            channel.truncate(min_index);
         }
     }
 }
@@ -380,8 +393,17 @@ impl WriteWorkflows for LocalTransaction<'_> {
 
 #[async_trait]
 impl StorageTransaction for LocalTransaction<'_> {
-    async fn commit(self) {
-        // Does nothing.
+    async fn commit(mut self) {
+        if self.truncate_messages {
+            let inner = &mut *self.inner;
+            for (&id, channel) in &mut inner.channels {
+                if let Some(workflow_id) = channel.state.receiver_workflow_id {
+                    let workflow = &inner.workflows[&workflow_id].persisted;
+                    let (.., state) = workflow.find_inbound_channel(id);
+                    channel.truncate(state.received_message_count());
+                }
+            }
+        }
     }
 }
 
@@ -396,6 +418,7 @@ impl<'a> Storage<'a> for LocalStorage {
             inner,
             next_channel_id: &self.next_channel_id,
             next_workflow_id: &self.next_workflow_id,
+            truncate_messages: self.truncate_messages,
         }
     }
 
