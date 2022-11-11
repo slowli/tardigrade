@@ -33,7 +33,6 @@ use tardigrade::{channel::SendError, ChannelId, WorkflowId};
 struct LocalChannel {
     record: ChannelRecord,
     messages: VecDeque<Message>,
-    next_message_idx: usize,
 }
 
 impl LocalChannel {
@@ -41,18 +40,18 @@ impl LocalChannel {
         Self {
             record,
             messages: VecDeque::new(),
-            next_message_idx: 0,
         }
     }
 
     fn contains_index(&self, idx: usize) -> bool {
-        let start_idx = self.next_message_idx - self.messages.len();
-        (start_idx..self.next_message_idx).contains(&idx)
-            || (self.record.is_closed && idx == self.next_message_idx) // EOF marker
+        let received_messages = self.record.received_messages;
+        let start_idx = received_messages - self.messages.len();
+        (start_idx..received_messages).contains(&idx)
+            || (self.record.is_closed && idx == received_messages) // EOF marker
     }
 
     fn truncate(&mut self, min_index: usize) {
-        let start_idx = self.next_message_idx - self.messages.len();
+        let start_idx = self.record.received_messages - self.messages.len();
         let messages_to_truncate = min_index.saturating_sub(start_idx);
         let messages_to_truncate = cmp::min(messages_to_truncate, self.messages.len());
         self.messages = self.messages.split_off(messages_to_truncate);
@@ -267,7 +266,7 @@ impl ReadChannels for LocalTransaction<'_> {
             if let Some(workflow_id) = channel.record.receiver_workflow_id {
                 let workflow = &self.inner.workflows[&workflow_id].persisted;
                 let (.., state) = workflow.find_inbound_channel(id);
-                return state.received_message_count() < channel.next_message_idx;
+                return state.received_message_count() < channel.record.received_messages;
             }
         }
         false
@@ -280,7 +279,7 @@ impl ReadChannels for LocalTransaction<'_> {
             .get(&id)
             .ok_or(MessageError::UnknownChannelId)?;
 
-        let start_idx = channel.next_message_idx - channel.messages.len();
+        let start_idx = channel.record.received_messages - channel.messages.len();
         let idx_in_channel = index
             .checked_sub(start_idx)
             .ok_or(MessageError::Truncated)?;
@@ -336,7 +335,7 @@ impl WriteChannels for LocalTransaction<'_> {
         channel
             .messages
             .extend(messages.into_iter().map(Message::from));
-        channel.next_message_idx += len;
+        channel.record.received_messages += len;
         Ok(())
     }
 

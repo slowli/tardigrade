@@ -105,13 +105,8 @@ async fn instantiating_workflow() {
     let workflow = create_test_workflow(&manager).await;
 
     let storage = manager.storage.readonly_transaction().await;
-    assert_eq!(
-        storage
-            .find_pending_workflow()
-            .await
-            .map(|record| record.id),
-        Some(workflow.id())
-    );
+    let pending_workflow = storage.find_pending_workflow().await.unwrap();
+    assert_eq!(pending_workflow.id, workflow.id());
     let record = storage.workflow(workflow.id()).await.unwrap();
     assert_eq!(record.module_id, "test@latest");
     assert_eq!(record.name_in_module, "TestWorkflow");
@@ -144,11 +139,13 @@ async fn test_initializing_workflow(
         .tick_workflow(&mut transaction, record)
         .await
         .unwrap();
+    transaction.commit().await;
     assert_eq!(receipt.executions().len(), 2);
     let main_execution = &receipt.executions()[0];
     assert_matches!(main_execution.function, ExecutedFunction::Entry { .. });
 
     let traces_id = ids.channel_ids.outbound["traces"];
+    let transaction = manager.storage.readonly_transaction().await;
     assert!(transaction.find_pending_workflow().await.is_none());
     assert!(transaction.find_consumable_channel().await.is_none());
     let traces = transaction.channel(traces_id).await.unwrap();
