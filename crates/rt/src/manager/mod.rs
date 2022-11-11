@@ -8,7 +8,6 @@ use tracing_tunnel::{LocalSpans, PersistedMetadata};
 
 use std::{collections::HashMap, sync::Arc};
 
-pub mod driver;
 mod handle;
 mod new_workflows;
 mod persistence;
@@ -141,9 +140,9 @@ enum ChannelSide {
 /// ```
 #[derive(Debug)]
 pub struct WorkflowManager<C, S> {
-    clock: C,
+    pub(crate) clock: C,
+    pub(crate) storage: S,
     spawners: WorkflowSpawners,
-    storage: S,
     local_spans: Mutex<HashMap<WorkflowId, LocalSpans>>,
 }
 

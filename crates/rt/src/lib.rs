@@ -117,6 +117,7 @@
 
 mod backends;
 mod data;
+pub mod driver;
 pub mod manager;
 mod module;
 pub mod receipt;

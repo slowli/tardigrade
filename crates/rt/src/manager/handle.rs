@@ -210,7 +210,7 @@ impl<W: TakeHandle<Self, Id = ()>, M: AsManager> WorkflowHandle<'_, W, M> {
 pub struct MessageSender<'a, T, C, M> {
     manager: &'a M,
     channel_id: ChannelId,
-    pub(super) codec: C,
+    pub(crate) codec: C,
     _item: PhantomData<fn(T)>,
 }
 
@@ -276,8 +276,8 @@ where
 pub struct MessageReceiver<'a, T, C, M> {
     manager: &'a M,
     channel_id: ChannelId,
-    pub(super) can_manipulate: bool,
-    pub(super) codec: C,
+    can_manipulate: bool,
+    pub(crate) codec: C,
     _item: PhantomData<fn() -> T>,
 }
 

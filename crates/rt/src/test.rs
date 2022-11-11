@@ -245,9 +245,10 @@ impl ModuleCompiler {
 /// # use async_std::task;
 /// # use futures::TryStreamExt;
 /// # use tardigrade::{interface::OutboundChannel, spawn::ManageWorkflowsExt};
-/// # use tardigrade_rt::{test::MockScheduler, storage::LocalStorage, WorkflowModule};
-/// # use tardigrade_rt::manager::{driver::Driver, WorkflowHandle, WorkflowManager};
-///
+/// # use tardigrade_rt::{
+/// #     driver::Driver, manager::{WorkflowHandle, WorkflowManager}, storage::LocalStorage,
+/// #     test::MockScheduler, WorkflowModule,
+/// # };
 /// # async fn test_wrapper(module: WorkflowModule) -> anyhow::Result<()> {
 /// let scheduler = MockScheduler::default();
 /// // Set the mocked wall clock for the workflow manager.

@@ -38,10 +38,10 @@ pub trait StorageReadonlyTransaction:
 {
 }
 
-impl<T> StorageReadonlyTransaction for T
-where
-    T: Send + Sync + ReadModules + ReadChannels + ReadWorkflows,
-{}
+impl<T> StorageReadonlyTransaction for T where
+    T: Send + Sync + ReadModules + ReadChannels + ReadWorkflows
+{
+}
 
 /// [`Storage`] transaction with read/write access to the storage.
 ///

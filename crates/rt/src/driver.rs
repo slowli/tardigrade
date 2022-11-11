@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::{
-    manager::{AsManager, TickResult},
+    manager::{self, AsManager, TickResult},
     receipt::ExecutionError,
     storage::{MessageError, ReadChannels, Storage},
     Schedule,
@@ -90,9 +90,7 @@ pub enum Termination {
 /// use futures::prelude::*;
 /// use tardigrade::interface::{InboundChannel, OutboundChannel};
 /// # use tardigrade::WorkflowId;
-/// use tardigrade_rt::{
-///     manager::{driver::Driver, WorkflowManager}, AsyncIoScheduler,
-/// };
+/// use tardigrade_rt::{driver::Driver, manager::WorkflowManager, AsyncIoScheduler};
 /// # use tardigrade_rt::storage::LocalStorage;
 ///
 /// # async fn test_wrapper(
@@ -321,7 +319,7 @@ impl<T, C: Clone> Clone for MessageSender<T, C> {
     }
 }
 
-impl<T, C: Encode<T>, M: AsManager> super::MessageSender<'_, T, C, M> {
+impl<T, C: Encode<T>, M: AsManager> manager::MessageSender<'_, T, C, M> {
     /// Registers this sender in `driver`, allowing to later asynchronously send messages.
     pub fn into_sink(self, driver: &mut Driver) -> MessageSender<T, C> {
         let (sx, rx) = mpsc::channel(1);
@@ -372,7 +370,7 @@ pin_project! {
     }
 }
 
-impl<T, C: Decode<T> + Default, M: AsManager> super::MessageReceiver<'_, T, C, M> {
+impl<T, C: Decode<T> + Default, M: AsManager> manager::MessageReceiver<'_, T, C, M> {
     /// Registers this receiver in `driver`, allowing to later asynchronously receive messages.
     pub fn into_stream(self, driver: &mut Driver) -> MessageReceiver<T, C> {
         let (sx, rx) = mpsc::unbounded();
