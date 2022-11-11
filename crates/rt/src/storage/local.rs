@@ -22,13 +22,13 @@ use super::{
     ReadWorkflows, Storage, StorageTransaction, WorkflowRecord, WorkflowSelectionCriteria,
     WriteChannels, WriteModules, WriteWorkflows,
 };
-use crate::PersistedWorkflow;
+use crate::{utils::Message, PersistedWorkflow};
 use tardigrade::{channel::SendError, ChannelId, WorkflowId};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LocalChannel {
     state: ChannelState,
-    messages: VecDeque<Vec<u8>>,
+    messages: VecDeque<Message>,
     next_message_idx: usize,
 }
 
@@ -44,6 +44,7 @@ impl LocalChannel {
     fn contains_index(&self, idx: usize) -> bool {
         let start_idx = self.next_message_idx - self.messages.len();
         (start_idx..self.next_message_idx).contains(&idx)
+            || (self.state.is_closed && idx == self.next_message_idx) // EOF marker
     }
 }
 
@@ -216,7 +217,7 @@ impl ReadChannels for LocalTransaction<'_> {
         channel
             .messages
             .get(idx_in_channel)
-            .cloned()
+            .map(|message| message.clone().into())
             .ok_or(MessageError::NonExistingIndex { is_closed })
     }
 }
@@ -257,7 +258,9 @@ impl WriteChannels for LocalTransaction<'_> {
         }
 
         let len = messages.len();
-        channel.messages.extend(messages);
+        channel
+            .messages
+            .extend(messages.into_iter().map(Message::from));
         channel.next_message_idx += len;
         Ok(())
     }

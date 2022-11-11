@@ -571,7 +571,11 @@ impl WorkflowData<'_> {
             .inbound
             .get_mut(channel_name)
             .unwrap();
-        state.pending_message.take().is_some()
+        let has_message = state.pending_message.take().is_some();
+        if has_message {
+            state.received_messages -= 1;
+        }
+        has_message
     }
 
     fn poll_inbound_channel(

@@ -298,7 +298,7 @@ impl<T, C: Decode<T> + Default, M: AsManager> MessageReceiver<'_, T, C, M> {
     ///
     /// Returns an error if the message is not available.
     pub async fn receive_message(
-        &mut self,
+        &self,
         index: usize,
     ) -> Result<ReceivedMessage<T, C>, MessageError> {
         let raw_message = in_transaction(self.manager, |transaction| {
@@ -344,7 +344,7 @@ impl<T, C: Decode<T>> ReceivedMessage<T, C> {
     /// # Errors
     ///
     /// Returns a decoding error, if any.
-    pub fn decode(&mut self) -> Result<T, C::Error> {
+    pub fn decode(mut self) -> Result<T, C::Error> {
         self.codec.try_decode_bytes(self.raw_message.clone())
     }
 }

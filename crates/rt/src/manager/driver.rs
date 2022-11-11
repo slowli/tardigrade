@@ -37,17 +37,18 @@ struct OutboundChannel {
 impl OutboundChannel {
     /// Returns `true` if the channel should be removed (e.g., if the EOF marker is reached,
     /// or if it's not listened to by the client.
-    async fn send_messages(&mut self, id: ChannelId, transaction: &impl ReadChannels) -> bool {
+    async fn relay_messages(&mut self, id: ChannelId, transaction: &impl ReadChannels) -> bool {
         loop {
             match transaction.channel_message(id, self.cursor).await {
                 Ok(message) => {
+                    self.cursor += 1;
                     if self.sender.unbounded_send(message).is_err() {
                         break true;
                     }
                 }
                 Err(MessageError::NonExistingIndex { is_closed }) => break is_closed,
                 Err(err) => {
-                    tracing::warn!(%err, "unexpected error when sending messages");
+                    tracing::warn!(%err, "unexpected error when relaying messages");
                     break true;
                 }
             }
@@ -260,7 +261,7 @@ impl Driver {
 
         let channels = self.outbound_channels.iter_mut();
         let channel_tasks = channels.map(|(&id, channel)| async move {
-            let should_drop = channel.send_messages(id, transaction).await;
+            let should_drop = channel.relay_messages(id, transaction).await;
             Some(id).filter(|_| should_drop)
         });
         let dropped_channels = future::join_all(channel_tasks).await;
