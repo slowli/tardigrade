@@ -8,7 +8,7 @@ use std::cmp;
 
 use tardigrade::{channel::WithId, spawn::ManageWorkflowsExt};
 use tardigrade_rt::{
-    manager::future::{Driver, Termination},
+    driver::{Driver, Termination},
     AsyncIoScheduler,
 };
 use tardigrade_test_basic::{

@@ -26,28 +26,28 @@ mod tasks;
 type TestResult<T = ()> = Result<T, Box<dyn error::Error>>;
 type LocalManager<C> = WorkflowManager<C, LocalStorage>;
 
-static MODULE_BYTES: Lazy<Vec<u8>> = Lazy::new(|| {
+static MODULE: Lazy<WorkflowModule> = Lazy::new(|| {
     // Since this closure is called once, it is a good place to do other initialization
     tracing::subscriber::set_global_default(create_fmt_subscriber()).ok();
 
-    ModuleCompiler::new(env!("CARGO_PKG_NAME"))
+    let module_bytes = ModuleCompiler::new(env!("CARGO_PKG_NAME"))
         .set_current_dir(env!("CARGO_MANIFEST_DIR"))
         .set_profile("wasm")
         .set_wasm_opt(WasmOpt::default())
-        .compile()
-});
-static MODULE: Lazy<WorkflowModule<'static>> = Lazy::new(|| {
+        .compile();
     let engine = WorkflowEngine::default();
-    WorkflowModule::new(&engine, &MODULE_BYTES).unwrap()
+    WorkflowModule::new(&engine, module_bytes).unwrap()
 });
 
-async fn create_module() -> WorkflowModule<'static> {
+async fn create_module() -> WorkflowModule {
     task::spawn_blocking(|| &*MODULE).await.clone()
 }
 
 async fn create_manager<C: Clock>(clock: C) -> TestResult<LocalManager<C>> {
     let module = create_module().await;
-    let mut manager = WorkflowManager::builder(LocalStorage::default())
+    let mut storage = LocalStorage::default();
+    storage.truncate_workflow_messages();
+    let mut manager = WorkflowManager::builder(storage)
         .with_clock(clock)
         .build()
         .await?;

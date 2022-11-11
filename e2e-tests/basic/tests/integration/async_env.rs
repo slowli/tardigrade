@@ -23,10 +23,8 @@ use tardigrade::{
     Decode, Encode, Json, TimerId,
 };
 use tardigrade_rt::{
-    manager::{
-        future::{Driver, MessageReceiver, MessageSender, Termination},
-        TickResult,
-    },
+    driver::{Driver, MessageReceiver, MessageSender, Termination},
+    manager::TickResult,
     receipt::{Event, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
     test::MockScheduler,
     AsyncIoScheduler,
@@ -157,9 +155,10 @@ async fn test_async_handle_with_concurrency(inputs: Args) -> TestResult {
     let mut orders = stream::iter(orders).map(Ok);
     orders_sx.send_all(&mut orders).await?;
     drop(orders_sx); // will terminate the workflow eventually
+    join_handle.await?;
 
     let events: Vec<_> = events_rx.try_collect().await?;
-    assert_eq!(events.len(), ORDER_COUNT * 4);
+    assert_eq!(events.len(), ORDER_COUNT * 4, "{events:#?}");
 
     for i in 1..=ORDER_COUNT {
         let order_events: Vec<_> = events.iter().filter(|event| event.index() == i).collect();
@@ -173,8 +172,6 @@ async fn test_async_handle_with_concurrency(inputs: Args) -> TestResult {
             ]
         );
     }
-
-    join_handle.await?;
     Ok(())
 }
 
@@ -546,10 +543,10 @@ async fn dynamically_typed_async_handle() -> TestResult {
 
     let manager = join_handle.await?;
     let chan = manager.channel(orders_id).await.unwrap();
-    assert!(chan.is_closed());
-    assert_eq!(chan.received_messages(), 1);
+    assert!(chan.is_closed);
+    assert_eq!(chan.received_messages, 1);
     let chan = manager.channel(events_id).await.unwrap();
-    assert_eq!(chan.flushed_messages(), 4);
+    assert_eq!(chan.received_messages, 4);
     Ok(())
 }
 

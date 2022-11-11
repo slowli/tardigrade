@@ -11,12 +11,12 @@ use tardigrade::{
     spawn::ManageWorkflowsExt,
     Decode, Encode, Json,
 };
-use tardigrade_rt::storage::{LocalStorageSnapshot, ModuleRecord};
 use tardigrade_rt::{
-    manager::{CreateModule, WorkflowManager},
+    manager::{AsManager, CreateModule, MessageReceiver, WorkflowManager},
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, ExecutionError, WakeUpCause,
     },
+    storage::{LocalStorageSnapshot, MessageError, ModuleRecord},
     test::MockScheduler,
     WorkflowModule,
 };
@@ -25,6 +25,42 @@ use tardigrade_test_basic::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOr
 use super::{create_manager, enable_tracing_assertions, TestResult};
 
 const DEFINITION_ID: &str = "test::PizzaDelivery";
+
+#[derive(Debug)]
+struct Drain<'a, T, C, M> {
+    receiver: MessageReceiver<'a, T, C, M>,
+    cursor: usize,
+}
+
+impl<'a, T, C, M> Drain<'a, T, C, M>
+where
+    C: Decode<T> + Default,
+    M: AsManager,
+{
+    fn new(receiver: MessageReceiver<'a, T, C, M>) -> Self {
+        Self {
+            receiver,
+            cursor: 0,
+        }
+    }
+
+    async fn drain(&mut self) -> TestResult<Vec<T>> {
+        let mut messages = vec![];
+        loop {
+            match self.receiver.receive_message(self.cursor).await {
+                Ok(message) => {
+                    messages.push(message.decode()?);
+                    self.cursor += 1;
+                }
+                Err(MessageError::NonExistingIndex { .. }) => {
+                    self.receiver.truncate(self.cursor).await;
+                    break Ok(messages);
+                }
+                Err(err) => break Err(err.into()),
+            }
+        }
+    }
+}
 
 #[async_std::test]
 async fn basic_workflow() -> TestResult {
@@ -83,18 +119,15 @@ async fn basic_workflow() -> TestResult {
     handle.orders.send(order).await?;
     manager.tick().await?.into_inner()?; // TODO: assert on receipt
 
-    let events = handle.shared.events.take_messages().await.unwrap();
-    assert_eq!(
-        events.decode()?,
-        [DomainEvent::OrderTaken { index: 1, order }]
-    );
+    let event = handle.shared.events.receive_message(0).await?;
+    assert_eq!(event.decode()?, DomainEvent::OrderTaken { index: 1, order });
 
     workflow.update().await?;
     let persisted = workflow.persisted();
-    let pending_events: Vec<_> = persisted.pending_events().collect();
-    assert_eq!(pending_events.len(), 1);
+    let wakeup_causes: Vec<_> = persisted.pending_wakeup_causes().collect();
+    assert_eq!(wakeup_causes.len(), 1);
     assert_matches!(
-        pending_events[0],
+        wakeup_causes[0],
         WakeUpCause::Flush { workflow_id: None, channel_name, .. } if channel_name == "events"
     );
 
@@ -125,8 +158,8 @@ async fn basic_workflow() -> TestResult {
     manager.set_current_time(new_time).await;
 
     manager.tick().await?.into_inner()?; // TODO: assert on receipt
-    let events = handle.shared.events.take_messages().await.unwrap();
-    assert_eq!(events.decode()?, [DomainEvent::Baked { index: 1, order }]);
+    let events = handle.shared.events.receive_message(1).await?;
+    assert_eq!(events.decode()?, DomainEvent::Baked { index: 1, order });
 
     {
         let storage = tracing_storage.lock();
@@ -179,9 +212,9 @@ async fn workflow_with_concurrency() -> TestResult {
     }
     assert_eq!(message_indices, [0, 1]);
 
-    let events = handle.shared.events.take_messages().await.unwrap();
+    let events = Drain::new(handle.shared.events).drain().await?;
     assert_eq!(
-        events.decode()?,
+        events,
         [
             DomainEvent::OrderTaken { index: 1, order },
             DomainEvent::OrderTaken {
@@ -199,10 +232,7 @@ struct DummyModuleCreator;
 
 #[async_trait]
 impl CreateModule for DummyModuleCreator {
-    async fn create_module<'a>(
-        &self,
-        module: &'a ModuleRecord<'_>,
-    ) -> anyhow::Result<WorkflowModule<'a>> {
+    async fn create_module(&self, module: &ModuleRecord) -> anyhow::Result<WorkflowModule> {
         assert_eq!(module.id, "test");
         Ok(create_module().await)
     }
@@ -233,18 +263,17 @@ async fn persisting_workflow() -> TestResult {
     handle.orders.send(order).await?;
     manager.tick().await?.into_inner()?;
 
-    let events = handle.shared.events.take_messages().await.unwrap();
-    assert_eq!(
-        events.decode()?,
-        [DomainEvent::OrderTaken { index: 1, order }]
-    );
+    let mut events_drain = Drain::new(handle.shared.events);
+    let events = events_drain.drain().await?;
+    assert_eq!(events, [DomainEvent::OrderTaken { index: 1, order }]);
+    let events_drain_cursor = events_drain.cursor;
 
     let mut storage = manager.into_storage();
     let mut snapshot = storage.snapshot();
-    snapshot.replace_module_bytes(|module| {
+    for mut module in snapshot.modules_mut() {
         assert_eq!(module.id, "test");
-        Some(vec![])
-    });
+        module.set_bytes(vec![]);
+    }
     let persisted_json = serde_json::to_string(&snapshot)?;
     assert!(persisted_json.len() < 5_000, "{persisted_json}");
     let snapshot: LocalStorageSnapshot<'_> = serde_json::from_str(&persisted_json)?;
@@ -265,17 +294,15 @@ async fn persisting_workflow() -> TestResult {
     // Check that the pizza is ready now.
     let workflow = manager.workflow(workflow_id).await.unwrap();
     let mut workflow = workflow.downcast::<PizzaDelivery>()?;
-    let mut handle = workflow.handle();
-    let events = handle.shared.events.take_messages().await.unwrap();
-    assert_eq!(events.decode()?, [DomainEvent::Baked { index: 1, order }]);
+    let mut events_drain = Drain::new(workflow.handle().shared.events);
+    events_drain.cursor = events_drain_cursor;
+    let events = events_drain.drain().await?;
+    assert_eq!(events, [DomainEvent::Baked { index: 1, order }]);
 
     // We need to flush a second time to get the "started delivering" event.
     manager.tick().await?.into_inner()?;
-    let events = handle.shared.events.take_messages().await.unwrap();
-    assert_eq!(
-        events.decode()?,
-        [DomainEvent::StartedDelivering { index: 1, order }]
-    );
+    let events = events_drain.drain().await?;
+    assert_eq!(events, [DomainEvent::StartedDelivering { index: 1, order }]);
     // ...and flush again to activate the delivery timer
     manager.tick().await?.into_inner()?;
 
@@ -318,22 +345,15 @@ async fn untyped_workflow() -> TestResult {
         .await?;
     manager.tick().await?.into_inner()?; // TODO: assert on receipt
 
-    let events = handle[OutboundChannel("events")]
-        .take_messages()
-        .await
-        .unwrap();
-    let events: Vec<DomainEvent> = events
-        .decode()?
-        .into_iter()
-        .map(|bytes| Json.decode_bytes(bytes))
-        .collect();
-    assert_eq!(events, [DomainEvent::OrderTaken { index: 1, order }]);
+    let event = handle[OutboundChannel("events")].receive_message(0).await?;
+    let event: DomainEvent = Json.try_decode_bytes(event.decode().unwrap())?;
+    assert_eq!(event, DomainEvent::OrderTaken { index: 1, order });
 
     let chan = handle[InboundChannel("orders")].channel_info().await;
-    assert!(!chan.is_closed());
-    assert_eq!(chan.received_messages(), 1);
+    assert!(!chan.is_closed);
+    assert_eq!(chan.received_messages, 1);
     let chan = handle[OutboundChannel("events")].channel_info().await;
-    assert_eq!(chan.flushed_messages(), 1);
+    assert_eq!(chan.received_messages, 1);
     Ok(())
 }
 
@@ -352,6 +372,7 @@ async fn workflow_recovery_after_trap() -> TestResult {
         .build()
         .await?;
     let mut handle = workflow.handle();
+    let mut events_drain = Drain::new(handle.remove(OutboundChannel("events")).unwrap());
     manager.tick().await?.into_inner()?;
 
     let order = PizzaOrder {
@@ -404,12 +425,14 @@ async fn workflow_recovery_after_trap() -> TestResult {
             assert!(err.contains("Cannot decode bytes"), "{err}");
         } else {
             result.into_inner()?;
-            let events = handle[OutboundChannel("events")]
-                .take_messages()
-                .await
-                .unwrap()
-                .decode()?;
+            let mut events = events_drain.drain().await?;
             assert_eq!(events.len(), 1);
+            let event: DomainEvent = Json.try_decode_bytes(events.pop().unwrap())?;
+            let expected_idx = (i + 1) / 2;
+            assert_matches!(
+                event,
+                DomainEvent::OrderTaken { index, .. } if index == expected_idx
+            );
         }
     }
     Ok(())

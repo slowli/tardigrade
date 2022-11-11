@@ -12,7 +12,7 @@ use std::{
 
 use tardigrade::{spawn::ManageWorkflowsExt, Json, TaskId};
 use tardigrade_rt::{
-    manager::future::{Driver, MessageSender, Termination},
+    driver::{Driver, MessageSender, Termination},
     receipt::{
         Event, ExecutedFunction, Execution, Receipt, ResourceEvent, ResourceEventKind, ResourceId,
     },
