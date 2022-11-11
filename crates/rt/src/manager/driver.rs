@@ -57,6 +57,8 @@ impl OutboundChannel {
 }
 
 /// Terminal status of a [`WorkflowManager`].
+///
+/// [`WorkflowManager`]: crate::manager::WorkflowManager
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Termination {
@@ -67,11 +69,13 @@ pub enum Termination {
     Stalled,
 }
 
-/// Asynchronous environment for driving workflows in a [`WorkflowManager`].
+/// Environment for driving workflow execution in a [`WorkflowManager`].
+///
+/// [`WorkflowManager`]: crate::manager::WorkflowManager
 ///
 /// # Error handling
 ///
-/// By default, workflow execution via [`Self::run()`] terminates immediately after a trap.
+/// By default, workflow execution via [`Self::drive()`] terminates immediately after a trap.
 /// To drop incoming messages that have led to an error, call [`Self::drop_erroneous_messages()`].
 /// Rolling back receiving a message
 /// means that from the workflow perspective, the message was never received in the first place,
@@ -86,40 +90,39 @@ pub enum Termination {
 /// use futures::prelude::*;
 /// use tardigrade::interface::{InboundChannel, OutboundChannel};
 /// # use tardigrade::WorkflowId;
-/// use tardigrade_rt::manager::{
-///     driver::{Driver, AsyncIoScheduler}, WorkflowHandle, WorkflowManager,
+/// use tardigrade_rt::{
+///     manager::{driver::Driver, WorkflowManager}, AsyncIoScheduler,
 /// };
+/// # use tardigrade_rt::storage::LocalStorage;
 ///
 /// # async fn test_wrapper(
-/// #     manager: WorkflowManager,
+/// #     manager: WorkflowManager<AsyncIoScheduler, LocalStorage>,
 /// #     workflow_id: WorkflowId,
 /// # ) -> anyhow::Result<()> {
 /// // Assume we have a dynamically typed workflow:
-/// let mut manager: WorkflowManager = // ...
+/// let mut manager: WorkflowManager<AsyncIoScheduler, _> = // ...
 /// #   manager;
-/// let mut workflow = manager.workflow(workflow_id).unwrap();
+/// let mut workflow = manager.workflow(workflow_id).await.unwrap();
 ///
-/// // First, create an environment to execute the workflow in.
-/// let mut env = Driver::new(AsyncIoScheduler);
+/// // First, create a driver to execute the workflow in.
+/// let mut driver = Driver::new();
 /// // Take relevant channels from the workflow and convert them to async form.
 /// let mut handle = workflow.handle();
 /// let mut commands_sx = handle.remove(InboundChannel("commands"))
 ///     .unwrap()
-///     .into_async(&mut env);
+///     .into_sink(&mut driver);
 /// let events_rx = handle.remove(OutboundChannel("events"))
 ///     .unwrap()
-///     .into_async(&mut env);
+///     .into_stream(&mut driver);
 ///
 /// // Run the environment in a separate task.
-/// task::spawn(async move { env.drive(&mut manager).await });
+/// task::spawn(async move { driver.drive(&mut manager).await });
 /// // Let's send a message via an inbound channel...
 /// let message = b"hello".to_vec();
 /// commands_sx.send(message).await?;
 ///
 /// // ...and wait for some outbound messages
-/// let events: Vec<Vec<u8>> = events_rx.take(2).try_collect().await.unwrap();
-/// // ^ `unwrap()` always succeeds because the codec for untyped workflows
-/// // is just an identity.
+/// let events: Vec<Vec<u8>> = events_rx.take(2).try_collect().await?;
 /// # Ok(())
 /// # }
 /// ```
@@ -163,6 +166,7 @@ impl Driver {
     /// Returns an error if workflow execution traps and is not rolled back due to
     /// [`Self::drop_erroneous_messages()`] flag being set.
     ///
+    /// [`WorkflowManager`]: crate::manager::WorkflowManager
     /// [`select`]: futures::select
     pub async fn drive<M>(&mut self, manager: &mut M) -> Result<Termination, ExecutionError>
     where

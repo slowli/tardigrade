@@ -49,7 +49,7 @@
 //! let builder = Workflows.new_workflow::<ChildWorkflow>("child", ())?;
 //! // It is possible to customize child workflow initialization via
 //! // `builder.handle()`, but zero config is fine as well.
-//! let mut child = builder.build()?;
+//! let mut child = builder.build().await?;
 //! // `child` contains handles to the created channels.
 //! child.api.commands.send("ping".to_owned()).await?;
 //! # drop(child.api.commands);

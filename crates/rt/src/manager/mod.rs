@@ -90,38 +90,52 @@ enum ChannelSide {
 /// - Spawning new workflows (including from the workflow code)
 /// - Writing messages to channels and reading messages from channels
 /// - Driving the contained workflows to completion (either [directly](Self::tick()) or
-///   using [future-based API][`AsyncEnv`])
+///   using a [`Driver`]
 ///
 /// This is the simplest manager implementation that stores the entire state in RAM.
 /// It is not a good choice for high-load, but is sufficiently flexible to support
 /// most basic use cases (e.g., persisting / resuming workflows).
 ///
-/// [`AsyncEnv`]: crate::manager::future::AsyncEnv
+/// [`Driver`]: crate::manager::driver::Driver
 ///
 /// # Examples
 ///
 /// ```
-/// # use tardigrade_rt::{manager::{WorkflowHandle, WorkflowManager}, WorkflowModule};
-/// # fn test_wrapper(module: WorkflowModule) -> anyhow::Result<()> {
+/// # use tardigrade_rt::{
+/// #     manager::{WorkflowHandle, WorkflowManager},
+/// #     storage::LocalStorage, AsyncIoScheduler, WorkflowModule,
+/// # };
+/// # async fn test_wrapper(module: WorkflowModule<'_>) -> anyhow::Result<()> {
 /// // A manager is instantiated using the builder pattern:
+/// let storage = LocalStorage::default();
+/// let mut manager = WorkflowManager::builder(storage)
+///     .with_clock(AsyncIoScheduler)
+///     .build()
+///     .await?;
+/// // After this, modules may be added:
 /// let module: WorkflowModule = // ...
 /// #   module;
-/// let spawner = module.for_untyped_workflow("TestWorkflow").unwrap();
-/// let mut manager = WorkflowManager::builder()
-///     .with_spawner("test", spawner)
-///     .build();
+/// manager.insert_module("test", module).await;
 ///
 /// // After that, new workflows can be spawned using `ManageWorkflowsExt`
 /// // trait from the `tardigrade` crate:
 /// use tardigrade::spawn::ManageWorkflowsExt;
+/// let definition_id = "test::Workflow";
+/// // ^ The definition ID is the ID of the module and the name of a workflow
+/// //   within the module separated by `::`.
 /// let args = b"test_args".to_vec();
-/// let workflow =
-///     manager.new_workflow::<()>("test", args)?.build()?;
+/// let mut workflow = manager
+///     .new_workflow::<()>(definition_id, args)?
+///     .build()
+///     .await?;
 /// // Do something with `workflow`, e.g., write something to its channels...
 ///
 /// // Initialize the workflow:
-/// let receipt = manager.tick()?.into_inner()?;
-/// println!("{:?}", receipt);
+/// let receipt = manager.tick().await?.into_inner()?;
+/// println!("{receipt:?}");
+/// // Check the workflow state:
+/// workflow.update().await?;
+/// assert!(workflow.persisted().is_initialized());
 /// # Ok(())
 /// # }
 /// ```

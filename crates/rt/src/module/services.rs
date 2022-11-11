@@ -45,7 +45,7 @@ impl fmt::Debug for dyn Schedule {
     }
 }
 
-/// Future for [`Clock::create_timer()`].
+/// Future for [`Schedule::create_timer()`].
 pub type TimerFuture = Pin<Box<dyn Future<Output = DateTime<Utc>> + Send>>;
 
 /// Similar to [`tardigrade::ManageWorkflows`], but mutable and synchronous.

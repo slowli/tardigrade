@@ -41,6 +41,8 @@ pub trait CreateModule {
     ///
     /// Returns an error if instantiation fails for whatever reason. This error will bubble up
     /// in [`WorkflowManagerBuilder::build()`].
+    ///
+    /// [`WorkflowManagerBuilder::build()`]: crate::manager::WorkflowManagerBuilder::build()
     async fn create_module<'a>(
         &self,
         module: &'a ModuleRecord<'_>,

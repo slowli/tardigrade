@@ -9,7 +9,7 @@
 //! use once_cell::sync::Lazy;
 //! use tardigrade_rt::{test::*, WorkflowEngine, WorkflowModule};
 //!
-//! static MODULE: Lazy<WorkflowModule> = Lazy::new(|| {
+//! static MODULE: Lazy<Vec<u8>> = Lazy::new(|| {
 //!     let module_bytes = ModuleCompiler::new(env!("CARGO_PKG_NAME"))
 //!         .set_current_dir(env!("CARGO_MANIFEST_DIR"))
 //!         .set_profile("wasm")
@@ -18,10 +18,7 @@
 //!     let engine = WorkflowEngine::default();
 //!     WorkflowModule::new(&engine, &module_bytes).unwrap()
 //! });
-//!
-//! // The module can then be used in tests:
-//! let spawner = MODULE.for_untyped_workflow("TestWorkflow").unwrap();
-//! // Use `spawner` to spawn workflows...
+//! // The module can then be used in tests
 //! ```
 
 use chrono::{DateTime, Utc};
@@ -229,9 +226,8 @@ impl ModuleCompiler {
         let wasm_file = self.do_compile();
         fs::read(&wasm_file).unwrap_or_else(|err| {
             panic!(
-                "Error reading file `{}`: {}",
-                wasm_file.to_string_lossy(),
-                err
+                "Error reading file `{}`: {err}",
+                wasm_file.to_string_lossy()
             )
         })
     }
@@ -241,37 +237,39 @@ impl ModuleCompiler {
 ///
 /// # Examples
 ///
-/// A primary use case is to use the scheduler with [`AsyncEnv`] for integration testing:
+/// A primary use case is to use the scheduler with a [`Driver`] for integration testing:
 ///
-/// [`AsyncEnv`]: crate::manager::future::AsyncEnv
+/// [`Driver`]: crate::manager::driver::Driver
 ///
 /// ```
 /// # use async_std::task;
 /// # use futures::TryStreamExt;
-/// # use std::sync::Arc;
-/// use tardigrade::{interface::OutboundChannel, spawn::ManageWorkflowsExt};
-/// use tardigrade_rt::{test::MockScheduler, WorkflowModule};
-/// use tardigrade_rt::manager::{driver::Driver, WorkflowHandle, WorkflowManager};
+/// # use tardigrade::{interface::OutboundChannel, spawn::ManageWorkflowsExt};
+/// # use tardigrade_rt::{test::MockScheduler, storage::LocalStorage, WorkflowModule};
+/// # use tardigrade_rt::manager::{driver::Driver, WorkflowHandle, WorkflowManager};
 ///
-/// # async fn test_wrapper(module: WorkflowModule) -> anyhow::Result<()> {
-/// let scheduler = Arc::new(MockScheduler::default());
+/// # async fn test_wrapper(module: WorkflowModule<'_>) -> anyhow::Result<()> {
+/// let scheduler = MockScheduler::default();
 /// // Set the mocked wall clock for the workflow manager.
-/// let mut manager = WorkflowManager::builder()
-///     .with_clock(Arc::clone(&scheduler))
-///     // set other options (e.g., spawners)
-///     .build();
+/// let storage = LocalStorage::default();
+/// let mut manager = WorkflowManager::builder(storage)
+///     .with_clock(scheduler.clone())
+///     .build()
+///     .await?;
 /// let inputs: Vec<u8> = // ...
 /// #   vec![];
-/// let mut workflow =
-///     manager.new_workflow::<()>("test", inputs)?.build()?;
+/// let mut workflow = manager
+///     .new_workflow::<()>("test::Workflow", inputs)?
+///     .build()
+///     .await?;
 ///
-/// // Spin up the environment to execute the `workflow`.
-/// let mut env = Driver::new(scheduler.clone());
+/// // Spin up the driver to execute the `workflow`.
+/// let mut driver = Driver::new();
 /// let mut handle = workflow.handle();
 /// let mut events_rx = handle.remove(OutboundChannel("events"))
 ///     .unwrap()
-///     .into_async(&mut env);
-/// task::spawn(async move { env.drive(&mut manager).await });
+///     .into_stream(&mut driver);
+/// task::spawn(async move { driver.drive(&mut manager).await });
 ///
 /// // Advance mocked wall clock.
 /// let now = scheduler.now();

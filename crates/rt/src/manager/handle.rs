@@ -1,4 +1,4 @@
-//! Handles for workflows in a [`WorkflowManager`] and their components (e.g., channels).
+//! Handles for workflows in a `WorkflowManager` and their components (e.g., channels).
 
 use futures::future;
 
@@ -46,34 +46,36 @@ impl error::Error for HandleUpdateError {}
 /// allow interacting with the workflow (e.g., [send messages](MessageSender) via inbound channels
 /// and [take messages](MessageReceiver) from outbound channels).
 ///
-/// See [`AsyncEnv`] for a more high-level, future-based alternative.
+/// See [`Driver`] for a more high-level alternative.
 ///
-/// [`AsyncEnv`]: crate::manager::future::AsyncEnv
+/// [`WorkflowManager`]: crate::manager::WorkflowManager
+/// [`Driver`]: crate::manager::driver::Driver
 ///
 /// # Examples
 ///
 /// ```
 /// use tardigrade::interface::{InboundChannel, OutboundChannel};
 /// use tardigrade_rt::manager::WorkflowHandle;
+/// # use tardigrade_rt::manager::AsManager;
 ///
-/// # fn test_wrapper(workflow: WorkflowHandle<'_, ()>) -> anyhow::Result<()> {
+/// # async fn test_wrapper<M: AsManager>(
+/// #     workflow: WorkflowHandle<'_, (), M>,
+/// # ) -> anyhow::Result<()> {
 /// // Assume we have a dynamically typed workflow:
-/// let mut workflow: WorkflowHandle<()> = // ...
+/// let mut workflow: WorkflowHandle<(), _> = // ...
 /// #   workflow;
 /// // We can create a handle to manipulate the workflow.
 /// let mut handle = workflow.handle();
 ///
 /// // Let's send a message via an inbound channel.
 /// let message = b"hello".to_vec();
-/// handle[InboundChannel("commands")].send(message)?;
+/// handle[InboundChannel("commands")].send(message).await?;
 ///
 /// // Let's then take outbound messages from a certain channel:
-/// let messages = handle[OutboundChannel("events")]
-///     .take_messages()
-///     .unwrap();
-/// let messages: Vec<Vec<u8>> = messages.decode().unwrap();
-/// // ^ `decode().unwrap()` always succeeds because the codec
-/// // for untyped workflows is just an identity.
+/// let message = handle[OutboundChannel("events")]
+///     .receive_message(0)
+///     .await?;
+/// let message: Vec<u8> = message.decode()?;
 ///
 /// // It is possible to access the underlying workflow state:
 /// let persisted = workflow.persisted();
@@ -173,12 +175,15 @@ impl<W: TakeHandle<Self, Id = ()>, M: AsManager> WorkflowHandle<'_, W, M> {
         self.ids.workflow_id
     }
 
-    /// Returns the current persisted state of the workflow.
+    /// Returns the snapshot of the persisted state of this workflow.
+    ///
+    /// The snapshot is taken when the handle is created and can be updated
+    /// using [`Self::update()`].
     pub fn persisted(&self) -> &PersistedWorkflow {
         &self.persisted
     }
 
-    /// Updates the snapshot contained in this handle.
+    /// Updates the [snapshot](Self::persisted()) contained in this handle.
     ///
     /// # Errors
     ///
