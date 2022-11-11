@@ -326,7 +326,7 @@ impl PersistedWorkflow {
     }
 
     /// Iterates over pending [`WakeUpCause`]s.
-    pub fn pending_events(&self) -> impl Iterator<Item = &WakeUpCause> + '_ {
+    pub fn pending_wakeup_causes(&self) -> impl Iterator<Item = &WakeUpCause> + '_ {
         self.state.waker_queue.iter().map(Wakers::cause)
     }
 

@@ -370,7 +370,7 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
         let _entered = span.enter();
         let mut transaction = self.storage.transaction().await;
 
-        let workflow = transaction.find_workflow_with_pending_tasks().await;
+        let workflow = transaction.find_pending_workflow().await;
         if let Some(workflow) = workflow {
             let workflow_id = workflow.id;
             span.record("workflow_id", workflow_id);

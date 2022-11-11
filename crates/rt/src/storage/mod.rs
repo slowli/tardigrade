@@ -1,6 +1,4 @@
-//! Storage abstraction.
-
-#![allow(missing_docs)]
+//! Storage abstraction for storing workflows and channel state.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -91,14 +89,18 @@ pub trait ReadChannels {
 pub trait WriteChannels: ReadChannels {
     /// Allocates a new unique ID for a channel.
     async fn allocate_channel_id(&mut self) -> ChannelId;
-    /// Creates a new channel with the provided `state`.
-    async fn get_or_insert_channel(&mut self, id: ChannelId, state: ChannelState) -> ChannelState;
-    /// Changes the channel state and selects it for further updates.
-    async fn manipulate_channel<F: FnOnce(&mut ChannelState) + Send>(
+
+    /// Creates a new channel with the provided `state`. If the channel with the specified ID
+    /// already exists, does nothing (i.e., the channel state is not updated in any way).
+    async fn get_or_insert_channel(&mut self, id: ChannelId, state: ChannelRecord)
+        -> ChannelRecord;
+
+    /// Changes the channel state and selects the updated state.
+    async fn manipulate_channel<F: FnOnce(&mut ChannelRecord) + Send>(
         &mut self,
         id: ChannelId,
         action: F,
-    ) -> ChannelState;
+    ) -> ChannelRecord;
 
     /// Pushes one or more messages into the channel.
     async fn push_messages(
@@ -143,37 +145,20 @@ impl fmt::Display for MessageError {
 impl error::Error for MessageError {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChannelState {
-    pub(crate) receiver_workflow_id: Option<WorkflowId>,
-    pub(crate) sender_workflow_ids: HashSet<WorkflowId>,
-    pub(crate) has_external_sender: bool,
-    pub(crate) is_closed: bool,
-}
-
-#[derive(Debug)]
 pub struct ChannelRecord {
-    pub state: ChannelState,
-    pub next_message_idx: usize,
+    /// ID of the receiver workflow, or `None` if the receiver is external.
+    pub receiver_workflow_id: Option<WorkflowId>,
+    /// IDs of sender workflows.
+    pub sender_workflow_ids: HashSet<WorkflowId>,
+    /// `true` if the channel has an external sender.
+    pub has_external_sender: bool,
+    /// `true` if the channel is closed (i.e., no more messages can be written to it).
+    pub is_closed: bool,
+    /// Number of messages written to the channel.
+    pub received_messages: usize,
 }
 
-impl ChannelRecord {
-    /// Checks if the channel is closed (i.e., no new messages can be written into it).
-    pub fn is_closed(&self) -> bool {
-        self.state.is_closed
-    }
-
-    /// Returns the number of messages written to the channel.
-    pub fn received_messages(&self) -> usize {
-        self.next_message_idx
-    }
-
-    /// Returns the ID of a workflow that holds the receiver end of this channel, or `None`
-    /// if it is held by the host.
-    pub fn receiver_workflow_id(&self) -> Option<WorkflowId> {
-        self.state.receiver_workflow_id
-    }
-}
-
+/// Allows reading information about workflows.
 #[async_trait]
 pub trait ReadWorkflows {
     /// Returns the number of active workflows.
@@ -181,8 +166,8 @@ pub trait ReadWorkflows {
     /// Retrieves a snapshot of the workflow with the specified ID.
     async fn workflow(&self, id: WorkflowId) -> Option<WorkflowRecord>;
 
-    /// Selects a workflow with pending tasks for execution.
-    async fn find_workflow_with_pending_tasks(&self) -> Option<WorkflowRecord>;
+    /// Selects a workflow with pending wakeup causes for execution.
+    async fn find_pending_workflow(&self) -> Option<WorkflowRecord>;
     /// Selects a workflow to which a message can be sent for execution.
     async fn find_consumable_channel(&self) -> Option<(ChannelId, usize, WorkflowRecord)>;
     /// Finds the nearest timer expiration in all active workflows.

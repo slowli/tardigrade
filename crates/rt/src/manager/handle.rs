@@ -133,7 +133,7 @@ impl<'a, M: AsManager> WorkflowHandle<'a, (), M> {
         let outbound_channel_ids = channel_ids.outbound.values();
         let channel_tasks = outbound_channel_ids.map(|&id| async move {
             let channel = transaction.channel(id).await.unwrap();
-            Some(id).filter(|_| channel.state.receiver_workflow_id.is_none())
+            Some(id).filter(|_| channel.receiver_workflow_id.is_none())
         });
         let host_receiver_channels = future::join_all(channel_tasks).await;
         host_receiver_channels.into_iter().flatten().collect()

@@ -10,7 +10,7 @@ use super::{Shared, WorkflowAndChannelIds, WorkflowHandle, WorkflowManager, Work
 use crate::{
     module::{Clock, Services, StashWorkflow},
     storage::{
-        ChannelState, Storage, StorageTransaction, WorkflowRecord, WriteChannels, WriteWorkflows,
+        ChannelRecord, Storage, StorageTransaction, WorkflowRecord, WriteChannels, WriteWorkflows,
     },
     workflow::{ChannelIds, PersistedWorkflow},
 };
@@ -24,7 +24,7 @@ use tardigrade::{
     ChannelId, WorkflowId,
 };
 
-impl ChannelState {
+impl ChannelRecord {
     fn new(
         sender_workflow_id: Option<WorkflowId>,
         receiver_workflow_id: Option<WorkflowId>,
@@ -34,6 +34,7 @@ impl ChannelState {
             sender_workflow_ids: sender_workflow_id.into_iter().collect(),
             has_external_sender: sender_workflow_id.is_none(),
             is_closed: false,
+            received_messages: 0,
         }
     }
 }
@@ -168,7 +169,7 @@ impl<'a> NewWorkflows<'a> {
 
         tracing::debug!(?channel_ids, "handling channels for new workflow");
         for (name, &channel_id) in &channel_ids.inbound {
-            let state = ChannelState::new(executed_workflow_id, Some(child_id));
+            let state = ChannelRecord::new(executed_workflow_id, Some(child_id));
             let state = persistence.get_or_insert_channel(channel_id, state).await;
             if state.is_closed {
                 persisted.close_inbound_channel(None, name);
@@ -176,7 +177,7 @@ impl<'a> NewWorkflows<'a> {
             tracing::debug!(name, channel_id, ?state, "prepared inbound channel");
         }
         for (name, &channel_id) in &channel_ids.outbound {
-            let state = ChannelState::new(Some(child_id), executed_workflow_id);
+            let state = ChannelRecord::new(Some(child_id), executed_workflow_id);
             let state = persistence.get_or_insert_channel(channel_id, state).await;
             if state.is_closed {
                 persisted.close_outbound_channel(None, name);

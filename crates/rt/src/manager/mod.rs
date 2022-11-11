@@ -248,7 +248,7 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
         if cfg!(debug_assertions) {
             let channel = transaction.channel(channel_id).await.unwrap();
             debug_assert!(
-                channel.state.receiver_workflow_id.is_none(),
+                channel.receiver_workflow_id.is_none(),
                 "Attempted to close channel {} for which the host doesn't hold receiver",
                 channel_id
             );

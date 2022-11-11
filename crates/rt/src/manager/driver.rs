@@ -280,7 +280,7 @@ impl Driver {
             let is_closed = manager
                 .channel(id)
                 .await
-                .map_or(true, |channel| channel.is_closed());
+                .map_or(true, |channel| channel.is_closed);
             Some(id).filter(|_| is_closed)
         });
         let closed_channels = future::join_all(check_closed_tasks).await;

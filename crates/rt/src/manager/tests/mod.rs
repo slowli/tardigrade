@@ -107,7 +107,7 @@ async fn instantiating_workflow() {
     let storage = manager.storage.readonly_transaction().await;
     assert_eq!(
         storage
-            .find_workflow_with_pending_tasks()
+            .find_pending_workflow()
             .await
             .map(|record| record.id),
         Some(workflow.id())
@@ -117,21 +117,18 @@ async fn instantiating_workflow() {
     assert_eq!(record.name_in_module, "TestWorkflow");
     let orders_id = workflow.ids().channel_ids.inbound["orders"];
     let orders_record = storage.channel(orders_id).await.unwrap();
-    assert_eq!(
-        orders_record.state.receiver_workflow_id,
-        Some(workflow.id())
-    );
-    assert_eq!(orders_record.state.sender_workflow_ids, HashSet::new());
-    assert!(orders_record.state.has_external_sender);
+    assert_eq!(orders_record.receiver_workflow_id, Some(workflow.id()));
+    assert_eq!(orders_record.sender_workflow_ids, HashSet::new());
+    assert!(orders_record.has_external_sender);
 
     let traces_id = workflow.ids().channel_ids.outbound["traces"];
     let traces_record = storage.channel(traces_id).await.unwrap();
-    assert_eq!(traces_record.state.receiver_workflow_id, None);
+    assert_eq!(traces_record.receiver_workflow_id, None);
     assert_eq!(
-        traces_record.state.sender_workflow_ids,
+        traces_record.sender_workflow_ids,
         HashSet::from_iter([workflow.id()])
     );
-    assert!(!traces_record.state.has_external_sender);
+    assert!(!traces_record.has_external_sender);
     drop(storage);
 
     test_initializing_workflow(&manager, workflow.ids()).await;
@@ -152,13 +149,10 @@ async fn test_initializing_workflow(
     assert_matches!(main_execution.function, ExecutedFunction::Entry { .. });
 
     let traces_id = ids.channel_ids.outbound["traces"];
-    assert!(transaction
-        .find_workflow_with_pending_tasks()
-        .await
-        .is_none());
+    assert!(transaction.find_pending_workflow().await.is_none());
     assert!(transaction.find_consumable_channel().await.is_none());
     let traces = transaction.channel(traces_id).await.unwrap();
-    assert_eq!(traces.received_messages(), 1);
+    assert_eq!(traces.received_messages, 1);
     let message = transaction.channel_message(traces_id, 0).await.unwrap();
     assert_eq!(message, b"trace #1");
 }
@@ -195,10 +189,10 @@ async fn initializing_workflow_with_closed_channels() {
 
     let mut handle = manager.workflow(workflow_id).await.unwrap().handle();
     let channel_info = handle[InboundChannel("orders")].channel_info().await;
-    assert!(channel_info.is_closed());
-    assert_eq!(channel_info.received_messages(), 0);
+    assert!(channel_info.is_closed);
+    assert_eq!(channel_info.received_messages, 0);
     let channel_info = handle[OutboundChannel("traces")].channel_info().await;
-    assert!(channel_info.is_closed());
+    assert!(channel_info.is_closed);
 
     let err = handle[InboundChannel("orders")]
         .send(b"test".to_vec())
@@ -249,10 +243,10 @@ async fn closing_workflow_channels() {
     tick_workflow(&manager, workflow_id).await.unwrap();
     manager.close_host_receiver(events_id).await;
     let channel_info = manager.channel(events_id).await.unwrap();
-    assert!(channel_info.is_closed());
+    assert!(channel_info.is_closed);
 
     workflow.update().await.unwrap();
-    let events: Vec<_> = workflow.persisted().pending_events().collect();
+    let events: Vec<_> = workflow.persisted().pending_wakeup_causes().collect();
     assert_matches!(
         events.as_slice(),
         [WakeUpCause::Flush { workflow_id: None, channel_name, .. }]
@@ -261,7 +255,7 @@ async fn closing_workflow_channels() {
 
     tick_workflow(&manager, workflow_id).await.unwrap();
     let channel_info = manager.channel(orders_id).await.unwrap();
-    assert!(channel_info.is_closed());
+    assert!(channel_info.is_closed);
 }
 
 fn extract_channel_events<'a>(
@@ -353,9 +347,9 @@ async fn test_closing_inbound_channel_from_host_side(with_message: bool) {
     }
 
     workflow.update().await.unwrap();
-    let pending_events = workflow.persisted().pending_events().collect::<Vec<_>>();
+    let wakeup_causes: Vec<_> = workflow.persisted().pending_wakeup_causes().collect();
     assert_matches!(
-        pending_events.as_slice(),
+        wakeup_causes.as_slice(),
         [WakeUpCause::ChannelClosed { workflow_id: None, channel_name }]
             if channel_name == "orders"
     );
@@ -436,7 +430,7 @@ async fn sending_message_to_workflow() {
             .channel(orders_id)
             .await
             .unwrap()
-            .received_messages();
+            .received_messages;
         assert_eq!(order_count, 1);
         let order = transaction.channel_message(orders_id, 0).await.unwrap();
         assert_eq!(order, b"order #1");
@@ -496,8 +490,8 @@ async fn error_processing_inbound_message_in_workflow() {
     assert!(err.contains("oops"), "{err}");
 
     let channel_info = manager.channel(orders_id).await.unwrap();
-    assert!(!channel_info.is_closed());
-    assert_eq!(channel_info.received_messages(), 1);
+    assert!(!channel_info.is_closed);
+    assert_eq!(channel_info.received_messages, 1);
 }
 
 #[async_std::test]
@@ -521,13 +515,13 @@ async fn workflow_not_consuming_inbound_message() {
 
     let transaction = manager.storage.readonly_transaction().await;
     let orders_channel = transaction.channel(orders_id).await.unwrap();
-    assert_eq!(orders_channel.received_messages(), 1);
+    assert_eq!(orders_channel.received_messages, 1);
     let order = transaction.channel_message(orders_id, 0).await.unwrap();
     assert_eq!(order, b"order #1");
     drop(transaction);
 
     // Workflow wakers should be consumed to not trigger the infinite loop.
     workflow.update().await.unwrap();
-    let events: Vec<_> = workflow.persisted().pending_events().collect();
+    let events: Vec<_> = workflow.persisted().pending_wakeup_causes().collect();
     assert!(events.is_empty(), "{events:?}");
 }

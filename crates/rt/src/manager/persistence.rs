@@ -10,7 +10,7 @@ use crate::{
     manager::{AsManager, ChannelSide},
     receipt::{ChannelEvent, ChannelEventKind, Receipt},
     storage::{
-        ChannelState, Storage, StorageTransaction, WorkflowSelectionCriteria, WriteChannels,
+        ChannelRecord, Storage, StorageTransaction, WorkflowSelectionCriteria, WriteChannels,
         WriteWorkflows,
     },
     utils::{clone_join_error, Message},
@@ -18,7 +18,7 @@ use crate::{
 };
 use tardigrade::{interface::ChannelKind, ChannelId, WorkflowId};
 
-impl ChannelState {
+impl ChannelRecord {
     fn close_side(&mut self, side: ChannelSide) {
         match side {
             ChannelSide::HostSender => {

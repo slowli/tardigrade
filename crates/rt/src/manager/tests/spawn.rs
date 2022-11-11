@@ -17,7 +17,7 @@ const ERROR_PTR: u32 = 1_024;
 
 async fn peek_channel(transaction: &LocalTransaction<'_>, channel_id: ChannelId) -> Vec<Vec<u8>> {
     let channel = transaction.channel(channel_id).await.unwrap();
-    let len = channel.received_messages();
+    let len = channel.received_messages;
     let messages = (0..len).map(|idx| transaction.channel_message(channel_id, idx));
     future::try_join_all(messages).await.unwrap()
 }
@@ -130,9 +130,9 @@ async fn spawning_child_workflow() {
     workflow.update().await.unwrap();
 
     let persisted = workflow.persisted();
-    let pending_events: Vec<_> = persisted.pending_events().collect();
+    let wakeup_causes: Vec<_> = persisted.pending_wakeup_causes().collect();
     assert_matches!(
-        pending_events.as_slice(),
+        wakeup_causes.as_slice(),
         [WakeUpCause::InitWorkflow { stub_id: 0 }]
     );
     let mut children: Vec<_> = persisted.child_workflows().collect();
@@ -144,8 +144,8 @@ async fn spawning_child_workflow() {
     tick_workflow(&manager, workflow_id).await.unwrap();
     workflow.update().await.unwrap();
     let persisted = workflow.persisted();
-    let pending_events: Vec<_> = persisted.pending_events().collect();
-    assert!(pending_events.is_empty(), "{pending_events:?}");
+    let wakeup_causes: Vec<_> = persisted.pending_wakeup_causes().collect();
+    assert!(wakeup_causes.is_empty(), "{wakeup_causes:?}");
 
     {
         let transaction = manager.storage.readonly_transaction().await;
@@ -153,15 +153,12 @@ async fn spawning_child_workflow() {
         assert_eq!(workflows.len(), 2);
         assert!(workflows.contains_key(&child_id));
 
-        let traces = transaction.channel(traces_id).await.unwrap().state;
+        let traces = transaction.channel(traces_id).await.unwrap();
         assert_eq!(traces.receiver_workflow_id, Some(workflow_id));
         assert_eq!(traces.sender_workflow_ids, HashSet::from_iter([child_id]));
         assert!(!traces.has_external_sender);
 
-        let pending_workflow = transaction
-            .find_workflow_with_pending_tasks()
-            .await
-            .unwrap();
+        let pending_workflow = transaction.find_pending_workflow().await.unwrap();
         assert_eq!(pending_workflow.id, child_id);
     }
 
@@ -200,9 +197,9 @@ async fn spawning_child_workflow() {
 
     let transaction = manager.storage.readonly_transaction().await;
     let child_orders = transaction.channel(child_orders_id).await.unwrap();
-    assert!(!child_orders.is_closed());
+    assert!(!child_orders.is_closed);
     let child_events = transaction.channel(child_events_id).await.unwrap();
-    assert!(!child_events.is_closed());
+    assert!(!child_events.is_closed);
 }
 
 #[async_std::test]
@@ -354,9 +351,9 @@ async fn test_child_workflow_channel_management(complete_child: bool) {
 
     tick_workflow(&manager, child_id).await.unwrap();
     let channel_info = manager.channel(orders_id).await.unwrap();
-    assert!(channel_info.is_closed());
+    assert!(channel_info.is_closed);
     let channel_info = manager.channel(traces_id).await.unwrap();
-    assert!(channel_info.is_closed());
+    assert!(channel_info.is_closed);
 
     workflow.update().await.unwrap();
     let child_state = workflow.persisted().child_workflow(child_id).unwrap();
@@ -366,7 +363,7 @@ async fn test_child_workflow_channel_management(complete_child: bool) {
         assert_matches!(child_state.result(), Poll::Pending);
     }
 
-    let events: Vec<_> = workflow.persisted().pending_events().collect();
+    let events: Vec<_> = workflow.persisted().pending_wakeup_causes().collect();
     assert_matches!(
         events[0],
         WakeUpCause::ChannelClosed { workflow_id: Some(CHILD_ID), channel_name }
@@ -495,7 +492,7 @@ async fn spawning_child_with_copied_outbound_channel() {
 
     let events_channel = manager.channel(events_id).await.unwrap();
     assert_eq!(
-        events_channel.state.sender_workflow_ids,
+        events_channel.sender_workflow_ids,
         HashSet::from_iter([workflow_id, CHILD_ID])
     );
     let child = manager.workflow(CHILD_ID).await.unwrap();
@@ -514,10 +511,10 @@ async fn spawning_child_with_copied_outbound_channel() {
     tick_workflow(&manager, CHILD_ID).await.unwrap();
     let events_channel = manager.channel(events_id).await.unwrap();
     assert_eq!(
-        events_channel.state.sender_workflow_ids,
+        events_channel.sender_workflow_ids,
         HashSet::from_iter([workflow_id])
     );
-    assert_eq!(events_channel.state.receiver_workflow_id, None);
+    assert_eq!(events_channel.receiver_workflow_id, None);
 
     let transaction = manager.storage.readonly_transaction().await;
     let events = peek_channel(&transaction, events_id).await;
@@ -624,7 +621,7 @@ async fn test_child_with_aliased_outbound_channel(complete_child: bool) {
 
     let events_channel = manager.channel(events_id).await.unwrap();
     assert_eq!(
-        events_channel.state.sender_workflow_ids,
+        events_channel.sender_workflow_ids,
         HashSet::from_iter([workflow_id, CHILD_ID])
     );
     let child = manager.workflow(CHILD_ID).await.unwrap();
@@ -635,7 +632,7 @@ async fn test_child_with_aliased_outbound_channel(complete_child: bool) {
     tick_workflow(&manager, CHILD_ID).await.unwrap();
     let events_channel = manager.channel(events_id).await.unwrap();
     assert_eq!(
-        events_channel.state.sender_workflow_ids,
+        events_channel.sender_workflow_ids,
         HashSet::from_iter([workflow_id, CHILD_ID])
     );
     let transaction = manager.storage.readonly_transaction().await;
@@ -646,7 +643,7 @@ async fn test_child_with_aliased_outbound_channel(complete_child: bool) {
     tick_workflow(&manager, CHILD_ID).await.unwrap();
     let events_channel = manager.channel(events_id).await.unwrap();
     assert_eq!(
-        events_channel.state.sender_workflow_ids,
+        events_channel.sender_workflow_ids,
         HashSet::from_iter([workflow_id])
     );
 }
@@ -788,8 +785,8 @@ async fn assert_child_abort(
 ) {
     // Check that the event emitted by the panicking workflow was not committed.
     let child_events = manager.channel(child_events_id).await.unwrap();
-    assert_eq!(child_events.received_messages(), 0);
-    assert!(child_events.is_closed());
+    assert_eq!(child_events.received_messages, 0);
+    assert!(child_events.is_closed);
 
     let receipt = tick_workflow(manager, workflow_id).await.unwrap();
     let is_child_polled = receipt.events().any(|event| {
@@ -874,9 +871,9 @@ async fn aborting_parent() {
     let child_orders_id = child.ids().channel_ids.inbound["orders"];
     manager.abort_workflow(workflow_id).await;
     let child_events = manager.channel(child_events_id).await.unwrap();
-    assert!(child_events.is_closed());
+    assert!(child_events.is_closed);
     let child_orders = manager.channel(child_orders_id).await.unwrap();
-    assert!(child_orders.is_closed());
+    assert!(child_orders.is_closed);
 
     tick_workflow(&manager, CHILD_ID).await.unwrap();
     assert!(manager.workflow(CHILD_ID).await.is_none());

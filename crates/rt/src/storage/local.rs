@@ -18,24 +18,24 @@ use std::{
 };
 
 use super::{
-    ChannelRecord, ChannelState, MessageError, ModuleRecord, ReadChannels, ReadModules,
-    ReadWorkflows, Storage, StorageTransaction, WorkflowRecord, WorkflowSelectionCriteria,
-    WriteChannels, WriteModules, WriteWorkflows,
+    ChannelRecord, MessageError, ModuleRecord, ReadChannels, ReadModules, ReadWorkflows, Storage,
+    StorageTransaction, WorkflowRecord, WorkflowSelectionCriteria, WriteChannels, WriteModules,
+    WriteWorkflows,
 };
 use crate::{utils::Message, PersistedWorkflow};
 use tardigrade::{channel::SendError, ChannelId, WorkflowId};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LocalChannel {
-    state: ChannelState,
+    record: ChannelRecord,
     messages: VecDeque<Message>,
     next_message_idx: usize,
 }
 
 impl LocalChannel {
-    fn new(state: ChannelState) -> Self {
+    fn new(record: ChannelRecord) -> Self {
         Self {
-            state,
+            record,
             messages: VecDeque::new(),
             next_message_idx: 0,
         }
@@ -44,7 +44,7 @@ impl LocalChannel {
     fn contains_index(&self, idx: usize) -> bool {
         let start_idx = self.next_message_idx - self.messages.len();
         (start_idx..self.next_message_idx).contains(&idx)
-            || (self.state.is_closed && idx == self.next_message_idx) // EOF marker
+            || (self.record.is_closed && idx == self.next_message_idx) // EOF marker
     }
 
     fn truncate(&mut self, min_index: usize) {
@@ -74,11 +74,12 @@ struct Inner {
 
 impl Default for Inner {
     fn default() -> Self {
-        let closed_channel = LocalChannel::new(ChannelState {
+        let closed_channel = LocalChannel::new(ChannelRecord {
             receiver_workflow_id: None,
             sender_workflow_ids: HashSet::new(),
             has_external_sender: false,
             is_closed: true,
+            received_messages: 0,
         });
 
         Self {
@@ -201,15 +202,12 @@ impl WriteModules for LocalTransaction<'_> {
 impl ReadChannels for LocalTransaction<'_> {
     async fn channel(&self, id: ChannelId) -> Option<ChannelRecord> {
         let channel = self.inner.channels.get(&id)?;
-        Some(ChannelRecord {
-            state: channel.state.clone(),
-            next_message_idx: channel.next_message_idx,
-        })
+        Some(channel.record.clone())
     }
 
     async fn has_messages_for_receiver_workflow(&self, id: ChannelId) -> bool {
         if let Some(channel) = self.inner.channels.get(&id) {
-            if let Some(workflow_id) = channel.state.receiver_workflow_id {
+            if let Some(workflow_id) = channel.record.receiver_workflow_id {
                 let workflow = &self.inner.workflows[&workflow_id].persisted;
                 let (.., state) = workflow.find_inbound_channel(id);
                 return state.received_message_count() < channel.next_message_idx;
@@ -229,7 +227,7 @@ impl ReadChannels for LocalTransaction<'_> {
         let idx_in_channel = index
             .checked_sub(start_idx)
             .ok_or(MessageError::Truncated)?;
-        let is_closed = channel.state.is_closed;
+        let is_closed = channel.record.is_closed;
         channel
             .messages
             .get(idx_in_channel)
@@ -244,23 +242,27 @@ impl WriteChannels for LocalTransaction<'_> {
         ChannelId::from(self.next_channel_id.fetch_add(1, Ordering::SeqCst))
     }
 
-    async fn get_or_insert_channel(&mut self, id: ChannelId, state: ChannelState) -> ChannelState {
+    async fn get_or_insert_channel(
+        &mut self,
+        id: ChannelId,
+        record: ChannelRecord,
+    ) -> ChannelRecord {
         self.inner
             .channels
             .entry(id)
-            .or_insert_with(|| LocalChannel::new(state))
-            .state
+            .or_insert_with(|| LocalChannel::new(record))
+            .record
             .clone()
     }
 
-    async fn manipulate_channel<F: FnOnce(&mut ChannelState) + Send>(
+    async fn manipulate_channel<F: FnOnce(&mut ChannelRecord) + Send>(
         &mut self,
         id: ChannelId,
         action: F,
-    ) -> ChannelState {
+    ) -> ChannelRecord {
         let channel = self.inner.channels.get_mut(&id).unwrap();
-        action(&mut channel.state);
-        channel.state.clone()
+        action(&mut channel.record);
+        channel.record.clone()
     }
 
     async fn push_messages(
@@ -269,7 +271,7 @@ impl WriteChannels for LocalTransaction<'_> {
         messages: Vec<Vec<u8>>,
     ) -> Result<(), SendError> {
         let channel = self.inner.channels.get_mut(&id).unwrap();
-        if channel.state.is_closed {
+        if channel.record.is_closed {
             return Err(SendError::Closed);
         }
 
@@ -298,13 +300,13 @@ impl ReadWorkflows for LocalTransaction<'_> {
         self.inner.workflows.get(&id).cloned()
     }
 
-    async fn find_workflow_with_pending_tasks(&self) -> Option<WorkflowRecord> {
+    async fn find_pending_workflow(&self) -> Option<WorkflowRecord> {
         self.inner
             .workflows
             .values()
             .find(|record| {
                 let persisted = &record.persisted;
-                !persisted.is_initialized() || persisted.pending_events().next().is_some()
+                !persisted.is_initialized() || persisted.pending_wakeup_causes().next().is_some()
             })
             .cloned()
     }
@@ -397,7 +399,7 @@ impl StorageTransaction for LocalTransaction<'_> {
         if self.truncate_messages {
             let inner = &mut *self.inner;
             for (&id, channel) in &mut inner.channels {
-                if let Some(workflow_id) = channel.state.receiver_workflow_id {
+                if let Some(workflow_id) = channel.record.receiver_workflow_id {
                     let workflow = &inner.workflows[&workflow_id].persisted;
                     let (.., state) = workflow.find_inbound_channel(id);
                     channel.truncate(state.received_message_count());
@@ -441,11 +443,12 @@ mod tests {
         let err = transaction.channel_message(1, 0).await.unwrap_err();
         assert_matches!(err, MessageError::UnknownChannelId);
 
-        let channel_state = ChannelState {
+        let channel_state = ChannelRecord {
             receiver_workflow_id: Some(1),
             sender_workflow_ids: HashSet::new(),
             has_external_sender: true,
             is_closed: false,
+            received_messages: 0,
         };
         transaction.get_or_insert_channel(1, channel_state).await;
 
