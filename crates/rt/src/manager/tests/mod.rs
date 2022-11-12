@@ -28,10 +28,11 @@ use tardigrade::{
 const POLL_CX: WasmContextPtr = 123;
 const DEFINITION_ID: &str = "test@latest::TestWorkflow";
 
-type LocalManager = WorkflowManager<(), LocalStorage>;
+type LocalManager<C = ()> = WorkflowManager<C, LocalStorage>;
 
-async fn create_test_manager() -> LocalManager {
+pub(crate) async fn create_test_manager<C: Clock>(clock: C) -> LocalManager<C> {
     let mut manager = WorkflowManager::builder(LocalStorage::default())
+        .with_clock(clock)
         .build()
         .await
         .unwrap();
@@ -41,7 +42,9 @@ async fn create_test_manager() -> LocalManager {
     manager
 }
 
-async fn create_test_workflow(manager: &LocalManager) -> WorkflowHandle<'_, (), LocalManager> {
+pub(crate) async fn create_test_workflow<C: Clock>(
+    manager: &LocalManager<C>,
+) -> WorkflowHandle<'_, (), LocalManager<C>> {
     manager
         .new_workflow(DEFINITION_ID, b"test_input".to_vec())
         .unwrap()
@@ -101,7 +104,7 @@ fn initialize_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()
 async fn instantiating_workflow() {
     let poll_fns = Answers::from_value(initialize_task as MockPollFn);
     let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager().await;
+    let manager = create_test_manager(()).await;
     let workflow = create_test_workflow(&manager).await;
 
     let storage = manager.storage.readonly_transaction().await;
@@ -171,7 +174,7 @@ async fn initializing_workflow_with_closed_channels() {
     };
 
     let _guard = ExportsMock::prepare(Answers::from_value(test_channels));
-    let manager = create_test_manager().await;
+    let manager = create_test_manager(()).await;
     let builder = manager
         .new_workflow::<()>(DEFINITION_ID, b"test_input".to_vec())
         .unwrap();
@@ -231,7 +234,7 @@ async fn closing_workflow_channels() {
 
     let poll_fns = Answers::from_values([block_on_flush, drop_inbound_channel]);
     let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager().await;
+    let manager = create_test_manager(()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
     let events_id = workflow.ids().channel_ids.outbound["events"];
@@ -306,7 +309,7 @@ async fn test_closing_inbound_channel_from_host_side(with_message: bool) {
         vec![initialize_task, test_closed_channel]
     };
     let _guard = ExportsMock::prepare(Answers::from_values(poll_fns));
-    let manager = create_test_manager().await;
+    let manager = create_test_manager(()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
     let orders_id = workflow.ids().channel_ids.inbound["orders"];
@@ -376,7 +379,7 @@ async fn error_initializing_workflow() {
     let error_on_initialization: MockPollFn = |_| Err(Trap::new("oops"));
     let poll_fns = Answers::from_value(error_on_initialization);
     let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager().await;
+    let manager = create_test_manager(()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
 
@@ -410,7 +413,7 @@ fn consume_message(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()
 async fn sending_message_to_workflow() {
     let poll_fns = Answers::from_values([poll_receiver as MockPollFn, consume_message]);
     let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager().await;
+    let manager = create_test_manager(()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
     let orders_id = workflow.ids().channel_ids.inbound["orders"];
@@ -470,7 +473,7 @@ async fn error_processing_inbound_message_in_workflow() {
         initialize_task,
         error_after_consuming_message,
     ]));
-    let manager = create_test_manager().await;
+    let manager = create_test_manager(()).await;
     let workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
     let orders_id = workflow.ids().channel_ids.inbound["orders"];
@@ -496,7 +499,7 @@ async fn workflow_not_consuming_inbound_message() {
     let not_consume_message: MockPollFn = |_| Ok(Poll::Pending);
     let poll_fns = Answers::from_values([poll_receiver as MockPollFn, not_consume_message]);
     let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager().await;
+    let manager = create_test_manager(()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
     let orders_id = workflow.ids().channel_ids.inbound["orders"];

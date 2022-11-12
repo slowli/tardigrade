@@ -126,7 +126,7 @@ async fn spawning_child_workflow() {
 
     let poll_fns = Answers::from_values([spawn_child, poll_child_traces, receive_child_trace]);
     let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager().await;
+    let manager = create_test_manager(()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
     tick_workflow(&manager, workflow_id).await.unwrap();
@@ -253,7 +253,7 @@ async fn sending_message_to_child() {
         poll_orders_in_child,
     ]);
     let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager().await;
+    let manager = create_test_manager(()).await;
     let workflow_id = create_test_workflow(&manager).await.id();
     tick_workflow(&manager, workflow_id).await.unwrap(); // initializes workflow
     tick_workflow(&manager, workflow_id).await.unwrap(); // notifies about child initialization
@@ -337,7 +337,7 @@ async fn test_child_workflow_channel_management(complete_child: bool) {
         test_child_resources,
     ]);
     let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager().await;
+    let manager = create_test_manager(()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
     tick_workflow(&manager, workflow_id).await.unwrap(); // initializes workflow
@@ -485,7 +485,7 @@ async fn spawning_child_with_copied_outbound_channel() {
         write_event_and_complete_child,
     ]);
     let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager().await;
+    let manager = create_test_manager(()).await;
     let workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
     let events_id = workflow.ids().channel_ids.outbound["events"];
@@ -542,7 +542,7 @@ async fn test_child_with_copied_closed_outbound_channel(close_before_spawn: bool
         test_writing_event_in_child,
     ]);
     let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager().await;
+    let manager = create_test_manager(()).await;
     let workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
     let events_id = workflow.ids().channel_ids.outbound["events"];
@@ -614,7 +614,7 @@ async fn test_child_with_aliased_outbound_channel(complete_child: bool) {
         complete_child_or_drop_traces,
     ]);
     let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager().await;
+    let manager = create_test_manager(()).await;
     let workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
     let events_id = workflow.ids().channel_ids.outbound["events"];
@@ -694,7 +694,7 @@ async fn completing_child_with_error() {
         check_child_completion,
     ]);
     let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager().await;
+    let manager = create_test_manager(()).await;
     let workflow_id = create_test_workflow(&manager).await.id();
     tick_workflow(&manager, workflow_id).await.unwrap(); // initializes workflow
     tick_workflow(&manager, workflow_id).await.unwrap(); // notifies about child initialization
@@ -758,7 +758,7 @@ async fn completing_child_with_panic() {
         check_aborted_child_completion,
     ]);
     let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager().await;
+    let manager = create_test_manager(()).await;
     let workflow_id = create_test_workflow(&manager).await.id();
 
     let tick_result = manager.tick().await.unwrap();
@@ -818,7 +818,7 @@ async fn test_aborting_child(initialize_child: bool) {
 
     let poll_fns = Answers::from_values(poll_fns);
     let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager().await;
+    let manager = create_test_manager(()).await;
     let workflow_id = create_test_workflow(&manager).await.id();
     tick_workflow(&manager, workflow_id).await.unwrap();
     tick_workflow(&manager, workflow_id).await.unwrap();
@@ -863,7 +863,7 @@ async fn aborting_parent() {
 
     let poll_fns = Answers::from_values([spawn_child, poll_child_completion, check_child_channels]);
     let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager().await;
+    let manager = create_test_manager(()).await;
     let workflow_id = create_test_workflow(&manager).await.id();
 
     tick_workflow(&manager, workflow_id).await.unwrap();

@@ -15,10 +15,10 @@ mod tick;
 mod traits;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use self::{
-    handle::{MessageReceiver, MessageSender, ReceivedMessage, WorkflowHandle},
+    handle::{HandleUpdateError, MessageReceiver, MessageSender, ReceivedMessage, WorkflowHandle},
     tick::{Actions, TickResult, WouldBlock},
     traits::{AsManager, CreateModule},
 };

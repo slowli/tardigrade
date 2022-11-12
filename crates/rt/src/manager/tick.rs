@@ -295,11 +295,11 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
             let (spans, local_spans) = tracer.persist();
 
             let mut persistence = StorageHelper::new(transaction);
+            persistence.push_messages(messages).await;
             persistence
                 .persist_workflow(workflow_id, parent_id, persisted, spans)
                 .await;
             persistence.close_channels(workflow_id, receipt).await;
-            persistence.push_messages(messages).await;
 
             self.local_spans
                 .lock()
@@ -338,11 +338,11 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
             let (spans, local_spans) = tracer.persist();
 
             let mut persistence = StorageHelper::new(transaction);
+            persistence.push_messages(messages).await;
             persistence
                 .persist_workflow(workflow_id, parent_id, persisted, spans)
                 .await;
             persistence.close_channels(workflow_id, receipt).await;
-            persistence.push_messages(messages).await;
 
             self.local_spans
                 .lock()

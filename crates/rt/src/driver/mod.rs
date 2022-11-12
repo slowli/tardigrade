@@ -14,6 +14,9 @@ use std::{
     task::{Context, Poll},
 };
 
+#[cfg(test)]
+mod tests;
+
 use crate::{
     manager::{self, AsManager, TickResult},
     receipt::ExecutionError,
@@ -40,7 +43,6 @@ struct OutboundChannel {
 impl OutboundChannel {
     /// Returns `true` if the channel should be removed (e.g., if the EOF marker is reached,
     /// or if it's not listened to by the client.
-    // TODO: rework to only emit new messages (based on receipts?)
     async fn relay_messages(&mut self, id: ChannelId, transaction: &impl ReadChannels) -> bool {
         loop {
             match transaction.channel_message(id, self.cursor).await {
@@ -170,18 +172,33 @@ impl Driver {
     ///
     /// [`WorkflowManager`]: crate::manager::WorkflowManager
     /// [`select`]: futures::select
-    pub async fn drive<M>(&mut self, manager: &mut M) -> Result<Termination, ExecutionError>
+    pub async fn drive<M>(mut self, manager: &mut M) -> Result<Termination, ExecutionError>
     where
         M: AsManager,
         M::Clock: Schedule,
     {
         // Technically, we don't need a mutable ref to a manager; we use it to ensure that
-        // the manager isn't driven manually elsewhere, which can lead to unexpected behavior.
+        // the manager isn't driven elsewhere, which can lead to unexpected behavior.
+        self.set_channel_cursors(manager).await;
         loop {
             if let Some(termination) = self.tick(manager).await? {
                 self.flush_outbound_messages(manager).await;
                 return Ok(termination);
             }
+        }
+    }
+
+    async fn set_channel_cursors<M: AsManager>(&mut self, manager: &M) {
+        let storage = &manager.as_manager().storage;
+        let transaction = &storage.readonly_transaction().await;
+        let cursor_tasks = self.outbound_channels.keys().map(|&id| async move {
+            let cursor = transaction.channel(id).await.unwrap().received_messages;
+            (id, cursor)
+        });
+        let channel_cursors = future::join_all(cursor_tasks).await;
+        for (id, cursor) in channel_cursors {
+            let state = self.outbound_channels.get_mut(&id).unwrap();
+            state.cursor = cursor;
         }
     }
 
@@ -301,7 +318,7 @@ impl Driver {
 }
 
 pin_project! {
-    /// Async handle for an [inbound workflow channel](Receiver) that allows sending messages
+    /// Sink handle for an [inbound workflow channel](Receiver) that allows sending messages
     /// via the channel.
     ///
     /// Dropping the handle while [`AsyncEnv::run()`] is executing will signal to the workflow
@@ -361,12 +378,15 @@ impl<T, C: Encode<T>> Sink<T> for MessageSender<T, C> {
 }
 
 pin_project! {
-    /// Async handle for an [outbound workflow channel](Sender) that allows taking messages
+    /// Stream handle for an [outbound workflow channel](Sender) that allows receiving messages
     /// from the channel.
     ///
-    /// Dropping the handle has no effect on workflow execution (outbound channels cannot
-    /// be closed by the host), but allows to save resources, since outbound messages
-    /// would be dropped rather than buffered.
+    /// The handle will receive all messages produced while the [`Driver`] it is connected to is
+    /// [driving](Driver::drive()) the workflow manager. Messages produced before or after
+    /// will not be received by the handle.
+    ///
+    /// Dropping the handle has no effect on workflow executions, but allows to save resources,
+    /// since outbound messages would be dropped rather than buffered.
     #[derive(Debug)]
     pub struct MessageReceiver<T, C> {
         #[pin]
