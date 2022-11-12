@@ -88,14 +88,10 @@ enum ChannelSide {
 ///
 /// - Spawning new workflows (including from the workflow code)
 /// - Writing messages to channels and reading messages from channels
-/// - Driving the contained workflows to completion (either [directly](Self::tick()) or
+/// - Driving the contained workflows to completion, either [directly](Self::tick()) or
 ///   using a [`Driver`]
 ///
-/// This is the simplest manager implementation that stores the entire state in RAM.
-/// It is not a good choice for high-load, but is sufficiently flexible to support
-/// most basic use cases (e.g., persisting / resuming workflows).
-///
-/// [`Driver`]: crate::manager::driver::Driver
+/// [`Driver`]: crate::driver::Driver
 ///
 /// # Examples
 ///

@@ -325,6 +325,7 @@ impl<T: StorageReadonlyTransaction> ReadChannels for Readonly<T> {
         self.0.has_messages_for_receiver_workflow(id).await
     }
 
+    // TODO: add retrieving messages by an index range?
     async fn channel_message(&self, id: ChannelId, index: usize) -> Result<Vec<u8>, MessageError> {
         self.0.channel_message(id, index).await
     }

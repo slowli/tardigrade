@@ -49,7 +49,7 @@ impl error::Error for HandleUpdateError {}
 /// See [`Driver`] for a more high-level alternative.
 ///
 /// [`WorkflowManager`]: crate::manager::WorkflowManager
-/// [`Driver`]: crate::manager::driver::Driver
+/// [`Driver`]: crate::driver::Driver
 ///
 /// # Examples
 ///

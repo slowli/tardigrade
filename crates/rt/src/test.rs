@@ -239,7 +239,7 @@ impl ModuleCompiler {
 ///
 /// A primary use case is to use the scheduler with a [`Driver`] for integration testing:
 ///
-/// [`Driver`]: crate::manager::driver::Driver
+/// [`Driver`]: crate::driver::Driver
 ///
 /// ```
 /// # use async_std::task;

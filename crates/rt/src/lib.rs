@@ -20,7 +20,7 @@
 //! [`wasmtime`]: https://docs.rs/wasmtime/latest/wasmtime/
 //! [`WorkflowManager`]: crate::manager::WorkflowManager
 //! [`WorkflowHandle`]: crate::manager::WorkflowHandle
-//! [`Driver`]: crate::manager::driver::Driver
+//! [`Driver`]: crate::driver::Driver
 //!
 //! # Crate features
 //!

@@ -1,4 +1,7 @@
-//! Async handles for workflows.
+//! [`Driver`] for a [`WorkflowManager`](crate::manager::WorkflowManager) that drives
+//! workflows contained in the manager to completion.
+//!
+//! See `Driver` docs for examples of usage.
 
 use chrono::{DateTime, Utc};
 use futures::{channel::mpsc, future, FutureExt, Sink, Stream, StreamExt};
@@ -37,6 +40,7 @@ struct OutboundChannel {
 impl OutboundChannel {
     /// Returns `true` if the channel should be removed (e.g., if the EOF marker is reached,
     /// or if it's not listened to by the client.
+    // TODO: rework to only emit new messages (based on receipts?)
     async fn relay_messages(&mut self, id: ChannelId, transaction: &impl ReadChannels) -> bool {
         loop {
             match transaction.channel_message(id, self.cursor).await {
@@ -152,12 +156,12 @@ impl Driver {
         self.drop_erroneous_messages = true;
     }
 
-    /// Executes the enclosed [`WorkflowManager`] until all workflows in it are terminated,
+    /// Executes the provided [`WorkflowManager`] until all workflows in it are terminated,
     /// or an execution error occurs. As the workflows execute, outbound messages and
     /// [`TickResult`]s will be sent using respective channels.
     ///
     /// Note that it is possible to cancel this future (e.g., by [`select`]ing between it
-    /// and a cancellation signal) and continue working with the enclosed workflow manager.
+    /// and a cancellation signal) and continue working with the provided workflow manager.
     ///
     /// # Errors
     ///
@@ -171,6 +175,8 @@ impl Driver {
         M: AsManager,
         M::Clock: Schedule,
     {
+        // Technically, we don't need a mutable ref to a manager; we use it to ensure that
+        // the manager isn't driven manually elsewhere, which can lead to unexpected behavior.
         loop {
             if let Some(termination) = self.tick(manager).await? {
                 self.flush_outbound_messages(manager).await;

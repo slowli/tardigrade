@@ -127,7 +127,7 @@ impl LocalStorageSnapshot<'_> {
 ///
 /// `LocalStorage` can be [serialized] by taking a [snapshot](LocalStorageSnapshot)
 /// and then restored from it. Since workflow module bytes constitute the largest serialization
-/// part, the snapshot provides [a method](LocalStorageSnapshot::replace_module_bytes())
+/// part, the snapshot provides [a method](LocalStorageSnapshot::modules_mut())
 /// to manipulate them, e.g. in order to store module bytes separately.
 ///
 /// [serialized]: https://docs.rs/serde/1/serde
