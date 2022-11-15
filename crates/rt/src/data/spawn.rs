@@ -501,7 +501,7 @@ impl SpawnFunctions {
         error_ptr: u32,
     ) -> Result<Option<ExternRef>, Trap> {
         let stub_id = HostResource::from_ref(stub.as_ref())?.as_workflow_stub()?;
-        tracing::Span::current().record("id", &stub_id);
+        tracing::Span::current().record("stub_id", stub_id);
 
         let mut poll_cx = WasmContext::new(poll_cx);
         let poll_result = ctx.data_mut().poll_workflow_init(stub_id, &mut poll_cx)?;

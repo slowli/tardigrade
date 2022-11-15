@@ -32,14 +32,21 @@ tracing = "0.1.37"
 
 tardigrade = { version = "0.1.0", path = "../.." }
 
+# TODO: make optional together with the `test` module?
+[dependencies.externref]
+version = "0.1.0"
+git = "https://github.com/slowli/externref.git"
+rev = "36f978748b27d1621e6a565317859b00f99f5e8a"
+features = ["processor"]
+
 [dependencies.tracing-tunnel]
 version = "0.1.0"
 git = "https://github.com/slowli/tracing-toolbox.git"
-rev = "502655fa03d9bcd9f7721b05baba63b550b3d599"
+rev = "8ee374e08cb702df70d27c9eb7e36f87ff72da6f"
 features = ["receiver"]
 
 [dev-dependencies]
 assert_matches = "1.5.0"
-async-std = "1.12.0"
+async-std = { version = "1.12.0", features = ["attributes"] }
 mimicry = "0.1.0"
 version-sync = "0.9.4"
