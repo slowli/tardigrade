@@ -1,4 +1,7 @@
-//! Async handles for workflows.
+//! [`Driver`] for a [`WorkflowManager`](crate::manager::WorkflowManager) that drives
+//! workflows contained in the manager to completion.
+//!
+//! See `Driver` docs for examples of usage.
 
 use chrono::{DateTime, Utc};
 use futures::{channel::mpsc, future, FutureExt, Sink, Stream, StreamExt};
@@ -6,71 +9,21 @@ use pin_project_lite::pin_project;
 
 use std::{
     collections::HashMap,
-    fmt,
-    future::Future,
     marker::PhantomData,
     pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
 };
 
+#[cfg(test)]
+mod tests;
+
 use crate::{
-    manager::{TickResult, WorkflowManager},
+    manager::{self, AsManager, TickResult},
     receipt::ExecutionError,
+    storage::{MessageError, ReadChannels, Storage},
+    Schedule,
 };
 use tardigrade::{ChannelId, Decode, Encode};
-
-/// Future for [`Schedule::create_timer()`].
-pub type TimerFuture = Pin<Box<dyn Future<Output = DateTime<Utc>> + Send>>;
-
-/// Scheduler that allows creating futures completing at the specified timestamp.
-pub trait Schedule: Send + Sync + 'static {
-    /// Creates a timer with the specified expiration timestamp.
-    fn create_timer(&self, expires_at: DateTime<Utc>) -> TimerFuture;
-}
-
-impl fmt::Debug for dyn Schedule {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_struct("Schedule").finish_non_exhaustive()
-    }
-}
-
-impl<T: Schedule + ?Sized> Schedule for Arc<T> {
-    fn create_timer(&self, expires_at: DateTime<Utc>) -> TimerFuture {
-        (**self).create_timer(expires_at)
-    }
-}
-
-/// [Scheduler](Schedule) implementation from [`async-io`] (a part of [`async-std`] suite).
-///
-/// [`async-io`]: https://docs.rs/async-io/
-/// [`async-std`]: https://docs.rs/async-std/
-#[cfg(feature = "async-io")]
-#[cfg_attr(docsrs, doc(cfg(feature = "async-io")))]
-#[derive(Debug)]
-pub struct AsyncIoScheduler;
-
-#[cfg(feature = "async-io")]
-impl Schedule for AsyncIoScheduler {
-    fn create_timer(&self, timestamp: DateTime<Utc>) -> TimerFuture {
-        use async_io::Timer;
-        use std::time::{Instant, SystemTime};
-
-        let timestamp = SystemTime::from(timestamp);
-        let (now_instant, now) = (Instant::now(), SystemTime::now());
-        match timestamp.duration_since(now) {
-            Ok(diff) => {
-                let timer = Timer::at(now_instant + diff);
-                let timer = FutureExt::map(timer, move |instant| {
-                    let new_time = now + (instant - now_instant);
-                    new_time.into()
-                });
-                Box::pin(timer)
-            }
-            Err(_) => Box::pin(future::ready(now.into())),
-        }
-    }
-}
 
 #[derive(Debug)]
 enum ListenedEventOutput {
@@ -81,7 +34,37 @@ enum ListenedEventOutput {
     Timer(DateTime<Utc>),
 }
 
+#[derive(Debug)]
+struct OutboundChannel {
+    sender: mpsc::UnboundedSender<Vec<u8>>,
+    cursor: usize,
+}
+
+impl OutboundChannel {
+    /// Returns `true` if the channel should be removed (e.g., if the EOF marker is reached,
+    /// or if it's not listened to by the client.
+    async fn relay_messages(&mut self, id: ChannelId, transaction: &impl ReadChannels) -> bool {
+        loop {
+            match transaction.channel_message(id, self.cursor).await {
+                Ok(message) => {
+                    self.cursor += 1;
+                    if self.sender.unbounded_send(message).is_err() {
+                        break true;
+                    }
+                }
+                Err(MessageError::NonExistingIndex { is_closed }) => break is_closed,
+                Err(err) => {
+                    tracing::warn!(%err, "unexpected error when relaying messages");
+                    break true;
+                }
+            }
+        }
+    }
+}
+
 /// Terminal status of a [`WorkflowManager`].
+///
+/// [`WorkflowManager`]: crate::manager::WorkflowManager
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Termination {
@@ -92,11 +75,13 @@ pub enum Termination {
     Stalled,
 }
 
-/// Asynchronous environment for driving workflows in a [`WorkflowManager`].
+/// Environment for driving workflow execution in a [`WorkflowManager`].
+///
+/// [`WorkflowManager`]: crate::manager::WorkflowManager
 ///
 /// # Error handling
 ///
-/// By default, workflow execution via [`Self::run()`] terminates immediately after a trap.
+/// By default, workflow execution via [`Self::drive()`] terminates immediately after a trap.
 /// To drop incoming messages that have led to an error, call [`Self::drop_erroneous_messages()`].
 /// Rolling back receiving a message
 /// means that from the workflow perspective, the message was never received in the first place,
@@ -111,63 +96,53 @@ pub enum Termination {
 /// use futures::prelude::*;
 /// use tardigrade::interface::{InboundChannel, OutboundChannel};
 /// # use tardigrade::WorkflowId;
-/// use tardigrade_rt::manager::{
-///     future::{AsyncEnv, AsyncIoScheduler}, WorkflowHandle, WorkflowManager,
-/// };
+/// use tardigrade_rt::{driver::Driver, manager::WorkflowManager, AsyncIoScheduler};
+/// # use tardigrade_rt::storage::LocalStorage;
 ///
 /// # async fn test_wrapper(
-/// #     manager: WorkflowManager,
+/// #     manager: WorkflowManager<AsyncIoScheduler, LocalStorage>,
 /// #     workflow_id: WorkflowId,
 /// # ) -> anyhow::Result<()> {
 /// // Assume we have a dynamically typed workflow:
-/// let mut manager: WorkflowManager = // ...
+/// let mut manager: WorkflowManager<AsyncIoScheduler, _> = // ...
 /// #   manager;
-/// let mut workflow = manager.workflow(workflow_id).unwrap();
+/// let mut workflow = manager.workflow(workflow_id).await.unwrap();
 ///
-/// // First, create an environment to execute the workflow in.
-/// let mut env = AsyncEnv::new(AsyncIoScheduler);
+/// // First, create a driver to execute the workflow in.
+/// let mut driver = Driver::new();
 /// // Take relevant channels from the workflow and convert them to async form.
 /// let mut handle = workflow.handle();
 /// let mut commands_sx = handle.remove(InboundChannel("commands"))
 ///     .unwrap()
-///     .into_async(&mut env);
+///     .into_sink(&mut driver);
 /// let events_rx = handle.remove(OutboundChannel("events"))
 ///     .unwrap()
-///     .into_async(&mut env);
+///     .into_stream(&mut driver);
 ///
 /// // Run the environment in a separate task.
-/// task::spawn(async move { env.run(&mut manager).await });
+/// task::spawn(async move { driver.drive(&mut manager).await });
 /// // Let's send a message via an inbound channel...
 /// let message = b"hello".to_vec();
 /// commands_sx.send(message).await?;
 ///
 /// // ...and wait for some outbound messages
-/// let events: Vec<Vec<u8>> = events_rx.take(2).try_collect().await.unwrap();
-/// // ^ `unwrap()` always succeeds because the codec for untyped workflows
-/// // is just an identity.
+/// let events: Vec<Vec<u8>> = events_rx.take(2).try_collect().await?;
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug)]
-pub struct AsyncEnv {
-    scheduler: Box<dyn Schedule>,
+#[derive(Debug, Default)]
+pub struct Driver {
     inbound_channels: HashMap<ChannelId, mpsc::Receiver<Vec<u8>>>,
-    outbound_channels: HashMap<ChannelId, mpsc::UnboundedSender<Vec<u8>>>,
+    outbound_channels: HashMap<ChannelId, OutboundChannel>,
     results_sx: Option<mpsc::UnboundedSender<TickResult<()>>>,
     drop_erroneous_messages: bool,
 }
 
-impl AsyncEnv {
+impl Driver {
     /// Creates an async environment for a `workflow` that uses the specified `scheduler`
     /// for timers.
-    pub fn new(scheduler: impl Schedule) -> Self {
-        Self {
-            scheduler: Box::new(scheduler),
-            inbound_channels: HashMap::new(),
-            outbound_channels: HashMap::new(),
-            results_sx: None,
-            drop_erroneous_messages: false,
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Returns the receiver of [`TickResult`]s generated during workflow execution.
@@ -183,45 +158,66 @@ impl AsyncEnv {
         self.drop_erroneous_messages = true;
     }
 
-    /// Executes the enclosed [`WorkflowManager`] until all workflows in it are terminated,
+    /// Executes the provided [`WorkflowManager`] until all workflows in it are terminated,
     /// or an execution error occurs. As the workflows execute, outbound messages and
     /// [`TickResult`]s will be sent using respective channels.
     ///
     /// Note that it is possible to cancel this future (e.g., by [`select`]ing between it
-    /// and a cancellation signal) and continue working with the enclosed workflow manager.
+    /// and a cancellation signal) and continue working with the provided workflow manager.
     ///
     /// # Errors
     ///
     /// Returns an error if workflow execution traps and is not rolled back due to
     /// [`Self::drop_erroneous_messages()`] flag being set.
     ///
+    /// [`WorkflowManager`]: crate::manager::WorkflowManager
     /// [`select`]: futures::select
-    pub async fn run(
-        &mut self,
-        manager: &mut WorkflowManager,
-    ) -> Result<Termination, ExecutionError> {
+    pub async fn drive<M>(mut self, manager: &mut M) -> Result<Termination, ExecutionError>
+    where
+        M: AsManager,
+        M::Clock: Schedule,
+    {
+        // Technically, we don't need a mutable ref to a manager; we use it to ensure that
+        // the manager isn't driven elsewhere, which can lead to unexpected behavior.
+        self.set_channel_cursors(manager).await;
         loop {
             if let Some(termination) = self.tick(manager).await? {
-                self.flush_outbound_messages(manager);
+                self.flush_outbound_messages(manager).await;
                 return Ok(termination);
             }
         }
     }
 
-    async fn tick(
-        &mut self,
-        manager: &mut WorkflowManager,
-    ) -> Result<Option<Termination>, ExecutionError> {
-        if manager.is_empty() {
-            return Ok(Some(Termination::Finished));
+    async fn set_channel_cursors<M: AsManager>(&mut self, manager: &M) {
+        let storage = &manager.as_manager().storage;
+        let transaction = &storage.readonly_transaction().await;
+        let cursor_tasks = self.outbound_channels.keys().map(|&id| async move {
+            let cursor = transaction.channel(id).await.unwrap().received_messages;
+            (id, cursor)
+        });
+        let channel_cursors = future::join_all(cursor_tasks).await;
+        for (id, cursor) in channel_cursors {
+            let state = self.outbound_channels.get_mut(&id).unwrap();
+            state.cursor = cursor;
         }
+    }
 
-        let nearest_timer_expiration = self.tick_manager(manager)?;
-        self.gc(manager);
-        if manager.is_empty() {
-            return Ok(Some(Termination::Finished));
-        } else if nearest_timer_expiration.is_none() && self.inbound_channels.is_empty() {
-            return Ok(Some(Termination::Stalled));
+    #[tracing::instrument(level = "debug", skip_all, err)]
+    async fn tick<M>(&mut self, manager: &M) -> Result<Option<Termination>, ExecutionError>
+    where
+        M: AsManager,
+        M::Clock: Schedule,
+    {
+        let manager_ref = manager.as_manager();
+        let nearest_timer_expiration = self.tick_manager(manager).await?;
+        self.gc(manager).await;
+        if nearest_timer_expiration.is_none() && self.inbound_channels.is_empty() {
+            let termination = if manager_ref.workflow_count().await == 0 {
+                Termination::Finished
+            } else {
+                Termination::Stalled
+            };
+            return Ok(Some(termination));
         }
 
         // Determine external events listened by the workflow.
@@ -233,7 +229,7 @@ impl AsyncEnv {
 
         // TODO: cache `timer_event`?
         let timer_event = nearest_timer_expiration.map(|timestamp| {
-            let timer = self.scheduler.create_timer(timestamp);
+            let timer = manager_ref.clock.create_timer(timestamp);
             timer.map(ListenedEventOutput::Timer).right_future()
         });
         let all_futures = channel_futures.chain(timer_event);
@@ -242,33 +238,33 @@ impl AsyncEnv {
         match output {
             ListenedEventOutput::Channel { id, message } => {
                 if let Some(message) = message {
-                    manager.send_message(id, message).unwrap();
+                    manager_ref.send_message(id, message).await.unwrap();
                 } else {
-                    manager.close_host_sender(id);
+                    manager_ref.close_host_sender(id).await;
                 }
             }
 
             ListenedEventOutput::Timer(timestamp) => {
-                manager.set_current_time(timestamp);
+                manager_ref.set_current_time(timestamp).await;
             }
         };
 
         Ok(None)
     }
 
-    fn tick_manager(
+    async fn tick_manager<M: AsManager>(
         &mut self,
-        manager: &mut WorkflowManager,
+        manager: &M,
     ) -> Result<Option<DateTime<Utc>>, ExecutionError> {
         loop {
-            let tick_result = match manager.tick() {
+            let tick_result = match manager.as_manager().tick().await {
                 Ok(result) => result,
                 Err(blocked) => break Ok(blocked.nearest_timer_expiration()),
             };
 
             let (tick_result, recovered_from_error) =
                 if self.drop_erroneous_messages && tick_result.can_drop_erroneous_message() {
-                    (tick_result.drop_erroneous_message(), true)
+                    (tick_result.drop_erroneous_message().await, true)
                 } else {
                     (tick_result.drop_extra(), false)
                 };
@@ -279,31 +275,50 @@ impl AsyncEnv {
                 sx.unbounded_send(tick_result).ok();
             }
 
-            self.flush_outbound_messages(manager);
+            self.flush_outbound_messages(manager).await;
         }
     }
 
     /// Flushes messages to the outbound channels until no messages are left.
-    fn flush_outbound_messages(&self, manager: &WorkflowManager) {
-        for (&id, sx) in &self.outbound_channels {
-            let (_, messages) = manager.take_outbound_messages(id);
-            for message in messages {
-                sx.unbounded_send(message.into()).ok();
-                // ^ We don't care if outbound messages are no longer listened to.
-            }
+    async fn flush_outbound_messages<M: AsManager>(&mut self, manager: &M) {
+        let manager = manager.as_manager();
+        let transaction = &manager.storage.readonly_transaction().await;
+
+        let channels = self.outbound_channels.iter_mut();
+        let channel_tasks = channels.map(|(&id, channel)| async move {
+            let should_drop = channel.relay_messages(id, transaction).await;
+            Some(id).filter(|_| should_drop)
+        });
+        let dropped_channels = future::join_all(channel_tasks).await;
+        for id in dropped_channels.into_iter().flatten() {
+            self.outbound_channels.remove(&id);
         }
     }
 
     /// Garbage-collect receivers for closed inbound channels. This will signal
     /// to the consumers that the channel cannot be written to.
-    fn gc(&mut self, manager: &WorkflowManager) {
-        self.inbound_channels
-            .retain(|&id, _| !manager.channel(id).unwrap().is_closed());
+    #[tracing::instrument(level = "debug", skip_all)]
+    async fn gc<M: AsManager>(&mut self, manager: &M) {
+        let manager = manager.as_manager();
+        let channel_ids = self.inbound_channels.keys();
+        let check_closed_tasks = channel_ids.map(|&id| async move {
+            let is_closed = manager
+                .channel(id)
+                .await
+                .map_or(true, |channel| channel.is_closed);
+            Some(id).filter(|_| is_closed)
+        });
+        let closed_channels = future::join_all(check_closed_tasks).await;
+
+        for id in closed_channels.into_iter().flatten() {
+            self.inbound_channels.remove(&id);
+            tracing::debug!(id, "removed closed inbound channel");
+        }
     }
 }
 
 pin_project! {
-    /// Async handle for an [inbound workflow channel](Receiver) that allows sending messages
+    /// Sink handle for an [inbound workflow channel](Receiver) that allows sending messages
     /// via the channel.
     ///
     /// Dropping the handle while [`AsyncEnv::run()`] is executing will signal to the workflow
@@ -327,11 +342,11 @@ impl<T, C: Clone> Clone for MessageSender<T, C> {
     }
 }
 
-impl<T, C: Encode<T>> super::MessageSender<'_, T, C> {
-    /// Registers this sender in `env`, allowing to later asynchronously send messages.
-    pub fn into_async(self, env: &mut AsyncEnv) -> MessageSender<T, C> {
+impl<T, C: Encode<T>, M: AsManager> manager::MessageSender<'_, T, C, M> {
+    /// Registers this sender in `driver`, allowing to later asynchronously send messages.
+    pub fn into_sink(self, driver: &mut Driver) -> MessageSender<T, C> {
         let (sx, rx) = mpsc::channel(1);
-        env.inbound_channels.insert(self.channel_id(), rx);
+        driver.inbound_channels.insert(self.channel_id(), rx);
         MessageSender {
             raw_sender: sx,
             codec: self.codec,
@@ -363,12 +378,15 @@ impl<T, C: Encode<T>> Sink<T> for MessageSender<T, C> {
 }
 
 pin_project! {
-    /// Async handle for an [outbound workflow channel](Sender) that allows taking messages
+    /// Stream handle for an [outbound workflow channel](Sender) that allows receiving messages
     /// from the channel.
     ///
-    /// Dropping the handle has no effect on workflow execution (outbound channels cannot
-    /// be closed by the host), but allows to save resources, since outbound messages
-    /// would be dropped rather than buffered.
+    /// The handle will receive all messages produced while the [`Driver`] it is connected to is
+    /// [driving](Driver::drive()) the workflow manager. Messages produced before or after
+    /// will not be received by the handle.
+    ///
+    /// Dropping the handle has no effect on workflow executions, but allows to save resources,
+    /// since outbound messages would be dropped rather than buffered.
     #[derive(Debug)]
     pub struct MessageReceiver<T, C> {
         #[pin]
@@ -378,15 +396,15 @@ pin_project! {
     }
 }
 
-impl<T, C: Decode<T>> super::MessageReceiver<'_, T, C> {
-    /// Registers this receiver in `env`, allowing to later asynchronously receive messages.
-    pub fn into_async(self, env: &mut AsyncEnv) -> MessageReceiver<T, C> {
+impl<T, C: Decode<T> + Default, M: AsManager> manager::MessageReceiver<'_, T, C, M> {
+    /// Registers this receiver in `driver`, allowing to later asynchronously receive messages.
+    pub fn into_stream(self, driver: &mut Driver) -> MessageReceiver<T, C> {
         let (sx, rx) = mpsc::unbounded();
-        if self.can_receive_messages {
-            env.outbound_channels.insert(self.channel_id(), sx);
-            // If the channel cannot receive messages, `sx` is immediately dropped,
-            // thus, we don't improperly remove messages from the channel.
-        }
+        let state = OutboundChannel {
+            cursor: 0,
+            sender: sx,
+        };
+        driver.outbound_channels.insert(self.channel_id(), state);
         MessageReceiver {
             raw_receiver: rx,
             codec: self.codec,

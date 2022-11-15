@@ -4,14 +4,13 @@ use anyhow::Context;
 use wasmtime::{AsContextMut, Linker, Store, Trap};
 
 use std::{collections::HashMap, mem, sync::Arc};
-use tracing_tunnel::PersistedMetadata;
 
 mod persistence;
 
 pub use self::persistence::PersistedWorkflow;
 
 use crate::{
-    data::{ConsumeError, WorkflowData},
+    data::WorkflowData,
     module::{DataSection, ModuleExports, Services, WorkflowSpawner},
     receipt::{
         Event, ExecutedFunction, Execution, ExecutionError, Receipt, ResourceEventKind, ResourceId,
@@ -19,11 +18,7 @@ use crate::{
     },
     utils::Message,
 };
-use tardigrade::{
-    spawn::{ChannelSpawnConfig, ChannelsConfig},
-    task::TaskResult,
-    ChannelId, TaskId, WorkflowId,
-};
+use tardigrade::{task::TaskResult, ChannelId, TaskId, WorkflowId};
 
 #[derive(Debug, Default)]
 struct ExecutionOutput {
@@ -35,33 +30,6 @@ struct ExecutionOutput {
 pub(crate) struct ChannelIds {
     pub inbound: HashMap<String, ChannelId>,
     pub outbound: HashMap<String, ChannelId>,
-}
-
-impl ChannelIds {
-    pub fn new(
-        channels: ChannelsConfig<ChannelId>,
-        mut new_channel: impl FnMut() -> ChannelId,
-    ) -> Self {
-        Self {
-            inbound: Self::map_channels(channels.inbound, &mut new_channel),
-            outbound: Self::map_channels(channels.outbound, new_channel),
-        }
-    }
-
-    fn map_channels(
-        config: HashMap<String, ChannelSpawnConfig<ChannelId>>,
-        mut new_channel: impl FnMut() -> ChannelId,
-    ) -> HashMap<String, ChannelId> {
-        let channel_ids = config.into_iter().map(|(name, config)| {
-            let channel_id = match config {
-                ChannelSpawnConfig::New => new_channel(),
-                ChannelSpawnConfig::Closed => 0,
-                ChannelSpawnConfig::Existing(id) => id,
-            };
-            (name, channel_id)
-        });
-        channel_ids.collect()
-    }
 }
 
 impl WorkflowSpawner<()> {
@@ -281,18 +249,6 @@ impl<'a> Workflow<'a> {
         Ok(())
     }
 
-    #[tracing::instrument(level = "debug", skip(self, message), err, fields(message.len = message.len()))]
-    pub(crate) fn push_inbound_message(
-        &mut self,
-        workflow_id: Option<WorkflowId>,
-        channel_name: &str,
-        message: Vec<u8>,
-    ) -> Result<(), ConsumeError> {
-        self.store
-            .data_mut()
-            .push_inbound_message(workflow_id, channel_name, message)
-    }
-
     pub(crate) fn take_pending_inbound_message(
         &mut self,
         workflow_id: Option<WorkflowId>,
@@ -313,8 +269,8 @@ impl<'a> Workflow<'a> {
     /// # Panics
     ///
     /// Panics if the workflow is in such a state that it cannot be persisted right now.
-    pub(crate) fn persist(self, metadata: &mut PersistedMetadata) -> PersistedWorkflow {
-        PersistedWorkflow::new(self, metadata).unwrap()
+    pub(crate) fn persist(self) -> PersistedWorkflow {
+        PersistedWorkflow::new(self).unwrap()
     }
 
     fn copy_memory(&mut self, offset: usize, memory_contents: &[u8]) -> anyhow::Result<()> {

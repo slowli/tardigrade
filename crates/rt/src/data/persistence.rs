@@ -3,14 +3,14 @@
 use anyhow::{anyhow, ensure};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use wasmtime::{Store, Val};
 
 use std::{collections::HashMap, error, fmt};
-use tracing_tunnel::PersistedMetadata;
-use wasmtime::{Store, Val};
 
 use super::{
     channel::{ChannelStates, InboundChannelState, OutboundChannelState},
     helpers::HostResource,
+    spawn::ChildWorkflowStubs,
     task::TaskQueue,
     time::Timers,
     PersistedWorkflowData, WorkflowCounters, WorkflowData,
@@ -130,12 +130,9 @@ impl PersistedWorkflowData {
             timers: Timers::new(now),
             tasks: HashMap::new(),
             child_workflows: HashMap::new(),
+            child_workflow_stubs: ChildWorkflowStubs::default(),
             waker_queue: Vec::new(),
         }
-    }
-
-    pub fn check_on_restore(&self, interface: &Interface) -> anyhow::Result<()> {
-        self.channels.check_on_restore(interface)
     }
 
     pub fn restore<'a>(
@@ -182,12 +179,6 @@ impl WorkflowData<'_> {
             }
         }
         Ok(())
-    }
-
-    pub(crate) fn persist_trace_metadata(&self, metadata: &mut PersistedMetadata) {
-        if let Some(tracer) = &self.services.tracer {
-            tracer.persist_metadata(metadata);
-        }
     }
 
     // Must be preceded with `Self::check_persistence()`.

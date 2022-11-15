@@ -7,16 +7,12 @@ use futures::{stream, SinkExt, StreamExt, TryStreamExt};
 use std::{
     cmp,
     collections::{HashMap, HashSet},
-    sync::Arc,
     task::Poll,
 };
 
 use tardigrade::{spawn::ManageWorkflowsExt, Json, TaskId};
 use tardigrade_rt::{
-    manager::{
-        future::{AsyncEnv, MessageSender, Termination},
-        WorkflowManager,
-    },
+    driver::{Driver, MessageSender, Termination},
     receipt::{
         Event, ExecutedFunction, Execution, Receipt, ResourceEvent, ResourceEventKind, ResourceId,
     },
@@ -27,7 +23,7 @@ use tardigrade_test_basic::{
     DomainEvent, PizzaKind, PizzaOrder,
 };
 
-use crate::{TestResult, MODULE};
+use crate::{create_manager, TestResult};
 
 pub(crate) async fn send_orders(
     mut orders_sx: MessageSender<PizzaOrder, Json>,
@@ -112,26 +108,21 @@ async fn setup_workflow(
     args: Args,
     order_count: usize,
 ) -> TestResult<(Vec<DomainEvent>, Vec<Receipt>)> {
-    let module = task::spawn_blocking(|| &*MODULE).await;
-    let spawner = module.for_workflow::<PizzaDeliveryWithTasks>()?;
     let (scheduler, mut expirations) = MockScheduler::with_expirations();
-    let scheduler = Arc::new(scheduler);
-    let mut manager = WorkflowManager::builder()
-        .with_spawner("pizza", spawner)
-        .with_clock(Arc::clone(&scheduler))
-        .build();
+    let mut manager = create_manager(scheduler.clone()).await?;
 
     let mut workflow = manager
-        .new_workflow::<PizzaDeliveryWithTasks>("pizza", args)?
-        .build()?;
+        .new_workflow::<PizzaDeliveryWithTasks>("test::PizzaDeliveryWithTasks", args)?
+        .build()
+        .await?;
     let handle = workflow.handle();
-    let mut env = AsyncEnv::new(Arc::clone(&scheduler));
-    let orders_sx = handle.orders.into_async(&mut env);
-    let events_rx = handle.shared.events.into_async(&mut env);
-    let receipts_rx = env
+    let mut driver = Driver::new();
+    let orders_sx = handle.orders.into_sink(&mut driver);
+    let events_rx = handle.shared.events.into_stream(&mut driver);
+    let receipts_rx = driver
         .tick_results()
         .map(|result| result.into_inner().unwrap());
-    let join_handle = task::spawn(async move { env.run(&mut manager).await });
+    let join_handle = task::spawn(async move { driver.drive(&mut manager).await });
 
     // We want to have precise control over time (in order to deterministically fail subtasks).
     task::spawn(async move {

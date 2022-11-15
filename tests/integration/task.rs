@@ -71,7 +71,7 @@ fn test_workflow_termination(args: Args) {
         let builder = Workflows
             .new_workflow::<WorkflowWithSubtask>("test", args)
             .unwrap();
-        let handle = builder.build().unwrap();
+        let handle = builder.build().await.unwrap();
         handle.workflow.await.unwrap();
 
         let events: Vec<_> = handle.api.events.collect().await;
@@ -127,7 +127,7 @@ fn workflow_failure_in_main_task() {
             .new_workflow::<WorkflowWithSubtask>("test", Args::default())
             .unwrap();
         builder.handle().events.close(); // makes the workflow fail on sending the "42" event
-        let handle = builder.build().unwrap();
+        let handle = builder.build().await.unwrap();
 
         let err = handle.workflow.await.unwrap_err();
         let err = into_task_error(err);

@@ -3,14 +3,13 @@
 use anyhow::{ensure, Context};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tracing_tunnel::PersistedMetadata;
 use wasmtime::Store;
 
 use std::{fmt, task::Poll};
 
 use crate::{
     data::{
-        ChildWorkflowState, InboundChannelState, OutboundChannelState, PersistError,
+        ChildWorkflowState, ConsumeError, InboundChannelState, OutboundChannelState, PersistError,
         PersistedWorkflowData, Refs, TaskState, TimerState, Wakers, WorkflowData,
     },
     module::{DataSection, Services, WorkflowSpawner},
@@ -18,7 +17,11 @@ use crate::{
     utils::Message,
     workflow::{ChannelIds, Workflow},
 };
-use tardigrade::{task::JoinError, ChannelId, TaskId, TimerId, WorkflowId};
+use tardigrade::{
+    spawn::{ChannelsConfig, HostError},
+    task::JoinError,
+    ChannelId, TaskId, TimerId, WorkflowId,
+};
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -155,19 +158,13 @@ pub struct PersistedWorkflow {
 }
 
 impl PersistedWorkflow {
-    pub(super) fn new(
-        mut workflow: Workflow<'_>,
-        metadata: &mut PersistedMetadata,
-    ) -> Result<Self, PersistError> {
+    pub(super) fn new(mut workflow: Workflow<'_>) -> Result<Self, PersistError> {
         workflow.store.data().check_persistence()?;
         let refs = Refs::new(&mut workflow.store);
         let memory = Memory::new(&workflow.store, workflow.data_section.as_deref());
         let data = workflow.store.into_data();
-        data.persist_trace_metadata(metadata);
-        let state = data.persist();
-
         Ok(Self {
-            state,
+            state: data.persist(),
             refs,
             memory,
             args: workflow.raw_args.clone(),
@@ -180,10 +177,37 @@ impl PersistedWorkflow {
         self.state.inbound_channels()
     }
 
+    pub(crate) fn find_inbound_channel(
+        &self,
+        channel_id: ChannelId,
+    ) -> (Option<WorkflowId>, &str, &InboundChannelState) {
+        self.state.find_inbound_channel(channel_id)
+    }
+
     pub(crate) fn outbound_channels(
         &self,
     ) -> impl Iterator<Item = (Option<WorkflowId>, &str, &OutboundChannelState)> + '_ {
         self.state.outbound_channels()
+    }
+
+    #[tracing::instrument(level = "debug", skip(self, message), err, fields(message.len = message.len()))]
+    pub(crate) fn push_inbound_message(
+        &mut self,
+        workflow_id: Option<WorkflowId>,
+        channel_name: &str,
+        message: Vec<u8>,
+    ) -> Result<(), ConsumeError> {
+        self.state
+            .push_inbound_message(workflow_id, channel_name, message)
+    }
+
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub(crate) fn drop_inbound_message(
+        &mut self,
+        workflow_id: Option<WorkflowId>,
+        channel_name: &str,
+    ) {
+        self.state.drop_inbound_message(workflow_id, channel_name);
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
@@ -249,6 +273,23 @@ impl PersistedWorkflow {
         self.state.notify_on_child_completion(id, result);
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub(crate) fn notify_on_child_init(
+        &mut self,
+        stub_id: WorkflowId,
+        id: WorkflowId,
+        channels: &ChannelsConfig<ChannelId>,
+        channel_ids: ChannelIds,
+    ) {
+        self.state
+            .notify_on_child_init(stub_id, id, channels, channel_ids);
+    }
+
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub(crate) fn notify_on_child_spawn_error(&mut self, stub_id: WorkflowId, err: HostError) {
+        self.state.notify_on_child_spawn_error(stub_id, err);
+    }
+
     /// Checks whether the workflow is initialized.
     pub fn is_initialized(&self) -> bool {
         self.args.is_none()
@@ -285,16 +326,12 @@ impl PersistedWorkflow {
     }
 
     /// Iterates over pending [`WakeUpCause`]s.
-    pub fn pending_events(&self) -> impl Iterator<Item = &WakeUpCause> + '_ {
+    pub fn pending_wakeup_causes(&self) -> impl Iterator<Item = &WakeUpCause> + '_ {
         self.state.waker_queue.iter().map(Wakers::cause)
     }
 
     pub(crate) fn channel_ids(&self) -> ChannelIds {
         self.state.channel_ids()
-    }
-
-    pub(crate) fn check_on_restore(&self, spawner: &WorkflowSpawner<()>) -> anyhow::Result<()> {
-        self.state.check_on_restore(spawner.interface())
     }
 
     /// Restores a workflow from the persisted state and the `spawner` defining the workflow.

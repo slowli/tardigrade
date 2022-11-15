@@ -68,6 +68,11 @@ pub enum WakeUpCause {
         /// Timer ID.
         id: TimerId,
     },
+    /// Woken up by workflow initialization.
+    InitWorkflow {
+        /// ID of the stub that got initialized.
+        stub_id: WorkflowId,
+    },
     /// Woken up by completion of a child workflow.
     CompletedWorkflow(WorkflowId),
 }
@@ -150,6 +155,8 @@ pub enum ResourceId {
     Task(TaskId),
     /// Workflow ID.
     Workflow(WorkflowId),
+    /// Workflow stub ID.
+    WorkflowStub(WorkflowId),
 }
 
 /// Kind of a [`ResourceEvent`].

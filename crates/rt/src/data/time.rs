@@ -157,9 +157,12 @@ impl PersistedWorkflowData {
 }
 
 impl WorkflowData<'_> {
-    fn timer_definition(timestamp_millis: i64) -> TimerDefinition {
-        let expires_at = Utc.timestamp_millis(timestamp_millis);
-        TimerDefinition { expires_at }
+    fn timer_definition(timestamp_millis: i64) -> Result<TimerDefinition, Trap> {
+        let expires_at = Utc
+            .timestamp_millis_opt(timestamp_millis)
+            .single()
+            .ok_or_else(|| Trap::new("Timestamp overflow"))?;
+        Ok(TimerDefinition { expires_at })
     }
 
     fn create_timer(&mut self, definition: TimerDefinition) -> TimerId {
@@ -205,9 +208,9 @@ impl WorkflowFunctions {
     pub fn create_timer(
         mut ctx: StoreContextMut<'_, WorkflowData>,
         timestamp_millis: i64,
-    ) -> TimerId {
-        let definition = WorkflowData::timer_definition(timestamp_millis);
-        ctx.data_mut().create_timer(definition)
+    ) -> Result<TimerId, Trap> {
+        let definition = WorkflowData::timer_definition(timestamp_millis)?;
+        Ok(ctx.data_mut().create_timer(definition))
     }
 
     #[tracing::instrument(level = "debug", skip(ctx), err)]

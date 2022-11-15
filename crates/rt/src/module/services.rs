@@ -3,12 +3,10 @@
 use chrono::{DateTime, Utc};
 use tracing_tunnel::TracingEventReceiver;
 
-use std::{borrow::Cow, fmt};
+use std::{fmt, future::Future, pin::Pin};
 
-use crate::workflow::ChannelIds;
 use tardigrade::{
-    interface::Interface,
-    spawn::{ChannelsConfig, ManageInterfaces, ManageWorkflows, SpecifyWorkflowChannels},
+    spawn::{ChannelsConfig, ManageInterfaces},
     ChannelId, WorkflowId,
 };
 
@@ -23,71 +21,51 @@ pub trait Clock: Send + Sync + 'static {
     fn now(&self) -> DateTime<Utc>;
 }
 
-impl<F> Clock for F
-where
-    F: Fn() -> DateTime<Utc> + Send + Sync + 'static,
-{
-    fn now(&self) -> DateTime<Utc> {
-        self()
-    }
-}
-
 impl fmt::Debug for dyn Clock {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.debug_struct("Clock").finish_non_exhaustive()
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct WorkflowAndChannelIds {
-    pub workflow_id: WorkflowId,
-    pub channel_ids: ChannelIds,
-}
-
-/// Workflow manager that does not hold any workflow definitions and correspondingly
-/// cannot spawn workflows.
-#[derive(Debug)]
-pub(crate) struct NoOpWorkflowManager;
-
-impl ManageInterfaces for NoOpWorkflowManager {
-    fn interface(&self, _definition_id: &str) -> Option<Cow<'_, Interface>> {
-        None
+impl Clock for () {
+    fn now(&self) -> DateTime<Utc> {
+        Utc::now()
     }
 }
 
-impl ManageWorkflows<'_, ()> for NoOpWorkflowManager {
-    type Handle = WorkflowAndChannelIds;
-    type Error = anyhow::Error;
+/// Scheduler that allows creating futures completing at the specified timestamp.
+pub trait Schedule: Clock {
+    /// Creates a timer with the specified expiration timestamp.
+    fn create_timer(&self, expires_at: DateTime<Utc>) -> TimerFuture;
+}
 
-    fn create_workflow(
-        &self,
-        _definition_id: &str,
-        _args: Vec<u8>,
-        _channels: ChannelsConfig<ChannelId>,
-    ) -> Result<Self::Handle, Self::Error> {
-        unreachable!("No definitions, thus `create_workflow` should never be called")
+impl fmt::Debug for dyn Schedule {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("Schedule").finish_non_exhaustive()
     }
 }
 
-impl SpecifyWorkflowChannels for NoOpWorkflowManager {
-    type Inbound = ChannelId;
-    type Outbound = ChannelId;
-}
+/// Future for [`Schedule::create_timer()`].
+pub type TimerFuture = Pin<Box<dyn Future<Output = DateTime<Utc>> + Send>>;
 
-type DynManager = dyn for<'a> ManageWorkflows<
-    'a,
-    (),
-    Inbound = ChannelId,
-    Outbound = ChannelId,
-    Handle = WorkflowAndChannelIds,
-    Error = anyhow::Error,
->;
+/// Similar to [`tardigrade::ManageWorkflows`], but mutable and synchronous.
+/// The returned handle is stored in a `Workflow` and, before it's persisted, exchanged for
+/// a `WorkflowId`.
+pub(crate) trait StashWorkflow: Send + Sync + ManageInterfaces {
+    fn stash_workflow(
+        &mut self,
+        stub_id: WorkflowId,
+        id: &str,
+        args: Vec<u8>,
+        channels: ChannelsConfig<ChannelId>,
+    );
+}
 
 /// Dynamically dispatched services available to workflows.
 pub(crate) struct Services<'a> {
     pub clock: &'a dyn Clock,
-    pub workflows: &'a DynManager,
-    pub tracer: Option<TracingEventReceiver<'a>>,
+    pub workflows: Option<&'a mut dyn StashWorkflow>,
+    pub tracer: Option<&'a mut TracingEventReceiver>,
 }
 
 impl fmt::Debug for Services<'_> {

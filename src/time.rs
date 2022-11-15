@@ -75,7 +75,8 @@ mod imp {
             fn timer_now() -> i64;
         }
 
-        Utc.timestamp_millis(unsafe { timer_now() })
+        Utc.timestamp_millis_opt(unsafe { timer_now() }).unwrap()
+        // ^ since we trust the host to submit a real timestamp, `unwrap()` should be safe
     }
 }
 

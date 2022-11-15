@@ -23,7 +23,7 @@ impl ParentWorkflow {
     async fn spawn_child(command: i32, events: Sender<i32, Json>) -> TaskResult {
         let builder = Workflows.new_workflow::<TestedWorkflow>("child", ())?;
         builder.handle().events.copy_from(events);
-        let mut child = builder.build()?;
+        let mut child = builder.build().await?;
         child.api.commands.send(command).await?;
         drop(child.api.commands); // Should terminate the child workflow
         child.workflow.await?;

@@ -16,31 +16,33 @@
 //!         .set_wasm_opt(WasmOpt::default())
 //!         .compile();
 //!     let engine = WorkflowEngine::default();
-//!     WorkflowModule::new(&engine, &module_bytes).unwrap()
+//!     WorkflowModule::new(&engine, module_bytes).unwrap()
 //! });
-//!
-//! // The module can then be used in tests:
-//! let spawner = MODULE.for_untyped_workflow("TestWorkflow").unwrap();
-//! // Use `spawner` to spawn workflows...
+//! // The module can then be used in tests
 //! ```
 
 use chrono::{DateTime, Utc};
-#[cfg(feature = "async")]
+use externref::processor::Processor;
 use futures::{channel::mpsc, Stream};
 
 use std::{
     env, fs, ops,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
-#[cfg(feature = "async")]
-use crate::manager::future::{Schedule, TimerFuture};
-use crate::module::Clock;
+use crate::module::{Clock, Schedule, TimerFuture};
 use tardigrade::test::MockScheduler as SchedulerBase;
 
 /// Options for the `wasm-opt` optimizer.
+///
+/// Note that `wasm-opt` before and including version 109 [mangles table exports][export-bug],
+/// which most probably will result in the module validation error ("`externrefs` export is not
+/// a table of `externref`s"). The first release of `wasm-opt` to include the fix is [version 110].
+///
+/// [export-bug]: https://github.com/WebAssembly/binaryen/pull/4736
+/// [version 110]: https://github.com/WebAssembly/binaryen/releases/tag/version_110
 #[derive(Debug)]
 pub struct WasmOpt {
     wasm_opt_command: String,
@@ -56,6 +58,7 @@ impl Default for WasmOpt {
             args: vec![
                 "-Os".to_string(),
                 "--enable-mutable-globals".to_string(),
+                "--enable-reference-types".to_string(),
                 "--strip-debug".to_string(),
             ],
         }
@@ -180,8 +183,32 @@ impl ModuleCompiler {
         self.wasm_file()
     }
 
+    fn process_refs(wasm_file: &Path) -> PathBuf {
+        let module_bytes = fs::read(wasm_file).unwrap_or_else(|err| {
+            panic!(
+                "Error reading file `{}`: {err}",
+                wasm_file.to_string_lossy()
+            )
+        });
+        let processed_bytes = Processor::default()
+            .set_drop_fn("tardigrade_rt", "drop_ref")
+            .process_bytes(&module_bytes)
+            .unwrap();
+
+        let mut ref_wasm_file = PathBuf::from(wasm_file);
+        ref_wasm_file.set_extension("ref.wasm");
+        fs::write(&ref_wasm_file, &processed_bytes).unwrap_or_else(|err| {
+            panic!(
+                "Error writing externref-processed module to file `{}`: {err}",
+                wasm_file.to_string_lossy()
+            )
+        });
+        ref_wasm_file
+    }
+
     fn do_compile(&self) -> PathBuf {
         let wasm_file = self.compile_wasm();
+        let wasm_file = Self::process_refs(&wasm_file);
         if let Some(wasm_opt) = &self.wasm_opt {
             wasm_opt.optimize_wasm(&wasm_file)
         } else {
@@ -199,9 +226,8 @@ impl ModuleCompiler {
         let wasm_file = self.do_compile();
         fs::read(&wasm_file).unwrap_or_else(|err| {
             panic!(
-                "Error reading file `{}`: {}",
-                wasm_file.to_string_lossy(),
-                err
+                "Error reading file `{}`: {err}",
+                wasm_file.to_string_lossy()
             )
         })
     }
@@ -211,37 +237,40 @@ impl ModuleCompiler {
 ///
 /// # Examples
 ///
-/// A primary use case is to use the scheduler with [`AsyncEnv`] for integration testing:
+/// A primary use case is to use the scheduler with a [`Driver`] for integration testing:
 ///
-/// [`AsyncEnv`]: crate::manager::future::AsyncEnv
+/// [`Driver`]: crate::driver::Driver
 ///
 /// ```
 /// # use async_std::task;
 /// # use futures::TryStreamExt;
-/// # use std::sync::Arc;
-/// use tardigrade::{interface::OutboundChannel, spawn::ManageWorkflowsExt};
-/// use tardigrade_rt::{test::MockScheduler, WorkflowModule};
-/// use tardigrade_rt::manager::{future::AsyncEnv, WorkflowHandle, WorkflowManager};
-///
+/// # use tardigrade::{interface::OutboundChannel, spawn::ManageWorkflowsExt};
+/// # use tardigrade_rt::{
+/// #     driver::Driver, manager::{WorkflowHandle, WorkflowManager}, storage::LocalStorage,
+/// #     test::MockScheduler, WorkflowModule,
+/// # };
 /// # async fn test_wrapper(module: WorkflowModule) -> anyhow::Result<()> {
-/// let scheduler = Arc::new(MockScheduler::default());
+/// let scheduler = MockScheduler::default();
 /// // Set the mocked wall clock for the workflow manager.
-/// let mut manager = WorkflowManager::builder()
-///     .with_clock(Arc::clone(&scheduler))
-///     // set other options (e.g., spawners)
-///     .build();
+/// let storage = LocalStorage::default();
+/// let mut manager = WorkflowManager::builder(storage)
+///     .with_clock(scheduler.clone())
+///     .build()
+///     .await?;
 /// let inputs: Vec<u8> = // ...
 /// #   vec![];
-/// let mut workflow =
-///     manager.new_workflow::<()>("test", inputs)?.build()?;
+/// let mut workflow = manager
+///     .new_workflow::<()>("test::Workflow", inputs)?
+///     .build()
+///     .await?;
 ///
-/// // Spin up the environment to execute the `workflow`.
-/// let mut env = AsyncEnv::new(scheduler.clone());
+/// // Spin up the driver to execute the `workflow`.
+/// let mut driver = Driver::new();
 /// let mut handle = workflow.handle();
 /// let mut events_rx = handle.remove(OutboundChannel("events"))
 ///     .unwrap()
-///     .into_async(&mut env);
-/// task::spawn(async move { env.run(&mut manager).await });
+///     .into_stream(&mut driver);
+/// task::spawn(async move { driver.drive(&mut manager).await });
 ///
 /// // Advance mocked wall clock.
 /// let now = scheduler.now();
@@ -252,19 +281,16 @@ impl ModuleCompiler {
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MockScheduler {
-    inner: Mutex<SchedulerBase>,
-    #[cfg(feature = "async")]
+    inner: Arc<Mutex<SchedulerBase>>,
     new_expirations_sx: mpsc::UnboundedSender<DateTime<Utc>>,
 }
 
-#[allow(clippy::derivable_impls)] // triggered if building without `async` feature on
 impl Default for MockScheduler {
     fn default() -> Self {
         Self {
-            inner: Mutex::default(),
-            #[cfg(feature = "async")]
+            inner: Arc::default(),
             new_expirations_sx: mpsc::unbounded().0,
         }
     }
@@ -273,12 +299,10 @@ impl Default for MockScheduler {
 impl MockScheduler {
     /// Creates a mock scheduler together with a stream that notifies the consumer
     /// about new timer expirations.
-    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
-    #[cfg(feature = "async")]
     pub fn with_expirations() -> (Self, impl Stream<Item = DateTime<Utc>> + Unpin) {
         let (new_expirations_sx, rx) = mpsc::unbounded();
         let this = Self {
-            inner: Mutex::default(),
+            inner: Arc::default(),
             new_expirations_sx,
         };
         (this, rx)
@@ -310,7 +334,6 @@ impl Clock for MockScheduler {
     }
 }
 
-#[cfg(feature = "async")]
 impl Schedule for MockScheduler {
     fn create_timer(&self, expires_at: DateTime<Utc>) -> TimerFuture {
         use futures::{future, FutureExt};

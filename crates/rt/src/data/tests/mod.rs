@@ -1,8 +1,8 @@
 //! Mid-level tests for instantiating and managing workflows.
 
 use assert_matches::assert_matches;
+use futures::{future, stream, FutureExt};
 use mimicry::Answers;
-use tracing_tunnel::PersistedMetadata;
 use wasmtime::StoreContextMut;
 
 use std::{
@@ -14,7 +14,7 @@ mod spawn;
 
 use super::*;
 use crate::{
-    module::{ExportsMock, MockPollFn, NoOpWorkflowManager, WorkflowEngine, WorkflowModule},
+    module::{ExportsMock, MockPollFn, WorkflowEngine, WorkflowModule},
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, Execution, Receipt,
         ResourceEventKind, ResourceId,
@@ -24,7 +24,7 @@ use crate::{
     workflow::{PersistedWorkflow, Workflow},
 };
 use tardigrade::{
-    abi::AllocateBytes, interface::Interface, spawn::ChannelsConfig, task::JoinError,
+    abi::AllocateBytes, interface::Interface, spawn::ChannelsConfig, task::JoinError, ChannelId,
 };
 
 const POLL_CX: WasmContextPtr = 1_234;
@@ -47,7 +47,7 @@ fn initialize_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()
 
     // ...then polling this channel
     let poll_res =
-        WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX).unwrap();
+        WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
     assert_eq!(poll_res, -1); // Poll::Pending
 
     Ok(Poll::Pending)
@@ -88,9 +88,8 @@ fn consume_message(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()
         WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), traces.clone(), POLL_CX)?;
     assert_eq!(poll_res, 0); // Poll::Ready
 
-    let (trace_ptr, trace_len) = WasmAllocator::new(ctx.as_context_mut())
-        .copy_to_wasm(b"trace #1")
-        .unwrap();
+    let (trace_ptr, trace_len) =
+        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"trace #1")?;
     WorkflowFunctions::start_send(ctx.as_context_mut(), traces.clone(), trace_ptr, trace_len)?;
 
     emit_event_and_flush(&mut ctx)?;
@@ -105,12 +104,16 @@ fn consume_message(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()
     Ok(Poll::Pending)
 }
 
-fn mock_channel_ids(interface: &Interface) -> ChannelIds {
-    let mut channel_count = 0;
-    ChannelIds::new(ChannelsConfig::from_interface(interface), || {
-        channel_count += 1;
-        channel_count
-    })
+fn mock_channel_ids(interface: &Interface, next_channel_id: &mut ChannelId) -> ChannelIds {
+    let config = ChannelsConfig::from_interface(interface);
+    let new_channel_ids = stream::unfold(next_channel_id, |next_channel_id| {
+        let id = *next_channel_id;
+        *next_channel_id += 1;
+        future::ready(Some((id, next_channel_id)))
+    });
+    ChannelIds::new(config, new_channel_ids)
+        .now_or_never()
+        .unwrap()
 }
 
 fn create_workflow(services: Services<'_>) -> (Receipt, Workflow<'_>) {
@@ -120,7 +123,7 @@ fn create_workflow(services: Services<'_>) -> (Receipt, Workflow<'_>) {
         .for_untyped_workflow("TestWorkflow")
         .unwrap();
 
-    let channel_ids = mock_channel_ids(spawner.interface());
+    let channel_ids = mock_channel_ids(spawner.interface(), &mut 1);
     let mut workflow = spawner
         .spawn(b"test_input".to_vec(), &channel_ids, services)
         .unwrap();
@@ -136,6 +139,14 @@ fn restore_workflow(persisted: PersistedWorkflow, services: Services<'_>) -> Wor
     persisted.restore(&spawner, services).unwrap()
 }
 
+fn push_inbound_message(workflow: &mut Workflow<'_>, channel_name: &str, message: &[u8]) {
+    workflow
+        .data_mut()
+        .persisted
+        .push_inbound_message(None, channel_name, message.to_vec())
+        .unwrap();
+}
+
 #[test]
 fn starting_workflow() {
     let poll_fns = Answers::from_value(initialize_task as MockPollFn);
@@ -143,7 +154,7 @@ fn starting_workflow() {
     let clock = MockScheduler::default();
     let (receipt, workflow) = create_workflow(Services {
         clock: &clock,
-        workflows: &NoOpWorkflowManager,
+        workflows: None,
         tracer: None,
     });
     let exports_mock = exports_guard.into_inner();
@@ -168,7 +179,7 @@ fn starting_workflow() {
         }) if channel_name == "orders"
     );
 
-    workflow.persist(&mut PersistedMetadata::default());
+    workflow.persist();
 }
 
 #[test]
@@ -178,13 +189,11 @@ fn receiving_inbound_message() {
     let clock = MockScheduler::default();
     let (_, mut workflow) = create_workflow(Services {
         clock: &clock,
-        workflows: &NoOpWorkflowManager,
+        workflows: None,
         tracer: None,
     });
 
-    workflow
-        .push_inbound_message(None, "orders", b"order #1".to_vec())
-        .unwrap();
+    push_inbound_message(&mut workflow, "orders", b"order #1");
     let receipt = workflow.tick().unwrap();
 
     let exports = exports_guard.into_inner();
@@ -294,10 +303,10 @@ fn trap_when_starting_workflow() {
     let engine = WorkflowEngine::default();
     let module = WorkflowModule::new(&engine, ExportsMock::MOCK_MODULE_BYTES).unwrap();
     let spawner = module.for_untyped_workflow("TestWorkflow").unwrap();
-    let channel_ids = mock_channel_ids(spawner.interface());
+    let channel_ids = mock_channel_ids(spawner.interface(), &mut 1);
     let services = Services {
         clock: &MockScheduler::default(),
-        workflows: &NoOpWorkflowManager,
+        workflows: None,
         tracer: None,
     };
     let mut workflow = spawner
@@ -331,7 +340,7 @@ fn spawning_and_cancelling_task() {
     let clock = MockScheduler::default();
     let (receipt, mut workflow) = create_workflow(Services {
         clock: &clock,
-        workflows: &NoOpWorkflowManager,
+        workflows: None,
         tracer: None,
     });
 
@@ -359,9 +368,7 @@ fn spawning_and_cancelling_task() {
     assert_matches!(new_task.result(), Poll::Pending);
 
     // Push the message in order to tick the main task.
-    workflow
-        .push_inbound_message(None, "orders", b"order #1".to_vec())
-        .unwrap();
+    push_inbound_message(&mut workflow, "orders", b"order #1");
     let receipt = workflow.tick().unwrap();
 
     assert_matches!(
@@ -413,7 +420,7 @@ fn workflow_terminates_after_main_task_completion() {
     let clock = MockScheduler::default();
     let (receipt, workflow) = create_workflow(Services {
         clock: &clock,
-        workflows: &NoOpWorkflowManager,
+        workflows: None,
         tracer: None,
     });
 
@@ -431,7 +438,7 @@ fn workflow_terminates_after_main_task_completion() {
     let task_result = last_execution.task_result.as_ref().unwrap();
     task_result.as_ref().unwrap();
 
-    let workflow = workflow.persist(&mut PersistedMetadata::default());
+    let workflow = workflow.persist();
     assert_matches!(workflow.result(), Poll::Ready(Ok(())));
 }
 
@@ -448,14 +455,12 @@ fn rolling_back_task_spawning() {
     let clock = MockScheduler::default();
     let (_, mut workflow) = create_workflow(Services {
         clock: &clock,
-        workflows: &NoOpWorkflowManager,
+        workflows: None,
         tracer: None,
     });
 
     // Push the message in order to tick the main task.
-    workflow
-        .push_inbound_message(None, "orders", b"order #1".to_vec())
-        .unwrap();
+    push_inbound_message(&mut workflow, "orders", b"order #1");
     let err = workflow.tick().unwrap_err();
     assert_matches!(
         err.receipt().executions(),
@@ -487,14 +492,12 @@ fn rolling_back_task_abort() {
     let clock = MockScheduler::default();
     let (_, mut workflow) = create_workflow(Services {
         clock: &clock,
-        workflows: &NoOpWorkflowManager,
+        workflows: None,
         tracer: None,
     });
 
     // Push the message in order to tick the main task.
-    workflow
-        .push_inbound_message(None, "orders", b"order #1".to_vec())
-        .unwrap();
+    push_inbound_message(&mut workflow, "orders", b"order #1");
     let err = workflow.tick().unwrap_err();
     assert_eq!(err.receipt().executions().len(), 2);
     let err_message = err.trap().to_string();
@@ -529,14 +532,12 @@ fn rolling_back_emitting_messages_on_trap() {
     let clock = MockScheduler::default();
     let (_, mut workflow) = create_workflow(Services {
         clock: &clock,
-        workflows: &NoOpWorkflowManager,
+        workflows: None,
         tracer: None,
     });
 
     // Push the message in order to tick the main task.
-    workflow
-        .push_inbound_message(None, "orders", b"order #1".to_vec())
-        .unwrap();
+    push_inbound_message(&mut workflow, "orders", b"order #1");
     workflow.tick().unwrap_err();
 
     let messages = workflow.data_mut().drain_messages();
@@ -554,14 +555,12 @@ fn rolling_back_placing_waker_on_trap() {
     let clock = MockScheduler::default();
     let (_, mut workflow) = create_workflow(Services {
         clock: &clock,
-        workflows: &NoOpWorkflowManager,
+        workflows: None,
         tracer: None,
     });
 
     // Push the message in order to tick the main task.
-    workflow
-        .push_inbound_message(None, "orders", b"order #1".to_vec())
-        .unwrap();
+    push_inbound_message(&mut workflow, "orders", b"order #1");
     workflow.tick().unwrap_err();
 
     let outbound_channels = workflow.data().persisted.channels.outbound.values();
@@ -575,30 +574,28 @@ fn rolling_back_placing_waker_on_trap() {
 fn timers_basics() {
     let create_timers: MockPollFn = |mut ctx| {
         let ts = WorkflowFunctions::current_timestamp(ctx.as_context_mut());
-        let timer_id = WorkflowFunctions::create_timer(ctx.as_context_mut(), ts - 100);
+        let timer_id = WorkflowFunctions::create_timer(ctx.as_context_mut(), ts - 100)?;
         assert_eq!(timer_id, 0);
         // ^ implementation detail, but it's used in code later
-        let result =
-            WorkflowFunctions::poll_timer(ctx.as_context_mut(), timer_id, POLL_CX).unwrap();
+        let result = WorkflowFunctions::poll_timer(ctx.as_context_mut(), timer_id, POLL_CX)?;
         assert_eq!(result, ts);
 
-        let timer_id = WorkflowFunctions::create_timer(ctx.as_context_mut(), ts + 100);
+        let timer_id = WorkflowFunctions::create_timer(ctx.as_context_mut(), ts + 100)?;
         assert_eq!(timer_id, 1);
-        let result =
-            WorkflowFunctions::poll_timer(ctx.as_context_mut(), timer_id, POLL_CX).unwrap();
+        let result = WorkflowFunctions::poll_timer(ctx.as_context_mut(), timer_id, POLL_CX)?;
         assert_eq!(result, -1); // Poll::Pending
 
         Ok(Poll::Pending)
     };
     let poll_timers_and_drop: MockPollFn = |mut ctx| {
-        let result = WorkflowFunctions::poll_timer(ctx.as_context_mut(), 0, POLL_CX).unwrap();
+        let result = WorkflowFunctions::poll_timer(ctx.as_context_mut(), 0, POLL_CX)?;
         assert_ne!(result, -1);
-        WorkflowFunctions::drop_timer(ctx.as_context_mut(), 0).unwrap();
+        WorkflowFunctions::drop_timer(ctx.as_context_mut(), 0)?;
 
-        let result = WorkflowFunctions::poll_timer(ctx.as_context_mut(), 1, POLL_CX).unwrap();
+        let result = WorkflowFunctions::poll_timer(ctx.as_context_mut(), 1, POLL_CX)?;
         let ts = WorkflowFunctions::current_timestamp(ctx.as_context_mut());
         assert_eq!(result, ts);
-        WorkflowFunctions::drop_timer(ctx.as_context_mut(), 1).unwrap();
+        WorkflowFunctions::drop_timer(ctx.as_context_mut(), 1)?;
 
         Ok(Poll::Pending)
     };
@@ -608,7 +605,7 @@ fn timers_basics() {
     let scheduler = MockScheduler::default();
     let (_, mut workflow) = create_workflow(Services {
         clock: &scheduler,
-        workflows: &NoOpWorkflowManager,
+        workflows: None,
         tracer: None,
     });
 
@@ -619,13 +616,13 @@ fn timers_basics() {
     assert!(timers[&1].completed_at().is_none());
 
     scheduler.set_now(scheduler.now() + chrono::Duration::seconds(1));
-    let mut persisted = workflow.persist(&mut PersistedMetadata::default());
+    let mut persisted = workflow.persist();
     persisted.set_current_time(scheduler.now());
     let mut workflow = restore_workflow(
         persisted,
         Services {
             clock: &scheduler,
-            workflows: &NoOpWorkflowManager,
+            workflows: None,
             tracer: None,
         },
     );
@@ -648,7 +645,7 @@ fn dropping_inbound_channel_in_workflow() {
     let clock = MockScheduler::default();
     let (_, mut workflow) = create_workflow(Services {
         clock: &clock,
-        workflows: &NoOpWorkflowManager,
+        workflows: None,
         tracer: None,
     });
 
@@ -692,7 +689,7 @@ fn completing_main_task_with_error() {
     let clock = MockScheduler::default();
     let (receipt, workflow) = create_workflow(Services {
         clock: &clock,
-        workflows: &NoOpWorkflowManager,
+        workflows: None,
         tracer: None,
     });
 
@@ -744,7 +741,7 @@ fn completing_main_task_with_compound_error() {
     let clock = MockScheduler::default();
     let (_, workflow) = create_workflow(Services {
         clock: &clock,
-        workflows: &NoOpWorkflowManager,
+        workflows: None,
         tracer: None,
     });
 
@@ -774,7 +771,7 @@ fn completing_subtask_with_error() {
     let clock = MockScheduler::default();
     let (receipt, workflow) = create_workflow(Services {
         clock: &clock,
-        workflows: &NoOpWorkflowManager,
+        workflows: None,
         tracer: None,
     });
 

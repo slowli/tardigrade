@@ -231,9 +231,9 @@ pub(crate) mod serde_b64 {
         D: Deserializer<'de>,
         T: From<Vec<u8>>,
     {
-        struct HexVisitor;
+        struct Base64Visitor;
 
-        impl<'de> Visitor<'de> for HexVisitor {
+        impl<'de> Visitor<'de> for Base64Visitor {
             type Value = Vec<u8>;
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -269,7 +269,7 @@ pub(crate) mod serde_b64 {
         }
 
         let maybe_bytes = if deserializer.is_human_readable() {
-            deserializer.deserialize_str(HexVisitor)
+            deserializer.deserialize_str(Base64Visitor)
         } else {
             deserializer.deserialize_byte_buf(BytesVisitor)
         };
@@ -284,44 +284,45 @@ pub(crate) mod serde_poll {
 
     #[derive(Debug, Serialize, Deserialize)]
     #[serde(rename_all = "snake_case")]
-    enum PollResult<E> {
+    enum PollResult<T, E> {
         Pending,
-        Ok,
+        Ok(T),
         Error(E),
     }
 
-    impl<'a, E> PollResult<&'a E> {
-        fn from_ref(poll: &'a Poll<Result<(), E>>) -> Self {
+    impl<'a, T, E> PollResult<&'a T, &'a E> {
+        fn from_ref(poll: &'a Poll<Result<T, E>>) -> Self {
             match poll {
                 Poll::Pending => Self::Pending,
-                Poll::Ready(Ok(())) => Self::Ok,
+                Poll::Ready(Ok(value)) => Self::Ok(value),
                 Poll::Ready(Err(err)) => Self::Error(err),
             }
         }
     }
 
-    impl<E> From<PollResult<E>> for Poll<Result<(), E>> {
-        fn from(result: PollResult<E>) -> Self {
+    impl<T, E> From<PollResult<T, E>> for Poll<Result<T, E>> {
+        fn from(result: PollResult<T, E>) -> Self {
             match result {
                 PollResult::Pending => Poll::Pending,
-                PollResult::Ok => Poll::Ready(Ok(())),
+                PollResult::Ok(value) => Poll::Ready(Ok(value)),
                 PollResult::Error(err) => Poll::Ready(Err(err)),
             }
         }
     }
 
-    pub fn serialize<E: Serialize, S: Serializer>(
-        value: &Poll<Result<(), E>>,
+    pub fn serialize<T: Serialize, E: Serialize, S: Serializer>(
+        value: &Poll<Result<T, E>>,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         PollResult::from_ref(value).serialize(serializer)
     }
 
-    pub fn deserialize<'de, E, D>(deserializer: D) -> Result<Poll<Result<(), E>>, D::Error>
+    pub fn deserialize<'de, T, E, D>(deserializer: D) -> Result<Poll<Result<T, E>>, D::Error>
     where
+        T: Deserialize<'de>,
         E: Deserialize<'de>,
         D: Deserializer<'de>,
     {
-        PollResult::<E>::deserialize(deserializer).map(From::from)
+        PollResult::<T, E>::deserialize(deserializer).map(From::from)
     }
 }

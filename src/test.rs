@@ -145,7 +145,7 @@ pub struct MockScheduler {
 
 impl Default for MockScheduler {
     fn default() -> Self {
-        Self::new(Utc.timestamp(0, 0))
+        Self::new(Utc.timestamp_millis_opt(0).unwrap())
     }
 }
 
@@ -161,7 +161,7 @@ impl MockScheduler {
     /// Approximates `timestamp` to be presentable as an integer number of milliseconds since
     /// Unix epoch. This emulates WASM interface which uses millisecond precision.
     fn floor_timestamp(ts: DateTime<Utc>) -> DateTime<Utc> {
-        Utc.timestamp_millis(ts.timestamp_millis())
+        Utc.timestamp_millis_opt(ts.timestamp_millis()).unwrap()
     }
 
     /// Returns the expiration for the nearest timer, or `None` if there are no active timers.
@@ -476,11 +476,8 @@ impl Runtime {
 
         self.workflow_registry.insert::<W, _>(DEFINITION_ID);
         self.run(async {
-            let workflow = Workflows
-                .new_workflow::<W>(DEFINITION_ID, args)
-                .unwrap()
-                .build()
-                .expect("failed spawning workflow");
+            let builder = Workflows.new_workflow::<W>(DEFINITION_ID, args).unwrap();
+            let workflow = builder.build().await.expect("failed spawning workflow");
             task::yield_now().await; // allow the workflow to initialize
             test_fn(workflow.api).await;
         });

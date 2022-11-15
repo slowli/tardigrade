@@ -2,35 +2,30 @@
 
 use wasmtime::ExternRef;
 
-use std::{
-    borrow::Cow,
-    sync::{
-        atomic::{AtomicU32, Ordering},
-        Mutex,
-    },
-};
+use std::borrow::Cow;
 
 use super::*;
-use crate::{data::SpawnFunctions, module::WorkflowAndChannelIds, utils::copy_bytes_from_wasm};
+use crate::{data::SpawnFunctions, module::StashWorkflow, utils::copy_bytes_from_wasm};
 use tardigrade::{
     abi::TryFromWasm,
     interface::{ChannelKind, Interface},
-    spawn::{ChannelsConfig, ManageInterfaces, ManageWorkflows, SpecifyWorkflowChannels},
+    spawn::{HostError, ManageInterfaces},
     ChannelId,
 };
 
 #[derive(Debug)]
 struct NewWorkflowCall {
+    stub_id: WorkflowId,
     args: Vec<u8>,
-    commands_channel_id: ChannelId,
-    traces_channel_id: ChannelId,
+    channels: ChannelsConfig<ChannelId>,
 }
 
 #[derive(Debug)]
 struct MockWorkflowManager {
     interface: Interface,
-    channel_counter: AtomicU32,
-    calls: Mutex<Vec<NewWorkflowCall>>,
+    calls: Vec<NewWorkflowCall>,
+    next_workflow_id: WorkflowId,
+    next_channel_id: ChannelId,
 }
 
 impl MockWorkflowManager {
@@ -39,13 +34,37 @@ impl MockWorkflowManager {
     fn new() -> Self {
         Self {
             interface: Interface::from_bytes(Self::INTERFACE_BYTES),
-            channel_counter: AtomicU32::new(1),
-            calls: Mutex::new(vec![]),
+            calls: vec![],
+            next_channel_id: 1,
+            next_workflow_id: 1,
         }
     }
 
-    fn allocate_channel_id(&self) -> ChannelId {
-        ChannelId::from(self.channel_counter.fetch_add(1, Ordering::Relaxed))
+    fn init_single_child<'s>(
+        &'s mut self,
+        mut parent: PersistedWorkflow,
+        clock: &'s MockScheduler,
+    ) -> Workflow<'s> {
+        assert_eq!(self.calls.len(), 1);
+        let call = self.calls.pop().unwrap();
+
+        if call.args == b"err_input" {
+            parent.notify_on_child_spawn_error(call.stub_id, HostError::new("invalid input!"));
+        } else {
+            let channel_ids = mock_channel_ids(&self.interface, &mut self.next_channel_id);
+            let child_id = self.next_workflow_id;
+            self.next_workflow_id += 1;
+            parent.notify_on_child_init(call.stub_id, child_id, &call.channels, channel_ids);
+        }
+
+        restore_workflow(
+            parent,
+            Services {
+                clock,
+                workflows: Some(self),
+                tracer: None,
+            },
+        )
     }
 }
 
@@ -59,40 +78,22 @@ impl ManageInterfaces for MockWorkflowManager {
     }
 }
 
-impl SpecifyWorkflowChannels for MockWorkflowManager {
-    type Inbound = ChannelId;
-    type Outbound = ChannelId;
-}
-
-impl ManageWorkflows<'_, ()> for MockWorkflowManager {
-    type Handle = WorkflowAndChannelIds;
-    type Error = anyhow::Error;
-
-    fn create_workflow(
-        &self,
+impl StashWorkflow for MockWorkflowManager {
+    fn stash_workflow(
+        &mut self,
+        stub_id: WorkflowId,
         id: &str,
         args: Vec<u8>,
         channels: ChannelsConfig<ChannelId>,
-    ) -> Result<Self::Handle, Self::Error> {
+    ) {
         assert_eq!(id, "test:latest");
         assert_eq!(channels.inbound.len(), 1);
         assert_eq!(channels.outbound.len(), 1);
-
-        if args == b"err_input" {
-            anyhow::bail!("invalid input!");
-        }
-
-        let channel_ids = ChannelIds::new(channels, || self.allocate_channel_id());
-        let mut calls = self.calls.lock().unwrap();
-        calls.push(NewWorkflowCall {
+        self.calls.push(NewWorkflowCall {
+            stub_id,
             args,
-            commands_channel_id: channel_ids.inbound["commands"],
-            traces_channel_id: channel_ids.outbound["traces"],
+            channels,
         });
-        Ok(WorkflowAndChannelIds {
-            workflow_id: calls.len() as WorkflowId,
-            channel_ids,
-        })
     }
 }
 
@@ -103,7 +104,7 @@ fn create_workflow_with_manager(services: Services<'_>) -> Workflow<'_> {
         .for_untyped_workflow("TestWorkflow")
         .unwrap();
 
-    let channel_ids = mock_channel_ids(spawner.interface());
+    let channel_ids = mock_channel_ids(spawner.interface(), &mut 0);
     let mut workflow = spawner
         .spawn(b"test_input".to_vec(), &channel_ids, services)
         .unwrap();
@@ -132,15 +133,29 @@ fn spawn_child_workflow(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Po
     let handles = SpawnFunctions::create_channel_handles();
     assert!(handles.is_some());
     configure_handles(ctx.as_context_mut(), handles.clone())?;
-    let workflow = SpawnFunctions::spawn(
+    let stub = SpawnFunctions::spawn(
         ctx.as_context_mut(),
         id_ptr,
         id_len,
         args_ptr,
         args_len,
         handles,
-        ERROR_PTR,
     )?;
+    assert!(stub.is_some());
+
+    let maybe_workflow =
+        SpawnFunctions::poll_workflow_init(ctx.as_context_mut(), stub, POLL_CX, ERROR_PTR)?;
+    assert!(maybe_workflow.is_none()); // Poll::Pending
+
+    Ok(Poll::Pending)
+}
+
+fn get_child_workflow_channel(
+    mut ctx: StoreContextMut<'_, WorkflowData>,
+) -> Result<Poll<()>, Trap> {
+    let stub = Some(HostResource::WorkflowStub(0).into_ref());
+    let workflow =
+        SpawnFunctions::poll_workflow_init(ctx.as_context_mut(), stub, POLL_CX, ERROR_PTR)?;
     assert!(workflow.is_some());
 
     // Emulate getting an inbound channel for the workflow.
@@ -190,69 +205,148 @@ fn configure_handles(
 
 #[test]
 fn spawning_child_workflow() {
-    let poll_fns = Answers::from_value(spawn_child_workflow as MockPollFn);
+    let poll_fns = Answers::from_values([
+        spawn_child_workflow as MockPollFn,
+        get_child_workflow_channel,
+    ]);
     let _guard = ExportsMock::prepare(poll_fns);
     let clock = MockScheduler::default();
-    let manager = MockWorkflowManager::new();
+    let mut manager = MockWorkflowManager::new();
     let workflow = create_workflow_with_manager(Services {
         clock: &clock,
-        workflows: &manager,
+        workflows: Some(&mut manager),
         tracer: None,
     });
+
+    let persisted = workflow.persist();
+    let mut workflow = manager.init_single_child(persisted, &clock);
+    workflow.tick().unwrap();
 
     let mut children: Vec<_> = workflow.data().persisted.child_workflows().collect();
     assert_eq!(children.len(), 1);
     let (_, child) = children.pop().unwrap();
     let commands = child.outbound_channel("commands").unwrap();
     let traces = child.inbound_channel("traces").unwrap();
-
-    let calls = manager.calls.lock().unwrap();
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].args, b"child_input");
-    assert_eq!(calls[0].commands_channel_id, commands.id());
-    assert_eq!(calls[0].traces_channel_id, traces.id());
+    assert_ne!(commands.id(), traces.id());
 }
 
-fn spawn_child_workflow_errors(
-    mut ctx: StoreContextMut<'_, WorkflowData>,
-) -> Result<Poll<()>, Trap> {
-    let (bogus_id_ptr, bogus_id_len) =
-        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"bogus:latest")?;
-    let interface_res =
-        SpawnFunctions::workflow_interface(ctx.as_context_mut(), bogus_id_ptr, bogus_id_len)?;
-    assert_eq!(interface_res, -1); // `None`
+#[test]
+fn spawning_child_workflow_with_unknown_interface() {
+    let spawn_with_unknown_interface: MockPollFn = |mut ctx| {
+        let (bogus_id_ptr, bogus_id_len) =
+            WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"bogus:latest")?;
+        let interface_res =
+            SpawnFunctions::workflow_interface(ctx.as_context_mut(), bogus_id_ptr, bogus_id_len)?;
+        assert_eq!(interface_res, -1); // `None`
 
-    let (args_ptr, args_len) =
-        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"err_input")?;
-    let handles = SpawnFunctions::create_channel_handles();
-    configure_handles(ctx.as_context_mut(), handles.clone())?;
+        let (args_ptr, args_len) =
+            WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"err_input")?;
+        let handles = SpawnFunctions::create_channel_handles();
+        configure_handles(ctx.as_context_mut(), handles.clone())?;
 
-    let err = SpawnFunctions::spawn(
-        ctx.as_context_mut(),
-        bogus_id_ptr,
-        bogus_id_len,
-        args_ptr,
-        args_len,
-        handles.clone(),
-        ERROR_PTR,
-    )
-    .unwrap_err()
-    .to_string();
-    assert!(err.contains("workflow with ID `bogus:latest`"), "{}", err);
+        let err = SpawnFunctions::spawn(
+            ctx.as_context_mut(),
+            bogus_id_ptr,
+            bogus_id_len,
+            args_ptr,
+            args_len,
+            handles,
+        )
+        .unwrap_err()
+        .to_string();
 
-    let (id_ptr, id_len) = WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"test:latest")?;
-    let workflow = SpawnFunctions::spawn(
-        ctx.as_context_mut(),
-        id_ptr,
-        id_len,
-        args_ptr,
-        args_len,
-        handles.clone(),
-        ERROR_PTR,
-    )?;
+        assert!(err.contains("workflow with ID `bogus:latest`"), "{err}");
+        Ok(Poll::Pending)
+    };
 
-    assert!(workflow.is_none());
-    {
+    let poll_fns = Answers::from_value(spawn_with_unknown_interface);
+    let _guard = ExportsMock::prepare(poll_fns);
+    let clock = MockScheduler::default();
+    let mut manager = MockWorkflowManager::new();
+    let workflow = create_workflow_with_manager(Services {
+        clock: &clock,
+        workflows: Some(&mut manager),
+        tracer: None,
+    });
+
+    assert!(workflow.data().persisted.child_workflows().next().is_none());
+}
+
+#[test]
+fn spawning_child_workflow_with_extra_channel() {
+    let spawn_with_extra_channel: MockPollFn = |mut ctx| {
+        let (id_ptr, id_len) =
+            WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"test:latest")?;
+        let (args_ptr, args_len) =
+            WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"child_input")?;
+        let handles = SpawnFunctions::create_channel_handles();
+        configure_handles(ctx.as_context_mut(), handles.clone())?;
+
+        SpawnFunctions::set_channel_handle(
+            ctx.as_context_mut(),
+            handles.clone(),
+            ChannelKind::Inbound.into_abi_in_wasm(),
+            id_ptr,
+            id_len,
+            0,
+        )?;
+
+        let err = SpawnFunctions::spawn(
+            ctx.as_context_mut(),
+            id_ptr,
+            id_len,
+            args_ptr,
+            args_len,
+            handles,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert_eq!(err, "extra inbound handles: `test:latest`");
+        Ok(Poll::Pending)
+    };
+
+    let poll_fns = Answers::from_value(spawn_with_extra_channel);
+    let _guard = ExportsMock::prepare(poll_fns);
+    let clock = MockScheduler::default();
+    let mut manager = MockWorkflowManager::new();
+    let workflow = create_workflow_with_manager(Services {
+        clock: &clock,
+        workflows: Some(&mut manager),
+        tracer: None,
+    });
+
+    assert!(workflow.data().persisted.child_workflows().next().is_none());
+}
+
+#[test]
+fn spawning_child_workflow_with_host_error() {
+    let spawn_with_host_error: MockPollFn = |mut ctx| {
+        let (id_ptr, id_len) =
+            WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"test:latest")?;
+        let (args_ptr, args_len) =
+            WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"err_input")?;
+        let handles = SpawnFunctions::create_channel_handles();
+        configure_handles(ctx.as_context_mut(), handles.clone())?;
+
+        let stub = SpawnFunctions::spawn(
+            ctx.as_context_mut(),
+            id_ptr,
+            id_len,
+            args_ptr,
+            args_len,
+            handles,
+        )?;
+        assert!(stub.is_some());
+
+        Ok(Poll::Pending)
+    };
+    let poll_child_stub: MockPollFn = |mut ctx| {
+        let stub = Some(HostResource::WorkflowStub(0).into_ref());
+        let workflow =
+            SpawnFunctions::poll_workflow_init(ctx.as_context_mut(), stub, POLL_CX, ERROR_PTR)?;
+
+        assert!(workflow.is_none());
         let mut err_bytes = [0_u8; 8];
         let memory = ctx.data().exports().memory;
         memory
@@ -261,46 +355,23 @@ fn spawn_child_workflow_errors(
         let (err_ptr, err_len) = decode_string(i64::from_le_bytes(err_bytes));
         let err = copy_string_from_wasm(ctx.as_context_mut(), &memory, err_ptr, err_len)?;
         assert!(err.contains("invalid input"), "{}", err);
-    }
 
-    SpawnFunctions::set_channel_handle(
-        ctx.as_context_mut(),
-        handles.clone(),
-        ChannelKind::Inbound.into_abi_in_wasm(),
-        bogus_id_ptr,
-        bogus_id_len,
-        0,
-    )?;
+        Ok(Poll::Pending)
+    };
 
-    let err = SpawnFunctions::spawn(
-        ctx.as_context_mut(),
-        id_ptr,
-        id_len,
-        args_ptr,
-        args_len,
-        handles,
-        ERROR_PTR,
-    )
-    .unwrap_err()
-    .to_string();
-
-    assert_eq!(err, "extra inbound handles: `bogus:latest`");
-
-    Ok(Poll::Pending)
-}
-
-#[test]
-fn spawning_child_workflow_errors() {
-    let poll_fns = Answers::from_value(spawn_child_workflow_errors as MockPollFn);
+    let poll_fns = Answers::from_values([spawn_with_host_error, poll_child_stub]);
     let _guard = ExportsMock::prepare(poll_fns);
     let clock = MockScheduler::default();
-    let manager = MockWorkflowManager::new();
+    let mut manager = MockWorkflowManager::new();
     let workflow = create_workflow_with_manager(Services {
         clock: &clock,
-        workflows: &manager,
+        workflows: Some(&mut manager),
         tracer: None,
     });
 
+    let persisted = workflow.persist();
+    let mut workflow = manager.init_single_child(persisted, &clock);
+    workflow.tick().unwrap();
     assert!(workflow.data().persisted.child_workflows().next().is_none());
 }
 
@@ -341,25 +412,32 @@ fn consume_message_from_child(
 
 #[test]
 fn consuming_message_from_child_workflow() {
-    let poll_fns = Answers::from_values([spawn_child_workflow, consume_message_from_child]);
+    let poll_fns = Answers::from_values([
+        spawn_child_workflow,
+        get_child_workflow_channel,
+        consume_message_from_child,
+    ]);
     let exports_guard = ExportsMock::prepare(poll_fns);
     let clock = MockScheduler::default();
-    let manager = MockWorkflowManager::new();
-    let mut workflow = create_workflow_with_manager(Services {
+    let mut manager = MockWorkflowManager::new();
+    let workflow = create_workflow_with_manager(Services {
         clock: &clock,
-        workflows: &manager,
+        workflows: Some(&mut manager),
         tracer: None,
     });
+    let persisted = workflow.persist();
+    let mut workflow = manager.init_single_child(persisted, &clock);
+    workflow.tick().unwrap(); // makes the workflow listen to the `traces` child channel
 
     workflow
+        .data_mut()
+        .persisted
         .push_inbound_message(Some(1), "traces", b"trace #1".to_vec())
         .unwrap();
     let receipt = workflow.tick().unwrap();
 
     let exports = exports_guard.into_inner();
-    assert_eq!(exports.consumed_wakers.len(), 1);
-    assert!(exports.consumed_wakers.contains(&0));
-
+    assert_eq!(exports.consumed_wakers.len(), 2); // child init + child `traces` handle
     assert_child_inbound_message_receipt(&receipt);
 
     let messages = workflow.data_mut().drain_messages();
@@ -383,12 +461,12 @@ fn assert_child_inbound_message_receipt(receipt: &Receipt) {
         &receipt.executions()[0],
         Execution {
             function: ExecutedFunction::Waker {
-                waker_id: 0,
                 wake_up_cause: WakeUpCause::InboundMessage {
                     workflow_id: Some(1),
                     channel_name,
                     message_index: 0,
-                }
+                },
+                ..
             },
             events,
             ..

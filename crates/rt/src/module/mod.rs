@@ -18,12 +18,12 @@ mod services;
 #[cfg(test)]
 mod tests;
 
-pub use self::services::Clock;
+pub use self::services::{Clock, Schedule, TimerFuture};
 #[cfg(test)]
 pub(crate) use self::tests::{ExportsMock, MockPollFn};
 pub(crate) use self::{
     exports::ModuleExports,
-    services::{NoOpWorkflowManager, Services, WorkflowAndChannelIds},
+    services::{Services, StashWorkflow},
 };
 
 use self::imports::ModuleImports;
@@ -141,8 +141,10 @@ impl DataSection {
 
 /// Workflow module that combines a WASM module with the workflow logic and the declared
 /// workflow [`Interface`].
+#[derive(Clone)]
 pub struct WorkflowModule {
     pub(crate) inner: Module,
+    pub(crate) bytes: Arc<[u8]>,
     interfaces: HashMap<String, Interface>,
 }
 
@@ -150,6 +152,7 @@ impl fmt::Debug for WorkflowModule {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("WorkflowModule")
+            .field("bytes_len", &self.bytes.len())
             .field("interfaces", &self.interfaces)
             .finish_non_exhaustive()
     }
@@ -271,14 +274,19 @@ impl WorkflowModule {
     ///   or a known function with an incorrect signature.
     /// - The module does not have necessary exports.
     /// - The module does not have a custom section with the workflow interface definition(s).
-    pub fn new(engine: &WorkflowEngine, module_bytes: &[u8]) -> anyhow::Result<Self> {
-        let module =
-            Module::from_binary(&engine.inner, module_bytes).context("cannot parse WASM module")?;
-        let interfaces = WorkflowModule::interfaces_from_wasm(module_bytes)
+    pub fn new(
+        engine: &WorkflowEngine,
+        module_bytes: impl Into<Arc<[u8]>>,
+    ) -> anyhow::Result<Self> {
+        let module_bytes = module_bytes.into();
+        let module = Module::from_binary(&engine.inner, &module_bytes)
+            .context("cannot parse WASM module")?;
+        let interfaces = WorkflowModule::interfaces_from_wasm(&module_bytes)
             .context("cannot extract workflow interface from WASM module")?;
         WorkflowModule::validate_module(&module, &interfaces)?;
         Ok(Self {
             inner: module,
+            bytes: module_bytes,
             interfaces,
         })
     }
@@ -323,6 +331,14 @@ impl WorkflowModule {
             interface,
             workflow_name,
         ))
+    }
+
+    pub(crate) fn into_spawners(self) -> impl Iterator<Item = (String, WorkflowSpawner<()>)> {
+        let inner = self.inner;
+        self.interfaces.into_iter().map(move |(name, interface)| {
+            let spawner = WorkflowSpawner::new(inner.clone(), interface, &name);
+            (name, spawner)
+        })
     }
 }
 
@@ -406,16 +422,5 @@ impl<W> WorkflowSpawner<W> {
     /// Returns the name of the workflow spawned by this spawner.
     pub fn workflow_name(&self) -> &str {
         &self.workflow_name
-    }
-
-    pub(crate) fn erase(self) -> WorkflowSpawner<()> {
-        WorkflowSpawner {
-            module: self.module,
-            interface: self.interface,
-            workflow_name: self.workflow_name,
-            linker_extensions: self.linker_extensions,
-            data_section: self.data_section,
-            _ty: PhantomData,
-        }
     }
 }

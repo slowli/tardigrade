@@ -4,6 +4,11 @@
 
 use assert_matches::assert_matches;
 use futures::{stream, FutureExt, SinkExt};
+use tracing::{subscriber::DefaultGuard, Level, Subscriber};
+use tracing_capture::{CaptureLayer, SharedStorage};
+use tracing_subscriber::{
+    filter::Targets, layer::SubscriberExt, registry::LookupSpan, FmtSubscriber,
+};
 
 use super::*;
 use tardigrade::{
@@ -12,7 +17,29 @@ use tardigrade::{
     workflow::Handle,
 };
 
-async fn test_workflow_basics(mut api: Handle<PizzaDelivery, RemoteWorkflow>) {
+fn create_fmt_subscriber() -> impl Subscriber + for<'a> LookupSpan<'a> {
+    const FILTER: &str = "tardigrade_test_basic=debug,tardigrade=debug";
+
+    FmtSubscriber::builder()
+        .pretty()
+        .with_test_writer()
+        .with_env_filter(FILTER)
+        .finish()
+}
+
+fn enable_tracing_assertions() -> (DefaultGuard, SharedStorage) {
+    let storage = SharedStorage::default();
+    let filter = Targets::new().with_target("tardigrade_test_basic", Level::INFO);
+    let layer = CaptureLayer::new(&storage).with_filter(filter);
+    let subscriber = create_fmt_subscriber().with(layer);
+    let guard = tracing::subscriber::set_default(subscriber);
+    (guard, storage)
+}
+
+async fn test_workflow_basics(
+    mut api: Handle<PizzaDelivery, RemoteWorkflow>,
+    storage: SharedStorage,
+) {
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,
         delivery_distance: 10,
@@ -21,27 +48,26 @@ async fn test_workflow_basics(mut api: Handle<PizzaDelivery, RemoteWorkflow>) {
 
     let event = api.shared.events.next().await.unwrap();
     assert_eq!(event, DomainEvent::OrderTaken { index: 1, order });
-    /*{  // FIXME: restore somehow?
-        tracer_handle.update();
-        let traced_futures: Vec<_> = tracer_handle
-            .futures()
-            .iter()
-            .map(|(_, state)| state)
-            .collect();
-        assert_eq!(traced_futures.len(), 2);
-
-        let baking_process_future = traced_futures
-            .iter()
-            .find(|&state| state.name() == "baking_process (order=1)")
+    {
+        let storage = storage.lock();
+        let spawn_span = storage
+            .all_spans()
+            .find(|span| span.metadata().name() == "spawn")
             .unwrap();
-        assert_matches!(baking_process_future.state(), FutureState::Polling);
+        assert!(spawn_span["args"].is_debug(&Args {
+            oven_count: 1,
+            deliverer_count: 1,
+        }));
 
-        let baking_timer_future = traced_futures
-            .iter()
-            .find(|&state| state.name() == "baking_timer")
+        let baking_timer = storage
+            .all_spans()
+            .find(|span| span.metadata().name() == "baking_timer")
             .unwrap();
-        assert_matches!(baking_timer_future.state(), FutureState::Polling);
-    }*/
+        assert_eq!(baking_timer["index"], 1_u64);
+        assert!(baking_timer["order.kind"].is_debug(&PizzaKind::Pepperoni));
+        assert_eq!(baking_timer.stats().entered, 1);
+        assert!(!baking_timer.stats().is_closed);
+    }
 
     let now = Timers::now();
     let timer_expiration = Timers::next_timer_expiration().unwrap();
@@ -49,30 +75,25 @@ async fn test_workflow_basics(mut api: Handle<PizzaDelivery, RemoteWorkflow>) {
     Timers::set_now(timer_expiration);
     let event = api.shared.events.next().await.unwrap();
     assert_eq!(event, DomainEvent::Baked { index: 1, order });
-    /*{
-        tracer_handle.update();
-        let traced_futures: Vec<_> = tracer_handle
-            .futures()
-            .iter()
-            .map(|(_, state)| state)
-            .collect();
-        assert_eq!(traced_futures.len(), 3);
 
-        let baking_timer_future = traced_futures
-            .iter()
-            .find(|&state| state.name() == "baking_timer")
-            .unwrap();
-        assert_matches!(baking_timer_future.state(), FutureState::Dropped);
-    }*/
+    let storage = storage.lock();
+    let baking_timer = storage
+        .all_spans()
+        .find(|span| span.metadata().name() == "baking_timer")
+        .unwrap();
+    assert!(baking_timer.stats().is_closed);
 }
 
 #[test]
 fn workflow_basics() {
+    let (_guard, tracing_storage) = enable_tracing_assertions();
     let inputs = Args {
         oven_count: 1,
         deliverer_count: 1,
     };
-    Runtime::default().test::<PizzaDelivery, _, _>(inputs, test_workflow_basics);
+    Runtime::default().test::<PizzaDelivery, _, _>(inputs, |handle| {
+        test_workflow_basics(handle, tracing_storage)
+    });
 }
 
 async fn test_concurrency_in_workflow(mut api: Handle<PizzaDelivery, RemoteWorkflow>) {
