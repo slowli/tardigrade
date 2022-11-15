@@ -248,7 +248,8 @@ impl IntoWasm for Poll<DateTime<Utc>> {
     unsafe fn from_abi_in_wasm(abi: i64) -> Self {
         match abi {
             -1 => Poll::Pending,
-            _ => Poll::Ready(Utc.timestamp_millis(abi)),
+            _ => Poll::Ready(Utc.timestamp_millis_opt(abi).unwrap()),
+            // ^ since we trust the host to submit a real timestamp, `unwrap()` should be safe
         }
     }
 }

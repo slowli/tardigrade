@@ -47,7 +47,7 @@ fn initialize_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()
 
     // ...then polling this channel
     let poll_res =
-        WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX).unwrap();
+        WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
     assert_eq!(poll_res, -1); // Poll::Pending
 
     Ok(Poll::Pending)
@@ -88,9 +88,8 @@ fn consume_message(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()
         WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), traces.clone(), POLL_CX)?;
     assert_eq!(poll_res, 0); // Poll::Ready
 
-    let (trace_ptr, trace_len) = WasmAllocator::new(ctx.as_context_mut())
-        .copy_to_wasm(b"trace #1")
-        .unwrap();
+    let (trace_ptr, trace_len) =
+        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"trace #1")?;
     WorkflowFunctions::start_send(ctx.as_context_mut(), traces.clone(), trace_ptr, trace_len)?;
 
     emit_event_and_flush(&mut ctx)?;
@@ -575,30 +574,28 @@ fn rolling_back_placing_waker_on_trap() {
 fn timers_basics() {
     let create_timers: MockPollFn = |mut ctx| {
         let ts = WorkflowFunctions::current_timestamp(ctx.as_context_mut());
-        let timer_id = WorkflowFunctions::create_timer(ctx.as_context_mut(), ts - 100);
+        let timer_id = WorkflowFunctions::create_timer(ctx.as_context_mut(), ts - 100)?;
         assert_eq!(timer_id, 0);
         // ^ implementation detail, but it's used in code later
-        let result =
-            WorkflowFunctions::poll_timer(ctx.as_context_mut(), timer_id, POLL_CX).unwrap();
+        let result = WorkflowFunctions::poll_timer(ctx.as_context_mut(), timer_id, POLL_CX)?;
         assert_eq!(result, ts);
 
-        let timer_id = WorkflowFunctions::create_timer(ctx.as_context_mut(), ts + 100);
+        let timer_id = WorkflowFunctions::create_timer(ctx.as_context_mut(), ts + 100)?;
         assert_eq!(timer_id, 1);
-        let result =
-            WorkflowFunctions::poll_timer(ctx.as_context_mut(), timer_id, POLL_CX).unwrap();
+        let result = WorkflowFunctions::poll_timer(ctx.as_context_mut(), timer_id, POLL_CX)?;
         assert_eq!(result, -1); // Poll::Pending
 
         Ok(Poll::Pending)
     };
     let poll_timers_and_drop: MockPollFn = |mut ctx| {
-        let result = WorkflowFunctions::poll_timer(ctx.as_context_mut(), 0, POLL_CX).unwrap();
+        let result = WorkflowFunctions::poll_timer(ctx.as_context_mut(), 0, POLL_CX)?;
         assert_ne!(result, -1);
-        WorkflowFunctions::drop_timer(ctx.as_context_mut(), 0).unwrap();
+        WorkflowFunctions::drop_timer(ctx.as_context_mut(), 0)?;
 
-        let result = WorkflowFunctions::poll_timer(ctx.as_context_mut(), 1, POLL_CX).unwrap();
+        let result = WorkflowFunctions::poll_timer(ctx.as_context_mut(), 1, POLL_CX)?;
         let ts = WorkflowFunctions::current_timestamp(ctx.as_context_mut());
         assert_eq!(result, ts);
-        WorkflowFunctions::drop_timer(ctx.as_context_mut(), 1).unwrap();
+        WorkflowFunctions::drop_timer(ctx.as_context_mut(), 1)?;
 
         Ok(Poll::Pending)
     };

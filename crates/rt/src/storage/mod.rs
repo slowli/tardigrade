@@ -19,7 +19,7 @@ use tardigrade::{channel::SendError, ChannelId, WorkflowId};
 ///
 /// A storage is required to instantiate a [`WorkflowManager`](crate::manager::WorkflowManager).
 #[async_trait]
-pub trait Storage<'a>: 'a + Send + Sync {
+pub trait Storage<'a>: 'static + Send + Sync {
     /// Read/write transaction for the storage. See [`StorageTransaction`] for required
     /// transaction semantics.
     type Transaction: 'a + StorageTransaction;
