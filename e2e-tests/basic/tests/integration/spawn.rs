@@ -10,6 +10,7 @@ use tardigrade::spawn::ManageWorkflowsExt;
 use tardigrade_rt::{
     driver::{Driver, Termination},
     receipt::{Event, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
+    test::MockScheduler,
     AsyncIoScheduler,
 };
 use tardigrade_test_basic::{
@@ -106,7 +107,8 @@ async fn spawning_child_workflows() -> TestResult {
 
 #[async_std::test]
 async fn accessing_handles_in_child_workflows() -> TestResult {
-    let mut manager = create_manager(AsyncIoScheduler).await?;
+    let (scheduler, mut expirations) = MockScheduler::with_expirations();
+    let mut manager = create_manager(scheduler.clone()).await?;
 
     let inputs = Args {
         oven_count: 2,
@@ -150,8 +152,8 @@ async fn accessing_handles_in_child_workflows() -> TestResult {
         });
         child_ids.extend(new_child_ids);
     }
-
-    // At this point, 2 child workflows should be spawned and initialized.
+    // At this point, 2 child workflows should be spawned and initialized, and both blocked
+    // on timer.
     assert_eq!(child_ids.len(), 2);
 
     let mut driver = Driver::new();
@@ -161,17 +163,28 @@ async fn accessing_handles_in_child_workflows() -> TestResult {
         let child_handle = child.downcast::<Baking>()?.handle();
         assert!(child_handle.events.can_manipulate());
         assert_eq!(child_handle.events.channel_id(), parent_events_id);
+        let event = child_handle.events.receive_message(0).await?;
+        assert_matches!(event.decode()?, DomainEvent::OrderTaken { .. });
         child_events_rxs.push(child_handle.events.into_stream(&mut driver));
     }
 
-    // The aliased channels should be immediately disconnected.
+    // Complete baking tasks.
+    task::spawn(async move {
+        while let Some(expiration) = expirations.next().await {
+            if expiration > scheduler.now() {
+                scheduler.set_now(expiration);
+            }
+        }
+    });
+    // The aliased channel should be immediately disconnected.
     assert!(child_events_rxs[0].try_next().await?.is_none());
 
     task::spawn(async move { driver.drive(&mut manager).await });
-    // The pre-closed channels should be disconnected as well, but this happens
-    // on first tick.
     let events: Vec<_> = child_events_rxs[1].by_ref().try_collect().await?;
-    assert_eq!(events.len(), 4);
+    assert_matches!(
+        events.as_slice(),
+        [DomainEvent::Baked { .. }, DomainEvent::Baked { .. }]
+    );
 
     Ok(())
 }
