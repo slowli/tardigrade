@@ -3,7 +3,7 @@
 use assert_matches::assert_matches;
 use async_trait::async_trait;
 
-use std::task::Poll;
+use std::{collections::HashSet, task::Poll};
 
 use crate::create_module;
 use tardigrade::{
@@ -203,14 +203,19 @@ async fn workflow_with_concurrency() -> TestResult {
     };
     handle.orders.send(other_order).await?;
 
-    let mut message_indices = vec![];
+    let mut message_indices = HashSet::new();
     while let Ok(result) = manager.tick().await {
         let receipt = result.into_inner()?;
-        if let Some(WakeUpCause::InboundMessage { message_index, .. }) = receipt.root_cause() {
-            message_indices.push(*message_index);
-        }
+        let new_indices = receipt.executions().iter().filter_map(|execution| {
+            if let Some(WakeUpCause::InboundMessage { message_index, .. }) = execution.cause() {
+                Some(*message_index)
+            } else {
+                None
+            }
+        });
+        message_indices.extend(new_indices);
     }
-    assert_eq!(message_indices, [0, 1]);
+    assert_eq!(message_indices, HashSet::from_iter([0, 1]));
 
     let events = Drain::new(handle.shared.events).drain().await?;
     assert_eq!(
@@ -393,10 +398,10 @@ async fn workflow_recovery_after_trap() -> TestResult {
         let result = loop {
             let tick_result = manager.tick().await?;
             let receipt = tick_result.as_ref().unwrap_or_else(ExecutionError::receipt);
-            if matches!(
-                receipt.root_cause(),
-                Some(WakeUpCause::InboundMessage { .. })
-            ) {
+            let consumed_message = receipt.executions().iter().any(|execution| {
+                matches!(execution.cause(), Some(WakeUpCause::InboundMessage { .. }))
+            });
+            if consumed_message {
                 break tick_result;
             }
         };

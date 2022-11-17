@@ -285,6 +285,13 @@ pub struct Execution {
     pub task_result: Option<TaskResult>,
 }
 
+impl Execution {
+    /// Returns the cause of this execution.
+    pub fn cause(&self) -> Option<&WakeUpCause> {
+        self.function.wake_up_cause()
+    }
+}
+
 /// Receipt for executing tasks in a workflow.
 #[derive(Debug, Default)]
 pub struct Receipt {
@@ -307,11 +314,6 @@ impl Receipt {
         self.executions
             .iter()
             .flat_map(|execution| &execution.events)
-    }
-
-    /// Returns the root cause of the workflow execution that corresponds to this receipt, if any.
-    pub fn root_cause(&self) -> Option<&WakeUpCause> {
-        self.executions.first()?.function.wake_up_cause()
     }
 }
 
