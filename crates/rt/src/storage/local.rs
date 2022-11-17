@@ -14,7 +14,7 @@ use std::{
     borrow::Cow,
     cmp,
     collections::{HashMap, HashSet, VecDeque},
-    ops,
+    mem, ops,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -23,11 +23,11 @@ use std::{
 
 use super::{
     ChannelRecord, MessageError, ModuleRecord, ReadChannels, ReadModules, ReadWorkflows, Readonly,
-    Storage, StorageTransaction, WorkflowRecord, WorkflowSelectionCriteria, WriteChannels,
-    WriteModules, WriteWorkflows,
+    Storage, StorageTransaction, WorkflowRecord, WorkflowSelectionCriteria, WorkflowWaker,
+    WorkflowWakerRecord, WriteChannels, WriteModules, WriteWorkflowWakers, WriteWorkflows,
 };
 use crate::{utils::Message, PersistedWorkflow};
-use tardigrade::{channel::SendError, ChannelId, WorkflowId};
+use tardigrade::{ChannelId, WorkflowId};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LocalChannel {
@@ -63,6 +63,7 @@ struct Inner {
     modules: HashMap<String, ModuleRecord>,
     channels: HashMap<ChannelId, LocalChannel>,
     workflows: HashMap<WorkflowId, WorkflowRecord>,
+    workflow_wakers: Vec<WorkflowWakerRecord>,
 }
 
 impl Default for Inner {
@@ -79,6 +80,7 @@ impl Default for Inner {
             modules: HashMap::new(),
             channels: HashMap::from_iter([(0, closed_channel)]),
             workflows: HashMap::new(),
+            workflow_wakers: Vec::new(),
         }
     }
 }
@@ -231,6 +233,39 @@ pub struct LocalTransaction<'a> {
     truncate_messages: bool,
 }
 
+impl LocalTransaction<'_> {
+    /// Ensures that the specified workflow will be polled.
+    #[cfg(test)]
+    pub(crate) fn prepare_wakers_for_workflow(&mut self, workflow_id: WorkflowId) {
+        let wakers = &mut self.inner.workflow_wakers;
+        let pos = wakers
+            .iter()
+            .position(|record| record.workflow_id == workflow_id);
+        if let Some(pos) = pos {
+            wakers.swap(0, pos);
+        } else {
+            assert!(
+                wakers.is_empty(),
+                "no wakers for workflow {workflow_id}: {wakers:?}"
+            );
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn wakers_for_workflow(
+        &self,
+        workflow_id: WorkflowId,
+    ) -> impl Iterator<Item = &WorkflowWaker> + '_ {
+        self.inner.workflow_wakers.iter().filter_map(move |record| {
+            if record.workflow_id == workflow_id {
+                Some(&record.waker)
+            } else {
+                None
+            }
+        })
+    }
+}
+
 #[async_trait]
 impl ReadModules for LocalTransaction<'_> {
     async fn module(&self, id: &str) -> Option<ModuleRecord> {
@@ -261,17 +296,6 @@ impl ReadChannels for LocalTransaction<'_> {
         Some(channel.record.clone())
     }
 
-    async fn has_messages_for_receiver_workflow(&self, id: ChannelId) -> bool {
-        if let Some(channel) = self.inner.channels.get(&id) {
-            if let Some(workflow_id) = channel.record.receiver_workflow_id {
-                let workflow = &self.inner.workflows[&workflow_id].persisted;
-                let (.., state) = workflow.find_inbound_channel(id);
-                return state.received_message_count() < channel.record.received_messages;
-            }
-        }
-        false
-    }
-
     async fn channel_message(&self, id: ChannelId, index: usize) -> Result<Vec<u8>, MessageError> {
         let channel = self
             .inner
@@ -289,6 +313,27 @@ impl ReadChannels for LocalTransaction<'_> {
             .get(idx_in_channel)
             .map(|message| message.clone().into())
             .ok_or(MessageError::NonExistingIndex { is_closed })
+    }
+
+    async fn find_consumable_channel(&self) -> Option<(ChannelId, ChannelRecord)> {
+        let workflows = self.inner.workflows.values();
+        let mut all_channels = workflows.flat_map(|record| {
+            record
+                .persisted
+                .inbound_channels()
+                .map(|(_, _, state)| state)
+        });
+        all_channels.find_map(|state| {
+            if state.waits_for_message() {
+                let channel_id = state.id();
+                let next_message_idx = state.received_message_count();
+                let channel = &self.inner.channels[&channel_id];
+                if channel.contains_index(next_message_idx) {
+                    return Some((channel_id, channel.record.clone()));
+                }
+            }
+            None
+        })
     }
 }
 
@@ -321,22 +366,15 @@ impl WriteChannels for LocalTransaction<'_> {
         channel.record.clone()
     }
 
-    async fn push_messages(
-        &mut self,
-        id: ChannelId,
-        messages: Vec<Vec<u8>>,
-    ) -> Result<(), SendError> {
+    async fn push_messages(&mut self, id: ChannelId, messages: Vec<Vec<u8>>) {
         let channel = self.inner.channels.get_mut(&id).unwrap();
-        if channel.record.is_closed {
-            return Err(SendError::Closed);
-        }
+        debug_assert!(!channel.record.is_closed);
 
         let len = messages.len();
         channel
             .messages
             .extend(messages.into_iter().map(Message::from));
         channel.record.received_messages += len;
-        Ok(())
     }
 
     async fn truncate_channel(&mut self, id: ChannelId, min_index: usize) {
@@ -354,37 +392,6 @@ impl ReadWorkflows for LocalTransaction<'_> {
 
     async fn workflow(&self, id: WorkflowId) -> Option<WorkflowRecord> {
         self.inner.workflows.get(&id).cloned()
-    }
-
-    async fn find_pending_workflow(&self) -> Option<WorkflowRecord> {
-        self.inner
-            .workflows
-            .values()
-            .find(|record| {
-                let persisted = &record.persisted;
-                !persisted.is_initialized() || persisted.pending_wakeup_causes().next().is_some()
-            })
-            .cloned()
-    }
-
-    async fn find_consumable_channel(&self) -> Option<(ChannelId, usize, WorkflowRecord)> {
-        let workflows = self.inner.workflows.values();
-        let mut all_channels = workflows.flat_map(|record| {
-            record
-                .persisted
-                .inbound_channels()
-                .map(move |(_, _, state)| (record, state))
-        });
-        all_channels.find_map(|(record, state)| {
-            if state.waits_for_message() {
-                let channel_id = state.id();
-                let next_message_idx = state.received_message_count();
-                if self.inner.channels[&channel_id].contains_index(next_message_idx) {
-                    return Some((channel_id, next_message_idx, record.clone()));
-                }
-            }
-            None
-        })
     }
 
     async fn nearest_timer_expiration(&self) -> Option<DateTime<Utc>> {
@@ -432,20 +439,45 @@ impl WriteWorkflows for LocalTransaction<'_> {
         Some(record.clone())
     }
 
-    async fn manipulate_all_workflows<F: FnMut(&mut PersistedWorkflow) + Send>(
+    async fn delete_workflow(&mut self, id: WorkflowId) {
+        self.inner.workflows.remove(&id);
+    }
+}
+
+#[async_trait]
+impl WriteWorkflowWakers for LocalTransaction<'_> {
+    async fn insert_waker(&mut self, waker: WorkflowWakerRecord) {
+        self.inner.workflow_wakers.push(waker);
+    }
+
+    async fn insert_waker_for_matching_workflows(
         &mut self,
         criteria: WorkflowSelectionCriteria,
-        mut action: F,
+        waker: WorkflowWaker,
     ) {
-        for record in self.inner.workflows.values_mut() {
+        for (&id, record) in &self.inner.workflows {
             if criteria.matches(record) {
-                action(&mut record.persisted);
+                self.inner
+                    .workflow_wakers
+                    .push(waker.clone().for_workflow(id));
             }
         }
     }
 
-    async fn delete_workflow(&mut self, id: WorkflowId) {
-        self.inner.workflows.remove(&id);
+    async fn delete_wakers_for_single_workflow(&mut self) -> Vec<WorkflowWakerRecord> {
+        let workflow_id = self
+            .inner
+            .workflow_wakers
+            .first()
+            .map(|record| record.workflow_id);
+        if let Some(workflow_id) = workflow_id {
+            let wakers = mem::take(&mut self.inner.workflow_wakers).into_iter();
+            let (deleted, remaining) = wakers.partition(|record| record.workflow_id == workflow_id);
+            self.inner.workflow_wakers = remaining;
+            deleted
+        } else {
+            vec![]
+        }
     }
 }
 
@@ -510,19 +542,13 @@ mod tests {
         };
         transaction.get_or_insert_channel(1, channel_state).await;
 
-        transaction
-            .push_messages(1, vec![b"test".to_vec()])
-            .await
-            .unwrap();
+        transaction.push_messages(1, vec![b"test".to_vec()]).await;
         let message = transaction.channel_message(1, 0).await.unwrap();
         assert_eq!(message, b"test");
         let err = transaction.channel_message(1, 1).await.unwrap_err();
         assert_matches!(err, MessageError::NonExistingIndex { is_closed: false });
 
-        transaction
-            .push_messages(1, vec![b"other".to_vec()])
-            .await
-            .unwrap();
+        transaction.push_messages(1, vec![b"other".to_vec()]).await;
         let message = transaction.channel_message(1, 0).await.unwrap();
         assert_eq!(message, b"test");
         let message = transaction.channel_message(1, 1).await.unwrap();

@@ -239,9 +239,14 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
         message: Vec<u8>,
     ) -> Result<(), SendError> {
         let mut transaction = self.storage.transaction().await;
-        let result = transaction.push_messages(channel_id, vec![message]).await;
+        let channel = transaction.channel(channel_id).await.unwrap();
+        if channel.is_closed {
+            return Err(SendError::Closed);
+        }
+
+        transaction.push_messages(channel_id, vec![message]).await;
         transaction.commit().await;
-        result
+        Ok(())
     }
 
     pub(crate) async fn close_host_sender(&'a self, channel_id: ChannelId) {

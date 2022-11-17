@@ -9,9 +9,7 @@ use std::{borrow::Cow, collections::HashMap, mem};
 use super::{Shared, WorkflowAndChannelIds, WorkflowHandle, WorkflowManager, WorkflowSpawners};
 use crate::{
     module::{Clock, Services, StashWorkflow},
-    storage::{
-        ChannelRecord, Storage, StorageTransaction, WorkflowRecord, WriteChannels, WriteWorkflows,
-    },
+    storage::{ChannelRecord, Storage, StorageTransaction, WorkflowRecord, WorkflowWaker},
     workflow::{ChannelIds, PersistedWorkflow},
 };
 use tardigrade::{
@@ -77,10 +75,10 @@ struct WorkflowStub {
 
 impl WorkflowStub {
     // **NB.** Should be called only once per instance because `args` are taken out.
-    async fn spawn<T: WriteChannels>(
+    async fn spawn<T: StorageTransaction>(
         &mut self,
         shared: Shared<'_>,
-        persistence: &mut T,
+        transaction: &mut T,
     ) -> anyhow::Result<(PersistedWorkflow, ChannelIds)> {
         let spawner = shared.spawners.for_full_id(&self.definition_id).unwrap();
         let services = Services {
@@ -88,7 +86,7 @@ impl WorkflowStub {
             workflows: None,
             tracer: None,
         };
-        let new_channel_ids = stream::unfold(persistence, |persistence| async {
+        let new_channel_ids = stream::unfold(transaction, |persistence| async {
             let id = persistence.allocate_channel_id().await;
             Some((id, persistence))
         });
@@ -116,9 +114,9 @@ impl<'a> NewWorkflows<'a> {
         }
     }
 
-    pub async fn commit<T: WriteChannels + WriteWorkflows>(
+    pub async fn commit<T: StorageTransaction>(
         self,
-        persistence: &mut T,
+        transaction: &mut T,
         parent: &mut PersistedWorkflow,
     ) {
         let executed_workflow_id = self.executing_workflow_id;
@@ -127,7 +125,7 @@ impl<'a> NewWorkflows<'a> {
             let result = Self::commit_child(
                 executed_workflow_id,
                 self.shared,
-                persistence,
+                transaction,
                 &mut child_stub,
             );
             match result.await {
@@ -147,30 +145,30 @@ impl<'a> NewWorkflows<'a> {
         }
     }
 
-    async fn commit_external<T: WriteChannels + WriteWorkflows>(
+    async fn commit_external<T: StorageTransaction>(
         self,
-        persistence: &mut T,
+        transaction: &mut T,
     ) -> anyhow::Result<WorkflowId> {
         debug_assert!(self.executing_workflow_id.is_none());
         debug_assert_eq!(self.new_workflows.len(), 1);
         let (_, mut child_stub) = self.new_workflows.into_iter().next().unwrap();
-        let child = Self::commit_child(None, self.shared, persistence, &mut child_stub);
+        let child = Self::commit_child(None, self.shared, transaction, &mut child_stub);
         Ok(child.await?.workflow_id)
     }
 
-    async fn commit_child<T: WriteChannels + WriteWorkflows>(
+    async fn commit_child<T: StorageTransaction>(
         executed_workflow_id: Option<WorkflowId>,
         shared: Shared<'_>,
-        persistence: &mut T,
+        transaction: &mut T,
         child_stub: &mut WorkflowStub,
     ) -> anyhow::Result<WorkflowAndChannelIds> {
-        let (mut persisted, channel_ids) = child_stub.spawn(shared, persistence).await?;
-        let child_id = persistence.allocate_workflow_id().await;
+        let (mut persisted, channel_ids) = child_stub.spawn(shared, transaction).await?;
+        let child_id = transaction.allocate_workflow_id().await;
 
         tracing::debug!(?channel_ids, "handling channels for new workflow");
         for (name, &channel_id) in &channel_ids.inbound {
             let state = ChannelRecord::new(executed_workflow_id, Some(child_id));
-            let state = persistence.get_or_insert_channel(channel_id, state).await;
+            let state = transaction.get_or_insert_channel(channel_id, state).await;
             if state.is_closed {
                 persisted.close_inbound_channel(None, name);
             }
@@ -178,11 +176,11 @@ impl<'a> NewWorkflows<'a> {
         }
         for (name, &channel_id) in &channel_ids.outbound {
             let state = ChannelRecord::new(Some(child_id), executed_workflow_id);
-            let state = persistence.get_or_insert_channel(channel_id, state).await;
+            let state = transaction.get_or_insert_channel(channel_id, state).await;
             if state.is_closed {
                 persisted.close_outbound_channel(None, name);
             } else {
-                persistence
+                transaction
                     .manipulate_channel(channel_id, |channel| {
                         channel.sender_workflow_ids.insert(child_id);
                     })
@@ -201,7 +199,10 @@ impl<'a> NewWorkflows<'a> {
             persisted,
             tracing_spans: PersistedSpans::default(),
         };
-        persistence.insert_workflow(child_workflow).await;
+        transaction.insert_workflow(child_workflow).await;
+        transaction
+            .insert_waker(WorkflowWaker::Internal.for_workflow(child_id))
+            .await;
 
         Ok(WorkflowAndChannelIds {
             workflow_id: child_id,

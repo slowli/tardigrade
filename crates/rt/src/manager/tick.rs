@@ -7,13 +7,13 @@ use tracing_tunnel::TracingEventReceiver;
 use std::{error, fmt};
 
 use super::{new_workflows::NewWorkflows, persistence::StorageHelper, AsManager, WorkflowManager};
-use crate::storage::MessageError;
 use crate::{
     module::{Clock, Services},
     receipt::{ExecutionError, Receipt},
     storage::{
-        ReadChannels, ReadModules, ReadWorkflows, Storage, StorageTransaction, WorkflowRecord,
-        WriteModules, WriteWorkflows,
+        MessageError, ReadChannels, ReadModules, ReadWorkflows, Storage, StorageTransaction,
+        WorkflowRecord, WorkflowWaker, WorkflowWakerRecord, WriteModules, WriteWorkflowWakers,
+        WriteWorkflows,
     },
     workflow::Workflow,
     PersistedWorkflow, WorkflowSpawner,
@@ -173,6 +173,29 @@ impl fmt::Display for WouldBlock {
 
 impl error::Error for WouldBlock {}
 
+#[derive(Debug)]
+struct PendingChannel {
+    child_id: Option<WorkflowId>,
+    name: String,
+    channel_id: ChannelId,
+    message_idx: usize,
+    waits_for_message: bool,
+}
+
+impl PendingChannel {
+    fn take_pending_message(&self, workflow: &mut Workflow<'_>) {
+        if workflow.take_pending_inbound_message(self.child_id, &self.name) {
+            // The message was not consumed. We still persist the workflow in order to
+            // consume wakers (otherwise, we would loop indefinitely), and place the message
+            // back to the channel.
+            tracing::warn!(
+                ?self,
+                "message was not consumed by workflow; placing the message back"
+            );
+        }
+    }
+}
+
 /// Temporary value holding parts necessary to restore a `Workflow`.
 #[derive(Debug)]
 struct WorkflowSeed<'a> {
@@ -182,6 +205,74 @@ struct WorkflowSeed<'a> {
 }
 
 impl<'a> WorkflowSeed<'a> {
+    fn apply_wakers(&mut self, waker_records: Vec<WorkflowWakerRecord>) {
+        for record in waker_records {
+            match record.waker {
+                WorkflowWaker::Internal => {
+                    // Handled separately; no modifications are required
+                }
+                WorkflowWaker::Timer(timer) => {
+                    self.persisted.set_current_time(timer);
+                }
+                WorkflowWaker::OutboundChannelClosure(channel_id) => {
+                    self.persisted.close_outbound_channels_by_id(channel_id);
+                }
+                WorkflowWaker::ChildCompletion(child_id, result) => {
+                    self.persisted.notify_on_child_completion(child_id, result);
+                }
+            }
+        }
+    }
+
+    // TODO: consider pushing messages to all channels or making this configurable.
+    async fn update_inbound_channels<T: ReadChannels>(
+        &mut self,
+        transaction: &T,
+    ) -> Option<PendingChannel> {
+        let channels = self.persisted.inbound_channels();
+        let pending_channels = channels.filter_map(|(child_id, name, state)| {
+            if state.is_closed() {
+                None
+            } else {
+                Some(PendingChannel {
+                    child_id,
+                    name: name.to_owned(),
+                    channel_id: state.id(),
+                    message_idx: state.received_message_count(),
+                    waits_for_message: state.waits_for_message(),
+                })
+            }
+        });
+        let pending_channels: Vec<_> = pending_channels.collect();
+
+        let mut pending_channel = None;
+        for pending in pending_channels {
+            let message_or_eof = transaction
+                .channel_message(pending.channel_id, pending.message_idx)
+                .await;
+            match message_or_eof {
+                Ok(message) if pending.waits_for_message && pending_channel.is_none() => {
+                    self.persisted
+                        .push_inbound_message(pending.child_id, &pending.name, message)
+                        .unwrap();
+                    // ^ `unwrap()` is safe: no messages can be persisted
+                    pending_channel = Some(pending);
+                }
+                Err(MessageError::NonExistingIndex { is_closed: true }) => {
+                    // Signal to the workflow that the channel is closed. This can be performed
+                    // on a persisted workflow, without executing it.
+                    self.persisted
+                        .close_inbound_channel(pending.child_id, &pending.name);
+                }
+                _ => {
+                    // Skip processing for now: we want to pinpoint consumption-related
+                    // errors should they occur.
+                }
+            }
+        }
+        pending_channel
+    }
+
     fn restore(
         self,
         workflows: &'a mut NewWorkflows,
@@ -234,101 +325,28 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
         (template, tracer)
     }
 
-    /// Atomically pops a message from a channel and feeds it to a listening workflow.
-    /// If the workflow execution is successful, its results are committed to the manager state;
-    /// otherwise, the results are reverted.
-    #[tracing::instrument(skip(self, transaction, workflow), err)]
-    pub(super) async fn feed_message_to_workflow(
-        &'a self,
-        transaction: &mut S::Transaction,
-        channel_id: ChannelId,
-        message_idx: usize,
-        mut workflow: WorkflowRecord,
-    ) -> Result<Receipt, ExecutionError> {
-        let workflow_id = workflow.id;
-        let (child_id, channel_name, state) = workflow.persisted.find_inbound_channel(channel_id);
-        let channel_name = channel_name.to_owned();
-        debug_assert_eq!(message_idx, state.received_message_count());
-
-        let message_or_eof = transaction.channel_message(channel_id, message_idx).await;
-        let message = match message_or_eof {
-            Ok(message) => message,
-            Err(MessageError::NonExistingIndex { is_closed: true }) => {
-                // Signal to the workflow that the channel is closed. This can be performed
-                // on a persisted workflow, without executing it.
-                let mut persisted = workflow.persisted;
-                persisted.close_inbound_channel(child_id, &channel_name);
-                transaction
-                    .persist_workflow(workflow_id, persisted, workflow.tracing_spans)
-                    .await;
-                return Ok(Receipt::default());
-            }
-            Err(err) => panic!("unexpected error receiving message: {err}"),
-        };
-        workflow
-            .persisted
-            .push_inbound_message(child_id, &channel_name, message)
-            .unwrap();
-        // ^ `unwrap()` is safe: no messages can be persisted
-
-        let parent_id = workflow.parent_id;
-        let module_id = workflow.module_id.clone();
-        let (seed, mut tracer) = self.restore_workflow(transaction, workflow).await;
-        let mut new_workflows = NewWorkflows::new(Some(workflow_id), self.shared());
-        let mut workflow = seed.restore(&mut new_workflows, &mut tracer);
-        let result = workflow.tick();
-
-        if let Ok(receipt) = &result {
-            if workflow.take_pending_inbound_message(child_id, &channel_name) {
-                // The message was not consumed. We still persist the workflow in order to
-                // consume wakers (otherwise, we would loop indefinitely), and place the message
-                // back to the channel.
-                tracing::warn!("message was not consumed by workflow; placing the message back");
-            }
-
-            let span = tracing::debug_span!("persist_workflow_and_messages", workflow_id);
-            let _entered = span.enter();
-            let messages = workflow.drain_messages();
-            let mut persisted = workflow.persist();
-            new_workflows.commit(transaction, &mut persisted).await;
-            let tracing_metadata = tracer.persist_metadata();
-            let (spans, local_spans) = tracer.persist();
-
-            let mut persistence = StorageHelper::new(transaction);
-            persistence.push_messages(messages).await;
-            persistence
-                .persist_workflow(workflow_id, parent_id, persisted, spans)
-                .await;
-            persistence.close_channels(workflow_id, receipt).await;
-
-            self.local_spans
-                .lock()
-                .await
-                .insert(workflow_id, local_spans);
-            transaction
-                .update_tracing_metadata(&module_id, tracing_metadata)
-                .await;
-        } else {
-            // Do not commit the execution result.
-        }
-        result
-    }
-
-    #[tracing::instrument(skip_all, err)]
-    pub(crate) async fn tick_workflow(
+    #[tracing::instrument(skip_all)]
+    async fn tick_workflow(
         &'a self,
         transaction: &mut S::Transaction,
         workflow: WorkflowRecord,
-    ) -> Result<Receipt, ExecutionError> {
+        waker_records: Vec<WorkflowWakerRecord>,
+    ) -> (Result<Receipt, ExecutionError>, Option<PendingChannel>) {
         let workflow_id = workflow.id;
         let parent_id = workflow.parent_id;
         let module_id = workflow.module_id.clone();
-        let (template, mut tracer) = self.restore_workflow(transaction, workflow).await;
+        let (mut template, mut tracer) = self.restore_workflow(transaction, workflow).await;
+        template.apply_wakers(waker_records);
+        let pending_channel = template.update_inbound_channels(transaction).await;
         let mut children = NewWorkflows::new(Some(workflow_id), self.shared());
         let mut workflow = template.restore(&mut children, &mut tracer);
 
         let result = workflow.tick();
         if let Ok(receipt) = &result {
+            if let Some(pending) = &pending_channel {
+                pending.take_pending_message(&mut workflow);
+            }
+
             let span = tracing::debug_span!("persist_workflow_and_messages", workflow_id);
             let _entered = span.enter();
             let messages = workflow.drain_messages();
@@ -351,8 +369,12 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
             transaction
                 .update_tracing_metadata(&module_id, tracing_metadata)
                 .await;
+        } else {
+            let err = result.as_ref().unwrap_err();
+            tracing::warn!(%err, "workflow execution failed");
         }
-        result
+
+        (result, pending_channel)
     }
 
     /// Attempts to advance a single workflow within this manager.
@@ -365,49 +387,43 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
     /// # Errors
     ///
     /// Returns an error if the manager cannot be progressed.
+    #[allow(clippy::missing_panics_doc)] // false positive
     pub async fn tick(&'a self) -> Result<TickResult<Actions<'a, Self>>, WouldBlock> {
-        let span = tracing::info_span!("tick", workflow_id = field::Empty, err = field::Empty);
+        let span = tracing::info_span!("tick", workflow_id = field::Empty);
         let _entered = span.enter();
         let mut transaction = self.storage.transaction().await;
 
-        let workflow = transaction.find_pending_workflow().await;
-        if let Some(workflow) = workflow {
-            let workflow_id = workflow.id;
-            span.record("workflow_id", workflow_id);
-
-            let result = self.tick_workflow(&mut transaction, workflow).await;
-            transaction.commit().await;
-            return Ok(TickResult {
-                workflow_id,
-                extra: Actions::new(self, result.is_err()),
-                result,
-            });
-        }
-
-        let channel_info = transaction.find_consumable_channel().await;
-        if let Some((channel_id, message_idx, workflow)) = channel_info {
-            let workflow_id = workflow.id;
-            span.record("workflow_id", workflow_id);
-
-            let result = self
-                .feed_message_to_workflow(&mut transaction, channel_id, message_idx, workflow)
-                .await;
-            transaction.commit().await;
-            let mut actions = Actions::new(self, result.is_err());
-            if result.is_err() {
-                actions.allow_dropping_message(channel_id, message_idx);
-            }
-            return Ok(TickResult {
-                workflow_id,
-                extra: actions,
-                result,
-            });
-        }
-
-        let err = WouldBlock {
-            nearest_timer_expiration: transaction.nearest_timer_expiration().await,
+        let waker_records = transaction.delete_wakers_for_single_workflow().await;
+        let workflow_id = if let Some(waker) = waker_records.first() {
+            waker.workflow_id
+        } else if let Some((_, channel)) = transaction.find_consumable_channel().await {
+            channel.receiver_workflow_id.unwrap()
+        } else {
+            let err = WouldBlock {
+                nearest_timer_expiration: transaction.nearest_timer_expiration().await,
+            };
+            tracing::info!(%err, "workflow manager blocked");
+            return Err(err);
         };
-        tracing::info!(%err, "workflow manager blocked");
-        Err(err)
+
+        let workflow = transaction.workflow(workflow_id).await.unwrap();
+        span.record("workflow_id", workflow_id);
+
+        let (result, pending_channel) = self
+            .tick_workflow(&mut transaction, workflow, waker_records)
+            .await;
+        transaction.commit().await;
+        let mut actions = Actions::new(self, result.is_err());
+        if result.is_err() {
+            if let Some(pending) = pending_channel {
+                actions.allow_dropping_message(pending.channel_id, pending.message_idx);
+            }
+        }
+
+        Ok(TickResult {
+            workflow_id,
+            extra: actions,
+            result,
+        })
     }
 }

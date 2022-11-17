@@ -12,8 +12,11 @@ mod local;
 
 pub use self::local::{LocalStorage, LocalStorageSnapshot, LocalTransaction, ModuleRecordMut};
 
-use crate::{utils::serde_b64, PersistedWorkflow};
-use tardigrade::{channel::SendError, ChannelId, WorkflowId};
+use crate::{
+    utils::{clone_join_error, serde_b64},
+    PersistedWorkflow,
+};
+use tardigrade::{task::JoinError, ChannelId, WorkflowId};
 
 /// Async, transactional storage for workflows and workflow channels.
 ///
@@ -59,7 +62,9 @@ impl<T> StorageReadonlyTransaction for T where
 /// [`WorkflowManager`]: crate::manager::WorkflowManager
 #[must_use = "transactions must be committed to take effect"]
 #[async_trait]
-pub trait StorageTransaction: Send + Sync + WriteModules + WriteChannels + WriteWorkflows {
+pub trait StorageTransaction:
+    Send + Sync + WriteModules + WriteChannels + WriteWorkflows + WriteWorkflowWakers
+{
     /// Commits this transaction to the storage. This method must be called
     /// to (atomically) apply transaction changes.
     async fn commit(self);
@@ -117,16 +122,15 @@ pub trait ReadChannels {
     /// Retrieves information about the channel with the specified ID.
     async fn channel(&self, id: ChannelId) -> Option<ChannelRecord>;
 
-    /// Checks whether the specified channel has messages unconsumed by the receiver workflow.
-    /// If there is no receiver workflow for the channel, returns `false`.
-    async fn has_messages_for_receiver_workflow(&self, id: ChannelId) -> bool;
-
     /// Receives a message with the specified 0-based index from the specified channel.
     ///
     /// # Errors
     ///
     /// Returns an error if the message cannot be retrieved.
     async fn channel_message(&self, id: ChannelId, index: usize) -> Result<Vec<u8>, MessageError>;
+
+    /// Selects a channel with a message or EOF marker consumable by the receiver workflow.
+    async fn find_consumable_channel(&self) -> Option<(ChannelId, ChannelRecord)>;
 }
 
 /// Allows modifying stored information about channels.
@@ -148,11 +152,7 @@ pub trait WriteChannels: ReadChannels {
     ) -> ChannelRecord;
 
     /// Pushes one or more messages into the channel.
-    async fn push_messages(
-        &mut self,
-        id: ChannelId,
-        messages: Vec<Vec<u8>>,
-    ) -> Result<(), SendError>;
+    async fn push_messages(&mut self, id: ChannelId, messages: Vec<Vec<u8>>);
 
     /// Truncates the channel so that `min_index` is the minimum retained index.
     async fn truncate_channel(&mut self, id: ChannelId, min_index: usize);
@@ -215,10 +215,6 @@ pub trait ReadWorkflows {
     /// Retrieves a snapshot of the workflow with the specified ID.
     async fn workflow(&self, id: WorkflowId) -> Option<WorkflowRecord>;
 
-    /// Selects a workflow with pending wakeup causes for execution.
-    async fn find_pending_workflow(&self) -> Option<WorkflowRecord>;
-    /// Selects a workflow to which a message can be sent for execution.
-    async fn find_consumable_channel(&self) -> Option<(ChannelId, usize, WorkflowRecord)>;
     /// Finds the nearest timer expiration in all active workflows.
     async fn nearest_timer_expiration(&self) -> Option<DateTime<Utc>>;
 }
@@ -245,13 +241,6 @@ pub trait WriteWorkflows: ReadWorkflows {
         id: WorkflowId,
         action: F,
     ) -> Option<WorkflowRecord>;
-
-    /// Manipulates the persisted part of all matching workflows.
-    async fn manipulate_all_workflows<F: FnMut(&mut PersistedWorkflow) + Send>(
-        &mut self,
-        criteria: WorkflowSelectionCriteria,
-        action: F,
-    );
 
     /// Deletes a workflow with the specified ID.
     async fn delete_workflow(&mut self, id: WorkflowId);
@@ -293,6 +282,73 @@ impl WorkflowSelectionCriteria {
     }
 }
 
+/// Waker for a workflow.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum WorkflowWaker {
+    /// Waker produced by the workflow execution, e.g., flushing outbound messages
+    /// or initializing a child workflow.
+    Internal,
+    /// Waker produced by a timer.
+    Timer(DateTime<Utc>),
+    /// Waker produced by an outbound channel closure.
+    OutboundChannelClosure(ChannelId),
+    /// Waker produced by a completed child workflow.
+    // FIXME: store result in workflow entity
+    ChildCompletion(WorkflowId, Result<(), JoinError>),
+}
+
+impl Clone for WorkflowWaker {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Internal => Self::Internal,
+            Self::Timer(timer) => Self::Timer(*timer),
+            Self::OutboundChannelClosure(channel_id) => Self::OutboundChannelClosure(*channel_id),
+            Self::ChildCompletion(id, result) => {
+                let result = result.as_ref().copied().map_err(clone_join_error);
+                Self::ChildCompletion(*id, result)
+            }
+        }
+    }
+}
+
+impl WorkflowWaker {
+    pub(crate) fn for_workflow(self, workflow_id: WorkflowId) -> WorkflowWakerRecord {
+        WorkflowWakerRecord {
+            workflow_id,
+            waker: self,
+        }
+    }
+}
+
+/// Record associating a [`WorkflowWaker`] with a particular workflow.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowWakerRecord {
+    /// ID of the workflow that the waker belongs to.
+    pub workflow_id: WorkflowId,
+    /// The waker.
+    pub waker: WorkflowWaker,
+}
+
+/// Allows modifying stored information about [`WorkflowWaker`].
+#[async_trait]
+pub trait WriteWorkflowWakers {
+    /// Inserts a workflow waker into the queue.
+    async fn insert_waker(&mut self, waker: WorkflowWakerRecord);
+    /// Inserts a workflow waker for all workflows matching the specified criteria.
+    async fn insert_waker_for_matching_workflows(
+        &mut self,
+        criteria: WorkflowSelectionCriteria,
+        waker: WorkflowWaker,
+    );
+
+    /// Removes and returns all workflow wakers for a single workflow. The selection of the workflow
+    /// is up to the implementation. If there are no workflows with a waker,
+    /// returns an empty `Vec`.
+    async fn delete_wakers_for_single_workflow(&mut self) -> Vec<WorkflowWakerRecord>;
+}
+
 /// Wrapper for [`StorageTransaction`] implementations that allows safely using them
 /// as readonly transactions.
 #[derive(Debug)]
@@ -301,6 +357,12 @@ pub struct Readonly<T>(T);
 impl<T: StorageReadonlyTransaction> From<T> for Readonly<T> {
     fn from(inner: T) -> Self {
         Self(inner)
+    }
+}
+
+impl<T: StorageReadonlyTransaction> AsRef<T> for Readonly<T> {
+    fn as_ref(&self) -> &T {
+        &self.0
     }
 }
 
@@ -321,13 +383,13 @@ impl<T: StorageReadonlyTransaction> ReadChannels for Readonly<T> {
         self.0.channel(id).await
     }
 
-    async fn has_messages_for_receiver_workflow(&self, id: ChannelId) -> bool {
-        self.0.has_messages_for_receiver_workflow(id).await
-    }
-
     // TODO: add retrieving messages by an index range?
     async fn channel_message(&self, id: ChannelId, index: usize) -> Result<Vec<u8>, MessageError> {
         self.0.channel_message(id, index).await
+    }
+
+    async fn find_consumable_channel(&self) -> Option<(ChannelId, ChannelRecord)> {
+        self.0.find_consumable_channel().await
     }
 }
 
@@ -339,14 +401,6 @@ impl<T: StorageReadonlyTransaction> ReadWorkflows for Readonly<T> {
 
     async fn workflow(&self, id: WorkflowId) -> Option<WorkflowRecord> {
         self.0.workflow(id).await
-    }
-
-    async fn find_pending_workflow(&self) -> Option<WorkflowRecord> {
-        self.0.find_pending_workflow().await
-    }
-
-    async fn find_consumable_channel(&self) -> Option<(ChannelId, usize, WorkflowRecord)> {
-        self.0.find_consumable_channel().await
     }
 
     async fn nearest_timer_expiration(&self) -> Option<DateTime<Utc>> {
