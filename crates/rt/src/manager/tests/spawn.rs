@@ -124,7 +124,12 @@ async fn spawning_child_workflow() {
         Ok(Poll::Pending)
     };
 
-    let poll_fns = Answers::from_values([spawn_child, poll_child_traces, receive_child_trace]);
+    let poll_fns = Answers::from_values([
+        spawn_child,
+        poll_child_traces,
+        (|_| Ok(Poll::Pending)) as MockPollFn,
+        receive_child_trace,
+    ]);
     let _guard = ExportsMock::prepare(poll_fns);
     let manager = create_test_manager(()).await;
     let mut workflow = create_test_workflow(&manager).await;
@@ -159,24 +164,17 @@ async fn spawning_child_workflow() {
         assert_eq!(traces.receiver_workflow_id, Some(workflow_id));
         assert_eq!(traces.sender_workflow_ids, HashSet::from_iter([child_id]));
         assert!(!traces.has_external_sender);
-
-        let pending_workflow = transaction.find_pending_workflow().await.unwrap();
-        assert_eq!(pending_workflow.id, child_id);
     }
 
     // Emulate the child workflow putting a message to the `traces` channel.
+    tick_workflow(&manager, child_id).await.unwrap();
     manager
         .send_message(traces_id, b"trace".to_vec())
         .await
         .unwrap();
-    assert_eq!(
-        find_consumable_channel(&manager).await,
-        Some((traces_id, 0, workflow_id))
-    );
+    assert_eq!(find_consumable_channel(&manager).await, Some(traces_id));
 
-    let receipt = feed_message(&manager, traces_id, workflow_id)
-        .await
-        .unwrap();
+    let receipt = feed_message(&manager, workflow_id, "traces").await.unwrap();
     let events = extract_channel_events(&receipt, Some(child_id), "traces");
     assert_matches!(
         events.as_slice(),
@@ -219,15 +217,11 @@ async fn sending_message_to_child() {
             WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"child_order")?;
         let send_result = WorkflowFunctions::start_send(
             ctx.as_context_mut(),
-            child_orders.clone(),
+            child_orders,
             message_ptr,
             message_len,
         )?;
         assert_eq!(send_result, 0); // Ok(())
-
-        let poll_result =
-            WorkflowFunctions::poll_flush_for_sender(ctx.as_context_mut(), child_orders, POLL_CX)?;
-        assert_eq!(poll_result, -1); // Poll::Pending
 
         Ok(Poll::Pending)
     };
@@ -271,11 +265,9 @@ async fn sending_message_to_child() {
     tick_workflow(&manager, CHILD_ID).await.unwrap();
     assert_eq!(
         find_consumable_channel(&manager).await,
-        Some((child_orders_id, 0, CHILD_ID))
+        Some(child_orders_id)
     );
-    feed_message(&manager, child_orders_id, CHILD_ID)
-        .await
-        .unwrap();
+    feed_message(&manager, CHILD_ID, "orders").await.unwrap();
 }
 
 fn test_child_channels_after_closure(
@@ -357,6 +349,20 @@ async fn test_child_workflow_channel_management(complete_child: bool) {
     let channel_info = manager.channel(traces_id).await.unwrap();
     assert!(channel_info.is_closed);
 
+    let wakers = wakers_for_workflow(&manager, workflow_id).await;
+
+    assert_matches!(
+        wakers[0],
+        WorkflowWaker::OutboundChannelClosure(id) if id == orders_id
+    );
+    if complete_child {
+        assert_eq!(wakers.len(), 2);
+        assert_matches!(wakers[1], WorkflowWaker::ChildCompletion(CHILD_ID, _));
+    } else {
+        assert_eq!(wakers.len(), 1);
+    }
+
+    let receipt = tick_workflow(&manager, workflow_id).await.unwrap();
     workflow.update().await.unwrap();
     let child_state = workflow.persisted().child_workflow(child_id).unwrap();
     if complete_child {
@@ -364,21 +370,6 @@ async fn test_child_workflow_channel_management(complete_child: bool) {
     } else {
         assert_matches!(child_state.result(), Poll::Pending);
     }
-
-    let events: Vec<_> = workflow.persisted().pending_wakeup_causes().collect();
-    assert_matches!(
-        events[0],
-        WakeUpCause::ChannelClosed { workflow_id: Some(CHILD_ID), channel_name }
-            if channel_name == "traces"
-    );
-    if complete_child {
-        assert_eq!(events.len(), 2);
-        assert_matches!(events[1], WakeUpCause::CompletedWorkflow(CHILD_ID));
-    } else {
-        assert_eq!(events.len(), 1);
-    }
-
-    let receipt = tick_workflow(&manager, workflow_id).await.unwrap();
     if complete_child {
         let child_completed = receipt.events().any(|event| {
             matches!(

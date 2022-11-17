@@ -13,9 +13,10 @@ use crate::{
     data::{WasmContextPtr, WorkflowData, WorkflowFunctions},
     module::{ExportsMock, MockPollFn},
     receipt::{
-        ChannelEvent, ChannelEventKind, ExecutedFunction, ExecutionError, Receipt, WakeUpCause,
+        ChannelEvent, ChannelEventKind, Event, ExecutedFunction, ExecutionError, Receipt,
+        WakeUpCause,
     },
-    storage::LocalStorage,
+    storage::{LocalStorage, WorkflowWaker},
     utils::WasmAllocator,
     WorkflowEngine, WorkflowModule,
 };
@@ -53,36 +54,59 @@ pub(crate) async fn create_test_workflow<C: Clock>(
         .unwrap()
 }
 
-async fn tick_workflow(manager: &LocalManager, id: WorkflowId) -> Result<Receipt, ExecutionError> {
-    let mut transaction = manager.storage.transaction().await;
-    let record = transaction.workflow(id).await.unwrap();
-    let result = manager.tick_workflow(&mut transaction, record).await;
-    transaction.commit().await;
-    result
+async fn find_consumable_channel(manager: &WorkflowManager<(), LocalStorage>) -> Option<ChannelId> {
+    let transaction = manager.storage.readonly_transaction().await;
+    let (channel_id, _) = transaction.find_consumable_channel().await?;
+    Some(channel_id)
 }
 
-async fn find_consumable_channel(
-    manager: &WorkflowManager<(), LocalStorage>,
-) -> Option<(ChannelId, usize, WorkflowId)> {
-    let transaction = manager.storage.readonly_transaction().await;
-    let (channel_id, idx, workflow) = transaction.find_consumable_channel().await?;
-    Some((channel_id, idx, workflow.id))
+async fn tick_workflow(manager: &LocalManager, id: WorkflowId) -> Result<Receipt, ExecutionError> {
+    let mut transaction = manager.storage.transaction().await;
+    transaction.prepare_wakers_for_workflow(id);
+    transaction.commit().await;
+    let result = manager.tick().await.unwrap();
+    assert_eq!(result.workflow_id(), id);
+    result.into_inner()
+}
+
+fn is_consumption(event: &Event, channel_name: &str) -> bool {
+    if let Some(event) = event.as_channel_event() {
+        event.channel_name == channel_name
+            && matches!(
+                event.kind,
+                ChannelEventKind::InboundChannelPolled {
+                    result: Poll::Ready(_)
+                }
+            )
+    } else {
+        false
+    }
 }
 
 async fn feed_message(
-    manager: &WorkflowManager<(), LocalStorage>,
-    channel_id: ChannelId,
+    manager: &LocalManager,
     workflow_id: WorkflowId,
+    channel_name: &str,
 ) -> Result<Receipt, ExecutionError> {
-    let mut transaction = manager.storage.transaction().await;
-    let workflow = transaction.workflow(workflow_id).await.unwrap();
-    let (.., channel_state) = workflow.persisted.find_inbound_channel(channel_id);
-    let message_idx = channel_state.received_message_count();
-    let result = manager
-        .feed_message_to_workflow(&mut transaction, channel_id, message_idx, workflow)
-        .await;
-    transaction.commit().await;
+    let result = tick_workflow(manager, workflow_id).await;
+    let receipt = result.as_ref().unwrap_or_else(ExecutionError::receipt);
+    let consumed = receipt
+        .events()
+        .any(|event| is_consumption(event, channel_name));
+    assert!(consumed, "{receipt:?}");
     result
+}
+
+async fn wakers_for_workflow(
+    manager: &LocalManager,
+    workflow_id: WorkflowId,
+) -> Vec<WorkflowWaker> {
+    let transaction = manager.storage.readonly_transaction().await;
+    transaction
+        .as_ref()
+        .wakers_for_workflow(workflow_id)
+        .cloned()
+        .collect()
 }
 
 fn initialize_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
@@ -108,8 +132,6 @@ async fn instantiating_workflow() {
     let workflow = create_test_workflow(&manager).await;
 
     let storage = manager.storage.readonly_transaction().await;
-    let pending_workflow = storage.find_pending_workflow().await.unwrap();
-    assert_eq!(pending_workflow.id, workflow.id());
     let record = storage.workflow(workflow.id()).await.unwrap();
     assert_eq!(record.module_id, "test@latest");
     assert_eq!(record.name_in_module, "TestWorkflow");
@@ -136,20 +158,13 @@ async fn test_initializing_workflow(
     manager: &WorkflowManager<(), LocalStorage>,
     ids: &WorkflowAndChannelIds,
 ) {
-    let mut transaction = manager.storage.transaction().await;
-    let record = transaction.workflow(ids.workflow_id).await.unwrap();
-    let receipt = manager
-        .tick_workflow(&mut transaction, record)
-        .await
-        .unwrap();
-    transaction.commit().await;
+    let receipt = manager.tick().await.unwrap().into_inner().unwrap();
     assert_eq!(receipt.executions().len(), 2);
     let main_execution = &receipt.executions()[0];
     assert_matches!(main_execution.function, ExecutedFunction::Entry { .. });
 
     let traces_id = ids.channel_ids.outbound["traces"];
     let transaction = manager.storage.readonly_transaction().await;
-    assert!(transaction.find_pending_workflow().await.is_none());
     assert!(transaction.find_consumable_channel().await.is_none());
     let traces = transaction.channel(traces_id).await.unwrap();
     assert_eq!(traces.received_messages, 1);
@@ -310,7 +325,7 @@ async fn test_closing_inbound_channel_from_host_side(with_message: bool) {
     };
     let _guard = ExportsMock::prepare(Answers::from_values(poll_fns));
     let manager = create_test_manager(()).await;
-    let mut workflow = create_test_workflow(&manager).await;
+    let workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
     let orders_id = workflow.ids().channel_ids.inbound["orders"];
 
@@ -324,9 +339,7 @@ async fn test_closing_inbound_channel_from_host_side(with_message: bool) {
     manager.close_host_sender(orders_id).await;
 
     if with_message {
-        let receipt = feed_message(&manager, orders_id, workflow_id)
-            .await
-            .unwrap();
+        let receipt = feed_message(&manager, workflow_id, "orders").await.unwrap();
         let order_events = extract_channel_events(&receipt, None, "orders");
         assert_matches!(
             order_events.as_slice(),
@@ -339,20 +352,7 @@ async fn test_closing_inbound_channel_from_host_side(with_message: bool) {
                 },
             ]
         );
-
-        // Feed the EOF as well.
-        feed_message(&manager, orders_id, workflow_id)
-            .await
-            .unwrap();
     }
-
-    workflow.update().await.unwrap();
-    let wakeup_causes: Vec<_> = workflow.persisted().pending_wakeup_causes().collect();
-    assert_matches!(
-        wakeup_causes.as_slice(),
-        [WakeUpCause::ChannelClosed { workflow_id: None, channel_name }]
-            if channel_name == "orders"
-    );
 
     let receipt = tick_workflow(&manager, workflow_id).await.unwrap();
     let order_events = extract_channel_events(&receipt, None, "orders");
@@ -435,14 +435,9 @@ async fn sending_message_to_workflow() {
         let order = transaction.channel_message(orders_id, 0).await.unwrap();
         assert_eq!(order, b"order #1");
     }
-    assert_eq!(
-        find_consumable_channel(&manager).await,
-        Some((orders_id, 0, workflow_id))
-    );
+    assert_eq!(find_consumable_channel(&manager).await, Some(orders_id));
 
-    let receipt = feed_message(&manager, orders_id, workflow_id)
-        .await
-        .unwrap();
+    let receipt = feed_message(&manager, workflow_id, "orders").await.unwrap();
     assert_eq!(receipt.executions().len(), 2); // waker + task
     let waker_execution = &receipt.executions()[1];
     assert_matches!(
@@ -483,7 +478,7 @@ async fn error_processing_inbound_message_in_workflow() {
         .send_message(orders_id, b"test".to_vec())
         .await
         .unwrap();
-    let err = feed_message(&manager, orders_id, workflow_id)
+    let err = feed_message(&manager, workflow_id, "orders")
         .await
         .unwrap_err();
     let err = err.trap().display_reason().to_string();
@@ -509,9 +504,7 @@ async fn workflow_not_consuming_inbound_message() {
         .send_message(orders_id, b"order #1".to_vec())
         .await
         .unwrap();
-    feed_message(&manager, orders_id, workflow_id)
-        .await
-        .unwrap();
+    manager.tick().await.unwrap().into_inner().unwrap();
 
     let transaction = manager.storage.readonly_transaction().await;
     let orders_channel = transaction.channel(orders_id).await.unwrap();
