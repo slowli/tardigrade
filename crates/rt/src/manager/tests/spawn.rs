@@ -157,7 +157,7 @@ async fn spawning_child_workflow() {
 
     {
         let transaction = manager.storage.readonly_transaction().await;
-        assert_eq!(transaction.count_workflows().await, 2);
+        assert_eq!(transaction.count_active_workflows().await, 2);
         assert!(transaction.workflow(child_id).await.is_some());
 
         let traces = transaction.channel(traces_id).await.unwrap();
@@ -357,7 +357,7 @@ async fn test_child_workflow_channel_management(complete_child: bool) {
     );
     if complete_child {
         assert_eq!(wakers.len(), 2);
-        assert_matches!(wakers[1], WorkflowWaker::ChildCompletion(CHILD_ID, _));
+        assert_matches!(wakers[1], WorkflowWaker::ChildCompletion(CHILD_ID));
     } else {
         assert_eq!(wakers.len(), 1);
     }

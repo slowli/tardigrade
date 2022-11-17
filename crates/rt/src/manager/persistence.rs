@@ -6,11 +6,13 @@ use tracing_tunnel::PersistedSpans;
 
 use std::{collections::HashMap, task::Poll};
 
-use crate::storage::WorkflowWaker;
 use crate::{
     manager::{AsManager, ChannelSide},
     receipt::{ChannelEvent, ChannelEventKind, Receipt},
-    storage::{ChannelRecord, Storage, StorageTransaction, WorkflowSelectionCriteria},
+    storage::{
+        ActiveWorkflowState, ChannelRecord, CompletedWorkflowState, Storage, StorageTransaction,
+        WorkflowSelectionCriteria, WorkflowState, WorkflowWaker,
+    },
     utils::{clone_join_error, Message},
     PersistedWorkflow,
 };
@@ -74,28 +76,33 @@ impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
         tracing_spans: PersistedSpans,
     ) {
         self.handle_workflow_update(id, parent_id, &workflow).await;
-        if workflow.result().is_pending() {
-            let has_internal_waker = workflow.pending_wakeup_causes().next().is_some();
-            if has_internal_waker {
-                self.inner
-                    .insert_waker(WorkflowWaker::Internal.for_workflow(id))
-                    .await;
+        let state = match workflow.result() {
+            Poll::Pending => {
+                let has_internal_waker = workflow.pending_wakeup_causes().next().is_some();
+                if has_internal_waker {
+                    self.inner
+                        .insert_waker(WorkflowWaker::Internal.for_workflow(id))
+                        .await;
+                }
+                WorkflowState::from(ActiveWorkflowState {
+                    persisted: workflow,
+                    tracing_spans,
+                })
             }
-
-            self.inner
-                .persist_workflow(id, workflow, tracing_spans)
-                .await;
-        }
+            Poll::Ready(result) => WorkflowState::from(CompletedWorkflowState {
+                result: result.map_err(clone_join_error),
+            }),
+        };
+        self.inner.persist_workflow(id, state).await;
     }
 
-    /// Returns `true` if the workflow needs to be persisted (i.e., it's not completed).
-    pub async fn handle_workflow_update(
+    async fn handle_workflow_update(
         &mut self,
         id: WorkflowId,
         parent_id: Option<WorkflowId>,
         workflow: &PersistedWorkflow,
     ) {
-        let completion_notification = if let Poll::Ready(result) = workflow.result() {
+        let completion_receiver = if workflow.result().is_ready() {
             // Close all channels linked to the workflow.
             for (.., state) in workflow.inbound_channels() {
                 self.close_channel_side(state.id(), ChannelSide::Receiver)
@@ -105,14 +112,13 @@ impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
                 self.close_channel_side(state.id(), ChannelSide::WorkflowSender(id))
                     .await;
             }
-            self.inner.delete_workflow(id).await;
-            parent_id.map(|id| (id, result.map_err(clone_join_error)))
+            parent_id
         } else {
             None
         };
 
-        if let Some((parent_id, result)) = completion_notification {
-            let waker = WorkflowWaker::ChildCompletion(id, result);
+        if let Some(parent_id) = completion_receiver {
+            let waker = WorkflowWaker::ChildCompletion(id);
             self.inner.insert_waker(waker.for_workflow(parent_id)).await;
         }
     }

@@ -7,8 +7,8 @@ use std::{collections::HashSet, error, fmt, marker::PhantomData};
 use crate::{
     manager::{persistence::in_transaction, AsManager, WorkflowAndChannelIds},
     storage::{
-        ChannelRecord, MessageError, ReadChannels, ReadWorkflows, Storage, StorageTransaction,
-        WorkflowRecord, WriteChannels,
+        ActiveWorkflowState, ChannelRecord, MessageError, ReadChannels, ReadWorkflows, Storage,
+        StorageTransaction, WorkflowRecord, WriteChannels,
     },
     workflow::ChannelIds,
     PersistedWorkflow,
@@ -109,11 +109,11 @@ impl<'a, M: AsManager> WorkflowHandle<'a, (), M> {
         manager: &'a M,
         transaction: &impl ReadChannels,
         interface: &'a Interface,
-        record: WorkflowRecord,
+        record: WorkflowRecord<ActiveWorkflowState>,
     ) -> WorkflowHandle<'a, (), M> {
         let ids = WorkflowAndChannelIds {
             workflow_id: record.id,
-            channel_ids: record.persisted.channel_ids(),
+            channel_ids: record.state.persisted.channel_ids(),
         };
         let host_receiver_channels =
             Self::find_host_receiver_channels(transaction, &ids.channel_ids).await;
@@ -123,7 +123,7 @@ impl<'a, M: AsManager> WorkflowHandle<'a, (), M> {
             ids,
             host_receiver_channels,
             interface,
-            persisted: record.persisted,
+            persisted: record.state.persisted,
             _ty: PhantomData,
         }
     }
@@ -193,7 +193,8 @@ impl<W: TakeHandle<Self, Id = ()>, M: AsManager> WorkflowHandle<'_, W, M> {
         let transaction = manager.storage.readonly_transaction().await;
         let record = transaction.workflow(self.ids.workflow_id).await;
         let record = record.ok_or(HandleUpdateError::Terminated)?;
-        self.persisted = record.persisted;
+        let record = record.into_active().ok_or(HandleUpdateError::Terminated)?;
+        self.persisted = record.state.persisted;
         Ok(())
     }
 

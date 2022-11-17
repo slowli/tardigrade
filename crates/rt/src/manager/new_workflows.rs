@@ -9,7 +9,10 @@ use std::{borrow::Cow, collections::HashMap, mem};
 use super::{Shared, WorkflowAndChannelIds, WorkflowHandle, WorkflowManager, WorkflowSpawners};
 use crate::{
     module::{Clock, Services, StashWorkflow},
-    storage::{ChannelRecord, Storage, StorageTransaction, WorkflowRecord, WorkflowWaker},
+    storage::{
+        ActiveWorkflowState, ChannelRecord, Storage, StorageTransaction, WorkflowRecord,
+        WorkflowWaker,
+    },
     workflow::{ChannelIds, PersistedWorkflow},
 };
 use tardigrade::{
@@ -191,13 +194,16 @@ impl<'a> NewWorkflows<'a> {
 
         let (module_id, name_in_module) =
             WorkflowSpawners::split_full_id(&child_stub.definition_id).unwrap();
+        let state = ActiveWorkflowState {
+            persisted,
+            tracing_spans: PersistedSpans::default(),
+        };
         let child_workflow = WorkflowRecord {
             id: child_id,
             parent_id: executed_workflow_id,
             module_id: module_id.to_owned(),
             name_in_module: name_in_module.to_owned(),
-            persisted,
-            tracing_spans: PersistedSpans::default(),
+            state: state.into(),
         };
         transaction.insert_workflow(child_workflow).await;
         transaction

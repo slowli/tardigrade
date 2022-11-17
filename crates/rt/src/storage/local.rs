@@ -8,7 +8,7 @@ use futures::{
     StreamExt,
 };
 use serde::{Deserialize, Serialize};
-use tracing_tunnel::{PersistedMetadata, PersistedSpans};
+use tracing_tunnel::PersistedMetadata;
 
 use std::{
     borrow::Cow,
@@ -23,8 +23,9 @@ use std::{
 
 use super::{
     ChannelRecord, MessageError, ModuleRecord, ReadChannels, ReadModules, ReadWorkflows, Readonly,
-    Storage, StorageTransaction, WorkflowRecord, WorkflowSelectionCriteria, WorkflowWaker,
-    WorkflowWakerRecord, WriteChannels, WriteModules, WriteWorkflowWakers, WriteWorkflows,
+    Storage, StorageTransaction, WorkflowRecord, WorkflowSelectionCriteria, WorkflowState,
+    WorkflowWaker, WorkflowWakerRecord, WriteChannels, WriteModules, WriteWorkflowWakers,
+    WriteWorkflows,
 };
 use crate::{utils::Message, PersistedWorkflow};
 use tardigrade::{ChannelId, WorkflowId};
@@ -234,6 +235,16 @@ pub struct LocalTransaction<'a> {
 }
 
 impl LocalTransaction<'_> {
+    fn active_workflow_states(&self) -> impl Iterator<Item = &PersistedWorkflow> + '_ {
+        self.inner.workflows.values().filter_map(|record| {
+            if let WorkflowState::Active(state) = &record.state {
+                Some(&state.persisted)
+            } else {
+                None
+            }
+        })
+    }
+
     /// Ensures that the specified workflow will be polled.
     #[cfg(test)]
     pub(crate) fn prepare_wakers_for_workflow(&mut self, workflow_id: WorkflowId) {
@@ -316,13 +327,9 @@ impl ReadChannels for LocalTransaction<'_> {
     }
 
     async fn find_consumable_channel(&self) -> Option<(ChannelId, ChannelRecord)> {
-        let workflows = self.inner.workflows.values();
-        let mut all_channels = workflows.flat_map(|record| {
-            record
-                .persisted
-                .inbound_channels()
-                .map(|(_, _, state)| state)
-        });
+        let workflows = self.active_workflow_states();
+        let mut all_channels =
+            workflows.flat_map(|persisted| persisted.inbound_channels().map(|(_, _, state)| state));
         all_channels.find_map(|state| {
             if state.waits_for_message() {
                 let channel_id = state.id();
@@ -386,8 +393,8 @@ impl WriteChannels for LocalTransaction<'_> {
 
 #[async_trait]
 impl ReadWorkflows for LocalTransaction<'_> {
-    async fn count_workflows(&self) -> usize {
-        self.inner.workflows.len()
+    async fn count_active_workflows(&self) -> usize {
+        self.active_workflow_states().count()
     }
 
     async fn workflow(&self, id: WorkflowId) -> Option<WorkflowRecord> {
@@ -395,8 +402,8 @@ impl ReadWorkflows for LocalTransaction<'_> {
     }
 
     async fn nearest_timer_expiration(&self) -> Option<DateTime<Utc>> {
-        let workflows = self.inner.workflows.values();
-        let timers = workflows.flat_map(|record| record.persisted.timers());
+        let workflows = self.active_workflow_states();
+        let timers = workflows.flat_map(PersistedWorkflow::timers);
         let expirations = timers.filter_map(|(_, state)| {
             if state.completed_at().is_none() {
                 Some(state.definition().expires_at)
@@ -418,29 +425,13 @@ impl WriteWorkflows for LocalTransaction<'_> {
         self.inner.workflows.insert(state.id, state);
     }
 
-    async fn persist_workflow(
-        &mut self,
-        id: WorkflowId,
-        workflow: PersistedWorkflow,
-        tracing_spans: PersistedSpans,
-    ) {
+    async fn workflow_for_update(&mut self, id: WorkflowId) -> Option<WorkflowRecord> {
+        self.workflow(id).await
+    }
+
+    async fn persist_workflow(&mut self, id: WorkflowId, state: WorkflowState) {
         let record = self.inner.workflows.get_mut(&id).unwrap();
-        record.persisted = workflow;
-        record.tracing_spans = tracing_spans;
-    }
-
-    async fn manipulate_workflow<F: FnOnce(&mut PersistedWorkflow) + Send>(
-        &mut self,
-        id: WorkflowId,
-        action: F,
-    ) -> Option<WorkflowRecord> {
-        let record = self.inner.workflows.get_mut(&id)?;
-        action(&mut record.persisted);
-        Some(record.clone())
-    }
-
-    async fn delete_workflow(&mut self, id: WorkflowId) {
-        self.inner.workflows.remove(&id);
+        record.state = state;
     }
 }
 
@@ -456,7 +447,12 @@ impl WriteWorkflowWakers for LocalTransaction<'_> {
         waker: WorkflowWaker,
     ) {
         for (&id, record) in &self.inner.workflows {
-            if criteria.matches(record) {
+            let persisted = match &record.state {
+                WorkflowState::Active(state) => &state.persisted,
+                WorkflowState::Completed(_) => continue,
+            };
+
+            if criteria.matches(persisted) {
                 self.inner
                     .workflow_wakers
                     .push(waker.clone().for_workflow(id));
@@ -488,7 +484,10 @@ impl StorageTransaction for LocalTransaction<'_> {
             let inner = &mut self.inner;
             for (&id, channel) in &mut inner.channels {
                 if let Some(workflow_id) = channel.record.receiver_workflow_id {
-                    let workflow = &inner.workflows[&workflow_id].persisted;
+                    let workflow = match &inner.workflows[&workflow_id].state {
+                        WorkflowState::Active(state) => &state.persisted,
+                        WorkflowState::Completed(_) => continue,
+                    };
                     let (.., state) = workflow.find_inbound_channel(id);
                     channel.truncate(state.received_message_count());
                 }

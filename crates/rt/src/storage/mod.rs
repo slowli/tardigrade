@@ -211,7 +211,7 @@ pub struct ChannelRecord {
 #[async_trait]
 pub trait ReadWorkflows {
     /// Returns the number of active workflows.
-    async fn count_workflows(&self) -> usize;
+    async fn count_active_workflows(&self) -> usize;
     /// Retrieves a snapshot of the workflow with the specified ID.
     async fn workflow(&self, id: WorkflowId) -> Option<WorkflowRecord>;
 
@@ -226,29 +226,16 @@ pub trait WriteWorkflows: ReadWorkflows {
     async fn allocate_workflow_id(&mut self) -> WorkflowId;
     /// Inserts a new workflow into the storage.
     async fn insert_workflow(&mut self, state: WorkflowRecord);
+    /// Returns a workflow record for the specified ID for update.
+    async fn workflow_for_update(&mut self, id: WorkflowId) -> Option<WorkflowRecord>;
 
     /// Persists a workflow with the specified ID.
-    async fn persist_workflow(
-        &mut self,
-        id: WorkflowId,
-        workflow: PersistedWorkflow,
-        tracing_spans: PersistedSpans,
-    );
-
-    /// Manipulates the persisted part of a workflow.
-    async fn manipulate_workflow<F: FnOnce(&mut PersistedWorkflow) + Send>(
-        &mut self,
-        id: WorkflowId,
-        action: F,
-    ) -> Option<WorkflowRecord>;
-
-    /// Deletes a workflow with the specified ID.
-    async fn delete_workflow(&mut self, id: WorkflowId);
+    async fn persist_workflow(&mut self, id: WorkflowId, state: WorkflowState);
 }
 
 /// State of a workflow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkflowRecord {
+pub struct WorkflowRecord<T = WorkflowState> {
     /// ID of the workflow.
     pub id: WorkflowId,
     /// ID of the parent workflow, or `None` if this is a root workflow.
@@ -257,10 +244,78 @@ pub struct WorkflowRecord {
     pub module_id: String,
     /// Name of the workflow in the module.
     pub name_in_module: String,
+    /// Current state of the workflow.
+    pub state: T,
+}
+
+impl WorkflowRecord {
+    pub(crate) fn into_active(self) -> Option<WorkflowRecord<ActiveWorkflowState>> {
+        match self.state {
+            WorkflowState::Active(state) => Some(WorkflowRecord {
+                id: self.id,
+                parent_id: self.parent_id,
+                module_id: self.module_id,
+                name_in_module: self.name_in_module,
+                state: *state,
+            }),
+            WorkflowState::Completed(_) => None,
+        }
+    }
+}
+
+/// State of a [`WorkflowRecord`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowState {
+    /// Workflow is currently active.
+    Active(Box<ActiveWorkflowState>),
+    /// Workflow is completed.
+    Completed(CompletedWorkflowState),
+}
+
+impl WorkflowState {
+    pub(crate) fn into_result(self) -> Option<Result<(), JoinError>> {
+        match self {
+            Self::Completed(CompletedWorkflowState { result }) => Some(result),
+            Self::Active(_) => None,
+        }
+    }
+}
+
+impl From<ActiveWorkflowState> for WorkflowState {
+    fn from(state: ActiveWorkflowState) -> Self {
+        Self::Active(Box::new(state))
+    }
+}
+
+impl From<CompletedWorkflowState> for WorkflowState {
+    fn from(state: CompletedWorkflowState) -> Self {
+        Self::Completed(state)
+    }
+}
+
+/// State of an active workflow.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveWorkflowState {
     /// Persisted workflow state.
     pub persisted: PersistedWorkflow,
     /// Tracing spans associated with the workflow.
     pub tracing_spans: PersistedSpans,
+}
+
+/// State of a completed workflow.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CompletedWorkflowState {
+    /// Workflow completion result.
+    pub result: Result<(), JoinError>,
+}
+
+impl Clone for CompletedWorkflowState {
+    fn clone(&self) -> Self {
+        Self {
+            result: self.result.as_ref().copied().map_err(clone_join_error),
+        }
+    }
 }
 
 /// Workflow selection criteria used in [`WriteWorkflows::manipulate_all_workflows()`].
@@ -272,10 +327,9 @@ pub enum WorkflowSelectionCriteria {
 }
 
 impl WorkflowSelectionCriteria {
-    fn matches(&self, record: &WorkflowRecord) -> bool {
+    fn matches(&self, workflow: &PersistedWorkflow) -> bool {
         match self {
-            Self::HasTimerBefore(time) => record
-                .persisted
+            Self::HasTimerBefore(time) => workflow
                 .timers()
                 .any(|(_, timer)| timer.definition().expires_at <= *time),
         }
@@ -283,7 +337,7 @@ impl WorkflowSelectionCriteria {
 }
 
 /// Waker for a workflow.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum WorkflowWaker {
@@ -295,22 +349,7 @@ pub enum WorkflowWaker {
     /// Waker produced by an outbound channel closure.
     OutboundChannelClosure(ChannelId),
     /// Waker produced by a completed child workflow.
-    // FIXME: store result in workflow entity
-    ChildCompletion(WorkflowId, Result<(), JoinError>),
-}
-
-impl Clone for WorkflowWaker {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Internal => Self::Internal,
-            Self::Timer(timer) => Self::Timer(*timer),
-            Self::OutboundChannelClosure(channel_id) => Self::OutboundChannelClosure(*channel_id),
-            Self::ChildCompletion(id, result) => {
-                let result = result.as_ref().copied().map_err(clone_join_error);
-                Self::ChildCompletion(*id, result)
-            }
-        }
-    }
+    ChildCompletion(WorkflowId),
 }
 
 impl WorkflowWaker {
@@ -395,8 +434,8 @@ impl<T: StorageReadonlyTransaction> ReadChannels for Readonly<T> {
 
 #[async_trait]
 impl<T: StorageReadonlyTransaction> ReadWorkflows for Readonly<T> {
-    async fn count_workflows(&self) -> usize {
-        self.0.count_workflows().await
+    async fn count_active_workflows(&self) -> usize {
+        self.0.count_active_workflows().await
     }
 
     async fn workflow(&self, id: WorkflowId) -> Option<WorkflowRecord> {

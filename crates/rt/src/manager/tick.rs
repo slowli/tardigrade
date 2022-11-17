@@ -10,9 +10,9 @@ use crate::{
     module::{Clock, Services},
     receipt::{ExecutionError, Receipt},
     storage::{
-        MessageError, ReadChannels, ReadModules, ReadWorkflows, Storage, StorageTransaction,
-        WorkflowRecord, WorkflowWaker, WorkflowWakerRecord, WriteModules, WriteWorkflowWakers,
-        WriteWorkflows,
+        ActiveWorkflowState, MessageError, ReadChannels, ReadModules, ReadWorkflows, Storage,
+        StorageTransaction, WorkflowRecord, WorkflowWaker, WorkflowWakerRecord, WriteModules,
+        WriteWorkflowWakers, WriteWorkflows,
     },
     workflow::Workflow,
     PersistedWorkflow, WorkflowSpawner,
@@ -28,17 +28,21 @@ struct DropMessageAction {
 impl DropMessageAction {
     async fn execute<M: AsManager>(self, manager: &M, workflow_id: WorkflowId) {
         let mut transaction = manager.as_manager().storage.transaction().await;
-        transaction
-            .manipulate_workflow(workflow_id, |persisted| {
-                let (child_id, name, state) = persisted.find_inbound_channel(self.channel_id);
-                if state.received_message_count() == self.message_idx {
-                    let name = name.to_owned();
-                    persisted.drop_inbound_message(child_id, &name);
-                } else {
-                    tracing::warn!(?self, workflow_id, "failed dropping inbound message");
-                }
-            })
-            .await;
+        let record = transaction.workflow_for_update(workflow_id).await;
+        let record = record.and_then(WorkflowRecord::into_active);
+        if let Some(mut record) = record {
+            let persisted = &mut record.state.persisted;
+            let (child_id, name, state) = persisted.find_inbound_channel(self.channel_id);
+            if state.received_message_count() == self.message_idx {
+                let name = name.to_owned();
+                persisted.drop_inbound_message(child_id, &name);
+            } else {
+                tracing::warn!(?self, workflow_id, "failed dropping inbound message");
+            }
+            transaction
+                .persist_workflow(workflow_id, record.state.into())
+                .await;
+        }
         transaction.commit().await;
     }
 }
@@ -204,7 +208,11 @@ struct WorkflowSeed<'a> {
 }
 
 impl<'a> WorkflowSeed<'a> {
-    fn apply_wakers(&mut self, waker_records: Vec<WorkflowWakerRecord>) {
+    async fn apply_wakers<T: ReadWorkflows>(
+        &mut self,
+        transaction: &T,
+        waker_records: Vec<WorkflowWakerRecord>,
+    ) {
         for record in waker_records {
             match record.waker {
                 WorkflowWaker::Internal => {
@@ -216,7 +224,10 @@ impl<'a> WorkflowSeed<'a> {
                 WorkflowWaker::OutboundChannelClosure(channel_id) => {
                     self.persisted.close_outbound_channels_by_id(channel_id);
                 }
-                WorkflowWaker::ChildCompletion(child_id, result) => {
+                WorkflowWaker::ChildCompletion(child_id) => {
+                    let child = transaction.workflow(child_id).await.unwrap();
+                    let result = child.state.into_result().unwrap();
+                    // ^ Both `unwrap()`s above are safe by construction.
                     self.persisted.notify_on_child_completion(child_id, result);
                 }
             }
@@ -298,13 +309,14 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
     )]
     async fn restore_workflow(
         &'a self,
-        persistence: &S::Transaction,
-        record: WorkflowRecord,
+        transaction: &S::Transaction,
+        record: WorkflowRecord<ActiveWorkflowState>,
     ) -> (WorkflowSeed<'_>, TracingEventReceiver) {
+        let state = record.state;
         let spawner = self.spawners.get(&record.module_id, &record.name_in_module);
         tracing::debug!(?spawner, "using spawner to restore workflow");
 
-        let tracing_metadata = persistence
+        let tracing_metadata = transaction
             .module(&record.module_id)
             .await
             .unwrap()
@@ -315,11 +327,11 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
             .await
             .remove(&record.id)
             .unwrap_or_default();
-        let tracer = TracingEventReceiver::new(tracing_metadata, record.tracing_spans, local_spans);
+        let tracer = TracingEventReceiver::new(tracing_metadata, state.tracing_spans, local_spans);
         let template = WorkflowSeed {
             clock: &self.clock,
             spawner,
-            persisted: record.persisted,
+            persisted: state.persisted,
         };
         (template, tracer)
     }
@@ -328,14 +340,14 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
     async fn tick_workflow(
         &'a self,
         transaction: &mut S::Transaction,
-        workflow: WorkflowRecord,
+        workflow: WorkflowRecord<ActiveWorkflowState>,
         waker_records: Vec<WorkflowWakerRecord>,
     ) -> (Result<Receipt, ExecutionError>, Option<PendingChannel>) {
         let workflow_id = workflow.id;
         let parent_id = workflow.parent_id;
         let module_id = workflow.module_id.clone();
         let (mut template, mut tracer) = self.restore_workflow(transaction, workflow).await;
-        template.apply_wakers(waker_records);
+        template.apply_wakers(transaction, waker_records).await;
         let pending_channel = template.update_inbound_channels(transaction).await;
         let mut children = NewWorkflows::new(Some(workflow_id), self.shared());
         let mut workflow = template.restore(&mut children, &mut tracer);
@@ -407,10 +419,14 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
             };
 
             tracing::debug!(workflow_id, "selected workflow for execution");
-            if let Some(workflow) = transaction.workflow(workflow_id).await {
+            let workflow = transaction.workflow(workflow_id).await.unwrap();
+            if let Some(workflow) = workflow.into_active() {
                 break (workflow, waker_records);
             }
-            tracing::info!(workflow_id, "selected workflow is gone; continuing search");
+            tracing::info!(
+                workflow_id,
+                "selected workflow is not active; continuing search"
+            );
         };
 
         let workflow_id = workflow.id;

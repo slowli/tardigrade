@@ -4,7 +4,7 @@
 
 use chrono::{DateTime, Utc};
 use futures::{lock::Mutex, StreamExt};
-use tracing_tunnel::{LocalSpans, PersistedMetadata};
+use tracing_tunnel::{LocalSpans, PersistedMetadata, PersistedSpans};
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -28,7 +28,7 @@ use crate::{
     module::Clock,
     storage::{
         ChannelRecord, ModuleRecord, ReadChannels, ReadModules, ReadWorkflows, Storage,
-        StorageTransaction, WriteChannels, WriteModules, WriteWorkflows,
+        StorageTransaction, WorkflowRecord, WriteChannels, WriteModules, WriteWorkflows,
     },
     workflow::ChannelIds,
     WorkflowEngine, WorkflowModule, WorkflowSpawner,
@@ -205,6 +205,7 @@ impl<C: Clock, S: for<'a> Storage<'a>> WorkflowManager<C, S> {
     pub async fn workflow(&self, workflow_id: WorkflowId) -> Option<WorkflowHandle<'_, (), Self>> {
         let transaction = self.storage.readonly_transaction().await;
         let record = transaction.workflow(workflow_id).await?;
+        let record = record.into_active()?;
         let interface = self
             .spawners
             .get(&record.module_id, &record.name_in_module)
@@ -216,7 +217,7 @@ impl<C: Clock, S: for<'a> Storage<'a>> WorkflowManager<C, S> {
     /// Returns the number of non-completed workflows.
     pub async fn workflow_count(&self) -> usize {
         let transaction = self.storage.readonly_transaction().await;
-        transaction.count_workflows().await
+        transaction.count_active_workflows().await
     }
 
     /// Returns the encapsulated storage.
@@ -293,14 +294,15 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
     #[tracing::instrument(skip(self))]
     pub async fn abort_workflow(&'a self, workflow_id: WorkflowId) {
         let mut transaction = self.storage.transaction().await;
-        let record = transaction
-            .manipulate_workflow(workflow_id, |persisted| {
-                persisted.abort();
-            })
-            .await;
+        let record = transaction.workflow_for_update(workflow_id).await;
+        let record = record.and_then(WorkflowRecord::into_active);
+
         if let Some(record) = record {
+            let mut persisted = record.state.persisted;
+            persisted.abort();
+            let spans = PersistedSpans::default();
             StorageHelper::new(&mut transaction)
-                .handle_workflow_update(workflow_id, record.parent_id, &record.persisted)
+                .persist_workflow(workflow_id, record.parent_id, persisted, spans)
                 .await;
         }
         transaction.commit().await;
