@@ -1,7 +1,6 @@
 //! Tick logic for `WorkflowManager`.
 
 use chrono::{DateTime, Utc};
-use tracing::field;
 use tracing_tunnel::TracingEventReceiver;
 
 use std::{error, fmt};
@@ -389,26 +388,32 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
     /// Returns an error if the manager cannot be progressed.
     #[allow(clippy::missing_panics_doc)] // false positive
     pub async fn tick(&'a self) -> Result<TickResult<Actions<'a, Self>>, WouldBlock> {
-        let span = tracing::info_span!("tick", workflow_id = field::Empty);
+        let span = tracing::info_span!("tick");
         let _entered = span.enter();
         let mut transaction = self.storage.transaction().await;
 
-        let waker_records = transaction.delete_wakers_for_single_workflow().await;
-        let workflow_id = if let Some(waker) = waker_records.first() {
-            waker.workflow_id
-        } else if let Some((_, channel)) = transaction.find_consumable_channel().await {
-            channel.receiver_workflow_id.unwrap()
-        } else {
-            let err = WouldBlock {
-                nearest_timer_expiration: transaction.nearest_timer_expiration().await,
+        let (workflow, waker_records) = loop {
+            let waker_records = transaction.delete_wakers_for_single_workflow().await;
+            let workflow_id = if let Some(waker) = waker_records.first() {
+                waker.workflow_id
+            } else if let Some((_, channel)) = transaction.find_consumable_channel().await {
+                channel.receiver_workflow_id.unwrap()
+            } else {
+                let err = WouldBlock {
+                    nearest_timer_expiration: transaction.nearest_timer_expiration().await,
+                };
+                tracing::info!(%err, "workflow manager blocked");
+                return Err(err);
             };
-            tracing::info!(%err, "workflow manager blocked");
-            return Err(err);
+
+            tracing::debug!(workflow_id, "selected workflow for execution");
+            if let Some(workflow) = transaction.workflow(workflow_id).await {
+                break (workflow, waker_records);
+            }
+            tracing::info!(workflow_id, "selected workflow is gone; continuing search");
         };
 
-        let workflow = transaction.workflow(workflow_id).await.unwrap();
-        span.record("workflow_id", workflow_id);
-
+        let workflow_id = workflow.id;
         let (result, pending_channel) = self
             .tick_workflow(&mut transaction, workflow, waker_records)
             .await;
