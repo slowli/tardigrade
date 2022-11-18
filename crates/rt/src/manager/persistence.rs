@@ -1,17 +1,16 @@
 //! Persistence for `WorkflowManager`.
 
 use chrono::{DateTime, Utc};
-use futures::future::BoxFuture;
 use tracing_tunnel::PersistedSpans;
 
 use std::{collections::HashMap, task::Poll};
 
 use crate::{
-    manager::{AsManager, ChannelSide},
-    receipt::{ChannelEvent, ChannelEventKind, Receipt},
+    manager::ChannelSide,
+    receipt::{ChannelEvent, ChannelEventKind, ExecutionError, Receipt},
     storage::{
-        ActiveWorkflowState, ChannelRecord, CompletedWorkflowState, Storage, StorageTransaction,
-        WorkflowSelectionCriteria, WorkflowState, WorkflowWaker,
+        ActiveWorkflowState, ChannelRecord, CompletedWorkflowState, ErroneousMessageRef,
+        StorageTransaction, WorkflowSelectionCriteria, WorkflowState, WorkflowWaker,
     },
     utils::{clone_join_error, Message},
     PersistedWorkflow,
@@ -38,17 +37,6 @@ impl ChannelRecord {
             self.is_closed = true;
         }
     }
-}
-
-pub(super) async fn in_transaction<'a, M, F, R>(manager: &'a M, action: F) -> R
-where
-    M: AsManager,
-    F: for<'tx> FnOnce(&'tx mut <M::Storage as Storage<'a>>::Transaction) -> BoxFuture<'tx, R>,
-{
-    let mut transaction = manager.as_manager().storage.transaction().await;
-    let output = action(&mut transaction).await;
-    transaction.commit().await;
-    output
 }
 
 #[derive(Debug)]
@@ -121,6 +109,22 @@ impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
             let waker = WorkflowWaker::ChildCompletion(id);
             self.inner.insert_waker(waker.for_workflow(parent_id)).await;
         }
+    }
+
+    #[tracing::instrument(skip(self, error), fields(err = %error))]
+    pub async fn persist_workflow_error(
+        &mut self,
+        workflow_id: WorkflowId,
+        error: ExecutionError,
+        erroneous_messages: Vec<ErroneousMessageRef>,
+    ) {
+        let state = self.inner.workflow(workflow_id).await.unwrap().state;
+        let state = if let WorkflowState::Active(state) = state {
+            state.with_error(error, erroneous_messages)
+        } else {
+            unreachable!()
+        };
+        self.inner.persist_workflow(workflow_id, state.into()).await;
     }
 
     #[tracing::instrument(skip(self, receipt))]

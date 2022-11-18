@@ -13,6 +13,7 @@ mod local;
 pub use self::local::{LocalStorage, LocalStorageSnapshot, LocalTransaction, ModuleRecordMut};
 
 use crate::{
+    receipt::ExecutionError,
     utils::{clone_join_error, serde_b64},
     PersistedWorkflow,
 };
@@ -258,7 +259,20 @@ impl WorkflowRecord {
                 name_in_module: self.name_in_module,
                 state: *state,
             }),
-            WorkflowState::Completed(_) => None,
+            WorkflowState::Completed(_) | WorkflowState::Errored(_) => None,
+        }
+    }
+
+    pub(crate) fn into_errored(self) -> Option<WorkflowRecord<ErroredWorkflowState>> {
+        match self.state {
+            WorkflowState::Errored(state) => Some(WorkflowRecord {
+                id: self.id,
+                parent_id: self.parent_id,
+                module_id: self.module_id,
+                name_in_module: self.name_in_module,
+                state,
+            }),
+            WorkflowState::Completed(_) | WorkflowState::Active(_) => None,
         }
     }
 }
@@ -269,6 +283,8 @@ impl WorkflowRecord {
 pub enum WorkflowState {
     /// Workflow is currently active.
     Active(Box<ActiveWorkflowState>),
+    /// Workflow has errored.
+    Errored(ErroredWorkflowState),
     /// Workflow is completed.
     Completed(CompletedWorkflowState),
 }
@@ -277,7 +293,7 @@ impl WorkflowState {
     pub(crate) fn into_result(self) -> Option<Result<(), JoinError>> {
         match self {
             Self::Completed(CompletedWorkflowState { result }) => Some(result),
-            Self::Active(_) => None,
+            Self::Active(_) | Self::Errored(_) => None,
         }
     }
 }
@@ -285,6 +301,12 @@ impl WorkflowState {
 impl From<ActiveWorkflowState> for WorkflowState {
     fn from(state: ActiveWorkflowState) -> Self {
         Self::Active(Box::new(state))
+    }
+}
+
+impl From<ErroredWorkflowState> for WorkflowState {
+    fn from(state: ErroredWorkflowState) -> Self {
+        Self::Errored(state)
     }
 }
 
@@ -303,6 +325,21 @@ pub struct ActiveWorkflowState {
     pub tracing_spans: PersistedSpans,
 }
 
+impl ActiveWorkflowState {
+    pub(crate) fn with_error(
+        self,
+        error: ExecutionError,
+        erroneous_messages: Vec<ErroneousMessageRef>,
+    ) -> ErroredWorkflowState {
+        ErroredWorkflowState {
+            persisted: self.persisted,
+            tracing_spans: self.tracing_spans,
+            error,
+            erroneous_messages,
+        }
+    }
+}
+
 /// State of a completed workflow.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CompletedWorkflowState {
@@ -316,6 +353,28 @@ impl Clone for CompletedWorkflowState {
             result: self.result.as_ref().copied().map_err(clone_join_error),
         }
     }
+}
+
+/// State of an errored workflow.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErroredWorkflowState {
+    /// Persisted workflow state.
+    pub persisted: PersistedWorkflow,
+    /// Tracing spans associated with the workflow.
+    pub tracing_spans: PersistedSpans,
+    /// Workflow execution error.
+    pub error: ExecutionError,
+    /// Messages the ingestion of which may have led to the execution error.
+    pub erroneous_messages: Vec<ErroneousMessageRef>,
+}
+
+/// Reference for a potentially erroneous message in [`ErroredWorkflowState`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErroneousMessageRef {
+    /// ID of the channel the message was received from.
+    pub channel_id: ChannelId,
+    /// 0-based index of the message in the channel.
+    pub index: usize,
 }
 
 /// Workflow selection criteria used in [`WriteWorkflows::manipulate_all_workflows()`].

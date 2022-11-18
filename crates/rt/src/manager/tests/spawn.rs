@@ -763,11 +763,14 @@ async fn completing_child_with_panic() {
 
     let tick_result = manager.tick().await.unwrap();
     assert_eq!(tick_result.workflow_id(), CHILD_ID);
-    let err = tick_result.abort_workflow().await.into_inner().unwrap_err();
+    let err_handle = tick_result.into_inner().unwrap_err();
     assert_eq!(
-        err.panic_info().unwrap().message.as_deref(),
+        err_handle.error().panic_info().unwrap().message.as_deref(),
         Some("panic message")
     );
+    assert_eq!(err_handle.messages().count(), 0);
+    err_handle.abort().await;
+
     assert_child_abort(&manager, workflow_id, child_events_id).await;
 }
 

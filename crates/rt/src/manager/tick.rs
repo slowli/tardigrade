@@ -5,58 +5,32 @@ use tracing_tunnel::TracingEventReceiver;
 
 use std::{error, fmt};
 
-use super::{new_workflows::NewWorkflows, persistence::StorageHelper, AsManager, WorkflowManager};
+use super::{
+    new_workflows::NewWorkflows, persistence::StorageHelper, AsManager, ErroredWorkflowHandle,
+    WorkflowManager,
+};
 use crate::{
     module::{Clock, Services},
     receipt::{ExecutionError, Receipt},
     storage::{
-        ActiveWorkflowState, MessageError, ReadChannels, ReadModules, ReadWorkflows, Storage,
-        StorageTransaction, WorkflowRecord, WorkflowWaker, WorkflowWakerRecord, WriteModules,
-        WriteWorkflowWakers, WriteWorkflows,
+        ActiveWorkflowState, ErroneousMessageRef, MessageError, ReadChannels, ReadModules,
+        ReadWorkflows, Storage, StorageTransaction, WorkflowRecord, WorkflowWaker,
+        WorkflowWakerRecord, WriteModules, WriteWorkflowWakers, WriteWorkflows,
     },
     workflow::Workflow,
     PersistedWorkflow, WorkflowSpawner,
 };
 use tardigrade::{ChannelId, WorkflowId};
 
-#[derive(Debug)]
-struct DropMessageAction {
-    channel_id: ChannelId,
-    message_idx: usize,
-}
-
-impl DropMessageAction {
-    async fn execute<M: AsManager>(self, manager: &M, workflow_id: WorkflowId) {
-        let mut transaction = manager.as_manager().storage.transaction().await;
-        let record = transaction.workflow_for_update(workflow_id).await;
-        let record = record.and_then(WorkflowRecord::into_active);
-        if let Some(mut record) = record {
-            let persisted = &mut record.state.persisted;
-            let (child_id, name, state) = persisted.find_inbound_channel(self.channel_id);
-            if state.received_message_count() == self.message_idx {
-                let name = name.to_owned();
-                persisted.drop_inbound_message(child_id, &name);
-            } else {
-                tracing::warn!(?self, workflow_id, "failed dropping inbound message");
-            }
-            transaction
-                .persist_workflow(workflow_id, record.state.into())
-                .await;
-        }
-        transaction.commit().await;
-    }
-}
-
 /// Result of [ticking](WorkflowManager::tick()) a [`WorkflowManager`].
 #[derive(Debug)]
 #[must_use = "Result can contain an execution error which should be handled"]
-pub struct TickResult<T> {
+pub struct TickResult<E = ExecutionError> {
     workflow_id: WorkflowId,
-    result: Result<Receipt, ExecutionError>,
-    extra: T,
+    result: Result<Receipt, E>,
 }
 
-impl<T> TickResult<T> {
+impl<E> TickResult<E> {
     /// Returns the ID of the executed workflow.
     pub fn workflow_id(&self) -> WorkflowId {
         self.workflow_id
@@ -64,90 +38,24 @@ impl<T> TickResult<T> {
 
     /// Returns a reference to the underlying execution result.
     #[allow(clippy::missing_errors_doc)] // doesn't make sense semantically
-    pub fn as_ref(&self) -> Result<&Receipt, &ExecutionError> {
+    pub fn as_ref(&self) -> Result<&Receipt, &E> {
         self.result.as_ref()
     }
 
     /// Returns the underlying execution result.
     #[allow(clippy::missing_errors_doc)] // doesn't make sense semantically
-    pub fn into_inner(self) -> Result<Receipt, ExecutionError> {
+    pub fn into_inner(self) -> Result<Receipt, E> {
         self.result
     }
+}
 
-    pub(crate) fn drop_extra(self) -> TickResult<()> {
+impl<M: AsManager> TickResult<ErroredWorkflowHandle<'_, M>> {
+    /// Replaced the associated errored workflow handle with the corresponding [`ExecutionError`].
+    pub fn drop_handle(self) -> TickResult {
         TickResult {
             workflow_id: self.workflow_id,
-            result: self.result,
-            extra: (),
+            result: self.result.map_err(|handle| handle.error),
         }
-    }
-}
-
-/// Actions that can be performed on a [`WorkflowManager`]. Used within the [`TickResult`]
-/// wrapper.
-#[derive(Debug)]
-pub struct Actions<'a, M> {
-    manager: &'a M,
-    abort_action: bool,
-    drop_message_action: Option<DropMessageAction>,
-}
-
-impl<'a, M> Actions<'a, M> {
-    fn new(manager: &'a M, abort_action: bool) -> Self {
-        Self {
-            manager,
-            abort_action,
-            drop_message_action: None,
-        }
-    }
-
-    fn allow_dropping_message(&mut self, channel_id: ChannelId, message_idx: usize) {
-        self.drop_message_action = Some(DropMessageAction {
-            channel_id,
-            message_idx,
-        });
-    }
-}
-
-impl<'a, M: AsManager> TickResult<Actions<'a, M>> {
-    /// Returns true if the workflow execution failed and the execution was triggered
-    /// by consuming a message from a certain channel.
-    pub fn can_drop_erroneous_message(&self) -> bool {
-        self.extra.drop_message_action.is_some()
-    }
-
-    /// Aborts the erroneous workflow. Messages emitted by the workflow during the erroneous
-    /// execution are discarded; same with the workflows spawned during the execution.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the execution is successful.
-    pub async fn abort_workflow(self) -> TickResult<()> {
-        assert!(
-            self.extra.abort_action,
-            "cannot abort workflow because it did not error"
-        );
-        self.extra
-            .manager
-            .as_manager()
-            .abort_workflow(self.workflow_id)
-            .await;
-        self.drop_extra()
-    }
-
-    /// Drops a message that led to erroneous workflow execution.
-    ///
-    /// # Panics
-    ///
-    /// Panics if [`Self::can_drop_erroneous_message()`] returns `false`.
-    pub async fn drop_erroneous_message(mut self) -> TickResult<()> {
-        let action = self
-            .extra
-            .drop_message_action
-            .take()
-            .expect("cannot drop message");
-        action.execute(self.extra.manager, self.workflow_id).await;
-        self.drop_extra()
     }
 }
 
@@ -195,6 +103,13 @@ impl PendingChannel {
                 ?self,
                 "message was not consumed by workflow; placing the message back"
             );
+        }
+    }
+
+    fn into_message_ref(self) -> ErroneousMessageRef {
+        ErroneousMessageRef {
+            channel_id: self.channel_id,
+            index: self.message_idx,
         }
     }
 }
@@ -387,7 +302,9 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
 
         (result, pending_channel)
     }
+}
 
+impl<C: Clock, S: for<'a> Storage<'a>> WorkflowManager<C, S> {
     /// Attempts to advance a single workflow within this manager.
     ///
     /// A workflow can be advanced if it has outstanding wakers, e.g., ones produced by
@@ -399,7 +316,7 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
     ///
     /// Returns an error if the manager cannot be progressed.
     #[allow(clippy::missing_panics_doc)] // false positive
-    pub async fn tick(&'a self) -> Result<TickResult<Actions<'a, Self>>, WouldBlock> {
+    pub async fn tick(&self) -> Result<TickResult<ErroredWorkflowHandle<'_, Self>>, WouldBlock> {
         let span = tracing::info_span!("tick");
         let _entered = span.enter();
         let mut transaction = self.storage.transaction().await;
@@ -433,18 +350,53 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
         let (result, pending_channel) = self
             .tick_workflow(&mut transaction, workflow, waker_records)
             .await;
-        transaction.commit().await;
-        let mut actions = Actions::new(self, result.is_err());
-        if result.is_err() {
-            if let Some(pending) = pending_channel {
-                actions.allow_dropping_message(pending.channel_id, pending.message_idx);
+        let result = match result {
+            Ok(receipt) => Ok(receipt),
+            Err(error) => {
+                let erroneous_messages: Vec<_> = pending_channel
+                    .into_iter()
+                    .map(PendingChannel::into_message_ref)
+                    .collect();
+                StorageHelper::new(&mut transaction)
+                    .persist_workflow_error(workflow_id, error.clone(), erroneous_messages.clone())
+                    .await;
+                Err(ErroredWorkflowHandle::new(
+                    self,
+                    workflow_id,
+                    error,
+                    erroneous_messages,
+                ))
             }
-        }
+        };
+        transaction.commit().await;
 
         Ok(TickResult {
             workflow_id,
-            extra: actions,
             result,
         })
+    }
+
+    pub(super) async fn drop_message(
+        &self,
+        workflow_id: WorkflowId,
+        message_ref: &ErroneousMessageRef,
+    ) {
+        let mut transaction = self.storage.transaction().await;
+        let record = transaction.workflow_for_update(workflow_id).await;
+        let record = record.and_then(WorkflowRecord::into_errored);
+        if let Some(mut record) = record {
+            let persisted = &mut record.state.persisted;
+            let (child_id, name, state) = persisted.find_inbound_channel(message_ref.channel_id);
+            if state.received_message_count() == message_ref.index {
+                let name = name.to_owned();
+                persisted.drop_inbound_message(child_id, &name);
+                transaction
+                    .persist_workflow(workflow_id, record.state.into())
+                    .await;
+            } else {
+                tracing::warn!(?message_ref, workflow_id, "failed dropping inbound message");
+            }
+        }
+        transaction.commit().await;
     }
 }

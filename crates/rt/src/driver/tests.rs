@@ -70,7 +70,7 @@ async fn completing_workflow_via_driver() {
     };
     let (_, driver_result) = future::join(input_actions, driver.drive(&mut manager)).await;
 
-    assert_matches!(driver_result, Ok(Termination::Finished));
+    assert_matches!(driver_result, Termination::Finished);
     let events: Vec<_> = events_rx.try_collect().await.unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0], b"event #1");
@@ -114,7 +114,7 @@ async fn test_driver_with_multiple_messages(start_after_tick: bool) {
     };
     let (_, driver_result) = future::join(input_actions, driver.drive(&mut manager)).await;
 
-    assert_matches!(driver_result, Ok(Termination::Finished));
+    assert_matches!(driver_result, Termination::Finished);
     let events: Vec<_> = events_rx.try_collect().await.unwrap();
     assert_eq!(events.last().unwrap(), b"event #1");
     if start_after_tick {

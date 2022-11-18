@@ -4,11 +4,13 @@ use futures::future;
 
 use std::{collections::HashSet, error, fmt, marker::PhantomData};
 
+use crate::storage::WorkflowState;
 use crate::{
-    manager::{persistence::in_transaction, AsManager, WorkflowAndChannelIds},
+    manager::{AsManager, WorkflowAndChannelIds},
+    receipt::ExecutionError,
     storage::{
-        ActiveWorkflowState, ChannelRecord, MessageError, ReadChannels, ReadWorkflows, Storage,
-        StorageTransaction, WorkflowRecord, WriteChannels,
+        ActiveWorkflowState, ChannelRecord, ErroneousMessageRef, MessageError, ReadChannels,
+        ReadWorkflows, Storage, StorageTransaction, WorkflowRecord, WriteChannels,
     },
     workflow::ChannelIds,
     PersistedWorkflow,
@@ -17,7 +19,7 @@ use tardigrade::{
     channel::{Receiver, SendError, Sender},
     interface::{AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel},
     workflow::{GetInterface, TakeHandle, UntypedHandle},
-    ChannelId, Decode, Encode, WorkflowId,
+    ChannelId, Decode, Encode, Raw, WorkflowId,
 };
 
 /// Error updating a [`WorkflowHandle`].
@@ -26,6 +28,8 @@ use tardigrade::{
 pub enum HandleUpdateError {
     /// The workflow that the handle is associated with was terminated.
     Terminated,
+    /// The workflow that the handle is associated with has errored.
+    Errored,
 }
 
 impl fmt::Display for HandleUpdateError {
@@ -33,6 +37,9 @@ impl fmt::Display for HandleUpdateError {
         match self {
             Self::Terminated => {
                 formatter.write_str("workflow that the handle is associated with was terminated")
+            }
+            Self::Errored => {
+                formatter.write_str("workflow that the handle is associated with has errored")
             }
         }
     }
@@ -96,7 +103,7 @@ pub struct WorkflowHandle<'a, W, M> {
 impl<W, M: fmt::Debug> fmt::Debug for WorkflowHandle<'_, W, M> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("WorkflowEnv")
+            .debug_struct("WorkflowHandle")
             .field("manager", &self.manager)
             .field("ids", &self.ids)
             .finish()
@@ -193,9 +200,20 @@ impl<W: TakeHandle<Self, Id = ()>, M: AsManager> WorkflowHandle<'_, W, M> {
         let transaction = manager.storage.readonly_transaction().await;
         let record = transaction.workflow(self.ids.workflow_id).await;
         let record = record.ok_or(HandleUpdateError::Terminated)?;
-        let record = record.into_active().ok_or(HandleUpdateError::Terminated)?;
-        self.persisted = record.state.persisted;
+        self.persisted = match record.state {
+            WorkflowState::Active(state) => state.persisted,
+            WorkflowState::Completed(_) => return Err(HandleUpdateError::Terminated),
+            WorkflowState::Errored(_) => return Err(HandleUpdateError::Errored),
+        };
         Ok(())
+    }
+
+    /// Aborts this workflow.
+    pub async fn abort(self) {
+        self.manager
+            .as_manager()
+            .abort_workflow(self.ids.workflow_id)
+            .await;
     }
 
     /// Returns a handle for the workflow that allows interacting with its channels.
@@ -310,10 +328,9 @@ impl<T, C: Decode<T> + Default, M: AsManager> MessageReceiver<'_, T, C, M> {
         &self,
         index: usize,
     ) -> Result<ReceivedMessage<T, C>, MessageError> {
-        let raw_message = in_transaction(self.manager, |transaction| {
-            transaction.channel_message(self.channel_id, index)
-        })
-        .await?;
+        let manager = self.manager.as_manager();
+        let transaction = manager.storage.readonly_transaction().await;
+        let raw_message = transaction.channel_message(self.channel_id, index).await?;
 
         Ok(ReceivedMessage {
             index,
@@ -418,5 +435,92 @@ impl<'a, M: AsManager> TakeHandle<WorkflowHandle<'a, (), M>> for () {
         _id: &Self::Id,
     ) -> Result<Self::Handle, AccessError> {
         UntypedHandle::take_handle(env, &())
+    }
+}
+
+/// Handle for an errored workflow.
+#[derive(Debug)]
+pub struct ErroredWorkflowHandle<'a, M> {
+    manager: &'a M,
+    id: WorkflowId,
+    pub(super) error: ExecutionError,
+    erroneous_messages: Vec<ErroneousMessageRef>,
+}
+
+impl<'a, M: AsManager> ErroredWorkflowHandle<'a, M> {
+    pub(super) fn new(
+        manager: &'a M,
+        id: WorkflowId,
+        error: ExecutionError,
+        erroneous_messages: Vec<ErroneousMessageRef>,
+    ) -> Self {
+        Self {
+            manager,
+            id,
+            error,
+            erroneous_messages,
+        }
+    }
+
+    /// Returns the ID of this workflow.
+    pub fn id(&self) -> WorkflowId {
+        self.id
+    }
+
+    /// Returns the workflow execution error.
+    pub fn error(&self) -> &ExecutionError {
+        &self.error
+    }
+
+    /// Aborts this workflow.
+    pub async fn abort(self) {
+        self.manager.as_manager().abort_workflow(self.id).await;
+    }
+
+    /// Iterates over messages the ingestion of which may have led to the execution error.
+    pub fn messages(&self) -> impl Iterator<Item = ErroneousMessage<'a, M>> + '_ {
+        self.erroneous_messages
+            .iter()
+            .map(|message_ref| ErroneousMessage {
+                manager: self.manager,
+                workflow_id: self.id,
+                message_ref: message_ref.clone(),
+            })
+    }
+}
+
+/// Handle for a potentially erroneous message consumed by an errored workflow.
+///
+/// The handle allows inspecting the message and dropping it from the workflow perspective.
+#[derive(Debug)]
+pub struct ErroneousMessage<'a, M> {
+    manager: &'a M,
+    workflow_id: WorkflowId,
+    message_ref: ErroneousMessageRef,
+}
+
+impl<M: AsManager> ErroneousMessage<'_, M> {
+    /// Receives this message.
+    pub async fn receive(&self) -> Result<ReceivedMessage<Vec<u8>, Raw>, MessageError> {
+        let manager = self.manager.as_manager();
+        let transaction = manager.storage.readonly_transaction().await;
+        let raw_message = transaction
+            .channel_message(self.message_ref.channel_id, self.message_ref.index)
+            .await?;
+
+        Ok(ReceivedMessage {
+            index: self.message_ref.index,
+            raw_message,
+            codec: Raw,
+            _item: PhantomData,
+        })
+    }
+
+    /// Drops the message from the workflow perspective.
+    pub async fn drop_for_workflow(self) {
+        self.manager
+            .as_manager()
+            .drop_message(self.workflow_id, &self.message_ref)
+            .await;
     }
 }

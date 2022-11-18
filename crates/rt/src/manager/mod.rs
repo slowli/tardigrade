@@ -18,17 +18,21 @@ mod traits;
 pub(crate) mod tests;
 
 pub use self::{
-    handle::{HandleUpdateError, MessageReceiver, MessageSender, ReceivedMessage, WorkflowHandle},
-    tick::{Actions, TickResult, WouldBlock},
+    handle::{
+        ErroredWorkflowHandle, HandleUpdateError, MessageReceiver, MessageSender, ReceivedMessage,
+        WorkflowHandle,
+    },
+    tick::{TickResult, WouldBlock},
     traits::{AsManager, CreateModule},
 };
 
 use self::persistence::StorageHelper;
+use crate::storage::WorkflowState;
 use crate::{
     module::Clock,
     storage::{
         ChannelRecord, ModuleRecord, ReadChannels, ReadModules, ReadWorkflows, Storage,
-        StorageTransaction, WorkflowRecord, WriteChannels, WriteModules, WriteWorkflows,
+        StorageTransaction, WriteChannels, WriteModules, WriteWorkflows,
     },
     workflow::ChannelIds,
     WorkflowEngine, WorkflowModule, WorkflowSpawner,
@@ -202,6 +206,7 @@ impl<C: Clock, S: for<'a> Storage<'a>> WorkflowManager<C, S> {
     }
 
     /// Returns a handle to a workflow with the specified ID.
+    // FIXME: rename to `active_workflow` or change return type
     pub async fn workflow(&self, workflow_id: WorkflowId) -> Option<WorkflowHandle<'_, (), Self>> {
         let transaction = self.storage.readonly_transaction().await;
         let record = transaction.workflow(workflow_id).await?;
@@ -214,7 +219,7 @@ impl<C: Clock, S: for<'a> Storage<'a>> WorkflowManager<C, S> {
         Some(handle)
     }
 
-    /// Returns the number of non-completed workflows.
+    /// Returns the number of active workflows.
     pub async fn workflow_count(&self) -> usize {
         let transaction = self.storage.readonly_transaction().await;
         transaction.count_active_workflows().await
@@ -287,22 +292,21 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
 
     /// Aborts the workflow with the specified ID. The parent workflow, if any, will be notified,
     /// and all channel handles owned by the workflow will be properly disposed.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the manager does not contain a workflow with the specified ID.
     #[tracing::instrument(skip(self))]
-    pub async fn abort_workflow(&'a self, workflow_id: WorkflowId) {
+    async fn abort_workflow(&'a self, workflow_id: WorkflowId) {
         let mut transaction = self.storage.transaction().await;
         let record = transaction.workflow_for_update(workflow_id).await;
-        let record = record.and_then(WorkflowRecord::into_active);
+        let record = record.and_then(|record| match record.state {
+            WorkflowState::Active(state) => Some((record.parent_id, state.persisted)),
+            WorkflowState::Errored(state) => Some((record.parent_id, state.persisted)),
+            WorkflowState::Completed(_) => None,
+        });
 
-        if let Some(record) = record {
-            let mut persisted = record.state.persisted;
+        if let Some((parent_id, mut persisted)) = record {
             persisted.abort();
             let spans = PersistedSpans::default();
             StorageHelper::new(&mut transaction)
-                .persist_workflow(workflow_id, record.parent_id, persisted, spans)
+                .persist_workflow(workflow_id, parent_id, persisted, spans)
                 .await;
         }
         transaction.commit().await;

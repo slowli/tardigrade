@@ -66,7 +66,7 @@ async fn tick_workflow(manager: &LocalManager, id: WorkflowId) -> Result<Receipt
     transaction.commit().await;
     let result = manager.tick().await.unwrap();
     assert_eq!(result.workflow_id(), id);
-    result.into_inner()
+    result.drop_handle().into_inner()
 }
 
 fn is_consumption(event: &Event, channel_name: &str) -> bool {
@@ -387,8 +387,9 @@ async fn error_initializing_workflow() {
     let err = err.trap().display_reason().to_string();
     assert!(err.contains("oops"), "{}", err);
 
-    workflow.update().await.unwrap();
-    assert!(!workflow.persisted().is_initialized());
+    let err = workflow.update().await.unwrap_err();
+    assert_matches!(err, HandleUpdateError::Errored);
+    // FIXME: access errored workflow
 }
 
 fn poll_receiver(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {

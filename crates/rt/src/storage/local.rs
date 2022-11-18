@@ -449,7 +449,7 @@ impl WriteWorkflowWakers for LocalTransaction<'_> {
         for (&id, record) in &self.inner.workflows {
             let persisted = match &record.state {
                 WorkflowState::Active(state) => &state.persisted,
-                WorkflowState::Completed(_) => continue,
+                WorkflowState::Completed(_) | WorkflowState::Errored(_) => continue,
             };
 
             if criteria.matches(persisted) {
@@ -486,7 +486,7 @@ impl StorageTransaction for LocalTransaction<'_> {
                 if let Some(workflow_id) = channel.record.receiver_workflow_id {
                     let workflow = match &inner.workflows[&workflow_id].state {
                         WorkflowState::Active(state) => &state.persisted,
-                        WorkflowState::Completed(_) => continue,
+                        WorkflowState::Completed(_) | WorkflowState::Errored(_) => continue,
                     };
                     let (.., state) = workflow.find_inbound_channel(id);
                     channel.truncate(state.received_message_count());
