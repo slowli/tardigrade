@@ -408,7 +408,8 @@ impl error::Error for JoinError {
 }
 
 /// Errors that can occur when sending a message over a channel.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum SendError {
     /// The channel is full.
