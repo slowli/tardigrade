@@ -19,8 +19,8 @@ pub(crate) mod tests;
 
 pub use self::{
     handle::{
-        ErroredWorkflowHandle, HandleUpdateError, MessageReceiver, MessageSender, ReceivedMessage,
-        WorkflowHandle,
+        AnyWorkflowHandle, CompletedWorkflowHandle, ErroredWorkflowHandle, HandleUpdateError,
+        MessageReceiver, MessageSender, ReceivedMessage, WorkflowHandle,
     },
     tick::{TickResult, WouldBlock},
     traits::{AsManager, CreateModule},
@@ -205,18 +205,50 @@ impl<C: Clock, S: for<'a> Storage<'a>> WorkflowManager<C, S> {
         Some(record)
     }
 
-    /// Returns a handle to a workflow with the specified ID.
-    // FIXME: rename to `active_workflow` or change return type
+    /// Returns a handle to an active workflow with the specified ID. If the workflow is
+    /// not active or does not exist, returns `None`.
     pub async fn workflow(&self, workflow_id: WorkflowId) -> Option<WorkflowHandle<'_, (), Self>> {
+        let handle = self.any_workflow(workflow_id).await?;
+        match handle {
+            AnyWorkflowHandle::Active(handle) => Some(*handle),
+            _ => None,
+        }
+    }
+
+    /// Returns a handle to a workflow with the specified ID. The workflow may have any state.
+    /// If the workflow does not exist, returns `None`.
+    pub async fn any_workflow(
+        &self,
+        workflow_id: WorkflowId,
+    ) -> Option<AnyWorkflowHandle<'_, Self>> {
         let transaction = self.storage.readonly_transaction().await;
         let record = transaction.workflow(workflow_id).await?;
-        let record = record.into_active()?;
-        let interface = self
-            .spawners
-            .get(&record.module_id, &record.name_in_module)
-            .interface();
-        let handle = WorkflowHandle::new(self, &transaction, interface, record).await;
-        Some(handle)
+        match record.state {
+            WorkflowState::Active(state) => {
+                let interface = self
+                    .spawners
+                    .get(&record.module_id, &record.name_in_module)
+                    .interface();
+                let handle =
+                    WorkflowHandle::new(self, &transaction, workflow_id, interface, *state).await;
+                Some(handle.into())
+            }
+
+            WorkflowState::Errored(state) => {
+                let handle = ErroredWorkflowHandle::new(
+                    self,
+                    workflow_id,
+                    state.error,
+                    state.erroneous_messages,
+                );
+                Some(handle.into())
+            }
+
+            WorkflowState::Completed(state) => {
+                let handle = CompletedWorkflowHandle::new(workflow_id, state);
+                Some(handle.into())
+            }
+        }
     }
 
     /// Returns the number of active workflows.

@@ -385,11 +385,18 @@ async fn error_initializing_workflow() {
 
     let err = tick_workflow(&manager, workflow_id).await.unwrap_err();
     let err = err.trap().display_reason().to_string();
-    assert!(err.contains("oops"), "{}", err);
+    assert!(err.contains("oops"), "{err}");
 
     let err = workflow.update().await.unwrap_err();
     assert_matches!(err, HandleUpdateError::Errored);
-    // FIXME: access errored workflow
+
+    let workflow = manager.any_workflow(workflow_id).await.unwrap();
+    assert!(workflow.is_errored());
+    let workflow = workflow.unwrap_errored();
+    assert_eq!(workflow.id(), workflow_id);
+    let err = workflow.error().trap().display_reason().to_string();
+    assert!(err.contains("oops"), "{err}");
+    assert_eq!(workflow.messages().count(), 0);
 }
 
 fn poll_receiver(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {

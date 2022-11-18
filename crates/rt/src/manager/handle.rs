@@ -4,13 +4,13 @@ use futures::future;
 
 use std::{collections::HashSet, error, fmt, marker::PhantomData};
 
-use crate::storage::WorkflowState;
+use crate::storage::{CompletedWorkflowState, WorkflowState};
 use crate::{
     manager::{AsManager, WorkflowAndChannelIds},
     receipt::ExecutionError,
     storage::{
         ActiveWorkflowState, ChannelRecord, ErroneousMessageRef, MessageError, ReadChannels,
-        ReadWorkflows, Storage, StorageTransaction, WorkflowRecord, WriteChannels,
+        ReadWorkflows, Storage, StorageTransaction, WriteChannels,
     },
     workflow::ChannelIds,
     PersistedWorkflow,
@@ -18,6 +18,7 @@ use crate::{
 use tardigrade::{
     channel::{Receiver, SendError, Sender},
     interface::{AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel},
+    task::JoinError,
     workflow::{GetInterface, TakeHandle, UntypedHandle},
     ChannelId, Decode, Encode, Raw, WorkflowId,
 };
@@ -26,8 +27,8 @@ use tardigrade::{
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum HandleUpdateError {
-    /// The workflow that the handle is associated with was terminated.
-    Terminated,
+    /// The workflow that the handle is associated with has completed.
+    Completed,
     /// The workflow that the handle is associated with has errored.
     Errored,
 }
@@ -35,8 +36,8 @@ pub enum HandleUpdateError {
 impl fmt::Display for HandleUpdateError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Terminated => {
-                formatter.write_str("workflow that the handle is associated with was terminated")
+            Self::Completed => {
+                formatter.write_str("workflow that the handle is associated with has completed")
             }
             Self::Errored => {
                 formatter.write_str("workflow that the handle is associated with has errored")
@@ -115,12 +116,13 @@ impl<'a, M: AsManager> WorkflowHandle<'a, (), M> {
     pub(super) async fn new(
         manager: &'a M,
         transaction: &impl ReadChannels,
+        id: WorkflowId,
         interface: &'a Interface,
-        record: WorkflowRecord<ActiveWorkflowState>,
+        state: ActiveWorkflowState,
     ) -> WorkflowHandle<'a, (), M> {
         let ids = WorkflowAndChannelIds {
-            workflow_id: record.id,
-            channel_ids: record.state.persisted.channel_ids(),
+            workflow_id: id,
+            channel_ids: state.persisted.channel_ids(),
         };
         let host_receiver_channels =
             Self::find_host_receiver_channels(transaction, &ids.channel_ids).await;
@@ -130,7 +132,7 @@ impl<'a, M: AsManager> WorkflowHandle<'a, (), M> {
             ids,
             host_receiver_channels,
             interface,
-            persisted: record.state.persisted,
+            persisted: state.persisted,
             _ty: PhantomData,
         }
     }
@@ -199,10 +201,10 @@ impl<W: TakeHandle<Self, Id = ()>, M: AsManager> WorkflowHandle<'_, W, M> {
         let manager = self.manager.as_manager();
         let transaction = manager.storage.readonly_transaction().await;
         let record = transaction.workflow(self.ids.workflow_id).await;
-        let record = record.ok_or(HandleUpdateError::Terminated)?;
+        let record = record.ok_or(HandleUpdateError::Completed)?;
         self.persisted = match record.state {
             WorkflowState::Active(state) => state.persisted,
-            WorkflowState::Completed(_) => return Err(HandleUpdateError::Terminated),
+            WorkflowState::Completed(_) => return Err(HandleUpdateError::Completed),
             WorkflowState::Errored(_) => return Err(HandleUpdateError::Errored),
         };
         Ok(())
@@ -522,5 +524,124 @@ impl<M: AsManager> ErroneousMessage<'_, M> {
             .as_manager()
             .drop_message(self.workflow_id, &self.message_ref)
             .await;
+    }
+}
+
+/// Handle to a completed workflow.
+#[derive(Debug)]
+pub struct CompletedWorkflowHandle {
+    id: WorkflowId,
+    result: Result<(), JoinError>,
+}
+
+impl CompletedWorkflowHandle {
+    pub(super) fn new(id: WorkflowId, state: CompletedWorkflowState) -> Self {
+        Self {
+            id,
+            result: state.result,
+        }
+    }
+
+    /// Returns the ID of this workflow.
+    pub fn id(&self) -> WorkflowId {
+        self.id
+    }
+
+    /// Returns the execution result of the workflow.
+    #[allow(clippy::missing_errors_doc)] // doesn't make sense semantically
+    pub fn result(&self) -> Result<(), &JoinError> {
+        self.result.as_ref().copied()
+    }
+}
+
+/// Handle to a workflow in an unknown state.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum AnyWorkflowHandle<'a, M> {
+    /// The workflow is active.
+    Active(Box<WorkflowHandle<'a, (), M>>),
+    /// The workflow is errored.
+    Errored(ErroredWorkflowHandle<'a, M>),
+    /// The workflow is completed.
+    Completed(CompletedWorkflowHandle),
+}
+
+impl<'a, M: AsManager> AnyWorkflowHandle<'a, M> {
+    /// Returns the ID of this workflow.
+    pub fn id(&self) -> WorkflowId {
+        match self {
+            Self::Active(handle) => handle.id(),
+            Self::Errored(handle) => handle.id(),
+            Self::Completed(handle) => handle.id(),
+        }
+    }
+
+    /// Checks whether this workflow is active.
+    pub fn is_active(&self) -> bool {
+        matches!(self, Self::Active(_))
+    }
+
+    /// Checks whether this workflow is errored.
+    pub fn is_errored(&self) -> bool {
+        matches!(self, Self::Errored(_))
+    }
+
+    /// Checks whether this workflow is completed.
+    pub fn is_completed(&self) -> bool {
+        matches!(self, Self::Completed(_))
+    }
+
+    /// Unwraps the handle to the active workflow.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the workflow is not active.
+    pub fn unwrap_active(self) -> WorkflowHandle<'a, (), M> {
+        match self {
+            Self::Active(handle) => *handle,
+            _ => panic!("workflow is not active"),
+        }
+    }
+
+    /// Unwraps the handle to the errored workflow.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the workflow is not errored.
+    pub fn unwrap_errored(self) -> ErroredWorkflowHandle<'a, M> {
+        match self {
+            Self::Errored(handle) => handle,
+            _ => panic!("workflow is not errored"),
+        }
+    }
+
+    /// Unwraps the handle to the completed workflow.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the workflow is not completed.
+    pub fn unwrap_completed(self) -> CompletedWorkflowHandle {
+        match self {
+            Self::Completed(handle) => handle,
+            _ => panic!("workflow is not completed"),
+        }
+    }
+}
+
+impl<'a, M: AsManager> From<WorkflowHandle<'a, (), M>> for AnyWorkflowHandle<'a, M> {
+    fn from(handle: WorkflowHandle<'a, (), M>) -> Self {
+        Self::Active(Box::new(handle))
+    }
+}
+
+impl<'a, M: AsManager> From<ErroredWorkflowHandle<'a, M>> for AnyWorkflowHandle<'a, M> {
+    fn from(handle: ErroredWorkflowHandle<'a, M>) -> Self {
+        Self::Errored(handle)
+    }
+}
+
+impl<'a, M: AsManager> From<CompletedWorkflowHandle> for AnyWorkflowHandle<'a, M> {
+    fn from(handle: CompletedWorkflowHandle) -> Self {
+        Self::Completed(handle)
     }
 }

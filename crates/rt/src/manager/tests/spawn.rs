@@ -10,7 +10,7 @@ use crate::{
     storage::{LocalTransaction, Readonly},
     utils::{copy_string_from_wasm, decode_string},
 };
-use tardigrade::{abi::TryFromWasm, interface::ChannelKind};
+use tardigrade::{abi::TryFromWasm, interface::ChannelKind, task::JoinError};
 
 const CHILD_ID: WorkflowId = 1;
 const ERROR_PTR: u32 = 1_024;
@@ -691,6 +691,14 @@ async fn completing_child_with_error() {
     tick_workflow(&manager, workflow_id).await.unwrap(); // notifies about child initialization
     tick_workflow(&manager, CHILD_ID).await.unwrap();
 
+    let child = manager.any_workflow(CHILD_ID).await.unwrap();
+    assert!(child.is_completed());
+    let child = child.unwrap_completed();
+    assert_matches!(
+        child.result(),
+        Err(JoinError::Err(err)) if err.cause().to_string() == "error message"
+    );
+
     let receipt = tick_workflow(&manager, workflow_id).await.unwrap();
     let is_child_polled = receipt.events().any(|event| {
         event.as_resource_event().map_or(false, |event| {
@@ -770,6 +778,11 @@ async fn completing_child_with_panic() {
     );
     assert_eq!(err_handle.messages().count(), 0);
     err_handle.abort().await;
+
+    let child = manager.any_workflow(CHILD_ID).await.unwrap();
+    assert!(child.is_completed());
+    let child = child.unwrap_completed();
+    assert_matches!(child.result(), Err(JoinError::Aborted));
 
     assert_child_abort(&manager, workflow_id, child_events_id).await;
 }

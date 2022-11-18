@@ -193,7 +193,7 @@ async fn selecting_from_driver_and_other_future() {
         .unwrap();
     manager.tick().await.unwrap().into_inner().unwrap();
     let err = workflow.update().await.unwrap_err();
-    assert_matches!(err, HandleUpdateError::Terminated);
+    assert_matches!(err, HandleUpdateError::Completed);
 }
 
 fn is_order_consumption(event: &Event) -> bool {
