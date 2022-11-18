@@ -477,7 +477,7 @@ async fn error_processing_inbound_message_in_workflow() {
         error_after_consuming_message,
     ]));
     let manager = create_test_manager(()).await;
-    let workflow = create_test_workflow(&manager).await;
+    let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
     let orders_id = workflow.ids().channel_ids.inbound["orders"];
 
@@ -495,6 +495,29 @@ async fn error_processing_inbound_message_in_workflow() {
     let channel_info = manager.channel(orders_id).await.unwrap();
     assert!(!channel_info.is_closed);
     assert_eq!(channel_info.received_messages, 1);
+
+    {
+        let workflow = manager.any_workflow(workflow_id).await.unwrap();
+        let workflow = workflow.unwrap_errored();
+        let mut message_refs: Vec<_> = workflow.messages().collect();
+        assert_eq!(message_refs.len(), 1);
+        let message_ref = message_refs.pop().unwrap();
+        let message = message_ref.receive().await.unwrap();
+        assert_eq!(message.decode().unwrap(), b"test");
+        message_ref.drop_for_workflow().await;
+        workflow.consider_repaired().await;
+    }
+
+    workflow.update().await.unwrap();
+    let mut channels = workflow.persisted().inbound_channels();
+    let orders_cursor = channels.find_map(|(_, name, state)| {
+        if name == "orders" {
+            Some(state.received_message_count())
+        } else {
+            None
+        }
+    });
+    assert_eq!(orders_cursor, Some(1));
 }
 
 #[async_std::test]

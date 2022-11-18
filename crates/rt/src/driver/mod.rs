@@ -260,8 +260,13 @@ impl Driver {
 
             if self.drop_erroneous_messages {
                 if let Err(handle) = tick_result.as_ref() {
+                    let mut dropped_messages = false;
                     for message in handle.messages() {
                         message.drop_for_workflow().await;
+                        dropped_messages = true;
+                    }
+                    if dropped_messages {
+                        handle.consider_repaired_by_ref().await;
                     }
                 }
             }

@@ -429,7 +429,7 @@ impl WriteWorkflows for LocalTransaction<'_> {
         self.workflow(id).await
     }
 
-    async fn persist_workflow(&mut self, id: WorkflowId, state: WorkflowState) {
+    async fn update_workflow(&mut self, id: WorkflowId, state: WorkflowState) {
         let record = self.inner.workflows.get_mut(&id).unwrap();
         record.state = state;
     }

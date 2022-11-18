@@ -50,7 +50,7 @@ impl<E> TickResult<E> {
 }
 
 impl<M: AsManager> TickResult<ErroredWorkflowHandle<'_, M>> {
-    /// Replaced the associated errored workflow handle with the corresponding [`ExecutionError`].
+    /// Replaces the associated errored workflow handle with the corresponding [`ExecutionError`].
     pub fn drop_handle(self) -> TickResult {
         TickResult {
             workflow_id: self.workflow_id,
@@ -391,7 +391,7 @@ impl<C: Clock, S: for<'a> Storage<'a>> WorkflowManager<C, S> {
                 let name = name.to_owned();
                 persisted.drop_inbound_message(child_id, &name);
                 transaction
-                    .persist_workflow(workflow_id, record.state.into())
+                    .update_workflow(workflow_id, record.state.into())
                     .await;
             } else {
                 tracing::warn!(?message_ref, workflow_id, "failed dropping inbound message");

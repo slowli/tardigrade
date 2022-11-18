@@ -479,6 +479,19 @@ impl<'a, M: AsManager> ErroredWorkflowHandle<'a, M> {
         self.manager.as_manager().abort_workflow(self.id).await;
     }
 
+    /// Considers this workflow repaired, usually after [dropping bogus messages] for the workflow
+    /// or otherwise eliminating the error cause.
+    ///
+    /// [dropping bogus messages]: ErroneousMessage::drop_for_workflow()
+    pub async fn consider_repaired(self) {
+        self.consider_repaired_by_ref().await;
+    }
+
+    // Used by `Driver`.
+    pub(crate) async fn consider_repaired_by_ref(&self) {
+        self.manager.as_manager().repair_workflow(self.id).await;
+    }
+
     /// Iterates over messages the ingestion of which may have led to the execution error.
     pub fn messages(&self) -> impl Iterator<Item = ErroneousMessage<'a, M>> + '_ {
         self.erroneous_messages

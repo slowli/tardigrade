@@ -230,8 +230,9 @@ pub trait WriteWorkflows: ReadWorkflows {
     /// Returns a workflow record for the specified ID for update.
     async fn workflow_for_update(&mut self, id: WorkflowId) -> Option<WorkflowRecord>;
 
-    /// Persists a workflow with the specified ID.
-    async fn persist_workflow(&mut self, id: WorkflowId, state: WorkflowState);
+    /// Updates the state of a workflow with the specified ID.
+    // TODO: concurrency edit protection (via execution counter?)
+    async fn update_workflow(&mut self, id: WorkflowId, state: WorkflowState);
 }
 
 /// State of a workflow.
@@ -366,6 +367,15 @@ pub struct ErroredWorkflowState {
     pub error: ExecutionError,
     /// Messages the ingestion of which may have led to the execution error.
     pub erroneous_messages: Vec<ErroneousMessageRef>,
+}
+
+impl ErroredWorkflowState {
+    pub(crate) fn repair(self) -> ActiveWorkflowState {
+        ActiveWorkflowState {
+            persisted: self.persisted,
+            tracing_spans: self.tracing_spans,
+        }
+    }
 }
 
 /// Reference for a potentially erroneous message in [`ErroredWorkflowState`].

@@ -81,7 +81,7 @@ impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
                 result: result.map_err(clone_join_error),
             }),
         };
-        self.inner.persist_workflow(id, state).await;
+        self.inner.update_workflow(id, state).await;
     }
 
     async fn handle_workflow_update(
@@ -124,7 +124,7 @@ impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
         } else {
             unreachable!()
         };
-        self.inner.persist_workflow(workflow_id, state.into()).await;
+        self.inner.update_workflow(workflow_id, state.into()).await;
     }
 
     #[tracing::instrument(skip(self, receipt))]

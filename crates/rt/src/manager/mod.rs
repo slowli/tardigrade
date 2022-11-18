@@ -27,7 +27,7 @@ pub use self::{
 };
 
 use self::persistence::StorageHelper;
-use crate::storage::WorkflowState;
+use crate::storage::{WorkflowRecord, WorkflowState};
 use crate::{
     module::Clock,
     storage::{
@@ -339,6 +339,20 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
             let spans = PersistedSpans::default();
             StorageHelper::new(&mut transaction)
                 .persist_workflow(workflow_id, parent_id, persisted, spans)
+                .await;
+        }
+        transaction.commit().await;
+    }
+
+    #[tracing::instrument(skip(self))]
+    async fn repair_workflow(&'a self, workflow_id: WorkflowId) {
+        let mut transaction = self.storage.transaction().await;
+        let record = transaction.workflow_for_update(workflow_id).await;
+        let record = record.and_then(WorkflowRecord::into_errored);
+        if let Some(record) = record {
+            let repaired_state = record.state.repair();
+            transaction
+                .update_workflow(workflow_id, repaired_state.into())
                 .await;
         }
         transaction.commit().await;
