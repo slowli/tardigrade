@@ -77,7 +77,7 @@ async fn test_external_tasks(
     assert_event_concurrency(&executor_events, expected_concurrency);
 
     tasks_handle.await?;
-    assert_matches!(join_handle.await?, Termination::Finished);
+    assert_matches!(join_handle.await, Termination::Finished);
     Ok(())
 }
 
@@ -163,6 +163,6 @@ async fn closing_task_responses_on_host() -> TestResult {
     assert_eq!(baked_count, SUCCESSFUL_TASK_COUNT, "{:?}", events);
 
     tasks_handle.await;
-    assert_matches!(join_handle.await?, Termination::Finished);
+    assert_matches!(join_handle.await, Termination::Finished);
     Ok(())
 }

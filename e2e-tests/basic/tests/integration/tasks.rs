@@ -133,7 +133,7 @@ async fn setup_workflow(
         }
     });
     send_orders(orders_sx, order_count).await?;
-    assert_matches!(join_handle.await?, Termination::Finished);
+    assert_matches!(join_handle.await, Termination::Finished);
 
     let events = events_rx.try_collect().await?;
     let receipts = receipts_rx.collect().await;
