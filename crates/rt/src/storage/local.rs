@@ -14,7 +14,7 @@ use std::{
     borrow::Cow,
     cmp,
     collections::{HashMap, HashSet, VecDeque},
-    mem, ops,
+    ops,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -22,10 +22,10 @@ use std::{
 };
 
 use super::{
-    ChannelRecord, MessageError, ModuleRecord, ReadChannels, ReadModules, ReadWorkflows, Readonly,
-    Storage, StorageTransaction, WorkflowRecord, WorkflowSelectionCriteria, WorkflowState,
-    WorkflowWaker, WorkflowWakerRecord, WriteChannels, WriteModules, WriteWorkflowWakers,
-    WriteWorkflows,
+    ActiveWorkflowState, ChannelRecord, MessageError, ModuleRecord, ReadChannels, ReadModules,
+    ReadWorkflows, Readonly, Storage, StorageTransaction, WorkflowRecord,
+    WorkflowSelectionCriteria, WorkflowState, WorkflowWaker, WorkflowWakerRecord, WriteChannels,
+    WriteModules, WriteWorkflowWakers, WriteWorkflows,
 };
 use crate::{utils::Message, PersistedWorkflow};
 use tardigrade::{ChannelId, WorkflowId};
@@ -325,23 +325,6 @@ impl ReadChannels for LocalTransaction<'_> {
             .map(|message| message.clone().into())
             .ok_or(MessageError::NonExistingIndex { is_closed })
     }
-
-    async fn find_consumable_channel(&self) -> Option<(ChannelId, ChannelRecord)> {
-        let workflows = self.active_workflow_states();
-        let mut all_channels =
-            workflows.flat_map(|persisted| persisted.inbound_channels().map(|(_, _, state)| state));
-        all_channels.find_map(|state| {
-            if state.waits_for_message() {
-                let channel_id = state.id();
-                let next_message_idx = state.received_message_count();
-                let channel = &self.inner.channels[&channel_id];
-                if channel.contains_index(next_message_idx) {
-                    return Some((channel_id, channel.record.clone()));
-                }
-            }
-            None
-        })
-    }
 }
 
 #[async_trait]
@@ -433,6 +416,48 @@ impl WriteWorkflows for LocalTransaction<'_> {
         let record = self.inner.workflows.get_mut(&id).unwrap();
         record.state = state;
     }
+
+    async fn workflow_with_wakers_for_update(
+        &mut self,
+    ) -> Option<WorkflowRecord<ActiveWorkflowState>> {
+        let workflows = &self.inner.workflows;
+        self.inner.workflow_wakers.iter().find_map(|record| {
+            let workflow = &workflows[&record.workflow_id];
+            if matches!(workflow.state, WorkflowState::Active(_)) {
+                return workflow.clone().into_active();
+            }
+            None
+        })
+    }
+
+    async fn workflow_with_consumable_channel_for_update(
+        &self,
+    ) -> Option<WorkflowRecord<ActiveWorkflowState>> {
+        let workflows = self.inner.workflows.values().filter_map(|record| {
+            if let WorkflowState::Active(state) = &record.state {
+                Some((record, &state.persisted))
+            } else {
+                None
+            }
+        });
+        let mut all_channels = workflows.flat_map(|(record, persisted)| {
+            persisted
+                .inbound_channels()
+                .map(move |(_, _, state)| (record, state))
+        });
+
+        all_channels.find_map(|(record, state)| {
+            if state.waits_for_message() {
+                let channel_id = state.id();
+                let next_message_idx = state.received_message_count();
+                let channel = &self.inner.channels[&channel_id];
+                if channel.contains_index(next_message_idx) {
+                    return record.clone().into_active();
+                }
+            }
+            None
+        })
+    }
 }
 
 #[async_trait]
@@ -460,20 +485,13 @@ impl WriteWorkflowWakers for LocalTransaction<'_> {
         }
     }
 
-    async fn delete_wakers_for_single_workflow(&mut self) -> Vec<WorkflowWakerRecord> {
-        let workflow_id = self
-            .inner
-            .workflow_wakers
-            .first()
-            .map(|record| record.workflow_id);
-        if let Some(workflow_id) = workflow_id {
-            let wakers = mem::take(&mut self.inner.workflow_wakers).into_iter();
-            let (deleted, remaining) = wakers.partition(|record| record.workflow_id == workflow_id);
-            self.inner.workflow_wakers = remaining;
-            deleted
-        } else {
-            vec![]
-        }
+    async fn wakers_for_workflow(&self, workflow_id: WorkflowId) -> Vec<WorkflowWakerRecord> {
+        let filtered = self.inner.workflow_wakers.iter().filter_map(|record| {
+            Some(record)
+                .filter(|&it| it.workflow_id == workflow_id)
+                .cloned()
+        });
+        filtered.collect()
     }
 }
 

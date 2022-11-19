@@ -54,12 +54,6 @@ pub(crate) async fn create_test_workflow<C: Clock>(
         .unwrap()
 }
 
-async fn find_consumable_channel(manager: &WorkflowManager<(), LocalStorage>) -> Option<ChannelId> {
-    let transaction = manager.storage.readonly_transaction().await;
-    let (channel_id, _) = transaction.find_consumable_channel().await?;
-    Some(channel_id)
-}
-
 async fn tick_workflow(manager: &LocalManager, id: WorkflowId) -> Result<Receipt, ExecutionError> {
     let mut transaction = manager.storage.transaction().await;
     transaction.prepare_wakers_for_workflow(id);
@@ -165,7 +159,6 @@ async fn test_initializing_workflow(
 
     let traces_id = ids.channel_ids.outbound["traces"];
     let transaction = manager.storage.readonly_transaction().await;
-    assert!(transaction.find_consumable_channel().await.is_none());
     let traces = transaction.channel(traces_id).await.unwrap();
     assert_eq!(traces.received_messages, 1);
     let message = transaction.channel_message(traces_id, 0).await.unwrap();
@@ -377,7 +370,7 @@ async fn closing_inbound_channel_with_message_from_host_side() {
 #[async_std::test]
 async fn error_initializing_workflow() {
     let error_on_initialization: MockPollFn = |_| Err(Trap::new("oops"));
-    let poll_fns = Answers::from_value(error_on_initialization);
+    let poll_fns = Answers::from_values([error_on_initialization]);
     let _guard = ExportsMock::prepare(poll_fns);
     let manager = create_test_manager(()).await;
     let mut workflow = create_test_workflow(&manager).await;
@@ -390,13 +383,20 @@ async fn error_initializing_workflow() {
     let err = workflow.update().await.unwrap_err();
     assert_matches!(err, HandleUpdateError::Errored);
 
-    let workflow = manager.any_workflow(workflow_id).await.unwrap();
-    assert!(workflow.is_errored());
-    let workflow = workflow.unwrap_errored();
-    assert_eq!(workflow.id(), workflow_id);
-    let err = workflow.error().trap().display_reason().to_string();
-    assert!(err.contains("oops"), "{err}");
-    assert_eq!(workflow.messages().count(), 0);
+    {
+        let workflow = manager.any_workflow(workflow_id).await.unwrap();
+        assert!(workflow.is_errored());
+        let workflow = workflow.unwrap_errored();
+        assert_eq!(workflow.id(), workflow_id);
+        let err = workflow.error().trap().display_reason().to_string();
+        assert!(err.contains("oops"), "{err}");
+        assert_eq!(workflow.messages().count(), 0);
+
+        workflow.consider_repaired().await;
+    }
+
+    let receipt = tick_workflow(&manager, workflow_id).await.unwrap();
+    assert!(!receipt.executions().is_empty());
 }
 
 fn poll_receiver(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
@@ -443,7 +443,6 @@ async fn sending_message_to_workflow() {
         let order = transaction.channel_message(orders_id, 0).await.unwrap();
         assert_eq!(order, b"order #1");
     }
-    assert_eq!(find_consumable_channel(&manager).await, Some(orders_id));
 
     let receipt = feed_message(&manager, workflow_id, "orders").await.unwrap();
     assert_eq!(receipt.executions().len(), 2); // waker + task

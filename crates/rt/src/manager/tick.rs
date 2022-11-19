@@ -321,32 +321,27 @@ impl<C: Clock, S: for<'a> Storage<'a>> WorkflowManager<C, S> {
         let _entered = span.enter();
         let mut transaction = self.storage.transaction().await;
 
-        let (workflow, waker_records) = loop {
-            let waker_records = transaction.delete_wakers_for_single_workflow().await;
-            let workflow_id = if let Some(waker) = waker_records.first() {
-                waker.workflow_id
-            } else if let Some((_, channel)) = transaction.find_consumable_channel().await {
-                channel.receiver_workflow_id.unwrap()
-            } else {
-                let err = WouldBlock {
-                    nearest_timer_expiration: transaction.nearest_timer_expiration().await,
-                };
-                tracing::info!(%err, "workflow manager blocked");
-                return Err(err);
+        let mut waker_records = vec![];
+        let mut workflow = transaction.workflow_with_wakers_for_update().await;
+        if let Some(workflow) = &workflow {
+            waker_records = transaction.wakers_for_workflow(workflow.id).await;
+        } else {
+            workflow = transaction
+                .workflow_with_consumable_channel_for_update()
+                .await;
+        }
+
+        let workflow = if let Some(workflow) = workflow {
+            workflow
+        } else {
+            let err = WouldBlock {
+                nearest_timer_expiration: transaction.nearest_timer_expiration().await,
             };
-
-            tracing::debug!(workflow_id, "selected workflow for execution");
-            let workflow = transaction.workflow(workflow_id).await.unwrap();
-            if let Some(workflow) = workflow.into_active() {
-                break (workflow, waker_records);
-            }
-            tracing::info!(
-                workflow_id,
-                "selected workflow is not active; continuing search"
-            );
+            tracing::info!(%err, "workflow manager blocked");
+            return Err(err);
         };
-
         let workflow_id = workflow.id;
+
         let (result, pending_channel) = self
             .tick_workflow(&mut transaction, workflow, waker_records)
             .await;

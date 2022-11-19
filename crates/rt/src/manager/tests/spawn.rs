@@ -172,7 +172,6 @@ async fn spawning_child_workflow() {
         .send_message(traces_id, b"trace".to_vec())
         .await
         .unwrap();
-    assert_eq!(find_consumable_channel(&manager).await, Some(traces_id));
 
     let receipt = feed_message(&manager, workflow_id, "traces").await.unwrap();
     let events = extract_channel_events(&receipt, Some(child_id), "traces");
@@ -263,10 +262,6 @@ async fn sending_message_to_child() {
     }
 
     tick_workflow(&manager, CHILD_ID).await.unwrap();
-    assert_eq!(
-        find_consumable_channel(&manager).await,
-        Some(child_orders_id)
-    );
     feed_message(&manager, CHILD_ID, "orders").await.unwrap();
 }
 

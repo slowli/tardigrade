@@ -128,10 +128,8 @@ pub trait ReadChannels {
     /// # Errors
     ///
     /// Returns an error if the message cannot be retrieved.
+    // TODO: add retrieving messages by an index range?
     async fn channel_message(&self, id: ChannelId, index: usize) -> Result<Vec<u8>, MessageError>;
-
-    /// Selects a channel with a message or EOF marker consumable by the receiver workflow.
-    async fn find_consumable_channel(&self) -> Option<(ChannelId, ChannelRecord)>;
 }
 
 /// Allows modifying stored information about channels.
@@ -233,6 +231,17 @@ pub trait WriteWorkflows: ReadWorkflows {
     /// Updates the state of a workflow with the specified ID.
     // TODO: concurrency edit protection (via execution counter?)
     async fn update_workflow(&mut self, id: WorkflowId, state: WorkflowState);
+
+    /// Finds an active workflow with wakers and selects it for update.
+    async fn workflow_with_wakers_for_update(
+        &mut self,
+    ) -> Option<WorkflowRecord<ActiveWorkflowState>>;
+
+    /// Finds an active workflow with an inbound channel that has a message or EOF marker
+    /// consumable by the workflow, and selects the workflow for update.
+    async fn workflow_with_consumable_channel_for_update(
+        &self,
+    ) -> Option<WorkflowRecord<ActiveWorkflowState>>;
 }
 
 /// State of a workflow.
@@ -451,10 +460,8 @@ pub trait WriteWorkflowWakers {
         waker: WorkflowWaker,
     );
 
-    /// Removes and returns all workflow wakers for a single workflow. The selection of the workflow
-    /// is up to the implementation. If there are no workflows with a waker,
-    /// returns an empty `Vec`.
-    async fn delete_wakers_for_single_workflow(&mut self) -> Vec<WorkflowWakerRecord>;
+    /// Selects all wakers for the specified workflow.
+    async fn wakers_for_workflow(&self, workflow_id: WorkflowId) -> Vec<WorkflowWakerRecord>;
 }
 
 /// Wrapper for [`StorageTransaction`] implementations that allows safely using them
@@ -491,13 +498,8 @@ impl<T: StorageReadonlyTransaction> ReadChannels for Readonly<T> {
         self.0.channel(id).await
     }
 
-    // TODO: add retrieving messages by an index range?
     async fn channel_message(&self, id: ChannelId, index: usize) -> Result<Vec<u8>, MessageError> {
         self.0.channel_message(id, index).await
-    }
-
-    async fn find_consumable_channel(&self) -> Option<(ChannelId, ChannelRecord)> {
-        self.0.find_consumable_channel().await
     }
 }
 
