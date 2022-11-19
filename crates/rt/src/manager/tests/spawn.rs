@@ -772,7 +772,14 @@ async fn completing_child_with_panic() {
         Some("panic message")
     );
     assert_eq!(err_handle.messages().count(), 0);
-    err_handle.abort().await;
+
+    let child = manager.any_workflow(CHILD_ID).await.unwrap();
+    assert!(child.is_errored());
+    let other_err_handle = child.unwrap_errored();
+    assert_eq!(other_err_handle.id(), err_handle.id());
+    err_handle.abort().await.unwrap();
+    // The aliased handle now cannot be used for any actions:
+    other_err_handle.consider_repaired().await.unwrap_err();
 
     let child = manager.any_workflow(CHILD_ID).await.unwrap();
     assert!(child.is_completed());
@@ -830,7 +837,7 @@ async fn test_aborting_child(initialize_child: bool) {
     if initialize_child {
         tick_workflow(&manager, CHILD_ID).await.unwrap();
     }
-    manager.abort_workflow(CHILD_ID).await;
+    manager.abort_workflow(CHILD_ID).await.unwrap();
 
     assert_child_abort(&manager, workflow_id, child_events_id).await;
 }
@@ -873,7 +880,7 @@ async fn aborting_parent() {
     let child = manager.workflow(CHILD_ID).await.unwrap();
     let child_events_id = child.ids().channel_ids.outbound["events"];
     let child_orders_id = child.ids().channel_ids.inbound["orders"];
-    manager.abort_workflow(workflow_id).await;
+    manager.abort_workflow(workflow_id).await.unwrap();
     let child_events = manager.channel(child_events_id).await.unwrap();
     assert!(child_events.is_closed);
     let child_orders = manager.channel(child_orders_id).await.unwrap();

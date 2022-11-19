@@ -260,13 +260,16 @@ impl Driver {
 
             if self.drop_erroneous_messages {
                 if let Err(handle) = tick_result.as_ref() {
+                    // Concurrency errors should not occur if the driver is used properly
+                    // (i.e., the workflows are not mutated externally). That's why the errors
+                    // are ignored below.
                     let mut dropped_messages = false;
                     for message in handle.messages() {
-                        message.drop_for_workflow().await;
+                        message.drop_for_workflow().await.ok();
                         dropped_messages = true;
                     }
                     if dropped_messages {
-                        handle.consider_repaired_by_ref().await;
+                        handle.consider_repaired_by_ref().await.ok();
                     }
                 }
             }

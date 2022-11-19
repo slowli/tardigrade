@@ -380,8 +380,7 @@ async fn error_initializing_workflow() {
     let err = err.trap().display_reason().to_string();
     assert!(err.contains("oops"), "{err}");
 
-    let err = workflow.update().await.unwrap_err();
-    assert_matches!(err, HandleUpdateError::Errored);
+    workflow.update().await.unwrap_err();
     let block_err = manager.tick().await.unwrap_err();
     assert!(block_err.nearest_timer_expiration().is_none());
 
@@ -394,7 +393,7 @@ async fn error_initializing_workflow() {
         assert!(err.contains("oops"), "{err}");
         assert_eq!(workflow.messages().count(), 0);
 
-        workflow.consider_repaired().await;
+        workflow.consider_repaired().await.unwrap();
     }
 
     let receipt = tick_workflow(&manager, workflow_id).await.unwrap();
@@ -505,8 +504,11 @@ async fn error_processing_inbound_message_in_workflow() {
         let message_ref = message_refs.pop().unwrap();
         let message = message_ref.receive().await.unwrap();
         assert_eq!(message.decode().unwrap(), b"test");
-        message_ref.drop_for_workflow().await;
-        workflow.consider_repaired().await;
+        message_ref.drop_for_workflow().await.unwrap();
+
+        let message_ref = workflow.messages().next().unwrap();
+        message_ref.drop_for_workflow().await.unwrap_err();
+        workflow.consider_repaired().await.unwrap();
     }
 
     workflow.update().await.unwrap();

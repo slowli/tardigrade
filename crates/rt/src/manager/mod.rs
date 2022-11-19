@@ -19,7 +19,7 @@ pub(crate) mod tests;
 
 pub use self::{
     handle::{
-        AnyWorkflowHandle, CompletedWorkflowHandle, ErroredWorkflowHandle, HandleUpdateError,
+        AnyWorkflowHandle, CompletedWorkflowHandle, ConcurrencyError, ErroredWorkflowHandle,
         MessageReceiver, MessageSender, ReceivedMessage, WorkflowHandle,
     },
     tick::{TickResult, WouldBlock},
@@ -27,12 +27,11 @@ pub use self::{
 };
 
 use self::persistence::StorageHelper;
-use crate::storage::{WorkflowRecord, WorkflowState};
 use crate::{
     module::Clock,
     storage::{
         ChannelRecord, ModuleRecord, ReadChannels, ReadModules, ReadWorkflows, Storage,
-        StorageTransaction, WriteChannels, WriteModules, WriteWorkflows,
+        StorageTransaction, WorkflowState, WriteChannels, WriteModules, WriteWorkflows,
     },
     workflow::ChannelIds,
     WorkflowEngine, WorkflowModule, WorkflowSpawner,
@@ -325,37 +324,41 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
     /// Aborts the workflow with the specified ID. The parent workflow, if any, will be notified,
     /// and all channel handles owned by the workflow will be properly disposed.
     #[tracing::instrument(skip(self))]
-    async fn abort_workflow(&'a self, workflow_id: WorkflowId) {
+    async fn abort_workflow(&'a self, workflow_id: WorkflowId) -> Result<(), ConcurrencyError> {
         let mut transaction = self.storage.transaction().await;
-        let record = transaction.workflow_for_update(workflow_id).await;
-        let record = record.and_then(|record| match record.state {
-            WorkflowState::Active(state) => Some((record.parent_id, state.persisted)),
-            WorkflowState::Errored(state) => Some((record.parent_id, state.persisted)),
-            WorkflowState::Completed(_) => None,
-        });
+        let record = transaction
+            .workflow_for_update(workflow_id)
+            .await
+            .ok_or_else(ConcurrencyError::new)?;
+        let (parent_id, mut persisted) = match record.state {
+            WorkflowState::Active(state) => (record.parent_id, state.persisted),
+            WorkflowState::Errored(state) => (record.parent_id, state.persisted),
+            WorkflowState::Completed(_) => return Err(ConcurrencyError::new()),
+        };
 
-        if let Some((parent_id, mut persisted)) = record {
-            persisted.abort();
-            let spans = PersistedSpans::default();
-            StorageHelper::new(&mut transaction)
-                .persist_workflow(workflow_id, parent_id, persisted, spans)
-                .await;
-        }
+        persisted.abort();
+        let spans = PersistedSpans::default();
+        StorageHelper::new(&mut transaction)
+            .persist_workflow(workflow_id, parent_id, persisted, spans)
+            .await;
         transaction.commit().await;
+        Ok(())
     }
 
     #[tracing::instrument(skip(self))]
-    async fn repair_workflow(&'a self, workflow_id: WorkflowId) {
+    async fn repair_workflow(&'a self, workflow_id: WorkflowId) -> Result<(), ConcurrencyError> {
         let mut transaction = self.storage.transaction().await;
-        let record = transaction.workflow_for_update(workflow_id).await;
-        let record = record.and_then(WorkflowRecord::into_errored);
-        if let Some(record) = record {
-            let repaired_state = record.state.repair();
-            transaction
-                .update_workflow(workflow_id, repaired_state.into())
-                .await;
-        }
+        let record = transaction
+            .workflow_for_update(workflow_id)
+            .await
+            .ok_or_else(ConcurrencyError::new)?;
+        let record = record.into_errored().ok_or_else(ConcurrencyError::new)?;
+        let repaired_state = record.state.repair();
+        transaction
+            .update_workflow(workflow_id, repaired_state.into())
+            .await;
         transaction.commit().await;
+        Ok(())
     }
 }
 

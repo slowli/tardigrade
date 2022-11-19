@@ -6,8 +6,8 @@ use tracing_tunnel::TracingEventReceiver;
 use std::{error, fmt};
 
 use super::{
-    new_workflows::NewWorkflows, persistence::StorageHelper, AsManager, ErroredWorkflowHandle,
-    WorkflowManager,
+    new_workflows::NewWorkflows, persistence::StorageHelper, AsManager, ConcurrencyError,
+    ErroredWorkflowHandle, WorkflowManager,
 };
 use crate::{
     module::{Clock, Services},
@@ -381,23 +381,26 @@ impl<C: Clock, S: for<'a> Storage<'a>> WorkflowManager<C, S> {
         &self,
         workflow_id: WorkflowId,
         message_ref: &ErroneousMessageRef,
-    ) {
+    ) -> Result<(), ConcurrencyError> {
         let mut transaction = self.storage.transaction().await;
-        let record = transaction.workflow_for_update(workflow_id).await;
-        let record = record.and_then(WorkflowRecord::into_errored);
-        if let Some(mut record) = record {
-            let persisted = &mut record.state.persisted;
-            let (child_id, name, state) = persisted.find_inbound_channel(message_ref.channel_id);
-            if state.received_message_count() == message_ref.index {
-                let name = name.to_owned();
-                persisted.drop_inbound_message(child_id, &name);
-                transaction
-                    .update_workflow(workflow_id, record.state.into())
-                    .await;
-            } else {
-                tracing::warn!(?message_ref, workflow_id, "failed dropping inbound message");
-            }
+        let record = transaction
+            .workflow_for_update(workflow_id)
+            .await
+            .ok_or_else(ConcurrencyError::new)?;
+        let mut record = record.into_errored().ok_or_else(ConcurrencyError::new)?;
+        let persisted = &mut record.state.persisted;
+        let (child_id, name, state) = persisted.find_inbound_channel(message_ref.channel_id);
+        if state.received_message_count() == message_ref.index {
+            let name = name.to_owned();
+            persisted.drop_inbound_message(child_id, &name);
+            transaction
+                .update_workflow(workflow_id, record.state.into())
+                .await;
+        } else {
+            tracing::warn!(?message_ref, workflow_id, "failed dropping inbound message");
+            return Err(ConcurrencyError::new());
         }
         transaction.commit().await;
+        Ok(())
     }
 }

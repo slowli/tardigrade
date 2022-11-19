@@ -11,10 +11,7 @@ use wasmtime::{AsContextMut, StoreContextMut, Trap};
 use super::*;
 use crate::{
     data::{WasmContextPtr, WorkflowData, WorkflowFunctions},
-    manager::{
-        tests::{create_test_manager, create_test_workflow},
-        HandleUpdateError,
-    },
+    manager::tests::{create_test_manager, create_test_workflow},
     module::{ExportsMock, MockPollFn},
     receipt::{ChannelEventKind, Event},
     test::MockScheduler,
@@ -192,8 +189,7 @@ async fn selecting_from_driver_and_other_future() {
         .await
         .unwrap();
     manager.tick().await.unwrap().into_inner().unwrap();
-    let err = workflow.update().await.unwrap_err();
-    assert_matches!(err, HandleUpdateError::Completed);
+    workflow.update().await.unwrap_err();
 }
 
 fn is_order_consumption(event: &Event) -> bool {
