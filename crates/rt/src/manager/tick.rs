@@ -14,8 +14,8 @@ use crate::{
     receipt::{ExecutionError, Receipt},
     storage::{
         ActiveWorkflowState, ErroneousMessageRef, MessageError, ReadChannels, ReadModules,
-        ReadWorkflows, Storage, StorageTransaction, WorkflowRecord, WorkflowWaker,
-        WorkflowWakerRecord, WriteModules, WriteWorkflowWakers, WriteWorkflows,
+        ReadWorkflows, Storage, StorageTransaction, WorkflowRecord, WorkflowWaker, WriteModules,
+        WriteWorkflowWakers, WriteWorkflows,
     },
     workflow::Workflow,
     PersistedWorkflow, WorkflowSpawner,
@@ -126,10 +126,10 @@ impl<'a> WorkflowSeed<'a> {
     async fn apply_wakers<T: ReadWorkflows>(
         &mut self,
         transaction: &T,
-        waker_records: Vec<WorkflowWakerRecord>,
+        wakers: Vec<WorkflowWaker>,
     ) {
-        for record in waker_records {
-            match record.waker {
+        for waker in wakers {
+            match waker {
                 WorkflowWaker::Internal => {
                     // Handled separately; no modifications are required
                 }
@@ -256,13 +256,13 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
         &'a self,
         transaction: &mut S::Transaction,
         workflow: WorkflowRecord<ActiveWorkflowState>,
-        waker_records: Vec<WorkflowWakerRecord>,
+        wakers: Vec<WorkflowWaker>,
     ) -> (Result<Receipt, ExecutionError>, Option<PendingChannel>) {
         let workflow_id = workflow.id;
         let parent_id = workflow.parent_id;
         let module_id = workflow.module_id.clone();
         let (mut template, mut tracer) = self.restore_workflow(transaction, workflow).await;
-        template.apply_wakers(transaction, waker_records).await;
+        template.apply_wakers(transaction, wakers).await;
         let pending_channel = template.update_inbound_channels(transaction).await;
         let mut children = NewWorkflows::new(Some(workflow_id), self.shared());
         let mut workflow = template.restore(&mut children, &mut tracer);
@@ -321,15 +321,19 @@ impl<C: Clock, S: for<'a> Storage<'a>> WorkflowManager<C, S> {
         let _entered = span.enter();
         let mut transaction = self.storage.transaction().await;
 
-        let mut waker_records = vec![];
         let mut workflow = transaction.workflow_with_wakers_for_update().await;
-        if let Some(workflow) = &workflow {
-            waker_records = transaction.wakers_for_workflow(workflow.id).await;
+        let waker_records = if let Some(workflow) = &workflow {
+            transaction.wakers_for_workflow(workflow.id).await
         } else {
             workflow = transaction
                 .workflow_with_consumable_channel_for_update()
                 .await;
-        }
+            vec![]
+        };
+        let (waker_ids, wakers): (Vec<_>, Vec<_>) = waker_records
+            .into_iter()
+            .map(|record| (record.waker_id, record.waker))
+            .unzip();
 
         let workflow = if let Some(workflow) = workflow {
             workflow
@@ -342,11 +346,13 @@ impl<C: Clock, S: for<'a> Storage<'a>> WorkflowManager<C, S> {
         };
         let workflow_id = workflow.id;
 
-        let (result, pending_channel) = self
-            .tick_workflow(&mut transaction, workflow, waker_records)
-            .await;
+        let (result, pending_channel) =
+            self.tick_workflow(&mut transaction, workflow, wakers).await;
         let result = match result {
-            Ok(receipt) => Ok(receipt),
+            Ok(receipt) => {
+                transaction.delete_wakers(workflow_id, &waker_ids).await;
+                Ok(receipt)
+            }
             Err(error) => {
                 let erroneous_messages: Vec<_> = pending_channel
                     .into_iter()

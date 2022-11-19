@@ -28,7 +28,7 @@ use super::{
     WriteModules, WriteWorkflowWakers, WriteWorkflows,
 };
 use crate::{utils::Message, PersistedWorkflow};
-use tardigrade::{ChannelId, WorkflowId};
+use tardigrade::{ChannelId, WakerId, WorkflowId};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LocalChannel {
@@ -113,6 +113,7 @@ impl ops::Deref for ModuleRecordMut<'_> {
 pub struct LocalStorageSnapshot<'a> {
     next_channel_id: u64,
     next_workflow_id: u64,
+    next_waker_id: u64,
     inner: Cow<'a, Inner>,
 }
 
@@ -176,6 +177,7 @@ pub struct LocalStorage {
     inner: Mutex<Inner>,
     next_channel_id: AtomicU64,
     next_workflow_id: AtomicU64,
+    next_waker_id: AtomicU64,
     truncate_messages: bool,
 }
 
@@ -185,6 +187,7 @@ impl Default for LocalStorage {
             inner: Mutex::default(),
             next_channel_id: AtomicU64::new(1), // skip the closed channel
             next_workflow_id: AtomicU64::new(0),
+            next_waker_id: AtomicU64::new(0),
             truncate_messages: false,
         }
     }
@@ -197,6 +200,7 @@ impl LocalStorage {
             inner: Cow::Borrowed(self.inner.get_mut()),
             next_channel_id: *self.next_channel_id.get_mut(),
             next_workflow_id: *self.next_workflow_id.get_mut(),
+            next_waker_id: *self.next_waker_id.get_mut(),
         }
     }
 
@@ -212,6 +216,7 @@ impl From<LocalStorageSnapshot<'_>> for LocalStorage {
             inner: Mutex::new(snapshot.inner.into_owned()),
             next_channel_id: AtomicU64::new(snapshot.next_channel_id),
             next_workflow_id: AtomicU64::new(snapshot.next_workflow_id),
+            next_waker_id: AtomicU64::new(snapshot.next_waker_id),
             truncate_messages: false,
         }
     }
@@ -231,6 +236,7 @@ pub struct LocalTransaction<'a> {
     inner: Inner,
     next_channel_id: &'a AtomicU64,
     next_workflow_id: &'a AtomicU64,
+    next_waker_id: &'a AtomicU64,
     truncate_messages: bool,
 }
 
@@ -462,7 +468,8 @@ impl WriteWorkflows for LocalTransaction<'_> {
 
 #[async_trait]
 impl WriteWorkflowWakers for LocalTransaction<'_> {
-    async fn insert_waker(&mut self, waker: WorkflowWakerRecord) {
+    async fn insert_waker(&mut self, mut waker: WorkflowWakerRecord) {
+        waker.waker_id = self.next_waker_id.fetch_add(1, Ordering::SeqCst);
         self.inner.workflow_wakers.push(waker);
     }
 
@@ -492,6 +499,12 @@ impl WriteWorkflowWakers for LocalTransaction<'_> {
                 .cloned()
         });
         filtered.collect()
+    }
+
+    async fn delete_wakers(&mut self, workflow_id: WorkflowId, waker_ids: &[WakerId]) {
+        self.inner.workflow_wakers.retain(|record| {
+            record.workflow_id != workflow_id || !waker_ids.contains(&record.waker_id)
+        });
     }
 }
 
@@ -527,6 +540,7 @@ impl<'a> Storage<'a> for LocalStorage {
             target,
             next_channel_id: &self.next_channel_id,
             next_workflow_id: &self.next_workflow_id,
+            next_waker_id: &self.next_waker_id,
             truncate_messages: self.truncate_messages,
         }
     }

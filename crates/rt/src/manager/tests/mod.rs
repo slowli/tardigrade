@@ -370,7 +370,7 @@ async fn closing_inbound_channel_with_message_from_host_side() {
 #[async_std::test]
 async fn error_initializing_workflow() {
     let error_on_initialization: MockPollFn = |_| Err(Trap::new("oops"));
-    let poll_fns = Answers::from_values([error_on_initialization]);
+    let poll_fns = Answers::from_values([error_on_initialization, initialize_task]);
     let _guard = ExportsMock::prepare(poll_fns);
     let manager = create_test_manager(()).await;
     let mut workflow = create_test_workflow(&manager).await;
@@ -382,6 +382,8 @@ async fn error_initializing_workflow() {
 
     let err = workflow.update().await.unwrap_err();
     assert_matches!(err, HandleUpdateError::Errored);
+    let block_err = manager.tick().await.unwrap_err();
+    assert!(block_err.nearest_timer_expiration().is_none());
 
     {
         let workflow = manager.any_workflow(workflow_id).await.unwrap();

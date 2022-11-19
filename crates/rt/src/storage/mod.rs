@@ -17,7 +17,7 @@ use crate::{
     utils::{clone_join_error, serde_b64},
     PersistedWorkflow,
 };
-use tardigrade::{task::JoinError, ChannelId, WorkflowId};
+use tardigrade::{task::JoinError, ChannelId, WakerId, WorkflowId};
 
 /// Async, transactional storage for workflows and workflow channels.
 ///
@@ -434,6 +434,7 @@ impl WorkflowWaker {
     pub(crate) fn for_workflow(self, workflow_id: WorkflowId) -> WorkflowWakerRecord {
         WorkflowWakerRecord {
             workflow_id,
+            waker_id: 0,
             waker: self,
         }
     }
@@ -444,7 +445,9 @@ impl WorkflowWaker {
 pub struct WorkflowWakerRecord {
     /// ID of the workflow that the waker belongs to.
     pub workflow_id: WorkflowId,
-    /// The waker.
+    /// ID of the waker. Must be unique at least within the workflow.
+    pub waker_id: WakerId,
+    /// The waker information.
     pub waker: WorkflowWaker,
 }
 
@@ -452,7 +455,11 @@ pub struct WorkflowWakerRecord {
 #[async_trait]
 pub trait WriteWorkflowWakers {
     /// Inserts a workflow waker into the queue.
+    ///
+    /// The `waker_id` field in the provided waker is ignored; the ID is assigned
+    /// by the storage logic (e.g., as an auto-incrementing counter).
     async fn insert_waker(&mut self, waker: WorkflowWakerRecord);
+
     /// Inserts a workflow waker for all workflows matching the specified criteria.
     async fn insert_waker_for_matching_workflows(
         &mut self,
@@ -462,6 +469,9 @@ pub trait WriteWorkflowWakers {
 
     /// Selects all wakers for the specified workflow.
     async fn wakers_for_workflow(&self, workflow_id: WorkflowId) -> Vec<WorkflowWakerRecord>;
+
+    /// Deletes wakers with the specified IDs for the given workflow ID.
+    async fn delete_wakers(&mut self, workflow_id: WorkflowId, waker_ids: &[WakerId]);
 }
 
 /// Wrapper for [`StorageTransaction`] implementations that allows safely using them
