@@ -68,9 +68,7 @@ impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
             Poll::Pending => {
                 let has_internal_waker = workflow.pending_wakeup_causes().next().is_some();
                 if has_internal_waker {
-                    self.inner
-                        .insert_waker(WorkflowWaker::Internal.for_workflow(id))
-                        .await;
+                    self.inner.insert_waker(id, WorkflowWaker::Internal).await;
                 }
                 WorkflowState::from(ActiveWorkflowState {
                     persisted: workflow,
@@ -107,7 +105,7 @@ impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
 
         if let Some(parent_id) = completion_receiver {
             let waker = WorkflowWaker::ChildCompletion(id);
-            self.inner.insert_waker(waker.for_workflow(parent_id)).await;
+            self.inner.insert_waker(parent_id, waker).await;
         }
     }
 
@@ -155,9 +153,7 @@ impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
 
         for &sender_workflow_id in &channel_state.sender_workflow_ids {
             let waker = WorkflowWaker::OutboundChannelClosure(channel_id);
-            self.inner
-                .insert_waker(waker.for_workflow(sender_workflow_id))
-                .await;
+            self.inner.insert_waker(sender_workflow_id, waker).await;
         }
     }
 

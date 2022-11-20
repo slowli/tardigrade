@@ -465,16 +465,6 @@ pub enum WorkflowWaker {
     ChildCompletion(WorkflowId),
 }
 
-impl WorkflowWaker {
-    pub(crate) fn for_workflow(self, workflow_id: WorkflowId) -> WorkflowWakerRecord {
-        WorkflowWakerRecord {
-            workflow_id,
-            waker_id: 0,
-            waker: self,
-        }
-    }
-}
-
 /// Record associating a [`WorkflowWaker`] with a particular workflow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowWakerRecord {
@@ -490,12 +480,9 @@ pub struct WorkflowWakerRecord {
 #[async_trait]
 pub trait WriteWorkflowWakers {
     /// Inserts a workflow waker into the queue.
-    ///
-    /// The `waker_id` field in the provided waker is ignored; the ID is assigned
-    /// by the storage logic (e.g., as an auto-incrementing counter).
-    async fn insert_waker(&mut self, waker: WorkflowWakerRecord);
+    async fn insert_waker(&mut self, workflow_id: WorkflowId, waker: WorkflowWaker);
 
-    /// Inserts a workflow waker for all workflows matching the specified criteria.
+    /// Inserts a workflow waker for all non-completed workflows matching the specified criteria.
     async fn insert_waker_for_matching_workflows(
         &mut self,
         criteria: WorkflowSelectionCriteria,

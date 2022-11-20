@@ -207,7 +207,7 @@ impl<'a> NewWorkflows<'a> {
         };
         transaction.insert_workflow(child_workflow).await;
         transaction
-            .insert_waker(WorkflowWaker::Internal.for_workflow(child_id))
+            .insert_waker(child_id, WorkflowWaker::Internal)
             .await;
 
         Ok(WorkflowAndChannelIds {

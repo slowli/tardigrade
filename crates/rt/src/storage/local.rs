@@ -468,9 +468,13 @@ impl WriteWorkflows for LocalTransaction<'_> {
 
 #[async_trait]
 impl WriteWorkflowWakers for LocalTransaction<'_> {
-    async fn insert_waker(&mut self, mut waker: WorkflowWakerRecord) {
-        waker.waker_id = self.next_waker_id.fetch_add(1, Ordering::SeqCst);
-        self.inner.workflow_wakers.push(waker);
+    async fn insert_waker(&mut self, workflow_id: WorkflowId, waker: WorkflowWaker) {
+        let waker_id = self.next_waker_id.fetch_add(1, Ordering::SeqCst);
+        self.inner.workflow_wakers.push(WorkflowWakerRecord {
+            workflow_id,
+            waker_id,
+            waker,
+        });
     }
 
     async fn insert_waker_for_matching_workflows(
@@ -481,13 +485,17 @@ impl WriteWorkflowWakers for LocalTransaction<'_> {
         for (&id, record) in &self.inner.workflows {
             let persisted = match &record.state {
                 WorkflowState::Active(state) => &state.persisted,
-                WorkflowState::Completed(_) | WorkflowState::Errored(_) => continue,
+                WorkflowState::Errored(state) => &state.persisted,
+                WorkflowState::Completed(_) => continue,
             };
 
             if criteria.matches(persisted) {
-                self.inner
-                    .workflow_wakers
-                    .push(waker.clone().for_workflow(id));
+                let waker_id = self.next_waker_id.fetch_add(1, Ordering::SeqCst);
+                self.inner.workflow_wakers.push(WorkflowWakerRecord {
+                    workflow_id: id,
+                    waker_id,
+                    waker: waker.clone(),
+                });
             }
         }
     }
