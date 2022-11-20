@@ -41,7 +41,7 @@ impl fmt::Display for ConcurrencyError {
 
 impl error::Error for ConcurrencyError {}
 
-/// Handle to a workflow in a [`WorkflowManager`].
+/// Handle to an active workflow in a [`WorkflowManager`].
 ///
 /// This type is used as a type param for the [`TakeHandle`] trait. The returned handles
 /// allow interacting with the workflow (e.g., [send messages](MessageSender) via inbound channels
@@ -439,7 +439,55 @@ impl<'a, M: AsManager> TakeHandle<WorkflowHandle<'a, (), M>> for () {
     }
 }
 
-/// Handle for an errored workflow.
+/// Handle for an errored workflow in a [`WorkflowManager`].
+///
+/// The handle can be used to get information about the error, inspect potentially bogus
+/// inbound messages, and repair the workflow. See the [manager docs] for more information
+/// about workflow lifecycle.
+///
+/// [`WorkflowManager`]: crate::manager::WorkflowManager
+/// [manager docs]: crate::manager::WorkflowManager#workflow-lifecycle
+///
+/// # Examples
+///
+/// ```
+/// # use tardigrade_rt::{manager::WorkflowManager, storage::LocalStorage};
+/// # use tardigrade::WorkflowId;
+/// #
+/// # fn is_bogus(bytes: &[u8]) -> bool { bytes.is_empty() }
+/// #
+/// # async fn test_wrapper(manager: WorkflowManager<(), LocalStorage>) -> anyhow::Result<()> {
+/// let manager: WorkflowManager<_, _> = // ...
+/// #   manager;
+/// let workflow_id: WorkflowId = // ...
+/// #   0;
+/// let workflow = manager.any_workflow(workflow_id).await.unwrap();
+/// let workflow = workflow.unwrap_errored();
+/// // Let's inspect the execution error.
+/// let panic_info = workflow.error().panic_info().unwrap();
+/// println!("{panic_info}");
+///
+/// // Let's inspect potentially bogus inbound messages:
+/// let mut dropped_messages = false;
+/// for message in workflow.messages() {
+///     let payload = message.receive().await?.decode()?;
+///     if is_bogus(&payload) {
+///         message.drop_for_workflow().await?;
+///         dropped_messages = true;
+///     }
+/// }
+///
+/// if dropped_messages {
+///     // Consider that the workflow is repaired:
+///     workflow.consider_repaired().await?;
+/// } else {
+///     // We didn't drop any messages. Assume that we can't do anything
+///     // and terminate the workflow.
+///     workflow.abort().await?;
+/// }
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug)]
 pub struct ErroredWorkflowHandle<'a, M> {
     manager: &'a M,
@@ -525,6 +573,10 @@ pub struct ErroneousMessage<'a, M> {
 
 impl<M: AsManager> ErroneousMessage<'_, M> {
     /// Receives this message.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the message is not available.
     pub async fn receive(&self) -> Result<ReceivedMessage<Vec<u8>, Raw>, MessageError> {
         let manager = self.manager.as_manager();
         let transaction = manager.storage.readonly_transaction().await;
@@ -554,7 +606,14 @@ impl<M: AsManager> ErroneousMessage<'_, M> {
     }
 }
 
-/// Handle to a completed workflow.
+/// Handle to a completed workflow in a [`WorkflowManager`].
+///
+/// There isn't much to do with a completed workflow, other than retrieving
+/// the execution [result](Self::result()). See the [manager docs] for more information
+/// about workflow lifecycle.
+///
+/// [`WorkflowManager`]: crate::manager::WorkflowManager
+/// [manager docs]: crate::manager::WorkflowManager#workflow-lifecycle
 #[derive(Debug)]
 pub struct CompletedWorkflowHandle {
     id: WorkflowId,

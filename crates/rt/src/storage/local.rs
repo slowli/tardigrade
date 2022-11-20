@@ -222,7 +222,7 @@ impl From<LocalStorageSnapshot<'_>> for LocalStorage {
     }
 }
 
-/// Transactions used by [`LocalStorage`].
+/// Transaction used by [`LocalStorage`].
 #[derive(Debug)]
 pub struct LocalTransaction<'a> {
     // Alternatively, we could manipulate the guarded data directly.

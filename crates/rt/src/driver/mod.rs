@@ -80,13 +80,16 @@ pub enum Termination {
 ///
 /// # Error handling
 ///
-/// By default, workflow execution via [`Self::drive()`] terminates immediately after a trap.
-/// To drop incoming messages that have led to an error, call [`Self::drop_erroneous_messages()`].
-/// Rolling back receiving a message
+/// Erroneous workflow executions in [`Self::drive()`] lead to the corresponding workflow
+/// getting the [errored state], so that it will not be executed again.
+/// To drop incoming messages that may have led to an error,
+/// call [`Self::drop_erroneous_messages()`] before [`Self::drive()`]. Dropping a message
 /// means that from the workflow perspective, the message was never received in the first place,
 /// and all progress resulting from receiving the message is lost (new tasks, timers, etc.).
 /// Whether this makes sense, depends on a use case; e.g., it seems reasonable to roll back
 /// deserialization errors for dynamically typed workflows.
+///
+/// [errored state]: crate::manager::WorkflowManager#workflow-lifecycle
 ///
 /// # Examples
 ///
@@ -157,17 +160,12 @@ impl Driver {
         self.drop_erroneous_messages = true;
     }
 
-    /// Executes the provided [`WorkflowManager`] until all workflows in it are terminated,
-    /// or an execution error occurs. As the workflows execute, outbound messages and
+    /// Executes the provided [`WorkflowManager`] until all workflows in it have completed
+    /// or errored. As the workflows execute, outbound messages and
     /// [`TickResult`]s will be sent using respective channels.
     ///
     /// Note that it is possible to cancel this future (e.g., by [`select`]ing between it
     /// and a cancellation signal) and continue working with the provided workflow manager.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if workflow execution traps and is not rolled back due to
-    /// [`Self::drop_erroneous_messages()`] flag being set.
     ///
     /// [`WorkflowManager`]: crate::manager::WorkflowManager
     /// [`select`]: futures::select

@@ -1,4 +1,37 @@
 //! Async, transactional storage abstraction for storing workflows and channel state.
+//!
+//! # Overview
+//!
+//! The core trait of this module is [`Storage`], which produces storage transactions:
+//!
+//! - [`ReadonlyStorageTransaction`] for reading data
+//! - [`StorageTransaction`] for reading and writing data
+//!
+//! Transactions must have at least snapshot isolation.
+//!
+//! The data operated by transactions is as follows:
+//!
+//! | Entity type | Read trait | Write trait |
+//! |-------------|------------|-------------|
+//! | [`ModuleRecord`] | [`ReadModules`] | [`WriteModules`] |
+//! | [`ChannelRecord`] | [`ReadChannels`] | [`WriteChannels`] |
+//! | [`WorkflowRecord`] | [`ReadWorkflows`] | [`WriteWorkflows`] |
+//! | [`WorkflowWakerRecord`] | n/a | [`WriteWorkflowWakers`] |
+//!
+//! The `ReadonlyStorageTransaction` trait encompasses all read traits, and `StorageTransaction`
+//! encompasses both read and write traits. To simplify readonly transaction implementation without
+//! sacrificing type safety, there is [`Readonly`] wrapper.
+//!
+//! In terms of domain-driven development, modules, channels and workflows are independent
+//! aggregate roots, while workflow wakers are tied to a workflow.
+//! `_Record` types do not precisely correspond to the relational data model, but can be
+//! straightforwardly mapped onto one. In particular, [`WorkflowRecord`] has the workflow state
+//! as a type param. The state is modelled via enum dispatch on the [`WorkflowState`] enum and
+//! its variants (e.g., [`ActiveWorkflowState`] for active workflows).
+//!
+//! Besides the [`Storage`] trait, the module provides its local in-memory implementation:
+//! [`LocalStorage`]. It has [`LocalTransaction`] transactions and provides
+//! [`LocalStorageSnapshot`] as a way to get (de)serializable snapshot of the storage.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -28,7 +61,7 @@ pub trait Storage<'a>: 'static + Send + Sync {
     /// transaction semantics.
     type Transaction: 'a + StorageTransaction;
     /// Readonly transaction for the storage.
-    type ReadonlyTransaction: 'a + StorageReadonlyTransaction;
+    type ReadonlyTransaction: 'a + ReadonlyStorageTransaction;
 
     /// Creates a new read/write transaction.
     async fn transaction(&'a self) -> Self::Transaction;
@@ -37,12 +70,12 @@ pub trait Storage<'a>: 'static + Send + Sync {
 }
 
 /// [`Storage`] transaction with readonly access to the storage.
-pub trait StorageReadonlyTransaction:
+pub trait ReadonlyStorageTransaction:
     Send + Sync + ReadModules + ReadChannels + ReadWorkflows
 {
 }
 
-impl<T> StorageReadonlyTransaction for T where
+impl<T> ReadonlyStorageTransaction for T where
     T: Send + Sync + ReadModules + ReadChannels + ReadWorkflows
 {
 }
@@ -396,7 +429,9 @@ pub struct ErroneousMessageRef {
     pub index: usize,
 }
 
-/// Workflow selection criteria used in [`WriteWorkflows::manipulate_all_workflows()`].
+/// Workflow selection criteria used in [`insert_waker_for_matching_workflows()`].
+///
+/// [`insert_waker_for_matching_workflows()`]: WriteWorkflowWakers::insert_waker_for_matching_workflows()
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum WorkflowSelectionCriteria {
@@ -479,20 +514,20 @@ pub trait WriteWorkflowWakers {
 #[derive(Debug)]
 pub struct Readonly<T>(T);
 
-impl<T: StorageReadonlyTransaction> From<T> for Readonly<T> {
+impl<T: ReadonlyStorageTransaction> From<T> for Readonly<T> {
     fn from(inner: T) -> Self {
         Self(inner)
     }
 }
 
-impl<T: StorageReadonlyTransaction> AsRef<T> for Readonly<T> {
+impl<T: ReadonlyStorageTransaction> AsRef<T> for Readonly<T> {
     fn as_ref(&self) -> &T {
         &self.0
     }
 }
 
 #[async_trait]
-impl<T: StorageReadonlyTransaction> ReadModules for Readonly<T> {
+impl<T: ReadonlyStorageTransaction> ReadModules for Readonly<T> {
     async fn module(&self, id: &str) -> Option<ModuleRecord> {
         self.0.module(id).await
     }
@@ -503,7 +538,7 @@ impl<T: StorageReadonlyTransaction> ReadModules for Readonly<T> {
 }
 
 #[async_trait]
-impl<T: StorageReadonlyTransaction> ReadChannels for Readonly<T> {
+impl<T: ReadonlyStorageTransaction> ReadChannels for Readonly<T> {
     async fn channel(&self, id: ChannelId) -> Option<ChannelRecord> {
         self.0.channel(id).await
     }
@@ -514,7 +549,7 @@ impl<T: StorageReadonlyTransaction> ReadChannels for Readonly<T> {
 }
 
 #[async_trait]
-impl<T: StorageReadonlyTransaction> ReadWorkflows for Readonly<T> {
+impl<T: ReadonlyStorageTransaction> ReadWorkflows for Readonly<T> {
     async fn count_active_workflows(&self) -> usize {
         self.0.count_active_workflows().await
     }

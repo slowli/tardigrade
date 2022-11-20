@@ -19,8 +19,8 @@ pub(crate) mod tests;
 
 pub use self::{
     handle::{
-        AnyWorkflowHandle, CompletedWorkflowHandle, ConcurrencyError, ErroredWorkflowHandle,
-        MessageReceiver, MessageSender, ReceivedMessage, WorkflowHandle,
+        AnyWorkflowHandle, CompletedWorkflowHandle, ConcurrencyError, ErroneousMessage,
+        ErroredWorkflowHandle, MessageReceiver, MessageSender, ReceivedMessage, WorkflowHandle,
     },
     tick::{TickResult, WouldBlock},
     traits::{AsManager, CreateModule},
@@ -83,18 +83,36 @@ enum ChannelSide {
     Receiver,
 }
 
-/// Simple in-memory implementation of a workflow manager.
+/// Manager for workflow modules, workflows and channels.
 ///
-/// A workflow manager is responsible for managing state and interfacing with workflows
+/// A workflow manager is responsible for managing the state and interfacing with workflows
 /// and channels connected to the workflows. In particular, a manager supports the following
 /// operations:
 ///
 /// - Spawning new workflows (including from the workflow code)
 /// - Writing messages to channels and reading messages from channels
-/// - Driving the contained workflows to completion, either [directly](Self::tick()) or
+/// - Driving the contained workflows to completion, either [manually](Self::tick()) or
 ///   using a [`Driver`]
 ///
 /// [`Driver`]: crate::driver::Driver
+///
+/// # Workflow lifecycle
+///
+/// A workflow can be in one of the following states:
+///
+/// - [**Active.**](WorkflowHandle) This is the initial state, provided that the workflow
+///   successfully initialized. In this state, the workflow can execute,
+///   receive and send messages etc.
+/// - [**Completed.**](CompletedWorkflowHandle) This is the terminal state after the workflow
+///   completes as a result of its execution or is aborted.
+/// - [**Errored.**](ErroredWorkflowHandle) A workflow reaches this state after it panics.
+///   The panicking execution is reverted, but this is usually not enough to fix the error;
+///   since workflows are largely deterministic, if nothing changes, a repeated execution
+///   would most probably lead to the same panic. An errored workflow cannot execute
+///   until it is *repaired*.
+///
+/// The only way to repair a workflow so far is to make the workflow skip the message(s)
+/// leading to the error.
 ///
 /// # Examples
 ///
@@ -129,7 +147,7 @@ enum ChannelSide {
 /// // Do something with `workflow`, e.g., write something to its channels...
 ///
 /// // Initialize the workflow:
-/// let receipt = manager.tick().await?.into_inner()?;
+/// let receipt = manager.tick().await?.drop_handle().into_inner()?;
 /// println!("{receipt:?}");
 /// // Check the workflow state:
 /// workflow.update().await?;
