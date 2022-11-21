@@ -100,7 +100,7 @@ async fn test_async_handle(cancel_workflow: bool) -> TestResult {
         assert_eq!(persisted.timers().count(), 0);
     } else {
         drop(orders); // should terminate the workflow
-        assert_matches!(join_handle.await, Either::Left(Ok(Termination::Finished)));
+        assert_matches!(join_handle.await, Either::Left(Termination::Finished));
         assert_completed_spans(&tracing_storage.lock());
     }
 
@@ -155,7 +155,7 @@ async fn test_async_handle_with_concurrency(inputs: Args) -> TestResult {
     let mut orders = stream::iter(orders).map(Ok);
     orders_sx.send_all(&mut orders).await?;
     drop(orders_sx); // will terminate the workflow eventually
-    join_handle.await?;
+    join_handle.await;
 
     let events: Vec<_> = events_rx.try_collect().await?;
     assert_eq!(events.len(), ORDER_COUNT * 4, "{events:#?}");
@@ -239,7 +239,7 @@ struct AsyncRig {
     scheduler: MockScheduler,
     scheduler_expirations: Box<dyn Stream<Item = DateTime<Utc>> + Unpin>,
     events: MessageReceiver<DomainEvent, Json>,
-    results: mpsc::UnboundedReceiver<TickResult<()>>,
+    results: mpsc::UnboundedReceiver<TickResult>,
 }
 
 async fn initialize_workflow() -> TestResult<AsyncRig> {
@@ -490,7 +490,7 @@ async fn launching_env_after_pause() -> TestResult {
     drop(orders_sx); // should terminate the workflow once the delivery timer is expired
     let next_timer = scheduler_expirations.next().await.unwrap();
     scheduler.set_now(next_timer);
-    assert_matches!(join_handle.await?, Termination::Finished);
+    assert_matches!(join_handle.await, Termination::Finished);
 
     assert_completed_spans(&tracing_storage.lock());
     Ok(())
@@ -517,8 +517,10 @@ async fn dynamically_typed_async_handle() -> TestResult {
     let events_id = events_rx.channel_id();
     let events_rx = events_rx.into_stream(&mut env);
 
-    let join_handle =
-        spawn_traced_task(async move { env.drive(&mut manager).await.map(|_| manager) });
+    let join_handle = spawn_traced_task(async move {
+        env.drive(&mut manager).await;
+        manager
+    });
 
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,
@@ -541,7 +543,7 @@ async fn dynamically_typed_async_handle() -> TestResult {
         ]
     );
 
-    let manager = join_handle.await?;
+    let manager = join_handle.await;
     let chan = manager.channel(orders_id).await.unwrap();
     assert!(chan.is_closed);
     assert_eq!(chan.received_messages, 1);
@@ -596,6 +598,6 @@ async fn rollbacks_on_trap() -> TestResult {
         panic_location
     );
 
-    join_handle.await?;
+    join_handle.await;
     Ok(())
 }

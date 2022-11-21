@@ -58,7 +58,7 @@ impl TaskQueue {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TaskState {
     name: String,
-    #[serde(with = "utils::serde_poll")]
+    #[serde(with = "utils::serde_poll_res")]
     completion_result: Poll<Result<(), JoinError>>,
     spawned_by: Option<TaskId>,
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]

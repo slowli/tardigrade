@@ -59,7 +59,7 @@ async fn spawning_child_workflows() -> TestResult {
         .await?;
     drop(orders_sx);
 
-    let termination = join_handle.await?;
+    let termination = join_handle.await;
     assert_matches!(termination, Termination::Finished);
 
     // Check domain events produced by child workflows
@@ -137,7 +137,7 @@ async fn accessing_handles_in_child_workflows() -> TestResult {
 
     let mut child_ids = vec![];
     while let Ok(tick_result) = manager.tick().await {
-        let receipt = tick_result.into_inner()?;
+        let receipt = tick_result.drop_handle().into_inner()?;
         let new_child_ids = receipt.events().filter_map(|event| {
             if let Event::Resource(ResourceEvent {
                 resource_id: ResourceId::Workflow(child_id),

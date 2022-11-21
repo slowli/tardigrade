@@ -13,6 +13,7 @@ use wasmtime::Trap;
 
 use std::{error, fmt, ops::Range, task::Poll};
 
+use crate::utils::{serde_poll, serde_poll_res, serde_trap};
 use tardigrade::{
     channel::SendError,
     task::{ErrorLocation, TaskError, TaskResult},
@@ -82,7 +83,8 @@ pub enum WakeUpCause {
 /// These functions are exported from the workflow WASM module and are called during different
 /// stages of the workflow lifecycle (e.g., after receiving an inbound message or completing
 /// a timer).
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ExecutedFunction {
     /// Entry point of the workflow.
@@ -146,7 +148,8 @@ impl ExecutedFunction {
 }
 
 /// ID of a host-managed resource.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ResourceId {
     /// Timer ID.
@@ -160,7 +163,8 @@ pub enum ResourceId {
 }
 
 /// Kind of a [`ResourceEvent`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ResourceEventKind {
     /// The resource was created.
@@ -168,11 +172,11 @@ pub enum ResourceEventKind {
     /// The resource was dropped.
     Dropped,
     /// The resource was polled for completion.
-    Polled(Poll<()>),
+    Polled(#[serde(with = "serde_poll")] Poll<()>),
 }
 
 /// Event related to a host-managed resource (a task or a timer).
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ResourceEvent {
     /// Resource ID.
@@ -182,12 +186,14 @@ pub struct ResourceEvent {
 }
 
 /// Kind of a [`ChannelEvent`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ChannelEventKind {
     /// Inbound channel was polled for messages.
     InboundChannelPolled {
         /// Result of a poll, with the message replaced with its byte length.
+        #[serde(with = "serde_poll")]
         result: Poll<Option<usize>>,
     },
     /// Inbound channel closed by the workflow logic.
@@ -196,6 +202,7 @@ pub enum ChannelEventKind {
     /// Outbound channel was polled for readiness.
     OutboundChannelReady {
         /// Result of a poll.
+        #[serde(with = "serde_poll_res")]
         result: Poll<Result<(), SendError>>,
     },
     /// Message was sent via an outbound channel.
@@ -206,6 +213,7 @@ pub enum ChannelEventKind {
     /// Outbound channel was polled for flush.
     OutboundChannelFlushed {
         /// Result of a poll.
+        #[serde(with = "serde_poll_res")]
         result: Poll<Result<(), SendError>>,
     },
     /// Outbound channel closed by the workflow logic.
@@ -218,7 +226,7 @@ pub enum ChannelEventKind {
 }
 
 /// Event related to an inbound or outbound workflow channel.
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ChannelEvent {
     /// Event kind.
@@ -231,7 +239,8 @@ pub struct ChannelEvent {
 }
 
 /// Event included into a [`Receipt`].
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Event {
     /// Event related to a host-managed resource (a task or a timer).
@@ -272,7 +281,7 @@ impl Event {
 
 /// Execution of a top-level WASM function with a list of events that have occurred during
 /// the execution.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Execution {
     /// The top-level WASM function getting executed.
@@ -280,13 +289,33 @@ pub struct Execution {
     /// Events that have occurred during the execution (in the order of their appearance).
     pub events: Vec<Event>,
     /// Result of executing a task. This field can only be set for
-    /// [task executions](ExecutedFunction::Task), but it is `None` if the task is
+    /// [task executions](ExecutedFunction::Task), and it is `None` if the task is
     /// not completed as a result of this execution.
     pub task_result: Option<TaskResult>,
 }
 
+impl Clone for Execution {
+    fn clone(&self) -> Self {
+        Self {
+            function: self.function.clone(),
+            events: self.events.clone(),
+            task_result: self
+                .task_result
+                .as_ref()
+                .map(|result| result.as_ref().copied().map_err(TaskError::clone_boxed)),
+        }
+    }
+}
+
+impl Execution {
+    /// Returns the cause of this execution.
+    pub fn cause(&self) -> Option<&WakeUpCause> {
+        self.function.wake_up_cause()
+    }
+}
+
 /// Receipt for executing tasks in a workflow.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Receipt {
     pub(crate) executions: Vec<Execution>,
 }
@@ -308,11 +337,6 @@ impl Receipt {
             .iter()
             .flat_map(|execution| &execution.events)
     }
-
-    /// Returns the root cause of the workflow execution that corresponds to this receipt, if any.
-    pub fn root_cause(&self) -> Option<&WakeUpCause> {
-        self.executions.first()?.function.wake_up_cause()
-    }
 }
 
 /// Error occurring during workflow execution.
@@ -320,8 +344,9 @@ impl Receipt {
 /// An error is caused by the executed WASM code [`Trap`]ping, which can be caused by a panic
 /// in the workflow logic, or misuse of Tardigrade runtime APIs. (The latter should not happen
 /// if properly using the Tardigrade client library.)
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionError {
+    #[serde(with = "serde_trap")]
     trap: Trap,
     panic_info: Option<PanicInfo>,
     receipt: Receipt,
@@ -374,7 +399,7 @@ impl error::Error for ExecutionError {
 }
 
 /// Information about a panic in the workflow code.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct PanicInfo {
     /// Human-readable panic message.

@@ -140,6 +140,11 @@ impl InboundChannelState {
         self.received_messages
     }
 
+    /// Checks whether the channel is closed.
+    pub fn is_closed(&self) -> bool {
+        self.is_closed
+    }
+
     pub(crate) fn waits_for_message(&self) -> bool {
         !self.is_closed && !self.wakes_on_next_element.is_empty()
     }

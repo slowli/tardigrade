@@ -8,7 +8,7 @@ use futures::{
     StreamExt,
 };
 use serde::{Deserialize, Serialize};
-use tracing_tunnel::{PersistedMetadata, PersistedSpans};
+use tracing_tunnel::PersistedMetadata;
 
 use std::{
     borrow::Cow,
@@ -22,12 +22,13 @@ use std::{
 };
 
 use super::{
-    ChannelRecord, MessageError, ModuleRecord, ReadChannels, ReadModules, ReadWorkflows, Readonly,
-    Storage, StorageTransaction, WorkflowRecord, WorkflowSelectionCriteria, WriteChannels,
-    WriteModules, WriteWorkflows,
+    ActiveWorkflowState, ChannelRecord, MessageError, ModuleRecord, ReadChannels, ReadModules,
+    ReadWorkflows, Readonly, Storage, StorageTransaction, WorkflowRecord,
+    WorkflowSelectionCriteria, WorkflowState, WorkflowWaker, WorkflowWakerRecord, WriteChannels,
+    WriteModules, WriteWorkflowWakers, WriteWorkflows,
 };
 use crate::{utils::Message, PersistedWorkflow};
-use tardigrade::{channel::SendError, ChannelId, WorkflowId};
+use tardigrade::{ChannelId, WakerId, WorkflowId};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LocalChannel {
@@ -63,6 +64,7 @@ struct Inner {
     modules: HashMap<String, ModuleRecord>,
     channels: HashMap<ChannelId, LocalChannel>,
     workflows: HashMap<WorkflowId, WorkflowRecord>,
+    workflow_wakers: Vec<WorkflowWakerRecord>,
 }
 
 impl Default for Inner {
@@ -79,6 +81,7 @@ impl Default for Inner {
             modules: HashMap::new(),
             channels: HashMap::from_iter([(0, closed_channel)]),
             workflows: HashMap::new(),
+            workflow_wakers: Vec::new(),
         }
     }
 }
@@ -110,6 +113,7 @@ impl ops::Deref for ModuleRecordMut<'_> {
 pub struct LocalStorageSnapshot<'a> {
     next_channel_id: u64,
     next_workflow_id: u64,
+    next_waker_id: u64,
     inner: Cow<'a, Inner>,
 }
 
@@ -173,6 +177,7 @@ pub struct LocalStorage {
     inner: Mutex<Inner>,
     next_channel_id: AtomicU64,
     next_workflow_id: AtomicU64,
+    next_waker_id: AtomicU64,
     truncate_messages: bool,
 }
 
@@ -182,6 +187,7 @@ impl Default for LocalStorage {
             inner: Mutex::default(),
             next_channel_id: AtomicU64::new(1), // skip the closed channel
             next_workflow_id: AtomicU64::new(0),
+            next_waker_id: AtomicU64::new(0),
             truncate_messages: false,
         }
     }
@@ -194,6 +200,7 @@ impl LocalStorage {
             inner: Cow::Borrowed(self.inner.get_mut()),
             next_channel_id: *self.next_channel_id.get_mut(),
             next_workflow_id: *self.next_workflow_id.get_mut(),
+            next_waker_id: *self.next_waker_id.get_mut(),
         }
     }
 
@@ -209,12 +216,13 @@ impl From<LocalStorageSnapshot<'_>> for LocalStorage {
             inner: Mutex::new(snapshot.inner.into_owned()),
             next_channel_id: AtomicU64::new(snapshot.next_channel_id),
             next_workflow_id: AtomicU64::new(snapshot.next_workflow_id),
+            next_waker_id: AtomicU64::new(snapshot.next_waker_id),
             truncate_messages: false,
         }
     }
 }
 
-/// Transactions used by [`LocalStorage`].
+/// Transaction used by [`LocalStorage`].
 #[derive(Debug)]
 pub struct LocalTransaction<'a> {
     // Alternatively, we could manipulate the guarded data directly.
@@ -228,7 +236,51 @@ pub struct LocalTransaction<'a> {
     inner: Inner,
     next_channel_id: &'a AtomicU64,
     next_workflow_id: &'a AtomicU64,
+    next_waker_id: &'a AtomicU64,
     truncate_messages: bool,
+}
+
+impl LocalTransaction<'_> {
+    fn active_workflow_states(&self) -> impl Iterator<Item = &PersistedWorkflow> + '_ {
+        self.inner.workflows.values().filter_map(|record| {
+            if let WorkflowState::Active(state) = &record.state {
+                Some(&state.persisted)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Ensures that the specified workflow will be polled.
+    #[cfg(test)]
+    pub(crate) fn prepare_wakers_for_workflow(&mut self, workflow_id: WorkflowId) {
+        let wakers = &mut self.inner.workflow_wakers;
+        let pos = wakers
+            .iter()
+            .position(|record| record.workflow_id == workflow_id);
+        if let Some(pos) = pos {
+            wakers.swap(0, pos);
+        } else {
+            assert!(
+                wakers.is_empty(),
+                "no wakers for workflow {workflow_id}: {wakers:?}"
+            );
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn wakers_for_workflow(
+        &self,
+        workflow_id: WorkflowId,
+    ) -> impl Iterator<Item = &WorkflowWaker> + '_ {
+        self.inner.workflow_wakers.iter().filter_map(move |record| {
+            if record.workflow_id == workflow_id {
+                Some(&record.waker)
+            } else {
+                None
+            }
+        })
+    }
 }
 
 #[async_trait]
@@ -259,17 +311,6 @@ impl ReadChannels for LocalTransaction<'_> {
     async fn channel(&self, id: ChannelId) -> Option<ChannelRecord> {
         let channel = self.inner.channels.get(&id)?;
         Some(channel.record.clone())
-    }
-
-    async fn has_messages_for_receiver_workflow(&self, id: ChannelId) -> bool {
-        if let Some(channel) = self.inner.channels.get(&id) {
-            if let Some(workflow_id) = channel.record.receiver_workflow_id {
-                let workflow = &self.inner.workflows[&workflow_id].persisted;
-                let (.., state) = workflow.find_inbound_channel(id);
-                return state.received_message_count() < channel.record.received_messages;
-            }
-        }
-        false
     }
 
     async fn channel_message(&self, id: ChannelId, index: usize) -> Result<Vec<u8>, MessageError> {
@@ -321,22 +362,15 @@ impl WriteChannels for LocalTransaction<'_> {
         channel.record.clone()
     }
 
-    async fn push_messages(
-        &mut self,
-        id: ChannelId,
-        messages: Vec<Vec<u8>>,
-    ) -> Result<(), SendError> {
+    async fn push_messages(&mut self, id: ChannelId, messages: Vec<Vec<u8>>) {
         let channel = self.inner.channels.get_mut(&id).unwrap();
-        if channel.record.is_closed {
-            return Err(SendError::Closed);
-        }
+        debug_assert!(!channel.record.is_closed);
 
         let len = messages.len();
         channel
             .messages
             .extend(messages.into_iter().map(Message::from));
         channel.record.received_messages += len;
-        Ok(())
     }
 
     async fn truncate_channel(&mut self, id: ChannelId, min_index: usize) {
@@ -348,48 +382,17 @@ impl WriteChannels for LocalTransaction<'_> {
 
 #[async_trait]
 impl ReadWorkflows for LocalTransaction<'_> {
-    async fn count_workflows(&self) -> usize {
-        self.inner.workflows.len()
+    async fn count_active_workflows(&self) -> usize {
+        self.active_workflow_states().count()
     }
 
     async fn workflow(&self, id: WorkflowId) -> Option<WorkflowRecord> {
         self.inner.workflows.get(&id).cloned()
     }
 
-    async fn find_pending_workflow(&self) -> Option<WorkflowRecord> {
-        self.inner
-            .workflows
-            .values()
-            .find(|record| {
-                let persisted = &record.persisted;
-                !persisted.is_initialized() || persisted.pending_wakeup_causes().next().is_some()
-            })
-            .cloned()
-    }
-
-    async fn find_consumable_channel(&self) -> Option<(ChannelId, usize, WorkflowRecord)> {
-        let workflows = self.inner.workflows.values();
-        let mut all_channels = workflows.flat_map(|record| {
-            record
-                .persisted
-                .inbound_channels()
-                .map(move |(_, _, state)| (record, state))
-        });
-        all_channels.find_map(|(record, state)| {
-            if state.waits_for_message() {
-                let channel_id = state.id();
-                let next_message_idx = state.received_message_count();
-                if self.inner.channels[&channel_id].contains_index(next_message_idx) {
-                    return Some((channel_id, next_message_idx, record.clone()));
-                }
-            }
-            None
-        })
-    }
-
     async fn nearest_timer_expiration(&self) -> Option<DateTime<Utc>> {
-        let workflows = self.inner.workflows.values();
-        let timers = workflows.flat_map(|record| record.persisted.timers());
+        let workflows = self.active_workflow_states();
+        let timers = workflows.flat_map(PersistedWorkflow::timers);
         let expirations = timers.filter_map(|(_, state)| {
             if state.completed_at().is_none() {
                 Some(state.definition().expires_at)
@@ -411,41 +414,105 @@ impl WriteWorkflows for LocalTransaction<'_> {
         self.inner.workflows.insert(state.id, state);
     }
 
-    async fn persist_workflow(
-        &mut self,
-        id: WorkflowId,
-        workflow: PersistedWorkflow,
-        tracing_spans: PersistedSpans,
-    ) {
+    async fn workflow_for_update(&mut self, id: WorkflowId) -> Option<WorkflowRecord> {
+        self.workflow(id).await
+    }
+
+    async fn update_workflow(&mut self, id: WorkflowId, state: WorkflowState) {
         let record = self.inner.workflows.get_mut(&id).unwrap();
-        record.persisted = workflow;
-        record.tracing_spans = tracing_spans;
+        record.state = state;
     }
 
-    async fn manipulate_workflow<F: FnOnce(&mut PersistedWorkflow) + Send>(
+    async fn workflow_with_wakers_for_update(
         &mut self,
-        id: WorkflowId,
-        action: F,
-    ) -> Option<WorkflowRecord> {
-        let record = self.inner.workflows.get_mut(&id)?;
-        action(&mut record.persisted);
-        Some(record.clone())
+    ) -> Option<WorkflowRecord<ActiveWorkflowState>> {
+        let workflows = &self.inner.workflows;
+        self.inner.workflow_wakers.iter().find_map(|record| {
+            let workflow = &workflows[&record.workflow_id];
+            if matches!(workflow.state, WorkflowState::Active(_)) {
+                return workflow.clone().into_active();
+            }
+            None
+        })
     }
 
-    async fn manipulate_all_workflows<F: FnMut(&mut PersistedWorkflow) + Send>(
+    async fn workflow_with_consumable_channel_for_update(
+        &self,
+    ) -> Option<WorkflowRecord<ActiveWorkflowState>> {
+        let workflows = self.inner.workflows.values().filter_map(|record| {
+            if let WorkflowState::Active(state) = &record.state {
+                Some((record, &state.persisted))
+            } else {
+                None
+            }
+        });
+        let mut all_channels = workflows.flat_map(|(record, persisted)| {
+            persisted
+                .inbound_channels()
+                .map(move |(_, _, state)| (record, state))
+        });
+
+        all_channels.find_map(|(record, state)| {
+            if state.waits_for_message() {
+                let channel_id = state.id();
+                let next_message_idx = state.received_message_count();
+                let channel = &self.inner.channels[&channel_id];
+                if channel.contains_index(next_message_idx) {
+                    return record.clone().into_active();
+                }
+            }
+            None
+        })
+    }
+}
+
+#[async_trait]
+impl WriteWorkflowWakers for LocalTransaction<'_> {
+    async fn insert_waker(&mut self, workflow_id: WorkflowId, waker: WorkflowWaker) {
+        let waker_id = self.next_waker_id.fetch_add(1, Ordering::SeqCst);
+        self.inner.workflow_wakers.push(WorkflowWakerRecord {
+            workflow_id,
+            waker_id,
+            waker,
+        });
+    }
+
+    async fn insert_waker_for_matching_workflows(
         &mut self,
         criteria: WorkflowSelectionCriteria,
-        mut action: F,
+        waker: WorkflowWaker,
     ) {
-        for record in self.inner.workflows.values_mut() {
-            if criteria.matches(record) {
-                action(&mut record.persisted);
+        for (&id, record) in &self.inner.workflows {
+            let persisted = match &record.state {
+                WorkflowState::Active(state) => &state.persisted,
+                WorkflowState::Errored(state) => &state.persisted,
+                WorkflowState::Completed(_) => continue,
+            };
+
+            if criteria.matches(persisted) {
+                let waker_id = self.next_waker_id.fetch_add(1, Ordering::SeqCst);
+                self.inner.workflow_wakers.push(WorkflowWakerRecord {
+                    workflow_id: id,
+                    waker_id,
+                    waker: waker.clone(),
+                });
             }
         }
     }
 
-    async fn delete_workflow(&mut self, id: WorkflowId) {
-        self.inner.workflows.remove(&id);
+    async fn wakers_for_workflow(&self, workflow_id: WorkflowId) -> Vec<WorkflowWakerRecord> {
+        let filtered = self.inner.workflow_wakers.iter().filter_map(|record| {
+            Some(record)
+                .filter(|&it| it.workflow_id == workflow_id)
+                .cloned()
+        });
+        filtered.collect()
+    }
+
+    async fn delete_wakers(&mut self, workflow_id: WorkflowId, waker_ids: &[WakerId]) {
+        self.inner.workflow_wakers.retain(|record| {
+            record.workflow_id != workflow_id || !waker_ids.contains(&record.waker_id)
+        });
     }
 }
 
@@ -456,7 +523,10 @@ impl StorageTransaction for LocalTransaction<'_> {
             let inner = &mut self.inner;
             for (&id, channel) in &mut inner.channels {
                 if let Some(workflow_id) = channel.record.receiver_workflow_id {
-                    let workflow = &inner.workflows[&workflow_id].persisted;
+                    let workflow = match &inner.workflows[&workflow_id].state {
+                        WorkflowState::Active(state) => &state.persisted,
+                        WorkflowState::Completed(_) | WorkflowState::Errored(_) => continue,
+                    };
                     let (.., state) = workflow.find_inbound_channel(id);
                     channel.truncate(state.received_message_count());
                 }
@@ -478,6 +548,7 @@ impl<'a> Storage<'a> for LocalStorage {
             target,
             next_channel_id: &self.next_channel_id,
             next_workflow_id: &self.next_workflow_id,
+            next_waker_id: &self.next_waker_id,
             truncate_messages: self.truncate_messages,
         }
     }
@@ -510,19 +581,13 @@ mod tests {
         };
         transaction.get_or_insert_channel(1, channel_state).await;
 
-        transaction
-            .push_messages(1, vec![b"test".to_vec()])
-            .await
-            .unwrap();
+        transaction.push_messages(1, vec![b"test".to_vec()]).await;
         let message = transaction.channel_message(1, 0).await.unwrap();
         assert_eq!(message, b"test");
         let err = transaction.channel_message(1, 1).await.unwrap_err();
         assert_matches!(err, MessageError::NonExistingIndex { is_closed: false });
 
-        transaction
-            .push_messages(1, vec![b"other".to_vec()])
-            .await
-            .unwrap();
+        transaction.push_messages(1, vec![b"other".to_vec()]).await;
         let message = transaction.channel_message(1, 0).await.unwrap();
         assert_eq!(message, b"test");
         let message = transaction.channel_message(1, 1).await.unwrap();

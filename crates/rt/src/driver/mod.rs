@@ -19,7 +19,6 @@ mod tests;
 
 use crate::{
     manager::{self, AsManager, TickResult},
-    receipt::ExecutionError,
     storage::{MessageError, ReadChannels, Storage},
     Schedule,
 };
@@ -81,13 +80,16 @@ pub enum Termination {
 ///
 /// # Error handling
 ///
-/// By default, workflow execution via [`Self::drive()`] terminates immediately after a trap.
-/// To drop incoming messages that have led to an error, call [`Self::drop_erroneous_messages()`].
-/// Rolling back receiving a message
+/// Erroneous workflow executions in [`Self::drive()`] lead to the corresponding workflow
+/// getting the [errored state], so that it will not be executed again.
+/// To drop incoming messages that may have led to an error,
+/// call [`Self::drop_erroneous_messages()`] before [`Self::drive()`]. Dropping a message
 /// means that from the workflow perspective, the message was never received in the first place,
 /// and all progress resulting from receiving the message is lost (new tasks, timers, etc.).
 /// Whether this makes sense, depends on a use case; e.g., it seems reasonable to roll back
 /// deserialization errors for dynamically typed workflows.
+///
+/// [errored state]: crate::manager::WorkflowManager#workflow-lifecycle
 ///
 /// # Examples
 ///
@@ -134,7 +136,7 @@ pub enum Termination {
 pub struct Driver {
     inbound_channels: HashMap<ChannelId, mpsc::Receiver<Vec<u8>>>,
     outbound_channels: HashMap<ChannelId, OutboundChannel>,
-    results_sx: Option<mpsc::UnboundedSender<TickResult<()>>>,
+    results_sx: Option<mpsc::UnboundedSender<TickResult>>,
     drop_erroneous_messages: bool,
 }
 
@@ -146,7 +148,7 @@ impl Driver {
     }
 
     /// Returns the receiver of [`TickResult`]s generated during workflow execution.
-    pub fn tick_results(&mut self) -> mpsc::UnboundedReceiver<TickResult<()>> {
+    pub fn tick_results(&mut self) -> mpsc::UnboundedReceiver<TickResult> {
         let (sx, rx) = mpsc::unbounded();
         self.results_sx = Some(sx);
         rx
@@ -158,21 +160,16 @@ impl Driver {
         self.drop_erroneous_messages = true;
     }
 
-    /// Executes the provided [`WorkflowManager`] until all workflows in it are terminated,
-    /// or an execution error occurs. As the workflows execute, outbound messages and
+    /// Executes the provided [`WorkflowManager`] until all workflows in it have completed
+    /// or errored. As the workflows execute, outbound messages and
     /// [`TickResult`]s will be sent using respective channels.
     ///
     /// Note that it is possible to cancel this future (e.g., by [`select`]ing between it
     /// and a cancellation signal) and continue working with the provided workflow manager.
     ///
-    /// # Errors
-    ///
-    /// Returns an error if workflow execution traps and is not rolled back due to
-    /// [`Self::drop_erroneous_messages()`] flag being set.
-    ///
     /// [`WorkflowManager`]: crate::manager::WorkflowManager
     /// [`select`]: futures::select
-    pub async fn drive<M>(mut self, manager: &mut M) -> Result<Termination, ExecutionError>
+    pub async fn drive<M>(mut self, manager: &mut M) -> Termination
     where
         M: AsManager,
         M::Clock: Schedule,
@@ -181,9 +178,9 @@ impl Driver {
         // the manager isn't driven elsewhere, which can lead to unexpected behavior.
         self.set_channel_cursors(manager).await;
         loop {
-            if let Some(termination) = self.tick(manager).await? {
+            if let Some(termination) = self.tick(manager).await {
                 self.flush_outbound_messages(manager).await;
-                return Ok(termination);
+                return termination;
             }
         }
     }
@@ -202,14 +199,14 @@ impl Driver {
         }
     }
 
-    #[tracing::instrument(level = "debug", skip_all, err)]
-    async fn tick<M>(&mut self, manager: &M) -> Result<Option<Termination>, ExecutionError>
+    #[tracing::instrument(level = "debug", skip_all, ret)]
+    async fn tick<M>(&mut self, manager: &M) -> Option<Termination>
     where
         M: AsManager,
         M::Clock: Schedule,
     {
         let manager_ref = manager.as_manager();
-        let nearest_timer_expiration = self.tick_manager(manager).await?;
+        let nearest_timer_expiration = self.tick_manager(manager).await;
         self.gc(manager).await;
         if nearest_timer_expiration.is_none() && self.inbound_channels.is_empty() {
             let termination = if manager_ref.workflow_count().await == 0 {
@@ -217,7 +214,7 @@ impl Driver {
             } else {
                 Termination::Stalled
             };
-            return Ok(Some(termination));
+            return Some(termination);
         }
 
         // Determine external events listened by the workflow.
@@ -249,29 +246,33 @@ impl Driver {
             }
         };
 
-        Ok(None)
+        None
     }
 
-    async fn tick_manager<M: AsManager>(
-        &mut self,
-        manager: &M,
-    ) -> Result<Option<DateTime<Utc>>, ExecutionError> {
+    async fn tick_manager<M: AsManager>(&mut self, manager: &M) -> Option<DateTime<Utc>> {
         loop {
             let tick_result = match manager.as_manager().tick().await {
                 Ok(result) => result,
-                Err(blocked) => break Ok(blocked.nearest_timer_expiration()),
+                Err(blocked) => break blocked.nearest_timer_expiration(),
             };
 
-            let (tick_result, recovered_from_error) =
-                if self.drop_erroneous_messages && tick_result.can_drop_erroneous_message() {
-                    (tick_result.drop_erroneous_message().await, true)
-                } else {
-                    (tick_result.drop_extra(), false)
-                };
-
-            if tick_result.as_ref().is_err() && !recovered_from_error {
-                return Err(tick_result.into_inner().unwrap_err());
-            } else if let Some(sx) = &self.results_sx {
+            if self.drop_erroneous_messages {
+                if let Err(handle) = tick_result.as_ref() {
+                    // Concurrency errors should not occur if the driver is used properly
+                    // (i.e., the workflows are not mutated externally). That's why the errors
+                    // are ignored below.
+                    let mut dropped_messages = false;
+                    for message in handle.messages() {
+                        message.drop_for_workflow().await.ok();
+                        dropped_messages = true;
+                    }
+                    if dropped_messages {
+                        handle.consider_repaired_by_ref().await.ok();
+                    }
+                }
+            }
+            let tick_result = tick_result.drop_handle();
+            if let Some(sx) = &self.results_sx {
                 sx.unbounded_send(tick_result).ok();
             }
 

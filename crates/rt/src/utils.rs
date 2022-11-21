@@ -284,6 +284,52 @@ pub(crate) mod serde_poll {
 
     #[derive(Debug, Serialize, Deserialize)]
     #[serde(rename_all = "snake_case")]
+    enum SerializedPoll<T> {
+        Pending,
+        Ready(T),
+    }
+
+    impl<'a, T> SerializedPoll<&'a T> {
+        fn from_ref(poll: &'a Poll<T>) -> Self {
+            match poll {
+                Poll::Pending => Self::Pending,
+                Poll::Ready(value) => Self::Ready(value),
+            }
+        }
+    }
+
+    impl<T> From<SerializedPoll<T>> for Poll<T> {
+        fn from(poll: SerializedPoll<T>) -> Self {
+            match poll {
+                SerializedPoll::Pending => Poll::Pending,
+                SerializedPoll::Ready(value) => Poll::Ready(value),
+            }
+        }
+    }
+
+    pub fn serialize<T: Serialize, S: Serializer>(
+        value: &Poll<T>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        SerializedPoll::from_ref(value).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, T, D>(deserializer: D) -> Result<Poll<T>, D::Error>
+    where
+        T: Deserialize<'de>,
+        D: Deserializer<'de>,
+    {
+        SerializedPoll::<T>::deserialize(deserializer).map(From::from)
+    }
+}
+
+pub(crate) mod serde_poll_res {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use std::task::Poll;
+
+    #[derive(Debug, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
     enum PollResult<T, E> {
         Pending,
         Ok(T),
@@ -324,5 +370,21 @@ pub(crate) mod serde_poll {
         D: Deserializer<'de>,
     {
         PollResult::<T, E>::deserialize(deserializer).map(From::from)
+    }
+}
+
+pub(crate) mod serde_trap {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use wasmtime::Trap;
+
+    pub fn serialize<S: Serializer>(trap: &Trap, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&trap.to_string())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Trap, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer).map(Trap::new)
     }
 }

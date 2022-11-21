@@ -39,7 +39,7 @@ pub(super) struct SharedChannelHandles {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ChildWorkflowStub {
-    #[serde(with = "utils::serde_poll")]
+    #[serde(with = "utils::serde_poll_res")]
     result: Poll<Result<WorkflowId, HostError>>,
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     wakes_on_init: HashSet<WakerId>,
@@ -78,7 +78,7 @@ impl ChildWorkflowStubs {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChildWorkflowState {
     pub(super) channels: ChannelStates,
-    #[serde(with = "utils::serde_poll")]
+    #[serde(with = "utils::serde_poll_res")]
     completion_result: Poll<Result<(), JoinError>>,
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     wakes_on_completion: HashSet<WakerId>,

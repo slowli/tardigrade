@@ -4,7 +4,7 @@
 
 use chrono::{DateTime, Utc};
 use futures::{lock::Mutex, StreamExt};
-use tracing_tunnel::{LocalSpans, PersistedMetadata};
+use tracing_tunnel::{LocalSpans, PersistedMetadata, PersistedSpans};
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -18,8 +18,11 @@ mod traits;
 pub(crate) mod tests;
 
 pub use self::{
-    handle::{HandleUpdateError, MessageReceiver, MessageSender, ReceivedMessage, WorkflowHandle},
-    tick::{Actions, TickResult, WouldBlock},
+    handle::{
+        AnyWorkflowHandle, CompletedWorkflowHandle, ConcurrencyError, ErroneousMessage,
+        ErroredWorkflowHandle, MessageReceiver, MessageSender, ReceivedMessage, WorkflowHandle,
+    },
+    tick::{TickResult, WouldBlock},
     traits::{AsManager, CreateModule},
 };
 
@@ -28,7 +31,7 @@ use crate::{
     module::Clock,
     storage::{
         ChannelRecord, ModuleRecord, ReadChannels, ReadModules, ReadWorkflows, Storage,
-        StorageTransaction, WriteChannels, WriteModules, WriteWorkflows,
+        StorageTransaction, WorkflowState, WriteChannels, WriteModules, WriteWorkflows,
     },
     workflow::ChannelIds,
     WorkflowEngine, WorkflowModule, WorkflowSpawner,
@@ -80,18 +83,36 @@ enum ChannelSide {
     Receiver,
 }
 
-/// Simple in-memory implementation of a workflow manager.
+/// Manager for workflow modules, workflows and channels.
 ///
-/// A workflow manager is responsible for managing state and interfacing with workflows
+/// A workflow manager is responsible for managing the state and interfacing with workflows
 /// and channels connected to the workflows. In particular, a manager supports the following
 /// operations:
 ///
 /// - Spawning new workflows (including from the workflow code)
 /// - Writing messages to channels and reading messages from channels
-/// - Driving the contained workflows to completion, either [directly](Self::tick()) or
+/// - Driving the contained workflows to completion, either [manually](Self::tick()) or
 ///   using a [`Driver`]
 ///
 /// [`Driver`]: crate::driver::Driver
+///
+/// # Workflow lifecycle
+///
+/// A workflow can be in one of the following states:
+///
+/// - [**Active.**](WorkflowHandle) This is the initial state, provided that the workflow
+///   successfully initialized. In this state, the workflow can execute,
+///   receive and send messages etc.
+/// - [**Completed.**](CompletedWorkflowHandle) This is the terminal state after the workflow
+///   completes as a result of its execution or is aborted.
+/// - [**Errored.**](ErroredWorkflowHandle) A workflow reaches this state after it panics.
+///   The panicking execution is reverted, but this is usually not enough to fix the error;
+///   since workflows are largely deterministic, if nothing changes, a repeated execution
+///   would most probably lead to the same panic. An errored workflow cannot execute
+///   until it is *repaired*.
+///
+/// The only way to repair a workflow so far is to make the workflow skip the message(s)
+/// leading to the error.
 ///
 /// # Examples
 ///
@@ -126,7 +147,7 @@ enum ChannelSide {
 /// // Do something with `workflow`, e.g., write something to its channels...
 ///
 /// // Initialize the workflow:
-/// let receipt = manager.tick().await?.into_inner()?;
+/// let receipt = manager.tick().await?.drop_handle().into_inner()?;
 /// println!("{receipt:?}");
 /// // Check the workflow state:
 /// workflow.update().await?;
@@ -201,22 +222,56 @@ impl<C: Clock, S: for<'a> Storage<'a>> WorkflowManager<C, S> {
         Some(record)
     }
 
-    /// Returns a handle to a workflow with the specified ID.
+    /// Returns a handle to an active workflow with the specified ID. If the workflow is
+    /// not active or does not exist, returns `None`.
     pub async fn workflow(&self, workflow_id: WorkflowId) -> Option<WorkflowHandle<'_, (), Self>> {
-        let transaction = self.storage.readonly_transaction().await;
-        let record = transaction.workflow(workflow_id).await?;
-        let interface = self
-            .spawners
-            .get(&record.module_id, &record.name_in_module)
-            .interface();
-        let handle = WorkflowHandle::new(self, &transaction, interface, record).await;
-        Some(handle)
+        let handle = self.any_workflow(workflow_id).await?;
+        match handle {
+            AnyWorkflowHandle::Active(handle) => Some(*handle),
+            _ => None,
+        }
     }
 
-    /// Returns the number of non-completed workflows.
+    /// Returns a handle to a workflow with the specified ID. The workflow may have any state.
+    /// If the workflow does not exist, returns `None`.
+    pub async fn any_workflow(
+        &self,
+        workflow_id: WorkflowId,
+    ) -> Option<AnyWorkflowHandle<'_, Self>> {
+        let transaction = self.storage.readonly_transaction().await;
+        let record = transaction.workflow(workflow_id).await?;
+        match record.state {
+            WorkflowState::Active(state) => {
+                let interface = self
+                    .spawners
+                    .get(&record.module_id, &record.name_in_module)
+                    .interface();
+                let handle =
+                    WorkflowHandle::new(self, &transaction, workflow_id, interface, *state).await;
+                Some(handle.into())
+            }
+
+            WorkflowState::Errored(state) => {
+                let handle = ErroredWorkflowHandle::new(
+                    self,
+                    workflow_id,
+                    state.error,
+                    state.erroneous_messages,
+                );
+                Some(handle.into())
+            }
+
+            WorkflowState::Completed(state) => {
+                let handle = CompletedWorkflowHandle::new(workflow_id, state);
+                Some(handle.into())
+            }
+        }
+    }
+
+    /// Returns the number of active workflows.
     pub async fn workflow_count(&self) -> usize {
         let transaction = self.storage.readonly_transaction().await;
-        transaction.count_workflows().await
+        transaction.count_active_workflows().await
     }
 
     /// Returns the encapsulated storage.
@@ -239,9 +294,14 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
         message: Vec<u8>,
     ) -> Result<(), SendError> {
         let mut transaction = self.storage.transaction().await;
-        let result = transaction.push_messages(channel_id, vec![message]).await;
+        let channel = transaction.channel(channel_id).await.unwrap();
+        if channel.is_closed {
+            return Err(SendError::Closed);
+        }
+
+        transaction.push_messages(channel_id, vec![message]).await;
         transaction.commit().await;
-        result
+        Ok(())
     }
 
     pub(crate) async fn close_host_sender(&'a self, channel_id: ChannelId) {
@@ -281,24 +341,42 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
 
     /// Aborts the workflow with the specified ID. The parent workflow, if any, will be notified,
     /// and all channel handles owned by the workflow will be properly disposed.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the manager does not contain a workflow with the specified ID.
     #[tracing::instrument(skip(self))]
-    pub async fn abort_workflow(&'a self, workflow_id: WorkflowId) {
+    async fn abort_workflow(&'a self, workflow_id: WorkflowId) -> Result<(), ConcurrencyError> {
         let mut transaction = self.storage.transaction().await;
         let record = transaction
-            .manipulate_workflow(workflow_id, |persisted| {
-                persisted.abort();
-            })
+            .workflow_for_update(workflow_id)
+            .await
+            .ok_or_else(ConcurrencyError::new)?;
+        let (parent_id, mut persisted) = match record.state {
+            WorkflowState::Active(state) => (record.parent_id, state.persisted),
+            WorkflowState::Errored(state) => (record.parent_id, state.persisted),
+            WorkflowState::Completed(_) => return Err(ConcurrencyError::new()),
+        };
+
+        persisted.abort();
+        let spans = PersistedSpans::default();
+        StorageHelper::new(&mut transaction)
+            .persist_workflow(workflow_id, parent_id, persisted, spans)
             .await;
-        if let Some(record) = record {
-            StorageHelper::new(&mut transaction)
-                .handle_workflow_update(workflow_id, record.parent_id, &record.persisted)
-                .await;
-        }
         transaction.commit().await;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self))]
+    async fn repair_workflow(&'a self, workflow_id: WorkflowId) -> Result<(), ConcurrencyError> {
+        let mut transaction = self.storage.transaction().await;
+        let record = transaction
+            .workflow_for_update(workflow_id)
+            .await
+            .ok_or_else(ConcurrencyError::new)?;
+        let record = record.into_errored().ok_or_else(ConcurrencyError::new)?;
+        let repaired_state = record.state.repair();
+        transaction
+            .update_workflow(workflow_id, repaired_state.into())
+            .await;
+        transaction.commit().await;
+        Ok(())
     }
 }
 

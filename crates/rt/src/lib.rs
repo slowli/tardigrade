@@ -71,7 +71,7 @@
 //!     .await?;
 //!
 //! // Let's initialize the workflow.
-//! let receipt = manager.tick().await?.into_inner()?;
+//! let receipt = manager.tick().await?.drop_handle().into_inner()?;
 //! // `receipt` contains information about WASM code execution. E.g.,
 //! // this will print the executed functions and a list of important
 //! // events for each of executions:

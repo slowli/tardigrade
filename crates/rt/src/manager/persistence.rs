@@ -1,17 +1,16 @@
 //! Persistence for `WorkflowManager`.
 
 use chrono::{DateTime, Utc};
-use futures::future::BoxFuture;
 use tracing_tunnel::PersistedSpans;
 
 use std::{collections::HashMap, task::Poll};
 
 use crate::{
-    manager::{AsManager, ChannelSide},
-    receipt::{ChannelEvent, ChannelEventKind, Receipt},
+    manager::ChannelSide,
+    receipt::{ChannelEvent, ChannelEventKind, ExecutionError, Receipt},
     storage::{
-        ChannelRecord, Storage, StorageTransaction, WorkflowSelectionCriteria, WriteChannels,
-        WriteWorkflows,
+        ActiveWorkflowState, ChannelRecord, CompletedWorkflowState, ErroneousMessageRef,
+        StorageTransaction, WorkflowSelectionCriteria, WorkflowState, WorkflowWaker,
     },
     utils::{clone_join_error, Message},
     PersistedWorkflow,
@@ -40,23 +39,12 @@ impl ChannelRecord {
     }
 }
 
-pub(super) async fn in_transaction<'a, M, F, R>(manager: &'a M, action: F) -> R
-where
-    M: AsManager,
-    F: for<'tx> FnOnce(&'tx mut <M::Storage as Storage<'a>>::Transaction) -> BoxFuture<'tx, R>,
-{
-    let mut transaction = manager.as_manager().storage.transaction().await;
-    let output = action(&mut transaction).await;
-    transaction.commit().await;
-    output
-}
-
 #[derive(Debug)]
 pub(super) struct StorageHelper<'a, T> {
     inner: &'a mut T,
 }
 
-impl<'a, T: WriteChannels + WriteWorkflows> StorageHelper<'a, T> {
+impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
     pub fn new(inner: &'a mut T) -> Self {
         Self { inner }
     }
@@ -76,21 +64,31 @@ impl<'a, T: WriteChannels + WriteWorkflows> StorageHelper<'a, T> {
         tracing_spans: PersistedSpans,
     ) {
         self.handle_workflow_update(id, parent_id, &workflow).await;
-        if workflow.result().is_pending() {
-            self.inner
-                .persist_workflow(id, workflow, tracing_spans)
-                .await;
-        }
+        let state = match workflow.result() {
+            Poll::Pending => {
+                let has_internal_waker = workflow.pending_wakeup_causes().next().is_some();
+                if has_internal_waker {
+                    self.inner.insert_waker(id, WorkflowWaker::Internal).await;
+                }
+                WorkflowState::from(ActiveWorkflowState {
+                    persisted: workflow,
+                    tracing_spans,
+                })
+            }
+            Poll::Ready(result) => WorkflowState::from(CompletedWorkflowState {
+                result: result.map_err(clone_join_error),
+            }),
+        };
+        self.inner.update_workflow(id, state).await;
     }
 
-    /// Returns `true` if the workflow needs to be persisted (i.e., it's not completed).
-    pub async fn handle_workflow_update(
+    async fn handle_workflow_update(
         &mut self,
         id: WorkflowId,
         parent_id: Option<WorkflowId>,
         workflow: &PersistedWorkflow,
     ) {
-        let completion_notification = if let Poll::Ready(result) = workflow.result() {
+        let completion_receiver = if workflow.result().is_ready() {
             // Close all channels linked to the workflow.
             for (.., state) in workflow.inbound_channels() {
                 self.close_channel_side(state.id(), ChannelSide::Receiver)
@@ -100,19 +98,31 @@ impl<'a, T: WriteChannels + WriteWorkflows> StorageHelper<'a, T> {
                 self.close_channel_side(state.id(), ChannelSide::WorkflowSender(id))
                     .await;
             }
-            self.inner.delete_workflow(id).await;
-            parent_id.map(|id| (id, result.map_err(clone_join_error)))
+            parent_id
         } else {
             None
         };
 
-        if let Some((parent_id, result)) = completion_notification {
-            self.inner
-                .manipulate_workflow(parent_id, |persisted| {
-                    persisted.notify_on_child_completion(id, result);
-                })
-                .await;
+        if let Some(parent_id) = completion_receiver {
+            let waker = WorkflowWaker::ChildCompletion(id);
+            self.inner.insert_waker(parent_id, waker).await;
         }
+    }
+
+    #[tracing::instrument(skip(self, error), fields(err = %error))]
+    pub async fn persist_workflow_error(
+        &mut self,
+        workflow_id: WorkflowId,
+        error: ExecutionError,
+        erroneous_messages: Vec<ErroneousMessageRef>,
+    ) {
+        let state = self.inner.workflow(workflow_id).await.unwrap().state;
+        let state = if let WorkflowState::Active(state) = state {
+            state.with_error(error, erroneous_messages)
+        } else {
+            unreachable!()
+        };
+        self.inner.update_workflow(workflow_id, state.into()).await;
     }
 
     #[tracing::instrument(skip(self, receipt))]
@@ -126,7 +136,6 @@ impl<'a, T: WriteChannels + WriteWorkflows> StorageHelper<'a, T> {
         }
     }
 
-    // TODO: potential bottleneck (multiple workflows touched). Rework as tx outbox?
     #[tracing::instrument(skip(self))]
     pub async fn close_channel_side(&mut self, channel_id: ChannelId, side: ChannelSide) {
         let channel_state = self
@@ -142,49 +151,24 @@ impl<'a, T: WriteChannels + WriteWorkflows> StorageHelper<'a, T> {
             return;
         }
 
-        // If the channel is closed by the receiver, no need to notify it again.
-        if !matches!(side, ChannelSide::Receiver) {
-            let has_messages = self
-                .inner
-                .has_messages_for_receiver_workflow(channel_id)
-                .await;
-            if !has_messages {
-                // We can notify the receiver immediately only if there are no unconsumed messages
-                // in the channel.
-                if let Some(receiver_workflow_id) = channel_state.receiver_workflow_id {
-                    self.inner
-                        .manipulate_workflow(receiver_workflow_id, |persisted| {
-                            let (child_id, name, _) = persisted.find_inbound_channel(channel_id);
-                            let name = name.to_owned();
-                            persisted.close_inbound_channel(child_id, &name);
-                        })
-                        .await;
-                }
-            }
-        }
-
         for &sender_workflow_id in &channel_state.sender_workflow_ids {
-            // The workflow may be missing from `self.workflows` if it has just completed.
-            self.inner
-                .manipulate_workflow(sender_workflow_id, |persisted| {
-                    persisted.close_outbound_channels_by_id(channel_id);
-                })
-                .await;
+            let waker = WorkflowWaker::OutboundChannelClosure(channel_id);
+            self.inner.insert_waker(sender_workflow_id, waker).await;
         }
     }
 
     pub async fn push_messages(&mut self, messages: HashMap<ChannelId, Vec<Message>>) {
         for (channel_id, messages) in messages {
             let messages = messages.into_iter().map(Into::into).collect();
-            self.inner.push_messages(channel_id, messages).await.ok();
-            // we're ok with messages getting dropped
+            self.inner.push_messages(channel_id, messages).await;
         }
     }
 
     pub async fn set_current_time(&mut self, time: DateTime<Utc>) {
         let criteria = WorkflowSelectionCriteria::HasTimerBefore(time);
+        let waker = WorkflowWaker::Timer(time);
         self.inner
-            .manipulate_all_workflows(criteria, |persisted| persisted.set_current_time(time))
+            .insert_waker_for_matching_workflows(criteria, waker)
             .await;
     }
 }
