@@ -48,6 +48,9 @@ features = ["receiver"]
 [dev-dependencies]
 assert_matches = "1.5.0"
 async-std = { version = "1.12.0", features = ["attributes"] }
-#mimicry = "0.1.0"
-mimicry = { path = "../../../mimicry" }
 version-sync = "0.9.4"
+
+[dev-dependencies.mimicry]
+version = "0.1.0"
+git = "https://github.com/slowli/mimicry.git"
+rev = "87abe3031032d3465f2e0172c96b68cd16fcf9f9"

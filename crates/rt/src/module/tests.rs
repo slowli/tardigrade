@@ -53,7 +53,7 @@ impl ExportsMock {
             map.insert("TestWorkflow".to_owned(), Interface::from_bytes(INTERFACE));
             Ok(map)
         } else {
-            this.call_real(|| WorkflowModule::interfaces_from_wasm(bytes))
+            this.call_real().scope(|| WorkflowModule::interfaces_from_wasm(bytes))
         }
     }
 
