@@ -1,6 +1,6 @@
 //! Persistence for `State`.
 
-use anyhow::{anyhow, ensure};
+use anyhow::anyhow;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use wasmtime::{Store, Val};
@@ -84,30 +84,12 @@ impl OutboundChannelState {
 
 impl ChannelStates {
     fn check_on_restore(&self, interface: &Interface) -> anyhow::Result<()> {
-        let inbound_channels_len = interface.inbound_channels().len();
-        ensure!(
-            inbound_channels_len == self.inbound.len(),
-            "mismatch between number of inbound channels in workflow interface ({}) \
-             and in persisted state ({})",
-            inbound_channels_len,
-            self.inbound.len()
-        );
         for name in self.mapping.inbound.keys() {
             InboundChannelState::check_on_restore(interface, name)?;
         }
-
-        let outbound_channels_len = interface.outbound_channels().len();
-        ensure!(
-            outbound_channels_len == self.outbound.len(),
-            "mismatch between number of outbound channels in workflow interface ({}) \
-             and in persisted state ({})",
-            outbound_channels_len,
-            self.outbound.len()
-        );
         for name in self.mapping.outbound.keys() {
             OutboundChannelState::check_on_restore(interface, name)?;
         }
-
         Ok(())
     }
 }

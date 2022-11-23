@@ -234,7 +234,7 @@ impl ChannelStates {
                 .inbound
                 .entry(id)
                 .or_insert_with(|| InboundChannelState::new(id));
-            if matches!(config.inbound[name], ChannelSpawnConfig::Existing(_)) {
+            if matches!(config.outbound[name], ChannelSpawnConfig::Existing(_)) {
                 state.is_acquired = true;
             }
         }
@@ -245,7 +245,7 @@ impl ChannelStates {
                 .outbound
                 .entry(id)
                 .or_insert_with(|| OutboundChannelState::new(id, Some(1)));
-            if matches!(config.outbound[name], ChannelSpawnConfig::Existing(_)) {
+            if matches!(config.inbound[name], ChannelSpawnConfig::Existing(_)) {
                 state.is_acquired = true;
             }
         }
@@ -373,12 +373,17 @@ impl PersistedWorkflowData {
         let mut new_wakers = vec![];
         let messages_by_channel = self
             .outbound_channels_mut()
-            .map(|(id, state)| {
+            .filter_map(|(id, state)| {
                 let (messages, maybe_wakers) = state.take_messages();
                 if let Some(wakers) = maybe_wakers {
                     new_wakers.push(wakers);
                 }
-                (id, messages)
+
+                if messages.is_empty() {
+                    None
+                } else {
+                    Some((id, messages))
+                }
             })
             .collect();
 

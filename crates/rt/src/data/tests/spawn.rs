@@ -106,7 +106,7 @@ fn create_workflow_with_manager(services: Services<'_>) -> Workflow<'_> {
 
     let channel_ids = mock_channel_ids(spawner.interface(), &mut 0);
     let mut workflow = spawner
-        .spawn(b"test_input".to_vec(), &channel_ids, services)
+        .spawn(b"test_input".to_vec(), channel_ids, services)
         .unwrap();
     workflow.initialize().unwrap();
     workflow
@@ -225,9 +225,9 @@ fn spawning_child_workflow() {
     let mut children: Vec<_> = workflow.data().persisted.child_workflows().collect();
     assert_eq!(children.len(), 1);
     let (_, child) = children.pop().unwrap();
-    let commands = child.outbound_channel("commands").unwrap();
-    let traces = child.inbound_channel("traces").unwrap();
-    assert_ne!(commands.id(), traces.id());
+    let commands_id = child.outbound_channel_id("commands").unwrap();
+    let traces_id = child.inbound_channel_id("traces").unwrap();
+    assert_ne!(commands_id, traces_id);
 }
 
 #[test]
@@ -378,8 +378,8 @@ fn spawning_child_workflow_with_host_error() {
 fn consume_message_from_child(
     mut ctx: StoreContextMut<'_, WorkflowData>,
 ) -> anyhow::Result<Poll<()>> {
-    let traces = Some(WorkflowData::inbound_channel_ref(Some(1), "traces"));
-    let commands = Some(WorkflowData::outbound_channel_ref(Some(1), "commands"));
+    let traces = Some(ctx.data().inbound_channel_ref(Some(1), "traces"));
+    let commands = Some(ctx.data().outbound_channel_ref(Some(1), "commands"));
 
     let poll_res =
         WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), traces, POLL_CX)?;
@@ -429,10 +429,15 @@ fn consuming_message_from_child_workflow() {
         workflow.tick().unwrap(); // makes the workflow listen to the `traces` child channel
     });
 
+    let persisted = &workflow.data().persisted;
+    let child = persisted.child_workflow(1).unwrap();
+    let child_commands_id = child.outbound_channel_id("commands").unwrap();
+    let child_traces_id = child.inbound_channel_id("traces").unwrap();
+
     workflow
         .data_mut()
         .persisted
-        .push_inbound_message(Some(1), "traces", b"trace #1".to_vec())
+        .push_inbound_message(child_traces_id, b"trace #1".to_vec())
         .unwrap();
     let receipt = poll_fn_sx
         .send(consume_message_from_child)
@@ -441,39 +446,43 @@ fn consuming_message_from_child_workflow() {
 
     let exports = exports_guard.into_inner();
     assert_eq!(exports.consumed_wakers.len(), 2); // child init + child `traces` handle
-    assert_child_inbound_message_receipt(&receipt);
+    assert_child_inbound_message_receipt(&workflow, &receipt);
 
     let messages = workflow.data_mut().drain_messages();
-    let child = workflow.data().persisted.child_workflow(1).unwrap();
-    let child_commands_id = child.outbound_channel("commands").unwrap().id();
     assert_eq!(messages[&child_commands_id].len(), 1);
     assert_eq!(messages[&child_commands_id][0].as_ref(), b"command #1");
 
-    assert_eq!(
-        child.inbound_channel("traces").unwrap().received_messages,
-        1
-    );
-    assert_eq!(
-        child.outbound_channel("commands").unwrap().flushed_messages,
-        1
-    );
+    let persisted = &workflow.data().persisted;
+    let child_traces = persisted.inbound_channel(child_traces_id).unwrap();
+    assert_eq!(child_traces.received_messages, 1);
+    let child_commands = persisted.outbound_channel(child_commands_id).unwrap();
+    assert_eq!(child_commands.flushed_messages, 1);
 }
 
-fn assert_child_inbound_message_receipt(receipt: &Receipt) {
+fn assert_child_inbound_message_receipt(workflow: &Workflow<'_>, receipt: &Receipt) {
+    let child = workflow
+        .data()
+        .persisted
+        .child_workflows
+        .values()
+        .next()
+        .unwrap();
+    let child_commands_id = child.channels.outbound["commands"];
+    let child_traces_id = child.channels.inbound["traces"];
+
     assert_matches!(
         &receipt.executions()[0],
         Execution {
             function: ExecutedFunction::Waker {
                 wake_up_cause: WakeUpCause::InboundMessage {
-                    workflow_id: Some(1),
-                    channel_name,
+                    channel_id: traces,
                     message_index: 0,
                 },
                 ..
             },
             events,
             ..
-        } if channel_name == "traces" && events.is_empty()
+        } if *traces == child_traces_id && events.is_empty()
     );
     let task_execution = &receipt.executions()[1];
     assert_matches!(
@@ -491,27 +500,23 @@ fn assert_child_inbound_message_receipt(receipt: &Receipt) {
         [
             ChannelEvent {
                 kind: ChannelEventKind::InboundChannelPolled { result: Poll::Ready(Some(_)) },
-                channel_name: traces,
-                workflow_id: Some(1),
+                channel_id: traces,
             },
             ChannelEvent {
                 kind: ChannelEventKind::OutboundChannelReady {
                     result: Poll::Ready(Ok(())),
                 },
-                channel_name: commands,
-                workflow_id: Some(1),
+                channel_id: commands,
             },
             ChannelEvent {
                 kind: ChannelEventKind::OutboundMessageSent { .. },
-                channel_name: commands2,
-                workflow_id: Some(1),
+                channel_id: commands2,
             },
             ChannelEvent {
                 kind: ChannelEventKind::OutboundChannelFlushed { result: Poll::Pending },
-                channel_name: commands3,
-                workflow_id: Some(1),
+                channel_id: commands3,
             },
-        ] if traces == "traces" && commands == "commands" && commands2 == "commands"
-            && commands3 == "commands"
+        ] if *traces == child_traces_id && *commands == child_commands_id
+            && *commands2 == child_commands_id && *commands3 == child_commands_id
     );
 }

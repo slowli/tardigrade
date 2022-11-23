@@ -55,7 +55,7 @@ fn initialize_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result
 }
 
 fn emit_event_and_flush(ctx: &mut StoreContextMut<'_, WorkflowData>) -> anyhow::Result<()> {
-    let events = Some(WorkflowData::outbound_channel_ref(None, "events"));
+    let events = Some(ctx.data().outbound_channel_ref(None, "events"));
 
     let poll_res =
         WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), events.clone(), POLL_CX)?;
@@ -71,9 +71,9 @@ fn emit_event_and_flush(ctx: &mut StoreContextMut<'_, WorkflowData>) -> anyhow::
 }
 
 fn consume_message(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
-    let orders = Some(WorkflowData::inbound_channel_ref(None, "orders"));
-    let events = Some(WorkflowData::outbound_channel_ref(None, "events"));
-    let traces = Some(WorkflowData::outbound_channel_ref(None, "traces"));
+    let orders = Some(ctx.data().inbound_channel_ref(None, "orders"));
+    let events = Some(ctx.data().outbound_channel_ref(None, "events"));
+    let traces = Some(ctx.data().outbound_channel_ref(None, "traces"));
 
     // Poll the channel again, since we yielded on this previously
     let poll_res =
@@ -126,7 +126,7 @@ fn create_workflow(services: Services<'_>) -> (Receipt, Workflow<'_>) {
 
     let channel_ids = mock_channel_ids(spawner.interface(), &mut 1);
     let mut workflow = spawner
-        .spawn(b"test_input".to_vec(), &channel_ids, services)
+        .spawn(b"test_input".to_vec(), channel_ids, services)
         .unwrap();
     (workflow.initialize().unwrap(), workflow)
 }
@@ -165,23 +165,25 @@ fn starting_workflow() {
         }
     );
     assert_eq!(execution.events.len(), 1);
+
+    let orders_id = workflow.data().persisted.channels.mapping.inbound["orders"];
     assert_matches!(
         &execution.events[0],
         Event::Channel(ChannelEvent {
             kind: ChannelEventKind::InboundChannelPolled { result: Poll::Pending },
-            channel_name,
-            workflow_id: None,
-        }) if channel_name == "orders"
+            channel_id
+        }) if *channel_id == orders_id
     );
 
     workflow.persist();
 }
 
 fn push_message_and_tick(workflow: &mut Workflow<'_>) -> Result<Receipt, ExecutionError> {
+    let orders_id = workflow.data().persisted.channels.mapping.inbound["orders"];
     workflow
         .data_mut()
         .persisted
-        .push_inbound_message(None, "orders", b"order #1".to_vec())
+        .push_inbound_message(orders_id, b"order #1".to_vec())
         .unwrap();
     workflow.tick()
 }
@@ -209,7 +211,7 @@ fn receiving_inbound_message() {
     assert_eq!(exports.consumed_wakers.len(), 1);
     assert!(exports.consumed_wakers.contains(&0));
 
-    assert_inbound_message_receipt(&receipt);
+    assert_inbound_message_receipt(&workflow, &receipt);
 
     let messages = workflow.data_mut().drain_messages();
     let channel_ids = workflow.data().persisted.channel_ids();
@@ -226,13 +228,18 @@ fn receiving_inbound_message() {
     for cause in &causes {
         assert_matches!(
             cause,
-            WakeUpCause::Flush { channel_name, message_indexes, workflow_id: None }
-                if channel_name == "events" && *message_indexes == (0..1)
+            WakeUpCause::Flush { channel_id, message_indexes }
+                if *channel_id == events_id && *message_indexes == (0..1)
         );
     }
 }
 
-fn assert_inbound_message_receipt(receipt: &Receipt) {
+fn assert_inbound_message_receipt(workflow: &Workflow<'_>, receipt: &Receipt) {
+    let mapping = &workflow.data().persisted.channels.mapping;
+    let orders_id = mapping.inbound["orders"];
+    let events_id = mapping.outbound["events"];
+    let traces_id = mapping.outbound["traces"];
+
     assert_eq!(receipt.executions().len(), 2);
     assert_matches!(
         &receipt.executions()[0],
@@ -240,14 +247,13 @@ fn assert_inbound_message_receipt(receipt: &Receipt) {
             function: ExecutedFunction::Waker {
                 waker_id: 0,
                 wake_up_cause: WakeUpCause::InboundMessage {
-                    workflow_id: None,
-                    channel_name,
+                    channel_id,
                     message_index: 0,
                 }
             },
             events,
             ..
-        } if channel_name == "orders" && events.is_empty()
+        } if *channel_id == orders_id && events.is_empty()
     );
     let task_execution = &receipt.executions()[1];
     assert_matches!(
@@ -265,40 +271,34 @@ fn assert_inbound_message_receipt(receipt: &Receipt) {
         [
             ChannelEvent {
                 kind: ChannelEventKind::InboundChannelPolled { result: Poll::Ready(Some(_)) },
-                channel_name: orders,
-                workflow_id: None,
+                channel_id: orders,
             },
             ChannelEvent {
                 kind: ChannelEventKind::OutboundChannelReady {
                     result: Poll::Ready(Ok(())),
                 },
-                channel_name: traces,
-                workflow_id: None,
+                channel_id: traces,
             },
             ChannelEvent {
                 kind: ChannelEventKind::OutboundMessageSent { .. },
-                channel_name: traces2,
-                workflow_id: None,
+                channel_id: traces2,
             },
             ChannelEvent {
                 kind: ChannelEventKind::OutboundChannelReady {
                     result: Poll::Ready(Ok(())),
                 },
-                channel_name: events,
-                workflow_id: None,
+                channel_id: events,
             },
             ChannelEvent {
                 kind: ChannelEventKind::OutboundMessageSent { .. },
-                channel_name: events2,
-                workflow_id: None,
+                channel_id: events2,
             },
             ChannelEvent {
                 kind: ChannelEventKind::OutboundChannelFlushed { result: Poll::Pending },
-                channel_name: events3,
-                workflow_id: None,
+                channel_id: events3,
             },
-        ] if orders == "orders" && traces == "traces" && traces2 == "traces"
-            && events == "events" && events2 == "events" && events3 == "events"
+        ] if *orders == orders_id && *traces == traces_id && *traces2 == traces_id
+            && *events == events_id && *events2 == events_id && *events3 == events_id
     );
 }
 
@@ -317,7 +317,7 @@ fn trap_when_starting_workflow() {
         tracer: None,
     };
     let mut workflow = spawner
-        .spawn(b"test_input".to_vec(), &channel_ids, services)
+        .spawn(b"test_input".to_vec(), channel_ids, services)
         .unwrap();
     let err = poll_fn_sx
         .send(|_| Err(anyhow!("boom")))
@@ -545,7 +545,7 @@ fn rolling_back_emitting_messages_on_trap() {
     });
 
     let emit_message_and_trap: MockPollFn = |mut ctx| {
-        let traces = Some(WorkflowData::outbound_channel_ref(None, "traces"));
+        let traces = Some(ctx.data().outbound_channel_ref(None, "traces"));
         let poll_res = WorkflowFunctions::poll_ready_for_sender(
             ctx.as_context_mut(),
             traces.clone(),
@@ -565,7 +565,7 @@ fn rolling_back_emitting_messages_on_trap() {
         .unwrap_err();
 
     let messages = workflow.data_mut().drain_messages();
-    assert!(messages.is_empty());
+    assert!(messages.is_empty(), "{messages:?}");
 }
 
 #[test]
@@ -668,7 +668,7 @@ fn timers_basics() {
 fn dropping_inbound_channel_in_workflow() {
     let drop_channel: MockPollFn = |mut ctx| {
         let _ = initialize_task(ctx.as_context_mut())?;
-        let orders = WorkflowData::inbound_channel_ref(None, "orders");
+        let orders = ctx.data().inbound_channel_ref(None, "orders");
         WorkflowFunctions::drop_ref(ctx, Some(orders))?;
         Ok(Poll::Pending)
     };
