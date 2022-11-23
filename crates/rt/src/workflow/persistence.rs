@@ -173,68 +173,43 @@ impl PersistedWorkflow {
 
     pub(crate) fn inbound_channels(
         &self,
-    ) -> impl Iterator<Item = (Option<WorkflowId>, &str, &InboundChannelState)> + '_ {
+    ) -> impl Iterator<Item = (ChannelId, &InboundChannelState)> + '_ {
         self.state.inbound_channels()
     }
 
-    pub(crate) fn find_inbound_channel(
-        &self,
-        channel_id: ChannelId,
-    ) -> (Option<WorkflowId>, &str, &InboundChannelState) {
-        self.state.find_inbound_channel(channel_id)
+    pub(crate) fn inbound_channel(&self, channel_id: ChannelId) -> Option<&InboundChannelState> {
+        self.state.inbound_channel(channel_id)
     }
 
     pub(crate) fn outbound_channels(
         &self,
-    ) -> impl Iterator<Item = (Option<WorkflowId>, &str, &OutboundChannelState)> + '_ {
+    ) -> impl Iterator<Item = (ChannelId, &OutboundChannelState)> + '_ {
         self.state.outbound_channels()
     }
 
     #[tracing::instrument(level = "debug", skip(self, message), err, fields(message.len = message.len()))]
     pub(crate) fn push_inbound_message(
         &mut self,
-        workflow_id: Option<WorkflowId>,
-        channel_name: &str,
+        channel_id: ChannelId,
         message: Vec<u8>,
     ) -> Result<(), ConsumeError> {
-        self.state
-            .push_inbound_message(workflow_id, channel_name, message)
+        self.state.push_inbound_message(channel_id, message)
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
-    pub(crate) fn drop_inbound_message(
-        &mut self,
-        workflow_id: Option<WorkflowId>,
-        channel_name: &str,
-    ) {
-        self.state.drop_inbound_message(workflow_id, channel_name);
+    pub(crate) fn drop_inbound_message(&mut self, channel_id: ChannelId) {
+        self.state.drop_inbound_message(channel_id);
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
-    pub(crate) fn close_inbound_channel(
-        &mut self,
-        workflow_id: Option<WorkflowId>,
-        channel_name: &str,
-    ) {
-        self.state.close_inbound_channel(workflow_id, channel_name);
+    pub(crate) fn close_inbound_channel(&mut self, channel_id: ChannelId) {
+        self.state.close_inbound_channel(channel_id);
     }
 
+    // FIXME: check usage for aliased channels
     #[tracing::instrument(level = "debug", skip(self))]
-    pub(crate) fn close_outbound_channel(
-        &mut self,
-        workflow_id: Option<WorkflowId>,
-        channel_name: &str,
-    ) {
-        self.state.close_outbound_channel(workflow_id, channel_name);
-    }
-
-    #[tracing::instrument(level = "debug", skip(self))]
-    pub(crate) fn close_outbound_channels_by_id(&mut self, channel_id: ChannelId) {
-        for (_, _, channel_state) in self.state.outbound_channels_mut() {
-            if channel_state.id() == channel_id {
-                channel_state.close();
-            }
-        }
+    pub(crate) fn close_outbound_channel(&mut self, channel_id: ChannelId) {
+        self.state.close_outbound_channel(channel_id);
     }
 
     /// Returns the current state of a task with the specified ID.
@@ -330,7 +305,7 @@ impl PersistedWorkflow {
         self.state.waker_queue.iter().map(Wakers::cause)
     }
 
-    pub(crate) fn channel_ids(&self) -> ChannelIds {
+    pub(crate) fn channel_ids(&self) -> &ChannelIds {
         self.state.channel_ids()
     }
 

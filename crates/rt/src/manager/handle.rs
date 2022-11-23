@@ -115,7 +115,7 @@ impl<'a, M: AsManager> WorkflowHandle<'a, (), M> {
     ) -> WorkflowHandle<'a, (), M> {
         let ids = WorkflowAndChannelIds {
             workflow_id: id,
-            channel_ids: state.persisted.channel_ids(),
+            channel_ids: state.persisted.channel_ids().clone(),
         };
         let host_receiver_channels =
             Self::find_host_receiver_channels(transaction, &ids.channel_ids).await;

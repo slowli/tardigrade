@@ -247,7 +247,7 @@ mod tests {
             workflows: None,
             tracer: None,
         };
-        let state = WorkflowData::new(&interface, &ChannelIds::default(), services);
+        let state = WorkflowData::new(&interface, ChannelIds::default(), services);
         let engine = Engine::default();
         let mut store = Store::new(&engine, state);
         let mut linker = Linker::new(&engine);

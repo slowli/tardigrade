@@ -86,8 +86,6 @@ impl error::Error for WouldBlock {}
 
 #[derive(Debug)]
 struct PendingChannel {
-    child_id: Option<WorkflowId>,
-    name: String,
     channel_id: ChannelId,
     message_idx: usize,
     waits_for_message: bool,
@@ -95,7 +93,7 @@ struct PendingChannel {
 
 impl PendingChannel {
     fn take_pending_message(&self, workflow: &mut Workflow<'_>) {
-        if workflow.take_pending_inbound_message(self.child_id, &self.name) {
+        if workflow.take_pending_inbound_message(self.channel_id) {
             // The message was not consumed. We still persist the workflow in order to
             // consume wakers (otherwise, we would loop indefinitely), and place the message
             // back to the channel.
@@ -137,7 +135,7 @@ impl<'a> WorkflowSeed<'a> {
                     self.persisted.set_current_time(timer);
                 }
                 WorkflowWaker::OutboundChannelClosure(channel_id) => {
-                    self.persisted.close_outbound_channels_by_id(channel_id);
+                    self.persisted.close_outbound_channel(channel_id);
                 }
                 WorkflowWaker::ChildCompletion(child_id) => {
                     let child = transaction.workflow(child_id).await.unwrap();
@@ -155,13 +153,11 @@ impl<'a> WorkflowSeed<'a> {
         transaction: &T,
     ) -> Option<PendingChannel> {
         let channels = self.persisted.inbound_channels();
-        let pending_channels = channels.filter_map(|(child_id, name, state)| {
+        let pending_channels = channels.filter_map(|(_, state)| {
             if state.is_closed() {
                 None
             } else {
                 Some(PendingChannel {
-                    child_id,
-                    name: name.to_owned(),
                     channel_id: state.id(),
                     message_idx: state.received_message_count(),
                     waits_for_message: state.waits_for_message(),
@@ -178,7 +174,7 @@ impl<'a> WorkflowSeed<'a> {
             match message_or_eof {
                 Ok(message) if pending.waits_for_message && pending_channel.is_none() => {
                     self.persisted
-                        .push_inbound_message(pending.child_id, &pending.name, message)
+                        .push_inbound_message(pending.channel_id, message)
                         .unwrap();
                     // ^ `unwrap()` is safe: no messages can be persisted
                     pending_channel = Some(pending);
@@ -186,8 +182,7 @@ impl<'a> WorkflowSeed<'a> {
                 Err(MessageError::NonExistingIndex { is_closed: true }) => {
                     // Signal to the workflow that the channel is closed. This can be performed
                     // on a persisted workflow, without executing it.
-                    self.persisted
-                        .close_inbound_channel(pending.child_id, &pending.name);
+                    self.persisted.close_inbound_channel(pending.channel_id);
                 }
                 _ => {
                     // Skip processing for now: we want to pinpoint consumption-related
@@ -389,10 +384,9 @@ impl<C: Clock, S: for<'a> Storage<'a>> WorkflowManager<C, S> {
             .ok_or_else(ConcurrencyError::new)?;
         let mut record = record.into_errored().ok_or_else(ConcurrencyError::new)?;
         let persisted = &mut record.state.persisted;
-        let (child_id, name, state) = persisted.find_inbound_channel(message_ref.channel_id);
+        let state = persisted.inbound_channel(message_ref.channel_id).unwrap();
         if state.received_message_count() == message_ref.index {
-            let name = name.to_owned();
-            persisted.drop_inbound_message(child_id, &name);
+            persisted.drop_inbound_message(message_ref.channel_id);
             transaction
                 .update_workflow(workflow_id, record.state.into())
                 .await;

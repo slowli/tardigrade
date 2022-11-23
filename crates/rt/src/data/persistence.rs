@@ -13,12 +13,12 @@ use super::{
     spawn::ChildWorkflowStubs,
     task::TaskQueue,
     time::Timers,
-    PersistedWorkflowData, WorkflowCounters, WorkflowData,
+    PersistedWorkflowData, WorkflowData,
 };
 use crate::{module::Services, workflow::ChannelIds};
 use tardigrade::{
     interface::{ChannelKind, Interface},
-    WorkflowId,
+    ChannelId,
 };
 
 /// Error persisting a workflow.
@@ -30,11 +30,8 @@ pub(crate) enum PersistError {
     PendingMessage {
         /// Kind of the channel involved.
         channel_kind: ChannelKind,
-        /// Name of the channel with the message.
-        channel_name: String,
-        /// ID of the remote workflow that the channel is attached to, or `None` if the channel
-        /// is local.
-        workflow_id: Option<WorkflowId>,
+        /// ID of the channel with the message.
+        channel_id: ChannelId,
     },
 }
 
@@ -46,18 +43,12 @@ impl fmt::Display for PersistError {
 
             Self::PendingMessage {
                 channel_kind,
-                channel_name,
-                workflow_id,
+                channel_id,
             } => {
                 write!(
                     formatter,
-                    "there is an non-flushed {} message on channel `{}`",
-                    channel_kind, channel_name
-                )?;
-                if let Some(id) = workflow_id {
-                    write!(formatter, " for workflow {}", id)?;
-                }
-                Ok(())
+                    "there is an non-flushed {channel_kind} message on channel {channel_id}"
+                )
             }
         }
     }
@@ -101,7 +92,7 @@ impl ChannelStates {
             inbound_channels_len,
             self.inbound.len()
         );
-        for name in self.inbound.keys() {
+        for name in self.mapping.inbound.keys() {
             InboundChannelState::check_on_restore(interface, name)?;
         }
 
@@ -113,7 +104,7 @@ impl ChannelStates {
             outbound_channels_len,
             self.outbound.len()
         );
-        for name in self.outbound.keys() {
+        for name in self.mapping.outbound.keys() {
             OutboundChannelState::check_on_restore(interface, name)?;
         }
 
@@ -122,7 +113,7 @@ impl ChannelStates {
 }
 
 impl PersistedWorkflowData {
-    pub(super) fn new(interface: &Interface, channel_ids: &ChannelIds, now: DateTime<Utc>) -> Self {
+    pub(super) fn new(interface: &Interface, channel_ids: ChannelIds, now: DateTime<Utc>) -> Self {
         Self {
             channels: ChannelStates::new(channel_ids, |name| {
                 interface.outbound_channel(name).unwrap().capacity
@@ -145,7 +136,6 @@ impl PersistedWorkflowData {
             exports: None,
             persisted: self,
             services,
-            counters: WorkflowCounters::default(),
             current_execution: None,
             task_queue: TaskQueue::default(),
             current_wakeup_cause: None,
@@ -160,21 +150,19 @@ impl WorkflowData<'_> {
             return Err(PersistError::PendingTask);
         }
 
-        for (workflow_id, name, state) in self.persisted.inbound_channels() {
+        for (channel_id, state) in self.persisted.inbound_channels() {
             if state.pending_message.is_some() {
                 return Err(PersistError::PendingMessage {
                     channel_kind: ChannelKind::Inbound,
-                    channel_name: name.to_owned(),
-                    workflow_id,
+                    channel_id,
                 });
             }
         }
-        for (workflow_id, name, state) in self.persisted.outbound_channels() {
+        for (channel_id, state) in self.persisted.outbound_channels() {
             if !state.messages.is_empty() {
                 return Err(PersistError::PendingMessage {
                     channel_kind: ChannelKind::Outbound,
-                    channel_name: name.to_owned(),
-                    workflow_id,
+                    channel_id,
                 });
             }
         }

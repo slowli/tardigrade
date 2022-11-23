@@ -176,13 +176,12 @@ impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
 impl Receipt {
     fn closed_channel_ids(&self) -> impl Iterator<Item = (ChannelKind, ChannelId)> + '_ {
         self.events().filter_map(|event| {
-            if let Some(ChannelEvent { kind, .. }) = event.as_channel_event() {
+            if let Some(ChannelEvent { kind, channel_id }) = event.as_channel_event() {
                 return match kind {
-                    ChannelEventKind::InboundChannelClosed(channel_id) => {
+                    ChannelEventKind::InboundChannelClosed => {
                         Some((ChannelKind::Inbound, *channel_id))
                     }
                     ChannelEventKind::OutboundChannelClosed {
-                        channel_id,
                         remaining_alias_count: 0,
                     } => Some((ChannelKind::Outbound, *channel_id)),
                     _ => None,

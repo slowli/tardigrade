@@ -14,7 +14,6 @@ use std::{
 
 use crate::{
     data::{
-        channel::{ChannelStates, InboundChannelState, OutboundChannelState},
         helpers::{HostResource, WakeIfPending, WakerPlacement, WasmContext, WasmContextPtr},
         PersistedWorkflowData, WorkflowData,
     },
@@ -78,7 +77,7 @@ impl ChildWorkflowStubs {
 /// State of child workflow as viewed by its parent.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChildWorkflowState {
-    pub(super) channels: ChannelStates,
+    pub(super) channels: ChannelIds,
     #[serde(with = "utils::serde_poll_res")]
     completion_result: Poll<Result<(), JoinError>>,
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]
@@ -96,28 +95,11 @@ impl Clone for ChildWorkflowState {
 }
 
 impl ChildWorkflowState {
-    fn new(channel_ids: &ChannelIds) -> Self {
+    fn new(channel_ids: ChannelIds) -> Self {
         Self {
-            // FIXME: what is the appropriate capacity?
-            channels: ChannelStates::new(channel_ids, |_| Some(1)),
+            channels: channel_ids,
             completion_result: Poll::Pending,
             wakes_on_completion: HashSet::new(),
-        }
-    }
-
-    /// This is needed to prevent the workflow from capturing non-captured channel handles.
-    fn acquire_non_captured_channels(&mut self, channels: &ChannelsConfig<ChannelId>) {
-        for (name, config) in &channels.inbound {
-            if matches!(config, ChannelSpawnConfig::Existing(_)) {
-                let state = self.channels.outbound.get_mut(name).unwrap();
-                state.is_acquired = true;
-            }
-        }
-        for (name, config) in &channels.outbound {
-            if matches!(config, ChannelSpawnConfig::Existing(_)) {
-                let state = self.channels.inbound.get_mut(name).unwrap();
-                state.is_acquired = true;
-            }
         }
     }
 
@@ -131,14 +113,14 @@ impl ChildWorkflowState {
 
     /// Returns the current state of a *local* inbound channel connected to the child workflow
     /// (i.e., the child has an outbound end of the channel).
-    pub fn inbound_channel(&self, name: &str) -> Option<&InboundChannelState> {
-        self.channels.inbound.get(name)
+    pub fn inbound_channel_id(&self, name: &str) -> Option<ChannelId> {
+        self.channels.inbound.get(name).copied()
     }
 
     /// Returns the current state of a *local* outbound channel connected to the child workflow
     /// (i.e., the child has the inbound end of the channel).
-    pub fn outbound_channel(&self, name: &str) -> Option<&OutboundChannelState> {
-        self.channels.outbound.get(name)
+    pub fn outbound_channel_id(&self, name: &str) -> Option<ChannelId> {
+        self.channels.outbound.get(name).copied()
     }
 
     pub(super) fn insert_waker(&mut self, waker_id: WakerId) {
@@ -159,7 +141,7 @@ impl PersistedWorkflowData {
         &mut self,
         stub_id: WorkflowId,
         workflow_id: WorkflowId,
-        channels: &ChannelsConfig<ChannelId>,
+        config: &ChannelsConfig<ChannelId>,
         mut channel_ids: ChannelIds,
     ) {
         let stub = self.child_workflow_stubs.stubs.get_mut(&stub_id).unwrap();
@@ -168,8 +150,8 @@ impl PersistedWorkflowData {
         self.schedule_wakers(wakers, WakeUpCause::InitWorkflow { stub_id });
 
         mem::swap(&mut channel_ids.inbound, &mut channel_ids.outbound);
-        let mut child_state = ChildWorkflowState::new(&channel_ids);
-        child_state.acquire_non_captured_channels(channels);
+        self.channels.insert_child_channels(&channel_ids, config);
+        let child_state = ChildWorkflowState::new(channel_ids);
         self.child_workflows.insert(workflow_id, child_state);
     }
 

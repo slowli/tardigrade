@@ -5,7 +5,7 @@ use futures::future::Aborted;
 use serde::{Deserialize, Serialize};
 use wasmtime::{AsContext, AsContextMut, Memory, StoreContextMut};
 
-use std::{cmp::Ordering, fmt, mem, task::Poll};
+use std::{fmt, task::Poll};
 
 use crate::data::WorkflowData;
 use tardigrade::{abi::AllocateBytes, task::JoinError};
@@ -124,62 +124,6 @@ pub(crate) fn drop_value<T>(poll_result: &Poll<T>) -> Poll<()> {
         Poll::Pending => Poll::Pending,
         Poll::Ready(_) => Poll::Ready(()),
     }
-}
-
-/// Merges two ordered `Vec`s into a single ordered `Vec`.
-pub(crate) fn merge_vec<T: Ord>(target: &mut Vec<T>, source: Vec<T>) {
-    debug_assert!(target.windows(2).all(|window| match window {
-        [prev, next] => prev <= next,
-        _ => unreachable!(),
-    }));
-    debug_assert!(source.windows(2).all(|window| match window {
-        [prev, next] => prev <= next,
-        _ => unreachable!(),
-    }));
-
-    if target.is_empty() {
-        *target = source;
-        return;
-    }
-
-    let mut xs = mem::replace(target, Vec::with_capacity(target.len() + source.len()))
-        .into_iter()
-        .peekable();
-    let mut ys = source.into_iter().peekable();
-    loop {
-        match (xs.peek(), ys.peek()) {
-            (Some(x), Some(y)) => match x.cmp(y) {
-                Ordering::Less => target.push(xs.next().unwrap()),
-                Ordering::Greater => target.push(ys.next().unwrap()),
-                Ordering::Equal => {
-                    target.push(xs.next().unwrap());
-                    target.push(ys.next().unwrap());
-                }
-            },
-            (Some(_), None) => {
-                target.extend(xs);
-                break;
-            }
-            (None, Some(_)) => {
-                target.extend(ys);
-                break;
-            }
-            (None, None) => break,
-        }
-    }
-}
-
-#[test]
-fn merging_vectors() {
-    let mut target = vec![];
-    merge_vec(&mut target, vec![1, 3, 4, 7, 9]);
-    assert_eq!(target, [1, 3, 4, 7, 9]);
-
-    merge_vec(&mut target, vec![2, 3, 3, 8, 13, 20]);
-    assert_eq!(target, [1, 2, 3, 3, 3, 4, 7, 8, 9, 13, 20]);
-
-    merge_vec(&mut target, vec![5]);
-    assert_eq!(target, [1, 2, 3, 3, 3, 4, 5, 7, 8, 9, 13, 20]);
 }
 
 pub(crate) fn clone_join_error(err: &JoinError) -> JoinError {

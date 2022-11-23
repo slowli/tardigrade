@@ -1,6 +1,7 @@
 //! `Workflow` and tightly related types.
 
 use anyhow::Context;
+use serde::{Deserialize, Serialize};
 use wasmtime::{AsContextMut, Linker, Store};
 
 use std::{collections::HashMap, mem, sync::Arc};
@@ -18,7 +19,7 @@ use crate::{
     },
     utils::Message,
 };
-use tardigrade::{task::TaskResult, ChannelId, TaskId, WorkflowId};
+use tardigrade::{task::TaskResult, ChannelId, TaskId};
 
 #[derive(Debug, Default)]
 struct ExecutionOutput {
@@ -26,7 +27,8 @@ struct ExecutionOutput {
     task_result: Option<TaskResult>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[allow(clippy::unsafe_derive_deserialize)] // false positive
 pub(crate) struct ChannelIds {
     pub inbound: HashMap<String, ChannelId>,
     pub outbound: HashMap<String, ChannelId>,
@@ -36,7 +38,7 @@ impl WorkflowSpawner<()> {
     pub(crate) fn spawn<'a>(
         &self,
         raw_args: Vec<u8>,
-        channel_ids: &ChannelIds,
+        channel_ids: ChannelIds,
         services: Services<'a>,
     ) -> anyhow::Result<Workflow<'a>> {
         let state = WorkflowData::new(self.interface(), channel_ids, services);
@@ -249,14 +251,10 @@ impl<'a> Workflow<'a> {
         Ok(())
     }
 
-    pub(crate) fn take_pending_inbound_message(
-        &mut self,
-        workflow_id: Option<WorkflowId>,
-        channel_name: &str,
-    ) -> bool {
+    pub(crate) fn take_pending_inbound_message(&mut self, channel_id: ChannelId) -> bool {
         self.store
             .data_mut()
-            .take_pending_inbound_message(workflow_id, channel_name)
+            .take_pending_inbound_message(channel_id)
     }
 
     #[tracing::instrument(level = "debug", skip(self), ret)]

@@ -95,7 +95,7 @@ impl WorkflowStub {
         });
         let channel_ids = ChannelIds::new(self.channels.clone(), new_channel_ids).await;
         let args = mem::take(&mut self.args);
-        let workflow = spawner.spawn(args, &channel_ids, services)?;
+        let workflow = spawner.spawn(args, channel_ids.clone(), services)?;
         let persisted = workflow.persist();
         Ok((persisted, channel_ids))
     }
@@ -173,7 +173,7 @@ impl<'a> NewWorkflows<'a> {
             let state = ChannelRecord::new(executed_workflow_id, Some(child_id));
             let state = transaction.get_or_insert_channel(channel_id, state).await;
             if state.is_closed {
-                persisted.close_inbound_channel(None, name);
+                persisted.close_inbound_channel(channel_id);
             }
             tracing::debug!(name, channel_id, ?state, "prepared inbound channel");
         }
@@ -181,7 +181,7 @@ impl<'a> NewWorkflows<'a> {
             let state = ChannelRecord::new(Some(child_id), executed_workflow_id);
             let state = transaction.get_or_insert_channel(channel_id, state).await;
             if state.is_closed {
-                persisted.close_outbound_channel(None, name);
+                persisted.close_outbound_channel(channel_id);
             } else {
                 transaction
                     .manipulate_channel(channel_id, |channel| {

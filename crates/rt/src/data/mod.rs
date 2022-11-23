@@ -64,20 +64,6 @@ pub(crate) struct PersistedWorkflowData {
     pub waker_queue: Vec<Wakers>,
 }
 
-/// Non-persisted counters associated with the workflow.
-#[derive(Debug, Default)]
-struct WorkflowCounters {
-    next_outbound_message_index: usize,
-}
-
-impl WorkflowCounters {
-    fn new_outbound_message_index(&mut self) -> usize {
-        let index = self.next_outbound_message_index;
-        self.next_outbound_message_index += 1;
-        index
-    }
-}
-
 #[derive(Debug)]
 pub struct WorkflowData<'a> {
     /// Functions exported by the `Instance`. Instantiated immediately after instance.
@@ -86,8 +72,6 @@ pub struct WorkflowData<'a> {
     services: Services<'a>,
     /// Persisted workflow data.
     persisted: PersistedWorkflowData,
-    /// Non-persisted counters associated with the workflow.
-    counters: WorkflowCounters,
     /// Data related to the currently executing WASM call.
     current_execution: Option<CurrentExecution>,
     /// Tasks that should be polled after `current_task`.
@@ -99,7 +83,7 @@ pub struct WorkflowData<'a> {
 impl<'a> WorkflowData<'a> {
     pub(crate) fn new(
         interface: &Interface,
-        channel_ids: &ChannelIds,
+        channel_ids: ChannelIds,
         services: Services<'a>,
     ) -> Self {
         debug_assert_eq!(
@@ -129,7 +113,6 @@ impl<'a> WorkflowData<'a> {
             persisted: PersistedWorkflowData::new(interface, channel_ids, services.clock.now()),
             exports: None,
             services,
-            counters: WorkflowCounters::default(),
             current_execution: None,
             task_queue: TaskQueue::default(),
             current_wakeup_cause: None,
@@ -147,18 +130,32 @@ impl<'a> WorkflowData<'a> {
 
     #[cfg(test)]
     pub(crate) fn inbound_channel_ref(
-        workflow_id: Option<WorkflowId>,
-        name: impl Into<String>,
+        &self,
+        child_id: Option<WorkflowId>,
+        name: &str,
     ) -> ExternRef {
-        HostResource::inbound_channel(workflow_id, name.into()).into_ref()
+        let channel_ids = if let Some(child_id) = child_id {
+            &self.persisted.child_workflows[&child_id].channels
+        } else {
+            &self.persisted.channels.mapping
+        };
+        let channel_id = channel_ids.inbound[name];
+        HostResource::InboundChannel(channel_id).into_ref()
     }
 
     #[cfg(test)]
     pub(crate) fn outbound_channel_ref(
-        workflow_id: Option<WorkflowId>,
-        name: impl Into<String>,
+        &self,
+        child_id: Option<WorkflowId>,
+        name: &str,
     ) -> ExternRef {
-        HostResource::outbound_channel(workflow_id, name.into()).into_ref()
+        let channel_ids = if let Some(child_id) = child_id {
+            &self.persisted.child_workflows[&child_id].channels
+        } else {
+            &self.persisted.channels.mapping
+        };
+        let channel_id = channel_ids.outbound[name];
+        HostResource::OutboundChannel(channel_id).into_ref()
     }
 
     #[cfg(test)]
@@ -181,11 +178,11 @@ impl WorkflowFunctions {
         tracing::Span::current().record("resource", field::debug(dropped));
 
         let wakers = match dropped {
-            HostResource::InboundChannel(channel_ref) => {
-                ctx.data_mut().handle_inbound_channel_drop(channel_ref)
+            HostResource::InboundChannel(channel_id) => {
+                ctx.data_mut().handle_inbound_channel_drop(*channel_id)
             }
-            HostResource::OutboundChannel(channel_ref) => {
-                ctx.data_mut().handle_outbound_channel_drop(channel_ref)
+            HostResource::OutboundChannel(channel_id) => {
+                ctx.data_mut().handle_outbound_channel_drop(*channel_id)
             }
             HostResource::WorkflowStub(stub_id) => ctx.data_mut().handle_child_stub_drop(*stub_id),
             HostResource::Workflow(workflow_id) => {

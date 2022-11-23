@@ -449,7 +449,7 @@ impl WriteWorkflows for LocalTransaction<'_> {
         let mut all_channels = workflows.flat_map(|(record, persisted)| {
             persisted
                 .inbound_channels()
-                .map(move |(_, _, state)| (record, state))
+                .map(move |(_, state)| (record, state))
         });
 
         all_channels.find_map(|(record, state)| {
@@ -527,7 +527,7 @@ impl StorageTransaction for LocalTransaction<'_> {
                         WorkflowState::Active(state) => &state.persisted,
                         WorkflowState::Completed(_) | WorkflowState::Errored(_) => continue,
                     };
-                    let (.., state) = workflow.find_inbound_channel(id);
+                    let state = workflow.inbound_channel(id).unwrap();
                     channel.truncate(state.received_message_count());
                 }
             }

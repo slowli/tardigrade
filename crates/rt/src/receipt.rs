@@ -26,29 +26,20 @@ use tardigrade::{
 pub enum WakeUpCause {
     /// Woken up by an inbound message.
     InboundMessage {
-        /// ID of the remote workflow that the channel is attached to, or `None` if the channel
-        /// is local.
-        workflow_id: Option<WorkflowId>,
-        /// Name of the inbound channel that has received a message.
-        channel_name: String,
+        /// ID of the channel.
+        channel_id: ChannelId,
         /// 0-based message index.
         message_index: usize,
     },
     /// Woken up by an inbound channel getting closed.
     ChannelClosed {
-        /// ID of the remote workflow that the channel is attached to, or `None` if the channel
-        /// is local.
-        workflow_id: Option<WorkflowId>,
-        /// Name of the inbound channel that was closed.
-        channel_name: String,
+        /// ID of the channel.
+        channel_id: ChannelId,
     },
     /// Woken up by flushing an outbound channel.
     Flush {
-        /// ID of the remote workflow that the channel is attached to, or `None` if the channel
-        /// is local.
-        workflow_id: Option<WorkflowId>,
-        /// Name of the outbound channel that was flushed.
-        channel_name: String,
+        /// ID of the channel.
+        channel_id: ChannelId,
         /// Indexes of flushed messages.
         message_indexes: Range<usize>,
     },
@@ -196,7 +187,7 @@ pub enum ChannelEventKind {
         result: Poll<Option<usize>>,
     },
     /// Inbound channel closed by the workflow logic.
-    InboundChannelClosed(ChannelId),
+    InboundChannelClosed,
 
     /// Outbound channel was polled for readiness.
     OutboundChannelReady {
@@ -217,8 +208,6 @@ pub enum ChannelEventKind {
     },
     /// Outbound channel closed by the workflow logic.
     OutboundChannelClosed {
-        /// Channel ID.
-        channel_id: ChannelId,
         /// Number of remaining outbound workflow channels with the same ID.
         remaining_alias_count: usize,
     },
@@ -230,11 +219,8 @@ pub enum ChannelEventKind {
 pub struct ChannelEvent {
     /// Event kind.
     pub kind: ChannelEventKind,
-    /// Name of the channel.
-    pub channel_name: String,
-    /// ID of the remote workflow that the channel is attached to, or `None` if the channel
-    /// is local.
-    pub workflow_id: Option<WorkflowId>,
+    /// ID of the channel.
+    pub channel_id: ChannelId,
 }
 
 /// Event included into a [`Receipt`].

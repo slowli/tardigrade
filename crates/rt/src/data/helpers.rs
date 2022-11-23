@@ -32,8 +32,8 @@ pub(super) struct ChannelRef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum HostResource {
-    InboundChannel(ChannelRef),
-    OutboundChannel(ChannelRef),
+    InboundChannel(ChannelId),
+    OutboundChannel(ChannelId),
     #[serde(skip)] // FIXME: why is this allowed?
     ChannelHandles(SharedChannelHandles),
     Workflow(WorkflowId),
@@ -41,14 +41,6 @@ pub(super) enum HostResource {
 }
 
 impl HostResource {
-    pub fn inbound_channel(workflow_id: Option<WorkflowId>, name: String) -> Self {
-        Self::InboundChannel(ChannelRef { workflow_id, name })
-    }
-
-    pub fn outbound_channel(workflow_id: Option<WorkflowId>, name: String) -> Self {
-        Self::OutboundChannel(ChannelRef { workflow_id, name })
-    }
-
     pub fn from_ref(reference: Option<&ExternRef>) -> anyhow::Result<&Self> {
         let reference = reference.ok_or_else(|| anyhow!("null reference provided to runtime"))?;
         reference
@@ -61,18 +53,18 @@ impl HostResource {
         ExternRef::new(self)
     }
 
-    pub fn as_inbound_channel(&self) -> anyhow::Result<&ChannelRef> {
-        if let Self::InboundChannel(channel_ref) = self {
-            Ok(channel_ref)
+    pub fn as_inbound_channel(&self) -> anyhow::Result<ChannelId> {
+        if let Self::InboundChannel(channel_id) = self {
+            Ok(*channel_id)
         } else {
             let err = anyhow!("unexpected reference type: expected inbound channel, got {self:?}");
             Err(err)
         }
     }
 
-    pub fn as_outbound_channel(&self) -> anyhow::Result<&ChannelRef> {
-        if let Self::OutboundChannel(channel_ref) = self {
-            Ok(channel_ref)
+    pub fn as_outbound_channel(&self) -> anyhow::Result<ChannelId> {
+        if let Self::OutboundChannel(channel_id) = self {
+            Ok(*channel_id)
         } else {
             let err = anyhow!("unexpected reference type: expected outbound channel, got {self:?}");
             Err(err)
@@ -120,8 +112,8 @@ pub(crate) type WasmContextPtr = u32;
 
 #[derive(Debug)]
 pub(super) enum WakerPlacement {
-    InboundChannel(ChannelRef),
-    OutboundChannel(ChannelRef),
+    InboundChannel(ChannelId),
+    OutboundChannel(ChannelId),
     Timer(TimerId),
     TaskCompletion(TaskId),
     WorkflowInit(WorkflowId),
@@ -253,7 +245,7 @@ impl CurrentExecution {
         self.tasks_to_be_awoken.insert(task_id);
     }
 
-    pub fn push_inbound_channel_event(&mut self, channel_ref: &ChannelRef, result: &PollMessage) {
+    pub fn push_inbound_channel_event(&mut self, channel_id: ChannelId, result: &PollMessage) {
         self.push_event(ChannelEvent {
             kind: ChannelEventKind::InboundChannelPolled {
                 result: match result {
@@ -261,34 +253,30 @@ impl CurrentExecution {
                     Poll::Ready(maybe_message) => Poll::Ready(maybe_message.as_ref().map(Vec::len)),
                 },
             },
-            channel_name: channel_ref.name.clone(),
-            workflow_id: channel_ref.workflow_id,
+            channel_id,
         });
     }
 
     pub fn push_channel_closure(
         &mut self,
         kind: ChannelKind,
-        channel_ref: &ChannelRef,
         channel_id: ChannelId,
         remaining_alias_count: usize,
     ) {
         self.push_event(ChannelEvent {
             kind: match kind {
-                ChannelKind::Inbound => ChannelEventKind::InboundChannelClosed(channel_id),
+                ChannelKind::Inbound => ChannelEventKind::InboundChannelClosed,
                 ChannelKind::Outbound => ChannelEventKind::OutboundChannelClosed {
-                    channel_id,
                     remaining_alias_count,
                 },
             },
-            channel_name: channel_ref.name.clone(),
-            workflow_id: channel_ref.workflow_id,
+            channel_id,
         });
     }
 
     pub fn push_outbound_poll_event(
         &mut self,
-        channel_ref: &ChannelRef,
+        channel_id: ChannelId,
         flush: bool,
         result: Poll<Result<(), SendError>>,
     ) {
@@ -298,16 +286,14 @@ impl CurrentExecution {
             } else {
                 ChannelEventKind::OutboundChannelReady { result }
             },
-            channel_name: channel_ref.name.clone(),
-            workflow_id: channel_ref.workflow_id,
+            channel_id,
         });
     }
 
-    pub fn push_outbound_message_event(&mut self, channel_ref: &ChannelRef, message_len: usize) {
+    pub fn push_outbound_message_event(&mut self, channel_id: ChannelId, message_len: usize) {
         self.push_event(ChannelEvent {
             kind: ChannelEventKind::OutboundMessageSent { message_len },
-            channel_name: channel_ref.name.clone(),
-            workflow_id: channel_ref.workflow_id,
+            channel_id,
         });
     }
 
@@ -406,10 +392,7 @@ impl CurrentExecution {
             if matches!(event.kind, ChannelEventKind::OutboundMessageSent { .. }) {
                 let channel = state
                     .persisted
-                    .outbound_channel_mut(&ChannelRef {
-                        workflow_id: event.workflow_id,
-                        name: event.channel_name.clone(), // TODO: avoid cloning here
-                    })
+                    .outbound_channel_mut(event.channel_id)
                     .unwrap();
                 channel.messages.pop();
             }
@@ -429,12 +412,12 @@ impl WorkflowData<'_> {
 
         let persisted = &mut self.persisted;
         match placement {
-            WakerPlacement::InboundChannel(channel_ref) => {
-                let channel_state = persisted.inbound_channel_mut(channel_ref).unwrap();
+            WakerPlacement::InboundChannel(channel_id) => {
+                let channel_state = persisted.inbound_channel_mut(*channel_id).unwrap();
                 channel_state.wakes_on_next_element.insert(waker);
             }
-            WakerPlacement::OutboundChannel(channel_ref) => {
-                let channel_state = persisted.outbound_channel_mut(channel_ref).unwrap();
+            WakerPlacement::OutboundChannel(channel_id) => {
+                let channel_state = persisted.outbound_channel_mut(*channel_id).unwrap();
                 channel_state.wakes_on_flush.insert(waker);
             }
             WakerPlacement::Timer(id) => {
@@ -462,7 +445,7 @@ impl WorkflowData<'_> {
                 .wakes_on_next_element
                 .retain(|waker_id| !wakers.contains(waker_id));
         }
-        for (_, _, state) in self.persisted.outbound_channels_mut() {
+        for (_, state) in self.persisted.outbound_channels_mut() {
             state
                 .wakes_on_flush
                 .retain(|waker_id| !wakers.contains(waker_id));

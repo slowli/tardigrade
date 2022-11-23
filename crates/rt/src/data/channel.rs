@@ -6,17 +6,13 @@ use tracing::field;
 use wasmtime::{AsContextMut, ExternRef, StoreContextMut};
 
 use std::{
-    cmp,
     collections::{HashMap, HashSet},
     error, fmt, mem,
     task::Poll,
 };
 
 use super::{
-    helpers::{
-        ChannelRef, HostResource, WakeIfPending, WakerPlacement, Wakers, WasmContext,
-        WasmContextPtr,
-    },
+    helpers::{HostResource, WakeIfPending, WakerPlacement, Wakers, WasmContext, WasmContextPtr},
     PersistedWorkflowData, WorkflowData, WorkflowFunctions,
 };
 use crate::{
@@ -28,52 +24,9 @@ use tardigrade::{
     abi::{IntoWasm, PollMessage},
     channel::SendError,
     interface::{AccessErrorKind, ChannelKind},
+    spawn::{ChannelSpawnConfig, ChannelsConfig},
     ChannelId, WakerId, WorkflowId,
 };
-
-/// Wrapper around `Message` that contains message index within all messages emitted
-/// by the workflow during its execution. This allows correct ordering of messages
-/// for aliased channels.
-#[derive(Debug, Clone)]
-pub(super) struct OrderedMessage {
-    inner: Message,
-    index: usize,
-}
-
-impl PartialEq for OrderedMessage {
-    fn eq(&self, other: &Self) -> bool {
-        self.index == other.index
-    }
-}
-
-impl Eq for OrderedMessage {}
-
-impl PartialOrd for OrderedMessage {
-    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for OrderedMessage {
-    fn cmp(&self, other: &Self) -> cmp::Ordering {
-        self.index.cmp(&other.index)
-    }
-}
-
-impl From<OrderedMessage> for Message {
-    fn from(message: OrderedMessage) -> Self {
-        message.inner
-    }
-}
-
-impl OrderedMessage {
-    fn new(message: Vec<u8>, index: usize) -> Self {
-        Self {
-            inner: message.into(),
-            index,
-        }
-    }
-}
 
 /// Errors for channels that cannot be acquired by the workflow.
 #[derive(Debug)]
@@ -178,7 +131,7 @@ pub struct OutboundChannelState {
     pub(super) is_closed: bool,
     pub(super) flushed_messages: usize,
     #[serde(default, skip)]
-    pub(super) messages: Vec<OrderedMessage>,
+    pub(super) messages: Vec<Message>,
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     pub(super) wakes_on_flush: HashSet<WakerId>,
 }
@@ -214,11 +167,7 @@ impl OutboundChannelState {
         }
     }
 
-    fn take_messages(
-        &mut self,
-        workflow_id: Option<WorkflowId>,
-        channel_name: &str,
-    ) -> (Vec<OrderedMessage>, Option<Wakers>) {
+    fn take_messages(&mut self) -> (Vec<Message>, Option<Wakers>) {
         let start_message_idx = self.flushed_messages;
         let messages = mem::take(&mut self.messages);
         self.flushed_messages += messages.len();
@@ -230,8 +179,7 @@ impl OutboundChannelState {
                 waker_set = Some(Wakers::new(
                     wakers,
                     WakeUpCause::Flush {
-                        workflow_id,
-                        channel_name: channel_name.to_owned(),
+                        channel_id: self.channel_id,
                         message_indexes: start_message_idx..(start_message_idx + messages.len()),
                     },
                 ));
@@ -248,63 +196,69 @@ impl OutboundChannelState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct ChannelStates {
-    pub inbound: HashMap<String, InboundChannelState>,
-    pub outbound: HashMap<String, OutboundChannelState>,
+    pub inbound: HashMap<ChannelId, InboundChannelState>,
+    pub outbound: HashMap<ChannelId, OutboundChannelState>,
+    pub mapping: ChannelIds,
 }
 
 impl ChannelStates {
-    pub fn new<F>(channel_ids: &ChannelIds, outbound_cap_fn: F) -> Self
+    pub fn new<F>(channel_ids: ChannelIds, outbound_cap_fn: F) -> Self
     where
         F: Fn(&str) -> Option<usize>,
     {
         let inbound = channel_ids
             .inbound
-            .iter()
-            .map(|(name, channel_id)| (name.clone(), InboundChannelState::new(*channel_id)))
+            .values()
+            .map(|&id| (id, InboundChannelState::new(id)))
             .collect();
         let outbound = channel_ids
             .outbound
             .iter()
-            .map(|(name, channel_id)| {
-                (
-                    name.clone(),
-                    OutboundChannelState::new(*channel_id, outbound_cap_fn(name)),
-                )
-            })
+            .map(|(name, &id)| (id, OutboundChannelState::new(id, outbound_cap_fn(name))))
             .collect();
-        Self { inbound, outbound }
+        Self {
+            inbound,
+            outbound,
+            mapping: channel_ids,
+        }
+    }
+
+    pub fn insert_child_channels(
+        &mut self,
+        channel_ids: &ChannelIds,
+        config: &ChannelsConfig<ChannelId>,
+    ) {
+        // This is needed to prevent the workflow from capturing non-captured channel handles.
+        for (name, &id) in &channel_ids.inbound {
+            let state = self
+                .inbound
+                .entry(id)
+                .or_insert_with(|| InboundChannelState::new(id));
+            if matches!(config.inbound[name], ChannelSpawnConfig::Existing(_)) {
+                state.is_acquired = true;
+            }
+        }
+
+        // TODO: what is the appropriate capacity?
+        for (name, &id) in &channel_ids.outbound {
+            let state = self
+                .outbound
+                .entry(id)
+                .or_insert_with(|| OutboundChannelState::new(id, Some(1)));
+            if matches!(config.outbound[name], ChannelSpawnConfig::Existing(_)) {
+                state.is_acquired = true;
+            }
+        }
     }
 }
 
 impl PersistedWorkflowData {
-    fn channels(&self, workflow_id: Option<WorkflowId>) -> &ChannelStates {
-        if let Some(workflow_id) = workflow_id {
-            &self.child_workflows.get(&workflow_id).unwrap().channels
-        } else {
-            &self.channels
-        }
-    }
-
-    fn channels_mut(&mut self, workflow_id: Option<WorkflowId>) -> &mut ChannelStates {
-        if let Some(workflow_id) = workflow_id {
-            &mut self.child_workflows.get_mut(&workflow_id).unwrap().channels
-        } else {
-            &mut self.channels
-        }
-    }
-
     pub(crate) fn push_inbound_message(
         &mut self,
-        workflow_id: Option<WorkflowId>,
-        channel_name: &str,
+        channel_id: ChannelId,
         message: Vec<u8>,
     ) -> Result<(), ConsumeError> {
-        let channel_state = self
-            .channels_mut(workflow_id)
-            .inbound
-            .get_mut(channel_name)
-            .unwrap();
-
+        let channel_state = self.channels.inbound.get_mut(&channel_id).unwrap();
         if channel_state.is_closed {
             return Err(ConsumeError::Closed);
         }
@@ -314,8 +268,7 @@ impl PersistedWorkflowData {
 
         debug_assert!(
             channel_state.pending_message.is_none(),
-            "Multiple messages inserted for inbound channel `{}`",
-            channel_name
+            "Multiple messages inserted for inbound channel {channel_id}"
         );
         let message_index = channel_state.received_messages;
         channel_state.pending_message = Some(message.into());
@@ -325,214 +278,131 @@ impl PersistedWorkflowData {
         self.schedule_wakers(
             wakers,
             WakeUpCause::InboundMessage {
-                workflow_id,
-                channel_name: channel_name.to_owned(),
+                channel_id,
                 message_index,
             },
         );
         Ok(())
     }
 
-    pub(crate) fn drop_inbound_message(
-        &mut self,
-        workflow_id: Option<WorkflowId>,
-        channel_name: &str,
-    ) {
-        let channel_state = self
-            .channels_mut(workflow_id)
-            .inbound
-            .get_mut(channel_name)
-            .unwrap();
+    pub(crate) fn drop_inbound_message(&mut self, channel_id: ChannelId) {
+        let channel_state = self.channels.inbound.get_mut(&channel_id).unwrap();
         channel_state.received_messages += 1;
     }
 
-    pub(crate) fn close_inbound_channel(
-        &mut self,
-        workflow_id: Option<WorkflowId>,
-        channel_name: &str,
-    ) {
-        let channel_state = self
-            .channels_mut(workflow_id)
-            .inbound
-            .get_mut(channel_name)
-            .unwrap();
-        // ^ `unwrap()` safety is guaranteed by previous checks.
+    pub(crate) fn close_inbound_channel(&mut self, channel_id: ChannelId) {
+        let channel_state = self.channels.inbound.get_mut(&channel_id).unwrap();
         if channel_state.is_closed {
             return; // no further actions required
         }
 
         debug_assert!(
             channel_state.pending_message.is_none(),
-            "Inbound channel `{}` closed while it has a pending message",
-            channel_name
+            "Inbound channel {channel_id} closed while it has a pending message"
         );
         channel_state.is_closed = true;
         channel_state.received_messages += 1; // EOF is a considered a message as well
 
         let wakers = mem::take(&mut channel_state.wakes_on_next_element);
-        self.schedule_wakers(
-            wakers,
-            WakeUpCause::ChannelClosed {
-                workflow_id,
-                channel_name: channel_name.to_owned(),
-            },
-        );
+        self.schedule_wakers(wakers, WakeUpCause::ChannelClosed { channel_id });
     }
 
-    pub(crate) fn close_outbound_channel(
-        &mut self,
-        workflow_id: Option<WorkflowId>,
-        channel_name: &str,
-    ) {
-        let channel_state = self
-            .channels_mut(workflow_id)
-            .outbound
-            .get_mut(channel_name)
-            .unwrap();
+    // FIXME: is this correct?
+    pub(crate) fn close_outbound_channel(&mut self, channel_id: ChannelId) {
+        let channel_state = self.channels.outbound.get_mut(&channel_id).unwrap();
         channel_state.close();
     }
 
-    pub fn channel_ids(&self) -> ChannelIds {
-        let inbound = self.channels.inbound.iter();
-        let inbound = inbound.map(|(name, state)| (name.clone(), state.id()));
-        let outbound = self.channels.outbound.iter();
-        let outbound = outbound.map(|(name, state)| (name.clone(), state.id()));
-
-        ChannelIds {
-            inbound: inbound.collect(),
-            outbound: outbound.collect(),
-        }
+    pub fn channel_ids(&self) -> &ChannelIds {
+        &self.channels.mapping
     }
 
-    pub fn inbound_channels(
+    pub(crate) fn inbound_channel(&self, channel_id: ChannelId) -> Option<&InboundChannelState> {
+        self.channels.inbound.get(&channel_id)
+    }
+
+    pub(crate) fn inbound_channels(
         &self,
-    ) -> impl Iterator<Item = (Option<WorkflowId>, &str, &InboundChannelState)> + '_ {
-        let local_channels = self.channels.inbound.iter();
-        let local_channels = local_channels.map(|(name, state)| (None, name.as_str(), state));
-        let workflow_channels = self
-            .child_workflows
-            .iter()
-            .flat_map(|(&child_id, workflow)| {
-                let channels = workflow.channels.inbound.iter();
-                channels.map(move |(name, state)| (Some(child_id), name.as_str(), state))
-            });
-        local_channels.chain(workflow_channels)
+    ) -> impl Iterator<Item = (ChannelId, &InboundChannelState)> + '_ {
+        self.channels.inbound.iter().map(|(&id, state)| (id, state))
     }
 
     pub(super) fn inbound_channel_mut(
         &mut self,
-        channel_ref: &ChannelRef,
+        channel_id: ChannelId,
     ) -> Option<&mut InboundChannelState> {
-        self.channels_mut(channel_ref.workflow_id)
-            .inbound
-            .get_mut(&channel_ref.name)
+        self.channels.inbound.get_mut(&channel_id)
     }
 
     pub(super) fn inbound_channels_mut(
         &mut self,
     ) -> impl Iterator<Item = &mut InboundChannelState> + '_ {
-        let workflow_channels = self
-            .child_workflows
-            .values_mut()
-            .flat_map(|workflow| workflow.channels.inbound.values_mut());
-        self.channels.inbound.values_mut().chain(workflow_channels)
+        self.channels.inbound.values_mut()
     }
 
-    pub(crate) fn find_inbound_channel(
-        &self,
-        channel_id: ChannelId,
-    ) -> (Option<WorkflowId>, &str, &InboundChannelState) {
-        self.inbound_channels()
-            .find(|(.., state)| state.channel_id == channel_id)
-            .expect("channel not found")
-    }
-
-    pub(super) fn outbound_channel(
-        &self,
-        channel_ref: &ChannelRef,
-    ) -> Option<&OutboundChannelState> {
-        self.channels(channel_ref.workflow_id)
-            .outbound
-            .get(&channel_ref.name)
+    pub(super) fn outbound_channel(&self, channel_id: ChannelId) -> Option<&OutboundChannelState> {
+        self.channels.outbound.get(&channel_id)
     }
 
     pub(super) fn outbound_channel_mut(
         &mut self,
-        channel_ref: &ChannelRef,
+        channel_id: ChannelId,
     ) -> Option<&mut OutboundChannelState> {
-        self.channels_mut(channel_ref.workflow_id)
-            .outbound
-            .get_mut(&channel_ref.name)
+        self.channels.outbound.get_mut(&channel_id)
     }
 
     pub(crate) fn outbound_channels(
         &self,
-    ) -> impl Iterator<Item = (Option<WorkflowId>, &str, &OutboundChannelState)> + '_ {
-        let local_channels = self.channels.outbound.iter();
-        let local_channels = local_channels.map(|(name, state)| (None, name.as_str(), state));
-        let workflow_channels = self
-            .child_workflows
+    ) -> impl Iterator<Item = (ChannelId, &OutboundChannelState)> + '_ {
+        self.channels
+            .outbound
             .iter()
-            .flat_map(|(&workflow_id, workflow)| {
-                let channels = workflow.channels.outbound.iter();
-                channels.map(move |(name, state)| (Some(workflow_id), name.as_str(), state))
-            });
-        local_channels.chain(workflow_channels)
+            .map(|(&id, state)| (id, state))
     }
 
     pub(crate) fn outbound_channels_mut(
         &mut self,
-    ) -> impl Iterator<Item = (Option<WorkflowId>, &str, &mut OutboundChannelState)> + '_ {
-        let local_channels = self.channels.outbound.iter_mut();
-        let local_channels = local_channels.map(|(name, state)| (None, name.as_str(), state));
-        let workflow_channels =
-            self.child_workflows
-                .iter_mut()
-                .flat_map(|(&workflow_id, workflow)| {
-                    let channels = workflow.channels.outbound.iter_mut();
-                    channels.map(move |(name, state)| (Some(workflow_id), name.as_str(), state))
-                });
-        local_channels.chain(workflow_channels)
+    ) -> impl Iterator<Item = (ChannelId, &mut OutboundChannelState)> + '_ {
+        self.channels
+            .outbound
+            .iter_mut()
+            .map(|(&id, state)| (id, state))
     }
 
     fn drain_messages(&mut self) -> HashMap<ChannelId, Vec<Message>> {
         let mut new_wakers = vec![];
-        let messages_by_channel = self.outbound_channels_mut().fold(
-            HashMap::<_, Vec<OrderedMessage>>::new(),
-            |mut acc, (child_id, name, state)| {
-                let (messages, maybe_wakers) = state.take_messages(child_id, name);
+        let messages_by_channel = self
+            .outbound_channels_mut()
+            .map(|(id, state)| {
+                let (messages, maybe_wakers) = state.take_messages();
                 if let Some(wakers) = maybe_wakers {
                     new_wakers.push(wakers);
                 }
-                if !messages.is_empty() {
-                    utils::merge_vec(acc.entry(state.id()).or_default(), messages);
-                }
-                acc
-            },
-        );
+                (id, messages)
+            })
+            .collect();
 
         self.waker_queue.extend(new_wakers);
         messages_by_channel
-            .into_iter()
-            .map(|(id, messages)| (id, messages.into_iter().map(Message::from).collect()))
-            .collect()
     }
 }
 
 impl WorkflowData<'_> {
     pub(super) fn handle_inbound_channel_drop(
         &mut self,
-        channel_ref: &ChannelRef,
+        channel_id: ChannelId,
     ) -> HashSet<WakerId> {
-        let channels = self.persisted.channels_mut(channel_ref.workflow_id);
-        let channel_state = channels.inbound.get_mut(&channel_ref.name).unwrap();
+        let channel_state = self
+            .persisted
+            .channels
+            .inbound
+            .get_mut(&channel_id)
+            .unwrap();
         let wakers = mem::take(&mut channel_state.wakes_on_next_element);
         if !channel_state.is_closed {
             channel_state.is_closed = true;
-            let channel_id = channel_state.channel_id;
             self.current_execution().push_channel_closure(
                 ChannelKind::Inbound,
-                channel_ref,
                 channel_id,
                 0, // inbound channels cannot be aliased
             );
@@ -542,23 +412,20 @@ impl WorkflowData<'_> {
 
     pub(super) fn handle_outbound_channel_drop(
         &mut self,
-        channel_ref: &ChannelRef,
+        channel_id: ChannelId,
     ) -> HashSet<WakerId> {
-        let channels = self.persisted.channels_mut(channel_ref.workflow_id);
-        let channel_state = channels.outbound.get_mut(&channel_ref.name).unwrap();
+        let channel_state = self
+            .persisted
+            .channels
+            .outbound
+            .get_mut(&channel_id)
+            .unwrap();
         let wakers = mem::take(&mut channel_state.wakes_on_flush);
         if !channel_state.is_closed {
             channel_state.is_closed = true;
-            let channel_id = channel_state.channel_id;
-            let remaining_alias_count = self
-                .persisted
-                .outbound_channels()
-                .filter(|(_, _, state)| state.id() == channel_id && !state.is_closed)
-                .count();
-
+            let remaining_alias_count = 0; // FIXME
             self.current_execution().push_channel_closure(
                 ChannelKind::Outbound,
-                channel_ref,
                 channel_id,
                 remaining_alias_count,
             );
@@ -566,16 +433,12 @@ impl WorkflowData<'_> {
         wakers
     }
 
-    pub(crate) fn take_pending_inbound_message(
-        &mut self,
-        workflow_id: Option<WorkflowId>,
-        channel_name: &str,
-    ) -> bool {
+    pub(crate) fn take_pending_inbound_message(&mut self, channel_id: ChannelId) -> bool {
         let state = self
             .persisted
-            .channels_mut(workflow_id)
+            .channels
             .inbound
-            .get_mut(channel_name)
+            .get_mut(&channel_id)
             .unwrap();
         let has_message = state.pending_message.take().is_some();
         if has_message {
@@ -584,33 +447,28 @@ impl WorkflowData<'_> {
         has_message
     }
 
-    fn poll_inbound_channel(
-        &mut self,
-        channel_ref: &ChannelRef,
-        cx: &mut WasmContext,
-    ) -> PollMessage {
-        let channels = self.persisted.channels_mut(channel_ref.workflow_id);
-        let channel_state = channels.inbound.get_mut(&channel_ref.name).unwrap();
+    fn poll_inbound_channel(&mut self, channel_id: ChannelId, cx: &mut WasmContext) -> PollMessage {
+        let channel_state = self
+            .persisted
+            .channels
+            .inbound
+            .get_mut(&channel_id)
+            .unwrap();
         // ^ `unwrap()` safety is guaranteed by resource handling
 
         let poll_result = channel_state.poll_next();
         self.current_execution()
-            .push_inbound_channel_event(channel_ref, &poll_result);
-        poll_result.wake_if_pending(cx, || WakerPlacement::InboundChannel(channel_ref.clone()))
+            .push_inbound_channel_event(channel_id, &poll_result);
+        poll_result.wake_if_pending(cx, || WakerPlacement::InboundChannel(channel_id))
     }
 
     fn poll_outbound_channel(
         &mut self,
-        channel_ref: &ChannelRef,
+        channel_id: ChannelId,
         flush: bool,
         cx: &mut WasmContext,
     ) -> Poll<Result<(), SendError>> {
-        let channels = if let Some(workflow_id) = channel_ref.workflow_id {
-            &self.persisted.child_workflows[&workflow_id].channels
-        } else {
-            &self.persisted.channels
-        };
-        let channel_state = &channels.outbound[&channel_ref.name];
+        let channel_state = &self.persisted.channels.outbound[&channel_id];
 
         let should_block =
             !channel_state.is_ready() || (flush && !channel_state.messages.is_empty());
@@ -628,18 +486,21 @@ impl WorkflowData<'_> {
         };
 
         self.current_execution()
-            .push_outbound_poll_event(channel_ref, flush, poll_result.clone());
-        poll_result.wake_if_pending(cx, || WakerPlacement::OutboundChannel(channel_ref.clone()))
+            .push_outbound_poll_event(channel_id, flush, poll_result.clone());
+        poll_result.wake_if_pending(cx, || WakerPlacement::OutboundChannel(channel_id))
     }
 
     fn push_outbound_message(
         &mut self,
-        channel_ref: &ChannelRef,
+        channel_id: ChannelId,
         message: Vec<u8>,
     ) -> Result<(), SendError> {
-        let channels = self.persisted.channels_mut(channel_ref.workflow_id);
-        let channel_state = channels.outbound.get_mut(&channel_ref.name).unwrap();
-
+        let channel_state = self
+            .persisted
+            .channels
+            .outbound
+            .get_mut(&channel_id)
+            .unwrap();
         if channel_state.is_closed {
             return Err(SendError::Closed);
         } else if !channel_state.is_ready() {
@@ -647,12 +508,9 @@ impl WorkflowData<'_> {
         }
 
         let message_len = message.len();
-        let index = self.counters.new_outbound_message_index();
-        channel_state
-            .messages
-            .push(OrderedMessage::new(message, index));
+        channel_state.messages.push(message.into());
         self.current_execution()
-            .push_outbound_message_event(channel_ref, message_len);
+            .push_outbound_message_event(channel_id, message_len);
         Ok(())
     }
 
@@ -679,7 +537,7 @@ impl WorkflowFunctions {
     #[tracing::instrument(level = "debug", skip_all, err, fields(workflow_id, channel_name))]
     pub fn get_receiver(
         mut ctx: StoreContextMut<'_, WorkflowData>,
-        workflow: Option<ExternRef>,
+        child: Option<ExternRef>,
         channel_name_ptr: u32,
         channel_name_len: u32,
         error_ptr: u32,
@@ -687,42 +545,49 @@ impl WorkflowFunctions {
         let memory = ctx.data().exports().memory;
         let channel_name =
             utils::copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
-        let data = &mut ctx.data_mut().persisted;
-        let (workflow_id, channels) = Self::channels(data, workflow.as_ref())?;
+        let child_id = if let Some(child) = &child {
+            Some(HostResource::from_ref(Some(child))?.as_workflow()?)
+        } else {
+            None
+        };
 
         tracing::Span::current()
-            .record("workflow_id", workflow_id)
+            .record("workflow_id", child_id)
             .record("channel_name", &channel_name);
+        let data = &mut ctx.data_mut().persisted;
+        let channel_ids = Self::channel_ids(data, child_id)?;
 
-        let result = channels
+        let channel_id = channel_ids
             .inbound
-            .get_mut(&channel_name)
-            .ok_or(AccessErrorKind::Unknown)
-            .map(|state| state.acquire().ok());
+            .get(&channel_name)
+            .copied()
+            .ok_or(AccessErrorKind::Unknown);
+        let result = channel_id.map(|id| {
+            let state = data.channels.inbound.get_mut(&id).unwrap();
+            state.acquire().ok().map(|()| id)
+        });
         utils::debug_result(&result);
 
         let mut channel_ref = None;
         let result = result.map(|acquire_result| {
-            channel_ref = acquire_result
-                .map(|()| HostResource::inbound_channel(workflow_id, channel_name).into_ref());
+            channel_ref = acquire_result.map(|id| HostResource::InboundChannel(id).into_ref());
         });
         Self::write_access_result(&mut ctx, result, error_ptr)?;
         Ok(channel_ref)
     }
 
-    fn channels<'a>(
-        data: &'a mut PersistedWorkflowData,
-        workflow: Option<&ExternRef>,
-    ) -> anyhow::Result<(Option<WorkflowId>, &'a mut ChannelStates)> {
-        if let Some(workflow) = workflow {
-            let id = HostResource::from_ref(Some(workflow))?.as_workflow()?;
+    fn channel_ids(
+        data: &PersistedWorkflowData,
+        child_id: Option<WorkflowId>,
+    ) -> anyhow::Result<&ChannelIds> {
+        if let Some(child_id) = child_id {
             let workflow = data
                 .child_workflows
-                .get_mut(&id)
-                .ok_or_else(|| anyhow!("unknown workflow ID {id}"))?;
-            Ok((Some(id), &mut workflow.channels))
+                .get(&child_id)
+                .ok_or_else(|| anyhow!("unknown child workflow ID {child_id}"))?;
+            Ok(&workflow.channels)
         } else {
-            Ok((None, &mut data.channels))
+            Ok(&data.channels.mapping)
         }
     }
 
@@ -732,13 +597,13 @@ impl WorkflowFunctions {
         channel_ref: Option<ExternRef>,
         poll_cx: WasmContextPtr,
     ) -> anyhow::Result<i64> {
-        let channel_ref = HostResource::from_ref(channel_ref.as_ref())?.as_inbound_channel()?;
+        let channel_id = HostResource::from_ref(channel_ref.as_ref())?.as_inbound_channel()?;
         tracing::Span::current().record("channel", field::debug(channel_ref));
 
         let mut poll_cx = WasmContext::new(poll_cx);
         let poll_result = ctx
             .data_mut()
-            .poll_inbound_channel(channel_ref, &mut poll_cx);
+            .poll_inbound_channel(channel_id, &mut poll_cx);
         tracing::debug!(result = ?utils::drop_value(&poll_result));
 
         if let Poll::Ready(maybe_message) = &poll_result {
@@ -752,7 +617,7 @@ impl WorkflowFunctions {
     #[tracing::instrument(level = "debug", skip_all, err, fields(workflow_id, channel_name))]
     pub fn get_sender(
         mut ctx: StoreContextMut<'_, WorkflowData>,
-        workflow: Option<ExternRef>,
+        child: Option<ExternRef>,
         channel_name_ptr: u32,
         channel_name_len: u32,
         error_ptr: u32,
@@ -760,24 +625,32 @@ impl WorkflowFunctions {
         let memory = ctx.data().exports().memory;
         let channel_name =
             utils::copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
-        let data = &mut ctx.data_mut().persisted;
-        let (workflow_id, channels) = Self::channels(data, workflow.as_ref())?;
+        let child_id = if let Some(child) = &child {
+            Some(HostResource::from_ref(Some(child))?.as_workflow()?)
+        } else {
+            None
+        };
 
         tracing::Span::current()
-            .record("workflow_id", workflow_id)
+            .record("workflow_id", child_id)
             .record("channel_name", &channel_name);
+        let data = &mut ctx.data_mut().persisted;
+        let channel_ids = Self::channel_ids(data, child_id)?;
 
-        let result = channels
+        let channel_id = channel_ids
             .outbound
-            .get_mut(&channel_name)
-            .ok_or(AccessErrorKind::Unknown)
-            .map(|state| state.acquire().ok());
+            .get(&channel_name)
+            .copied()
+            .ok_or(AccessErrorKind::Unknown);
+        let result = channel_id.map(|id| {
+            let state = data.channels.outbound.get_mut(&id).unwrap();
+            state.acquire().ok().map(|()| id)
+        });
         utils::debug_result(&result);
 
         let mut channel_ref = None;
         let result = result.map(|acquire_result| {
-            channel_ref = acquire_result
-                .map(|()| HostResource::outbound_channel(workflow_id, channel_name).into_ref());
+            channel_ref = acquire_result.map(|id| HostResource::OutboundChannel(id).into_ref());
         });
         Self::write_access_result(&mut ctx, result, error_ptr)?;
         Ok(channel_ref)
@@ -789,13 +662,13 @@ impl WorkflowFunctions {
         channel_ref: Option<ExternRef>,
         cx: WasmContextPtr,
     ) -> anyhow::Result<i32> {
-        let channel_ref = HostResource::from_ref(channel_ref.as_ref())?.as_outbound_channel()?;
+        let channel_id = HostResource::from_ref(channel_ref.as_ref())?.as_outbound_channel()?;
         tracing::Span::current().record("channel", field::debug(channel_ref));
 
         let mut cx = WasmContext::new(cx);
         let poll_result = ctx
             .data_mut()
-            .poll_outbound_channel(channel_ref, false, &mut cx);
+            .poll_outbound_channel(channel_id, false, &mut cx);
         tracing::debug!(result = ?poll_result);
 
         cx.save_waker(&mut ctx)?;
@@ -814,12 +687,12 @@ impl WorkflowFunctions {
         message_ptr: u32,
         message_len: u32,
     ) -> anyhow::Result<i32> {
-        let channel_ref = HostResource::from_ref(channel_ref.as_ref())?.as_outbound_channel()?;
+        let channel_id = HostResource::from_ref(channel_ref.as_ref())?.as_outbound_channel()?;
         let memory = ctx.data().exports().memory;
         let message = utils::copy_bytes_from_wasm(&ctx, &memory, message_ptr, message_len)?;
-        tracing::Span::current().record("channel", field::debug(channel_ref));
+        tracing::Span::current().record("channel", field::debug(channel_id));
 
-        let result = ctx.data_mut().push_outbound_message(channel_ref, message);
+        let result = ctx.data_mut().push_outbound_message(channel_id, message);
         utils::debug_result(&result);
         result.into_wasm(&mut WasmAllocator::new(ctx))
     }
@@ -830,13 +703,13 @@ impl WorkflowFunctions {
         channel_ref: Option<ExternRef>,
         poll_cx: WasmContextPtr,
     ) -> anyhow::Result<i32> {
-        let channel_ref = HostResource::from_ref(channel_ref.as_ref())?.as_outbound_channel()?;
-        tracing::Span::current().record("channel", field::debug(channel_ref));
+        let channel_id = HostResource::from_ref(channel_ref.as_ref())?.as_outbound_channel()?;
+        tracing::Span::current().record("channel", field::debug(channel_id));
 
         let mut poll_cx = WasmContext::new(poll_cx);
         let poll_result = ctx
             .data_mut()
-            .poll_outbound_channel(channel_ref, true, &mut poll_cx);
+            .poll_outbound_channel(channel_id, true, &mut poll_cx);
         tracing::debug!(result = ?poll_result);
 
         poll_cx.save_waker(&mut ctx)?;
