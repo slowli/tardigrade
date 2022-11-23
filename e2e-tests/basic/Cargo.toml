@@ -44,4 +44,4 @@ rev = "8ee374e08cb702df70d27c9eb7e36f87ff72da6f"
 [dev-dependencies.tardigrade-rt]
 version = "0.1.0"
 path = "../../crates/rt"
-features = ["async-io"]
+features = ["async-io", "test"]

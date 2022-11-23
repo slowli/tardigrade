@@ -24,6 +24,12 @@
 //!
 //! # Crate features
 //!
+//! ## `test`
+//!
+//! *(Off by default)*
+//!
+//! Provides the [`test`](crate::test) module with helpers for integration testing of workflows.
+//!
 //! ## `async-io`
 //!
 //! *(Off by default)*
@@ -122,6 +128,8 @@ pub mod manager;
 mod module;
 pub mod receipt;
 pub mod storage;
+#[cfg(feature = "test")]
+#[cfg_attr(docsrs, doc(cfg(feature = "test")))]
 pub mod test;
 mod utils;
 mod workflow;
