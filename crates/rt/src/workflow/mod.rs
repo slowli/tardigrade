@@ -1,7 +1,7 @@
 //! `Workflow` and tightly related types.
 
 use anyhow::Context;
-use wasmtime::{AsContextMut, Linker, Store, Trap};
+use wasmtime::{AsContextMut, Linker, Store};
 
 use std::{collections::HashMap, mem, sync::Arc};
 
@@ -117,7 +117,7 @@ impl<'a> Workflow<'a> {
         &mut self,
         function: &ExecutedFunction,
         data: Option<&[u8]>,
-    ) -> Result<ExecutionOutput, Trap> {
+    ) -> anyhow::Result<ExecutionOutput> {
         let mut output = ExecutionOutput::default();
         match function {
             ExecutedFunction::Task { task_id, .. } => {

@@ -1,5 +1,6 @@
 //! Mid-level tests for instantiating and managing workflows.
 
+use anyhow::anyhow;
 use assert_matches::assert_matches;
 use futures::{future, stream, FutureExt};
 use mimicry::Answers;
@@ -40,7 +41,7 @@ fn answer_main_task(mut poll_fns: Answers<MockPollFn>) -> Answers<MockPollFn, Ta
     })
 }
 
-fn initialize_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
+fn initialize_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
     // Emulate basic task startup: getting the inbound channel
     let (ptr, len) = WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"orders")?;
     let orders = WorkflowFunctions::get_receiver(ctx.as_context_mut(), None, ptr, len, ERROR_PTR)?;
@@ -53,7 +54,7 @@ fn initialize_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()
     Ok(Poll::Pending)
 }
 
-fn emit_event_and_flush(ctx: &mut StoreContextMut<'_, WorkflowData>) -> Result<(), Trap> {
+fn emit_event_and_flush(ctx: &mut StoreContextMut<'_, WorkflowData>) -> anyhow::Result<()> {
     let events = Some(WorkflowData::outbound_channel_ref(None, "events"));
 
     let poll_res =
@@ -69,7 +70,7 @@ fn emit_event_and_flush(ctx: &mut StoreContextMut<'_, WorkflowData>) -> Result<(
     Ok(())
 }
 
-fn consume_message(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
+fn consume_message(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
     let orders = Some(WorkflowData::inbound_channel_ref(None, "orders"));
     let events = Some(WorkflowData::outbound_channel_ref(None, "events"));
     let traces = Some(WorkflowData::outbound_channel_ref(None, "traces"));
@@ -319,7 +320,7 @@ fn trap_when_starting_workflow() {
         .spawn(b"test_input".to_vec(), &channel_ids, services)
         .unwrap();
     let err = poll_fn_sx
-        .send(|_| Err(Trap::new("boom")))
+        .send(|_| Err(anyhow!("boom")))
         .scope(|| workflow.initialize())
         .unwrap_err()
         .to_string();
@@ -327,7 +328,9 @@ fn trap_when_starting_workflow() {
     assert!(err.contains("failed while polling task 0"), "{}", err);
 }
 
-fn initialize_and_spawn_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
+fn initialize_and_spawn_task(
+    mut ctx: StoreContextMut<'_, WorkflowData>,
+) -> anyhow::Result<Poll<()>> {
     let _ = initialize_task(ctx.as_context_mut())?;
 
     let (name_ptr, name_len) =
@@ -469,7 +472,7 @@ fn rolling_back_task_spawning() {
         let (name_ptr, name_len) =
             WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"new task")?;
         WorkflowFunctions::spawn_task(ctx.as_context_mut(), name_ptr, name_len, 1)?;
-        Err(Trap::new("boom"))
+        Err(anyhow!("boom"))
     };
     let err = poll_fn_sx
         .send(spawn_task_and_trap)
@@ -511,7 +514,7 @@ fn rolling_back_task_abort() {
     // Push the message in order to tick the main task.
     let abort_task_and_trap: MockPollFn = |mut ctx| {
         WorkflowFunctions::schedule_task_abortion(ctx.as_context_mut(), 1)?;
-        Err(Trap::new("boom"))
+        Err(anyhow!("boom"))
     };
     let err = poll_fn_sx
         .send(abort_task_and_trap)
@@ -554,7 +557,7 @@ fn rolling_back_emitting_messages_on_trap() {
             WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"trace #1")?;
         WorkflowFunctions::start_send(ctx.as_context_mut(), traces, trace_ptr, trace_len)?;
 
-        Err(Trap::new("boom"))
+        Err(anyhow!("boom"))
     };
     poll_fn_sx
         .send(emit_message_and_trap)
@@ -581,7 +584,7 @@ fn rolling_back_placing_waker_on_trap() {
     // Push the message in order to tick the main task.
     let flush_event_and_trap: MockPollFn = |mut ctx| {
         emit_event_and_flush(&mut ctx)?;
-        Err(Trap::new("boom"))
+        Err(anyhow!("boom"))
     };
     poll_fn_sx
         .send(flush_event_and_trap)
@@ -690,7 +693,7 @@ fn report_task_error(
     line: u32,
     column: u32,
     message: &str,
-) -> Result<(), Trap> {
+) -> anyhow::Result<()> {
     let (message_ptr, message_len) =
         WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(message.as_bytes())?;
     let (filename_ptr, filename_len) =
@@ -708,7 +711,7 @@ fn report_task_error(
 
 pub(crate) fn complete_task_with_error(
     ctx: StoreContextMut<'_, WorkflowData>,
-) -> Result<Poll<()>, Trap> {
+) -> anyhow::Result<Poll<()>> {
     report_task_error(ctx, 42, 1, "error message")?;
     Ok(Poll::Ready(()))
 }

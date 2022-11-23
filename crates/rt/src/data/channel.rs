@@ -1,8 +1,9 @@
 //! Functionality to manage channel state.
 
+use anyhow::{anyhow, Context};
 use serde::{Deserialize, Serialize};
 use tracing::field;
-use wasmtime::{AsContextMut, ExternRef, StoreContextMut, Trap};
+use wasmtime::{AsContextMut, ExternRef, StoreContextMut};
 
 use std::{
     cmp,
@@ -667,12 +668,12 @@ impl WorkflowFunctions {
         ctx: &mut StoreContextMut<'_, WorkflowData>,
         result: Result<(), AccessErrorKind>,
         error_ptr: u32,
-    ) -> Result<(), Trap> {
+    ) -> anyhow::Result<()> {
         let memory = ctx.data().exports().memory;
         let result_abi = result.into_wasm(&mut WasmAllocator::new(ctx.as_context_mut()))?;
         memory
             .write(ctx, error_ptr as usize, &result_abi.to_le_bytes())
-            .map_err(|err| Trap::new(format!("cannot write to WASM memory: {}", err)))
+            .context("cannot write to WASM memory")
     }
 
     #[tracing::instrument(level = "debug", skip_all, err, fields(workflow_id, channel_name))]
@@ -682,7 +683,7 @@ impl WorkflowFunctions {
         channel_name_ptr: u32,
         channel_name_len: u32,
         error_ptr: u32,
-    ) -> Result<Option<ExternRef>, Trap> {
+    ) -> anyhow::Result<Option<ExternRef>> {
         let memory = ctx.data().exports().memory;
         let channel_name =
             utils::copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
@@ -712,13 +713,13 @@ impl WorkflowFunctions {
     fn channels<'a>(
         data: &'a mut PersistedWorkflowData,
         workflow: Option<&ExternRef>,
-    ) -> Result<(Option<WorkflowId>, &'a mut ChannelStates), Trap> {
+    ) -> anyhow::Result<(Option<WorkflowId>, &'a mut ChannelStates)> {
         if let Some(workflow) = workflow {
             let id = HostResource::from_ref(Some(workflow))?.as_workflow()?;
-            let workflow = data.child_workflows.get_mut(&id).ok_or_else(|| {
-                let message = format!("unknown workflow ID {}", id);
-                Trap::new(message)
-            })?;
+            let workflow = data
+                .child_workflows
+                .get_mut(&id)
+                .ok_or_else(|| anyhow!("unknown workflow ID {id}"))?;
             Ok((Some(id), &mut workflow.channels))
         } else {
             Ok((None, &mut data.channels))
@@ -730,7 +731,7 @@ impl WorkflowFunctions {
         mut ctx: StoreContextMut<'_, WorkflowData>,
         channel_ref: Option<ExternRef>,
         poll_cx: WasmContextPtr,
-    ) -> Result<i64, Trap> {
+    ) -> anyhow::Result<i64> {
         let channel_ref = HostResource::from_ref(channel_ref.as_ref())?.as_inbound_channel()?;
         tracing::Span::current().record("channel", field::debug(channel_ref));
 
@@ -755,7 +756,7 @@ impl WorkflowFunctions {
         channel_name_ptr: u32,
         channel_name_len: u32,
         error_ptr: u32,
-    ) -> Result<Option<ExternRef>, Trap> {
+    ) -> anyhow::Result<Option<ExternRef>> {
         let memory = ctx.data().exports().memory;
         let channel_name =
             utils::copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
@@ -787,7 +788,7 @@ impl WorkflowFunctions {
         mut ctx: StoreContextMut<'_, WorkflowData>,
         channel_ref: Option<ExternRef>,
         cx: WasmContextPtr,
-    ) -> Result<i32, Trap> {
+    ) -> anyhow::Result<i32> {
         let channel_ref = HostResource::from_ref(channel_ref.as_ref())?.as_outbound_channel()?;
         tracing::Span::current().record("channel", field::debug(channel_ref));
 
@@ -812,7 +813,7 @@ impl WorkflowFunctions {
         channel_ref: Option<ExternRef>,
         message_ptr: u32,
         message_len: u32,
-    ) -> Result<i32, Trap> {
+    ) -> anyhow::Result<i32> {
         let channel_ref = HostResource::from_ref(channel_ref.as_ref())?.as_outbound_channel()?;
         let memory = ctx.data().exports().memory;
         let message = utils::copy_bytes_from_wasm(&ctx, &memory, message_ptr, message_len)?;
@@ -828,7 +829,7 @@ impl WorkflowFunctions {
         mut ctx: StoreContextMut<'_, WorkflowData>,
         channel_ref: Option<ExternRef>,
         poll_cx: WasmContextPtr,
-    ) -> Result<i32, Trap> {
+    ) -> anyhow::Result<i32> {
         let channel_ref = HostResource::from_ref(channel_ref.as_ref())?.as_outbound_channel()?;
         tracing::Span::current().record("channel", field::debug(channel_ref));
 

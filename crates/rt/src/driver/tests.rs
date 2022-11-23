@@ -6,7 +6,7 @@ use futures::{
     SinkExt, TryStreamExt,
 };
 use mimicry::Answers;
-use wasmtime::{AsContextMut, StoreContextMut, Trap};
+use wasmtime::{AsContextMut, StoreContextMut};
 
 use super::*;
 use crate::{
@@ -24,7 +24,7 @@ use tardigrade::{
 
 const POLL_CX: WasmContextPtr = 123;
 
-fn poll_orders(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
+fn poll_orders(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
     let orders = Some(WorkflowData::inbound_channel_ref(None, "orders"));
     let poll_result =
         WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
@@ -33,7 +33,7 @@ fn poll_orders(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, T
     Ok(Poll::Pending)
 }
 
-fn handle_order(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
+fn handle_order(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
     let orders = Some(WorkflowData::inbound_channel_ref(None, "orders"));
     let poll_result =
         WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;

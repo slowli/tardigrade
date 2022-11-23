@@ -112,7 +112,7 @@ fn create_workflow_with_manager(services: Services<'_>) -> Workflow<'_> {
     workflow
 }
 
-fn spawn_child_workflow(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
+fn spawn_child_workflow(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
     // Emulate getting interface.
     let (id_ptr, id_len) = WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"test:latest")?;
     let interface_res = SpawnFunctions::workflow_interface(ctx.as_context_mut(), id_ptr, id_len)?;
@@ -152,7 +152,7 @@ fn spawn_child_workflow(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Po
 
 fn get_child_workflow_channel(
     mut ctx: StoreContextMut<'_, WorkflowData>,
-) -> Result<Poll<()>, Trap> {
+) -> anyhow::Result<Poll<()>> {
     let stub = Some(HostResource::WorkflowStub(0).into_ref());
     let workflow =
         SpawnFunctions::poll_workflow_init(ctx.as_context_mut(), stub, POLL_CX, ERROR_PTR)?;
@@ -180,7 +180,7 @@ fn get_child_workflow_channel(
 fn configure_handles(
     mut ctx: StoreContextMut<'_, WorkflowData>,
     handles: Option<ExternRef>,
-) -> Result<(), Trap> {
+) -> anyhow::Result<()> {
     let (name_ptr, name_len) =
         WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"commands")?;
     SpawnFunctions::set_channel_handle(
@@ -377,7 +377,7 @@ fn spawning_child_workflow_with_host_error() {
 
 fn consume_message_from_child(
     mut ctx: StoreContextMut<'_, WorkflowData>,
-) -> Result<Poll<()>, Trap> {
+) -> anyhow::Result<Poll<()>> {
     let traces = Some(WorkflowData::inbound_channel_ref(Some(1), "traces"));
     let commands = Some(WorkflowData::outbound_channel_ref(Some(1), "commands"));
 

@@ -1,8 +1,9 @@
 //! Tests for `WorkflowManager`.
 
+use anyhow::anyhow;
 use assert_matches::assert_matches;
 use mimicry::Answers;
-use wasmtime::{AsContextMut, StoreContextMut, Trap};
+use wasmtime::{AsContextMut, StoreContextMut};
 
 use std::{collections::HashSet, task::Poll};
 
@@ -103,7 +104,7 @@ async fn wakers_for_workflow(
         .collect()
 }
 
-fn initialize_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
+fn initialize_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
     let orders = Some(WorkflowData::inbound_channel_ref(None, "orders"));
     let poll_result =
         WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
@@ -401,11 +402,11 @@ async fn error_initializing_workflow() {
     let workflow_id = workflow.id();
 
     let err = poll_fn_sx
-        .send(|_| Err(Trap::new("oops")))
+        .send(|_| Err(anyhow!("oops")))
         .async_scope(tick_workflow(&manager, workflow_id))
         .await
         .unwrap_err();
-    let err = err.trap().display_reason().to_string();
+    let err = err.trap().to_string();
     assert!(err.contains("oops"), "{err}");
 
     workflow.update().await.unwrap_err();
@@ -417,7 +418,7 @@ async fn error_initializing_workflow() {
         assert!(workflow.is_errored());
         let workflow = workflow.unwrap_errored();
         assert_eq!(workflow.id(), workflow_id);
-        let err = workflow.error().trap().display_reason().to_string();
+        let err = workflow.error().trap().to_string();
         assert!(err.contains("oops"), "{err}");
         assert_eq!(workflow.messages().count(), 0);
 
@@ -432,7 +433,7 @@ async fn error_initializing_workflow() {
     assert!(!receipt.executions().is_empty());
 }
 
-fn poll_receiver(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
+fn poll_receiver(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
     let orders = Some(WorkflowData::inbound_channel_ref(None, "orders"));
     let poll_result =
         WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
@@ -441,7 +442,7 @@ fn poll_receiver(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>,
     Ok(Poll::Pending)
 }
 
-fn consume_message(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
+fn consume_message(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
     let orders = Some(WorkflowData::inbound_channel_ref(None, "orders"));
     let poll_result =
         WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
@@ -509,7 +510,7 @@ async fn error_processing_inbound_message_in_workflow() {
             WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
         assert_ne!(poll_result, -1); // Ready(Some(_))
 
-        Err(Trap::new("oops"))
+        Err(anyhow!("oops"))
     };
 
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
@@ -533,7 +534,7 @@ async fn error_processing_inbound_message_in_workflow() {
         .async_scope(feed_message(&manager, workflow_id, "orders"))
         .await
         .unwrap_err();
-    let err = err.trap().display_reason().to_string();
+    let err = err.trap().to_string();
     assert!(err.contains("oops"), "{err}");
 
     let channel_info = manager.channel(orders_id).await.unwrap();

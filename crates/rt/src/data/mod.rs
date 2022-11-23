@@ -1,9 +1,10 @@
 //! Workflow state.
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use tracing::field;
 use tracing_tunnel::TracingEvent;
-use wasmtime::{AsContextMut, ExternRef, StoreContextMut, Trap};
+use wasmtime::{AsContextMut, ExternRef, StoreContextMut};
 
 use std::collections::{HashMap, HashSet};
 
@@ -175,7 +176,7 @@ impl WorkflowFunctions {
     pub fn drop_ref(
         mut ctx: StoreContextMut<'_, WorkflowData>,
         dropped: Option<ExternRef>,
-    ) -> Result<(), Trap> {
+    ) -> anyhow::Result<()> {
         let dropped = HostResource::from_ref(dropped.as_ref())?;
         tracing::Span::current().record("resource", field::debug(dropped));
 
@@ -217,7 +218,7 @@ impl WorkflowFunctions {
         filename_len: u32,
         line: u32,
         column: u32,
-    ) -> Result<(), Trap> {
+    ) -> anyhow::Result<()> {
         Self::report_error_or_panic(
             ctx,
             ReportedErrorKind::Panic,
@@ -240,7 +241,7 @@ impl WorkflowFunctions {
         filename_len: u32,
         line: u32,
         column: u32,
-    ) -> Result<(), Trap> {
+    ) -> anyhow::Result<()> {
         let memory = ctx.data().exports().memory;
         let message = if message_ptr == 0 {
             None
@@ -295,13 +296,11 @@ impl TracingFunctions {
         mut ctx: StoreContextMut<'_, WorkflowData>,
         trace_ptr: u32,
         trace_len: u32,
-    ) -> Result<(), Trap> {
+    ) -> anyhow::Result<()> {
         let memory = ctx.data().exports().memory;
         let trace = copy_string_from_wasm(&ctx, &memory, trace_ptr, trace_len)?;
-        let trace: TracingEvent = serde_json::from_str(&trace).map_err(|err| {
-            let message = format!("`TracingEvent` deserialization failed: {err}");
-            Trap::new(message)
-        })?;
+        let trace: TracingEvent =
+            serde_json::from_str(&trace).context("`TracingEvent` deserialization failed")?;
         tracing::trace!(?trace, "received client trace");
 
         if let Some(tracing) = ctx.data_mut().services.tracer.as_mut() {

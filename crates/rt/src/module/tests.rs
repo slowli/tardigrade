@@ -1,7 +1,7 @@
 //! Mocks for `WorkflowModule`s.
 
 use mimicry::{Answers, CallReal, Mock, MockGuard, Mut};
-use wasmtime::{StoreContextMut, Trap};
+use wasmtime::StoreContextMut;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -18,7 +18,7 @@ const INTERFACE: &[u8] = br#"{
     "out": { "events": {}, "traces": { "capacity": null } }
 }"#;
 
-pub(crate) type MockPollFn = fn(StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap>;
+pub(crate) type MockPollFn = fn(StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>>;
 
 #[derive(Default, Mock)]
 #[mock(mut)]
@@ -53,7 +53,8 @@ impl ExportsMock {
             map.insert("TestWorkflow".to_owned(), Interface::from_bytes(INTERFACE));
             Ok(map)
         } else {
-            this.call_real().scope(|| WorkflowModule::interfaces_from_wasm(bytes))
+            this.call_real()
+                .scope(|| WorkflowModule::interfaces_from_wasm(bytes))
         }
     }
 

@@ -30,7 +30,7 @@ impl WasmValue for i64 {}
 /// Simple WASM allocator interface.
 pub trait AllocateBytes {
     /// Allocation error.
-    type Error: error::Error + 'static;
+    type Error: 'static;
 
     /// Copies `bytes` to WASM and returns a (pointer, length) tuple for the copied slice.
     ///

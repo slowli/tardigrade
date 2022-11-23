@@ -9,9 +9,8 @@
 //! [`WorkflowModule`]: crate::WorkflowModule
 
 use serde::{Deserialize, Serialize};
-use wasmtime::Trap;
 
-use std::{error, fmt, ops::Range, task::Poll};
+use std::{error, fmt, ops::Range, sync::Arc, task::Poll};
 
 use crate::utils::{serde_poll, serde_poll_res, serde_trap};
 use tardigrade::{
@@ -347,22 +346,26 @@ impl Receipt {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionError {
     #[serde(with = "serde_trap")]
-    trap: Trap,
+    trap: Arc<anyhow::Error>,
     panic_info: Option<PanicInfo>,
     receipt: Receipt,
 }
 
 impl ExecutionError {
-    pub(crate) fn new(trap: Trap, panic_info: Option<PanicInfo>, receipt: Receipt) -> Self {
+    pub(crate) fn new(
+        trap: anyhow::Error,
+        panic_info: Option<PanicInfo>,
+        receipt: Receipt,
+    ) -> Self {
         Self {
-            trap,
+            trap: Arc::new(trap),
             panic_info,
             receipt,
         }
     }
 
-    /// Returns a [`Trap`] that has led to an error.
-    pub fn trap(&self) -> &Trap {
+    /// Returns an [`Error`](anyhow::Error) that has led to this execution error.
+    pub fn trap(&self) -> &anyhow::Error {
         &self.trap
     }
 
@@ -385,16 +388,16 @@ impl fmt::Display for ExecutionError {
         let execution = self.receipt.executions.last().unwrap();
         execution.function.write_summary(formatter)?;
         if let Some(panic_info) = &self.panic_info {
-            write!(formatter, ": {}", panic_info)
+            write!(formatter, ": {panic_info}")
         } else {
-            write!(formatter, ": {}", self.trap.display_reason())
+            write!(formatter, ": {}", self.trap)
         }
     }
 }
 
 impl error::Error for ExecutionError {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
-        Some(&self.trap)
+        Some(anyhow::Error::as_ref(&self.trap))
     }
 }
 

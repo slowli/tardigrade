@@ -1,7 +1,8 @@
 //! Various helpers for workflow state.
 
+use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
-use wasmtime::{AsContextMut, ExternRef, Store, StoreContextMut, Trap};
+use wasmtime::{AsContextMut, ExternRef, Store, StoreContextMut};
 
 use std::{collections::HashSet, mem, task::Poll};
 
@@ -48,75 +49,62 @@ impl HostResource {
         Self::OutboundChannel(ChannelRef { workflow_id, name })
     }
 
-    pub fn from_ref(reference: Option<&ExternRef>) -> Result<&Self, Trap> {
-        let reference = reference.ok_or_else(|| Trap::new("null reference provided to runtime"))?;
+    pub fn from_ref(reference: Option<&ExternRef>) -> anyhow::Result<&Self> {
+        let reference = reference.ok_or_else(|| anyhow!("null reference provided to runtime"))?;
         reference
             .data()
             .downcast_ref::<Self>()
-            .ok_or_else(|| Trap::new("reference of unexpected type"))
+            .ok_or_else(|| anyhow!("reference of unexpected type"))
     }
 
     pub fn into_ref(self) -> ExternRef {
         ExternRef::new(self)
     }
 
-    pub fn as_inbound_channel(&self) -> Result<&ChannelRef, Trap> {
+    pub fn as_inbound_channel(&self) -> anyhow::Result<&ChannelRef> {
         if let Self::InboundChannel(channel_ref) = self {
             Ok(channel_ref)
         } else {
-            let message = format!(
-                "unexpected reference type: expected inbound channel, got {:?}",
-                self
-            );
-            Err(Trap::new(message))
+            let err = anyhow!("unexpected reference type: expected inbound channel, got {self:?}");
+            Err(err)
         }
     }
 
-    pub fn as_outbound_channel(&self) -> Result<&ChannelRef, Trap> {
+    pub fn as_outbound_channel(&self) -> anyhow::Result<&ChannelRef> {
         if let Self::OutboundChannel(channel_ref) = self {
             Ok(channel_ref)
         } else {
-            let message = format!(
-                "unexpected reference type: expected outbound channel, got {:?}",
-                self
-            );
-            Err(Trap::new(message))
+            let err = anyhow!("unexpected reference type: expected outbound channel, got {self:?}");
+            Err(err)
         }
     }
 
-    pub fn as_channel_handles(&self) -> Result<&SharedChannelHandles, Trap> {
+    pub fn as_channel_handles(&self) -> anyhow::Result<&SharedChannelHandles> {
         if let Self::ChannelHandles(handles) = self {
             Ok(handles)
         } else {
-            let message = format!(
-                "unexpected reference type: expected workflow spawn config, got {:?}",
-                self
-            );
-            Err(Trap::new(message))
+            let err =
+                anyhow!("unexpected reference type: expected workflow spawn config, got {self:?}");
+            Err(err)
         }
     }
 
-    pub fn as_workflow(&self) -> Result<WorkflowId, Trap> {
+    pub fn as_workflow(&self) -> anyhow::Result<WorkflowId> {
         if let Self::Workflow(id) = self {
             Ok(*id)
         } else {
-            let message = format!(
-                "unexpected reference type: expected workflow handle, got {:?}",
-                self
-            );
-            Err(Trap::new(message))
+            let err = anyhow!("unexpected reference type: expected workflow handle, got {self:?}");
+            Err(err)
         }
     }
 
-    pub fn as_workflow_stub(&self) -> Result<WorkflowId, Trap> {
+    pub fn as_workflow_stub(&self) -> anyhow::Result<WorkflowId> {
         if let Self::WorkflowStub(id) = self {
             Ok(*id)
         } else {
-            let message = format!(
-                "unexpected reference type: expected workflow stub handle, got {:?}",
-                self
-            );
-            Err(Trap::new(message))
+            let err =
+                anyhow!("unexpected reference type: expected workflow stub handle, got {self:?}");
+            Err(err)
         }
     }
 }
@@ -155,7 +143,7 @@ impl WasmContext {
         }
     }
 
-    pub fn save_waker(self, ctx: &mut StoreContextMut<'_, WorkflowData>) -> Result<(), Trap> {
+    pub fn save_waker(self, ctx: &mut StoreContextMut<'_, WorkflowData>) -> anyhow::Result<()> {
         if let Some(placement) = &self.placement {
             let waker_id = ctx
                 .data()
@@ -491,7 +479,7 @@ impl WorkflowData<'_> {
         store: &mut Store<Self>,
         waker_id: WakerId,
         cause: WakeUpCause,
-    ) -> Result<(), Trap> {
+    ) -> anyhow::Result<()> {
         store.data_mut().current_wakeup_cause = Some(cause);
         let result = store
             .data()

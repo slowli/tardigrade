@@ -31,7 +31,7 @@ fn configure_handle(
     handles: Option<ExternRef>,
     channel_kind: ChannelKind,
     name: &str,
-) -> Result<(), Trap> {
+) -> anyhow::Result<()> {
     let (name_ptr, name_len) =
         WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(name.as_bytes())?;
     SpawnFunctions::set_channel_handle(
@@ -47,7 +47,7 @@ fn configure_handle(
 fn configure_handles(
     mut ctx: StoreContextMut<'_, WorkflowData>,
     handles: Option<ExternRef>,
-) -> Result<(), Trap> {
+) -> anyhow::Result<()> {
     configure_handle(
         ctx.as_context_mut(),
         handles.clone(),
@@ -69,7 +69,7 @@ fn configure_handles(
     Ok(())
 }
 
-fn spawn_child(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
+fn spawn_child(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
     let (id_ptr, id_len) =
         WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(DEFINITION_ID.as_bytes())?;
     let (args_ptr, args_len) =
@@ -92,7 +92,7 @@ fn spawn_child(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, T
     Ok(Poll::Pending)
 }
 
-fn poll_child_traces(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
+fn poll_child_traces(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
     let workflow = Some(WorkflowData::child_ref(CHILD_ID));
 
     // Block on the inbound channel from the child.
@@ -293,7 +293,7 @@ async fn sending_message_to_child() {
 
 fn test_child_channels_after_closure(
     mut ctx: StoreContextMut<WorkflowData>,
-) -> Result<Poll<()>, Trap> {
+) -> anyhow::Result<Poll<()>> {
     let child_orders = Some(WorkflowData::outbound_channel_ref(Some(CHILD_ID), "orders"));
     let poll_result =
         WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), child_orders, POLL_CX)?;
@@ -431,7 +431,7 @@ async fn child_workflow_channel_closure() {
 fn spawn_child_with_copied_outbound_channel(
     mut ctx: StoreContextMut<'_, WorkflowData>,
     copy_traces: bool,
-) -> Result<Poll<()>, Trap> {
+) -> anyhow::Result<Poll<()>> {
     let (id_ptr, id_len) =
         WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(DEFINITION_ID.as_bytes())?;
     let (args_ptr, args_len) =
@@ -476,7 +476,7 @@ fn spawn_child_with_copied_outbound_channel(
 
 fn poll_child_completion_with_copied_channel(
     mut ctx: StoreContextMut<'_, WorkflowData>,
-) -> Result<Poll<()>, Trap> {
+) -> anyhow::Result<Poll<()>> {
     let workflow = Some(WorkflowData::child_ref(CHILD_ID));
     let (name_ptr, name_len) = WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"events")?;
     let child_events = WorkflowFunctions::get_receiver(
@@ -707,7 +707,7 @@ async fn spawning_and_completing_child_with_aliased_outbound_channel() {
     test_child_with_aliased_outbound_channel(true).await;
 }
 
-fn poll_child_completion(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
+fn poll_child_completion(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
     let workflow = Some(WorkflowData::child_ref(CHILD_ID));
     let poll_result =
         SpawnFunctions::poll_workflow_completion(ctx.as_context_mut(), workflow, POLL_CX)?;
@@ -770,7 +770,9 @@ async fn completing_child_with_error() {
     assert!(is_child_polled, "{receipt:?}");
 }
 
-fn complete_task_with_panic(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
+fn complete_task_with_panic(
+    mut ctx: StoreContextMut<'_, WorkflowData>,
+) -> anyhow::Result<Poll<()>> {
     let (message_ptr, message_len) =
         WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"panic message")?;
     let (filename_ptr, filename_len) =
@@ -790,12 +792,12 @@ fn complete_task_with_panic(mut ctx: StoreContextMut<'_, WorkflowData>) -> Resul
         42, // line
         1,  // column
     )?;
-    Err(Trap::new("oops"))
+    Err(anyhow!("oops"))
 }
 
 fn check_aborted_child_completion(
     mut ctx: StoreContextMut<'_, WorkflowData>,
-) -> Result<Poll<()>, Trap> {
+) -> anyhow::Result<Poll<()>> {
     let child = Some(WorkflowData::child_ref(CHILD_ID));
     let poll_result =
         SpawnFunctions::poll_workflow_completion(ctx.as_context_mut(), child, POLL_CX)?;
