@@ -90,12 +90,12 @@ impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
     ) {
         let completion_receiver = if workflow.result().is_ready() {
             // Close all channels linked to the workflow.
-            for (.., state) in workflow.inbound_channels() {
-                self.close_channel_side(state.id(), ChannelSide::Receiver)
+            for (channel_id, _) in workflow.inbound_channels() {
+                self.close_channel_side(channel_id, ChannelSide::Receiver)
                     .await;
             }
-            for (.., state) in workflow.outbound_channels() {
-                self.close_channel_side(state.id(), ChannelSide::WorkflowSender(id))
+            for (channel_id, _) in workflow.outbound_channels() {
+                self.close_channel_side(channel_id, ChannelSide::WorkflowSender(id))
                     .await;
             }
             parent_id

@@ -453,9 +453,9 @@ fn consuming_message_from_child_workflow() {
     assert_eq!(messages[&child_commands_id][0].as_ref(), b"command #1");
 
     let persisted = &workflow.data().persisted;
-    let child_traces = persisted.inbound_channel(child_traces_id).unwrap();
+    let child_traces = &persisted.channels.inbound[&child_traces_id];
     assert_eq!(child_traces.received_messages, 1);
-    let child_commands = persisted.outbound_channel(child_commands_id).unwrap();
+    let child_commands = &persisted.channels.outbound[&child_commands_id];
     assert_eq!(child_commands.flushed_messages, 1);
 }
 

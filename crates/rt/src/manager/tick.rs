@@ -153,12 +153,12 @@ impl<'a> WorkflowSeed<'a> {
         transaction: &T,
     ) -> Option<PendingChannel> {
         let channels = self.persisted.inbound_channels();
-        let pending_channels = channels.filter_map(|(_, state)| {
+        let pending_channels = channels.filter_map(|(id, state)| {
             if state.is_closed() {
                 None
             } else {
                 Some(PendingChannel {
-                    channel_id: state.id(),
+                    channel_id: id,
                     message_idx: state.received_message_count(),
                     waits_for_message: state.waits_for_message(),
                 })

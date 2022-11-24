@@ -435,15 +435,13 @@ impl SpawnFunctions {
         name_len: u32,
         sender: Option<ExternRef>,
     ) -> anyhow::Result<()> {
-        let channel_ref = HostResource::from_ref(sender.as_ref())?.as_outbound_channel()?;
-        let channel_state = ctx.data().persisted.outbound_channel(channel_ref);
-        let channel_id = channel_state.unwrap().id();
+        let channel_id = HostResource::from_ref(sender.as_ref())?.as_outbound_channel()?;
         let memory = ctx.data().exports().memory;
         let name = utils::copy_string_from_wasm(&ctx, &memory, name_ptr, name_len)?;
 
         tracing::Span::current()
             .record("name", &name)
-            .record("sender", field::debug(channel_ref));
+            .record("sender", channel_id);
 
         let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
         let mut handles = handles.inner.lock().unwrap();

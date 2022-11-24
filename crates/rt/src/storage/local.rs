@@ -449,12 +449,11 @@ impl WriteWorkflows for LocalTransaction<'_> {
         let mut all_channels = workflows.flat_map(|(record, persisted)| {
             persisted
                 .inbound_channels()
-                .map(move |(_, state)| (record, state))
+                .map(move |(id, state)| (record, id, state))
         });
 
-        all_channels.find_map(|(record, state)| {
+        all_channels.find_map(|(record, channel_id, state)| {
             if state.waits_for_message() {
-                let channel_id = state.id();
                 let next_message_idx = state.received_message_count();
                 let channel = &self.inner.channels[&channel_id];
                 if channel.contains_index(next_message_idx) {

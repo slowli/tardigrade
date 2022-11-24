@@ -143,9 +143,8 @@ fn flip_bool(&flag: &bool) -> bool {
 }
 
 /// State of an inbound workflow channel.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct InboundChannelState {
-    pub(super) channel_id: ChannelId, // FIXME remove as duplicated
     #[serde(default, skip_serializing_if = "flip_bool")]
     pub(super) is_closed: bool,
     pub(super) received_messages: usize,
@@ -156,19 +155,8 @@ pub struct InboundChannelState {
 }
 
 impl InboundChannelState {
-    pub(crate) fn new(channel_id: ChannelId) -> Self {
-        Self {
-            channel_id,
-            is_closed: false,
-            received_messages: 0,
-            pending_message: None,
-            wakes_on_next_element: HashSet::new(),
-        }
-    }
-
-    /// Returns the ID of the channel.
-    pub fn id(&self) -> ChannelId {
-        self.channel_id
+    pub(crate) fn new() -> Self {
+        Self::default()
     }
 
     /// Returns the number of messages received over the channel.
@@ -199,7 +187,6 @@ impl InboundChannelState {
 /// State of an outbound workflow channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutboundChannelState {
-    pub(super) channel_id: ChannelId,
     pub(super) capacity: Option<usize>,
     /// Number of references to the channel (including non-acquired ones).
     pub(super) ref_count: usize,
@@ -212,9 +199,8 @@ pub struct OutboundChannelState {
 }
 
 impl OutboundChannelState {
-    pub(crate) fn new(channel_id: ChannelId, capacity: Option<usize>) -> Self {
+    pub(crate) fn new(capacity: Option<usize>) -> Self {
         Self {
-            channel_id,
             capacity,
             ref_count: 0,
             is_closed: false,
@@ -222,11 +208,6 @@ impl OutboundChannelState {
             messages: Vec::new(),
             wakes_on_flush: HashSet::new(),
         }
-    }
-
-    /// Returns ID of the channel.
-    pub fn id(&self) -> ChannelId {
-        self.channel_id
     }
 
     /// Checks whether the channel is closed.
@@ -246,7 +227,7 @@ impl OutboundChannelState {
         };
     }
 
-    fn take_messages(&mut self) -> (Vec<Message>, Option<Wakers>) {
+    fn take_messages(&mut self, channel_id: ChannelId) -> (Vec<Message>, Option<Wakers>) {
         let start_message_idx = self.flushed_messages;
         let messages = mem::take(&mut self.messages);
         self.flushed_messages += messages.len();
@@ -258,7 +239,7 @@ impl OutboundChannelState {
                 waker_set = Some(Wakers::new(
                     wakers,
                     WakeUpCause::Flush {
-                        channel_id: self.channel_id,
+                        channel_id,
                         message_indexes: start_message_idx..(start_message_idx + messages.len()),
                     },
                 ));
@@ -297,14 +278,14 @@ impl ChannelStates {
         for &id in channel_ids.inbound.values() {
             self.inbound
                 .entry(id)
-                .or_insert_with(|| InboundChannelState::new(id));
+                .or_insert_with(InboundChannelState::new);
         }
         for (name, &id) in &channel_ids.outbound {
             let capacity = outbound_cap_fn(name);
             let state = self
                 .outbound
                 .entry(id)
-                .or_insert_with(|| OutboundChannelState::new(id, capacity));
+                .or_insert_with(|| OutboundChannelState::new(capacity));
             state.ensure_capacity(capacity);
             state.ref_count += 1;
         }
@@ -398,10 +379,6 @@ impl PersistedWorkflowData {
         self.channels.inbound.values_mut()
     }
 
-    pub(super) fn outbound_channel(&self, channel_id: ChannelId) -> Option<&OutboundChannelState> {
-        self.channels.outbound.get(&channel_id)
-    }
-
     pub(super) fn outbound_channel_mut(
         &mut self,
         channel_id: ChannelId,
@@ -432,7 +409,7 @@ impl PersistedWorkflowData {
         let messages_by_channel = self
             .outbound_channels_mut()
             .filter_map(|(id, state)| {
-                let (messages, maybe_wakers) = state.take_messages();
+                let (messages, maybe_wakers) = state.take_messages(id);
                 if let Some(wakers) = maybe_wakers {
                     new_wakers.push(wakers);
                 }
