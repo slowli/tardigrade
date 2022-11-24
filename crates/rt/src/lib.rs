@@ -128,7 +128,7 @@ pub mod manager;
 mod module;
 pub mod receipt;
 pub mod storage;
-#[cfg(feature = "test")]
+#[cfg(feature = "test")] // FIXME move `MockScheduler` so that lib tests work w/o feature=test
 #[cfg_attr(docsrs, doc(cfg(feature = "test")))]
 pub mod test;
 mod utils;
@@ -137,7 +137,10 @@ mod workflow;
 #[cfg(feature = "async-io")]
 pub use crate::backends::AsyncIoScheduler;
 pub use crate::{
-    data::{ChildWorkflowState, InboundChannelState, OutboundChannelState, TaskState, TimerState},
+    data::{
+        ChannelMapping, ChildWorkflowState, InboundChannelState, OutboundChannelState, TaskState,
+        TimerState,
+    },
     module::{
         Clock, ExtendLinker, Schedule, TimerFuture, WorkflowEngine, WorkflowModule, WorkflowSpawner,
     },

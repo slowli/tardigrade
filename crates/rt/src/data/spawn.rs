@@ -15,7 +15,7 @@ use std::{
 use crate::{
     data::{
         helpers::{HostResource, WakeIfPending, WakerPlacement, WasmContext, WasmContextPtr},
-        PersistedWorkflowData, WorkflowData,
+        ChannelMapping, PersistedWorkflowData, WorkflowData,
     },
     receipt::{ResourceEventKind, ResourceId, WakeUpCause},
     utils::{self, WasmAllocator},
@@ -77,7 +77,7 @@ impl ChildWorkflowStubs {
 /// State of child workflow as viewed by its parent.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChildWorkflowState {
-    pub(super) channels: ChannelIds,
+    pub(super) channels: ChannelMapping,
     #[serde(with = "utils::serde_poll_res")]
     completion_result: Poll<Result<(), JoinError>>,
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]
@@ -97,7 +97,7 @@ impl Clone for ChildWorkflowState {
 impl ChildWorkflowState {
     fn new(channel_ids: ChannelIds) -> Self {
         Self {
-            channels: channel_ids,
+            channels: ChannelMapping::new(channel_ids),
             completion_result: Poll::Pending,
             wakes_on_completion: HashSet::new(),
         }
@@ -111,16 +111,9 @@ impl ChildWorkflowState {
         }
     }
 
-    /// Returns the current state of a *local* inbound channel connected to the child workflow
-    /// (i.e., the child has an outbound end of the channel).
-    pub fn inbound_channel_id(&self, name: &str) -> Option<ChannelId> {
-        self.channels.inbound.get(name).copied()
-    }
-
-    /// Returns the current state of a *local* outbound channel connected to the child workflow
-    /// (i.e., the child has the inbound end of the channel).
-    pub fn outbound_channel_id(&self, name: &str) -> Option<ChannelId> {
-        self.channels.outbound.get(name).copied()
+    /// Returns the mapping of *local* channels.
+    pub fn channels(&self) -> &ChannelMapping {
+        &self.channels
     }
 
     pub(super) fn insert_waker(&mut self, waker_id: WakerId) {
@@ -149,8 +142,20 @@ impl PersistedWorkflowData {
         let wakers = mem::take(&mut stub.wakes_on_init);
         self.schedule_wakers(wakers, WakeUpCause::InitWorkflow { stub_id });
 
+        for (name, channel_config) in &config.inbound {
+            if matches!(channel_config, ChannelSpawnConfig::Existing(_)) {
+                channel_ids.inbound.remove(name);
+            }
+        }
+        for (name, channel_config) in &config.outbound {
+            if matches!(channel_config, ChannelSpawnConfig::Existing(_)) {
+                channel_ids.outbound.remove(name);
+            }
+        }
         mem::swap(&mut channel_ids.inbound, &mut channel_ids.outbound);
-        self.channels.insert_child_channels(&channel_ids, config);
+
+        // TODO: what is the appropriate capacity?
+        self.channels.insert_channels(&channel_ids, |_| Some(1));
         let child_state = ChildWorkflowState::new(channel_ids);
         self.child_workflows.insert(workflow_id, child_state);
     }

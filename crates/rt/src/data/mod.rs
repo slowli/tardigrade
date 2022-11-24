@@ -25,7 +25,7 @@ pub(crate) use self::{
     spawn::SpawnFunctions,
 };
 pub use self::{
-    channel::{InboundChannelState, OutboundChannelState},
+    channel::{ChannelMapping, InboundChannelState, OutboundChannelState},
     spawn::ChildWorkflowState,
     task::TaskState,
     time::TimerState,
@@ -134,12 +134,12 @@ impl<'a> WorkflowData<'a> {
         child_id: Option<WorkflowId>,
         name: &str,
     ) -> ExternRef {
-        let channel_ids = if let Some(child_id) = child_id {
+        let mapping = if let Some(child_id) = child_id {
             &self.persisted.child_workflows[&child_id].channels
         } else {
             &self.persisted.channels.mapping
         };
-        let channel_id = channel_ids.inbound[name];
+        let channel_id = mapping.inbound_id(name).unwrap();
         HostResource::InboundChannel(channel_id).into_ref()
     }
 
@@ -149,12 +149,12 @@ impl<'a> WorkflowData<'a> {
         child_id: Option<WorkflowId>,
         name: &str,
     ) -> ExternRef {
-        let channel_ids = if let Some(child_id) = child_id {
+        let mapping = if let Some(child_id) = child_id {
             &self.persisted.child_workflows[&child_id].channels
         } else {
             &self.persisted.channels.mapping
         };
-        let channel_id = channel_ids.outbound[name];
+        let channel_id = mapping.outbound_id(name).unwrap();
         HostResource::OutboundChannel(channel_id).into_ref()
     }
 

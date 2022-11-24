@@ -9,8 +9,9 @@ use std::{fmt, task::Poll};
 
 use crate::{
     data::{
-        ChildWorkflowState, ConsumeError, InboundChannelState, OutboundChannelState, PersistError,
-        PersistedWorkflowData, Refs, TaskState, TimerState, Wakers, WorkflowData,
+        ChannelMapping, ChildWorkflowState, ConsumeError, InboundChannelState,
+        OutboundChannelState, PersistError, PersistedWorkflowData, Refs, TaskState, TimerState,
+        Wakers, WorkflowData,
     },
     module::{DataSection, Services, WorkflowSpawner},
     receipt::WakeUpCause,
@@ -206,7 +207,6 @@ impl PersistedWorkflow {
         self.state.close_inbound_channel(channel_id);
     }
 
-    // FIXME: check usage for aliased channels
     #[tracing::instrument(level = "debug", skip(self))]
     pub(crate) fn close_outbound_channel(&mut self, channel_id: ChannelId) {
         self.state.close_outbound_channel(channel_id);
@@ -305,8 +305,9 @@ impl PersistedWorkflow {
         self.state.waker_queue.iter().map(Wakers::cause)
     }
 
-    pub(crate) fn channel_ids(&self) -> &ChannelIds {
-        self.state.channel_ids()
+    // FIXME: make public
+    pub(crate) fn channel_mapping(&self) -> &ChannelMapping {
+        self.state.channel_mapping()
     }
 
     /// Restores a workflow from the persisted state and the `spawner` defining the workflow.

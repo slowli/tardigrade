@@ -181,9 +181,9 @@ impl Receipt {
                     ChannelEventKind::InboundChannelClosed => {
                         Some((ChannelKind::Inbound, *channel_id))
                     }
-                    ChannelEventKind::OutboundChannelClosed {
-                        remaining_alias_count: 0,
-                    } => Some((ChannelKind::Outbound, *channel_id)),
+                    ChannelEventKind::OutboundChannelClosed => {
+                        Some((ChannelKind::Outbound, *channel_id))
+                    }
                     _ => None,
                 };
             }

@@ -21,14 +21,6 @@ use tardigrade::{
     ChannelId, TaskId, TimerId, WakerId, WorkflowId,
 };
 
-/// Unique reference to a channel within a workflow.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct ChannelRef {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workflow_id: Option<WorkflowId>,
-    pub name: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum HostResource {
@@ -257,18 +249,11 @@ impl CurrentExecution {
         });
     }
 
-    pub fn push_channel_closure(
-        &mut self,
-        kind: ChannelKind,
-        channel_id: ChannelId,
-        remaining_alias_count: usize,
-    ) {
+    pub fn push_channel_closure(&mut self, kind: ChannelKind, channel_id: ChannelId) {
         self.push_event(ChannelEvent {
             kind: match kind {
                 ChannelKind::Inbound => ChannelEventKind::InboundChannelClosed,
-                ChannelKind::Outbound => ChannelEventKind::OutboundChannelClosed {
-                    remaining_alias_count,
-                },
+                ChannelKind::Outbound => ChannelEventKind::OutboundChannelClosed,
             },
             channel_id,
         });

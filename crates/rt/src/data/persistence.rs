@@ -84,10 +84,10 @@ impl OutboundChannelState {
 
 impl ChannelStates {
     fn check_on_restore(&self, interface: &Interface) -> anyhow::Result<()> {
-        for name in self.mapping.inbound.keys() {
+        for (name, _) in self.mapping.inbound_ids() {
             InboundChannelState::check_on_restore(interface, name)?;
         }
-        for name in self.mapping.outbound.keys() {
+        for (name, _) in self.mapping.outbound_ids() {
             OutboundChannelState::check_on_restore(interface, name)?;
         }
         Ok(())
@@ -97,9 +97,7 @@ impl ChannelStates {
 impl PersistedWorkflowData {
     pub(super) fn new(interface: &Interface, channel_ids: ChannelIds, now: DateTime<Utc>) -> Self {
         Self {
-            channels: ChannelStates::new(channel_ids, |name| {
-                interface.outbound_channel(name).unwrap().capacity
-            }),
+            channels: ChannelStates::new(channel_ids, interface),
             timers: Timers::new(now),
             tasks: HashMap::new(),
             child_workflows: HashMap::new(),
