@@ -12,8 +12,8 @@ use super::*;
 use crate::{
     data::{WasmContextPtr, WorkflowData, WorkflowFunctions},
     manager::tests::{create_test_manager, create_test_workflow, is_consumption},
+    mock_scheduler::MockScheduler,
     module::{ExportsMock, MockPollFn},
-    test::MockScheduler,
     utils::WasmAllocator,
 };
 use tardigrade::{

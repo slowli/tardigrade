@@ -125,10 +125,12 @@ mod backends;
 mod data;
 pub mod driver;
 pub mod manager;
+#[cfg(any(test, feature = "test"))]
+mod mock_scheduler;
 mod module;
 pub mod receipt;
 pub mod storage;
-#[cfg(feature = "test")] // FIXME move `MockScheduler` so that lib tests work w/o feature=test
+#[cfg(feature = "test")]
 #[cfg_attr(docsrs, doc(cfg(feature = "test")))]
 pub mod test;
 mod utils;

@@ -234,7 +234,6 @@ mod tests {
     use super::*;
     use crate::{
         module::{LowLevelExtendLinker, Services},
-        test::MockScheduler,
         workflow::ChannelIds,
     };
     use tardigrade::interface::Interface;
@@ -243,7 +242,7 @@ mod tests {
     fn import_checks_are_consistent() {
         let interface = Interface::default();
         let services = Services {
-            clock: &MockScheduler::default(),
+            clock: &(),
             workflows: None,
             tracer: None,
         };

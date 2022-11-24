@@ -15,12 +15,12 @@ mod spawn;
 
 use super::*;
 use crate::{
+    mock_scheduler::MockScheduler,
     module::{ExportsMock, MockPollFn, WorkflowEngine, WorkflowModule},
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, Execution, ExecutionError,
         Receipt, ResourceEventKind, ResourceId,
     },
-    test::MockScheduler,
     utils::{copy_string_from_wasm, decode_string, WasmAllocator},
     workflow::{PersistedWorkflow, Workflow},
 };
