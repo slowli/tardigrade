@@ -8,7 +8,7 @@ use wasmtime::{Store, Val};
 use std::{collections::HashMap, error, fmt};
 
 use super::{
-    channel::{ChannelStates, InboundChannelState, OutboundChannelState},
+    channel::{ChannelStates, ReceiverState, SenderState},
     helpers::HostResource,
     spawn::ChildWorkflowStubs,
     task::TaskQueue,
@@ -17,7 +17,7 @@ use super::{
 };
 use crate::{module::Services, workflow::ChannelIds};
 use tardigrade::{
-    interface::{ChannelKind, Interface},
+    interface::{ChannelHalf, Interface},
     ChannelId,
 };
 
@@ -29,7 +29,7 @@ pub(crate) enum PersistError {
     /// There is an non-flushed / non-consumed message.
     PendingMessage {
         /// Kind of the channel involved.
-        channel_kind: ChannelKind,
+        channel_kind: ChannelHalf,
         /// ID of the channel with the message.
         channel_id: ChannelId,
     },
@@ -56,11 +56,11 @@ impl fmt::Display for PersistError {
 
 impl error::Error for PersistError {}
 
-impl InboundChannelState {
+impl ReceiverState {
     fn check_on_restore(interface: &Interface, channel_name: &str) -> anyhow::Result<()> {
-        interface.inbound_channel(channel_name).ok_or_else(|| {
+        interface.receiver(channel_name).ok_or_else(|| {
             anyhow!(
-                "inbound channel `{}` is present in persisted state, but not \
+                "receiver `{}` is present in persisted state, but not \
                  in workflow interface",
                 channel_name
             )
@@ -69,11 +69,11 @@ impl InboundChannelState {
     }
 }
 
-impl OutboundChannelState {
+impl SenderState {
     fn check_on_restore(interface: &Interface, channel_name: &str) -> anyhow::Result<()> {
-        interface.outbound_channel(channel_name).ok_or_else(|| {
+        interface.sender(channel_name).ok_or_else(|| {
             anyhow!(
-                "outbound channel `{}` is present in persisted state, but not \
+                "sender `{}` is present in persisted state, but not \
                  in workflow interface",
                 channel_name
             )
@@ -85,10 +85,10 @@ impl OutboundChannelState {
 impl ChannelStates {
     fn check_on_restore(&self, interface: &Interface) -> anyhow::Result<()> {
         for name in self.mapping.receiver_names() {
-            InboundChannelState::check_on_restore(interface, name)?;
+            ReceiverState::check_on_restore(interface, name)?;
         }
         for name in self.mapping.sender_names() {
-            OutboundChannelState::check_on_restore(interface, name)?;
+            SenderState::check_on_restore(interface, name)?;
         }
         Ok(())
     }
@@ -130,18 +130,18 @@ impl WorkflowData<'_> {
             return Err(PersistError::PendingTask);
         }
 
-        for (channel_id, state) in self.persisted.inbound_channels() {
+        for (channel_id, state) in self.persisted.receivers() {
             if state.pending_message.is_some() {
                 return Err(PersistError::PendingMessage {
-                    channel_kind: ChannelKind::Inbound,
+                    channel_kind: ChannelHalf::Receiver,
                     channel_id,
                 });
             }
         }
-        for (channel_id, state) in self.persisted.outbound_channels() {
+        for (channel_id, state) in self.persisted.senders() {
             if !state.messages.is_empty() {
                 return Err(PersistError::PendingMessage {
-                    channel_kind: ChannelKind::Outbound,
+                    channel_kind: ChannelHalf::Sender,
                     channel_id,
                 });
             }

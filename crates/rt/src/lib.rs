@@ -2,7 +2,7 @@
 //!
 //! The runtime provides a [`WorkflowManager`] in which workflows defined in a WASM module
 //! can be executed and [persisted](PersistedWorkflow) / restored. Interaction with a workflow
-//! (e.g., submitting messages to inbound channels or taking messages from outbound channels)
+//! (e.g., submitting messages to channel receivers or taking messages from senders)
 //! can be performed using low-level, synchronous [`WorkflowHandle`], or by driving the manager
 //! with the [`Driver`].
 //!
@@ -139,9 +139,7 @@ mod workflow;
 #[cfg(feature = "async-io")]
 pub use crate::backends::AsyncIoScheduler;
 pub use crate::{
-    data::{
-        Channels, ChildWorkflow, InboundChannelState, OutboundChannelState, TaskState, TimerState,
-    },
+    data::{Channels, ChildWorkflow, ReceiverState, SenderState, TaskState, TimerState},
     module::{
         Clock, ExtendLinker, Schedule, TimerFuture, WorkflowEngine, WorkflowModule, WorkflowSpawner,
     },

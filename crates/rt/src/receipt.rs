@@ -31,12 +31,12 @@ pub enum WakeUpCause {
         /// 0-based message index.
         message_index: usize,
     },
-    /// Woken up by an inbound channel getting closed.
+    /// Woken up by a channel getting closed.
     ChannelClosed {
         /// ID of the channel.
         channel_id: ChannelId,
     },
-    /// Woken up by flushing an outbound channel.
+    /// Woken up by flushing a channel.
     Flush {
         /// ID of the channel.
         channel_id: ChannelId,
@@ -180,37 +180,37 @@ pub struct ResourceEvent {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ChannelEventKind {
-    /// Inbound channel was polled for messages.
-    InboundChannelPolled {
+    /// Channel receiver was polled for messages.
+    ReceiverPolled {
         /// Result of a poll, with the message replaced with its byte length.
         #[serde(with = "serde_poll")]
         result: Poll<Option<usize>>,
     },
-    /// Inbound channel closed by the workflow logic.
-    InboundChannelClosed,
+    /// Channel receiver closed by the workflow logic.
+    ReceiverClosed,
 
-    /// Outbound channel was polled for readiness.
-    OutboundChannelReady {
+    /// Channel sender was polled for readiness.
+    SenderReady {
         /// Result of a poll.
         #[serde(with = "serde_poll_res")]
         result: Poll<Result<(), SendError>>,
     },
-    /// Message was sent via an outbound channel.
+    /// Message was sent via a channel sender.
     OutboundMessageSent {
         /// Byte length of the sent message.
         message_len: usize,
     },
-    /// Outbound channel was polled for flush.
-    OutboundChannelFlushed {
+    /// Channel sender was polled for flush.
+    SenderFlushed {
         /// Result of a poll.
         #[serde(with = "serde_poll_res")]
         result: Poll<Result<(), SendError>>,
     },
-    /// Outbound channel closed by the workflow logic.
-    OutboundChannelClosed,
+    /// Channel sender closed by the workflow logic.
+    SenderClosed,
 }
 
-/// Event related to an inbound or outbound workflow channel.
+/// Event related to a workflow channel receiver or sender.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ChannelEvent {
@@ -227,7 +227,7 @@ pub struct ChannelEvent {
 pub enum Event {
     /// Event related to a host-managed resource (a task or a timer).
     Resource(ResourceEvent),
-    /// Event related to an inbound or outbound channel.
+    /// Event related to a channel sender / receiver.
     Channel(ChannelEvent),
 }
 

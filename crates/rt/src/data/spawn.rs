@@ -24,7 +24,7 @@ use crate::{
 };
 use tardigrade::{
     abi::{IntoWasm, PollTask, TryFromWasm},
-    interface::{ChannelKind, Interface},
+    interface::{ChannelHalf, Interface},
     spawn::{ChannelSpawnConfig, ChannelsConfig, HostError},
     task::{JoinError, TaskError},
     ChannelId, WakerId, WorkflowId,
@@ -166,17 +166,17 @@ impl PersistedWorkflowData {
         let wakers = mem::take(&mut stub.wakes_on_init);
         self.schedule_wakers(wakers, WakeUpCause::InitWorkflow { stub_id });
 
-        for (name, channel_config) in &config.inbound {
+        for (name, channel_config) in &config.receivers {
             if matches!(channel_config, ChannelSpawnConfig::Existing(_)) {
-                channel_ids.inbound.remove(name);
+                channel_ids.receivers.remove(name);
             }
         }
-        for (name, channel_config) in &config.outbound {
+        for (name, channel_config) in &config.senders {
             if matches!(channel_config, ChannelSpawnConfig::Existing(_)) {
-                channel_ids.outbound.remove(name);
+                channel_ids.senders.remove(name);
             }
         }
-        mem::swap(&mut channel_ids.inbound, &mut channel_ids.outbound);
+        mem::swap(&mut channel_ids.receivers, &mut channel_ids.senders);
 
         // TODO: what is the appropriate capacity?
         self.channels.insert_channels(&channel_ids, |_| Some(1));
@@ -209,25 +209,25 @@ impl WorkflowData<'_> {
         let workflows = self.services.workflows.as_deref();
         let interface = workflows.and_then(|workflows| workflows.interface(definition_id));
         if let Some(interface) = interface {
-            for (name, _) in interface.inbound_channels() {
-                if !channels.inbound.contains_key(name) {
-                    let err = anyhow!("missing handle for inbound channel `{name}`");
+            for (name, _) in interface.receivers() {
+                if !channels.receivers.contains_key(name) {
+                    let err = anyhow!("missing handle for channel receiver `{name}`");
                     return Err(err);
                 }
             }
-            for (name, _) in interface.outbound_channels() {
-                if !channels.outbound.contains_key(name) {
-                    let err = anyhow!("missing handle for outbound channel `{name}`");
+            for (name, _) in interface.senders() {
+                if !channels.senders.contains_key(name) {
+                    let err = anyhow!("missing handle for channel sender `{name}`");
                     return Err(err);
                 }
             }
 
-            if channels.inbound.len() != interface.inbound_channels().len() {
-                let err = Self::extra_handles_error(&interface, channels, ChannelKind::Inbound);
+            if channels.receivers.len() != interface.receivers().len() {
+                let err = Self::extra_handles_error(&interface, channels, ChannelHalf::Receiver);
                 return Err(err);
             }
-            if channels.outbound.len() != interface.outbound_channels().len() {
-                let err = Self::extra_handles_error(&interface, channels, ChannelKind::Outbound);
+            if channels.senders.len() != interface.senders().len() {
+                let err = Self::extra_handles_error(&interface, channels, ChannelHalf::Sender);
                 return Err(err);
             }
             Ok(())
@@ -239,19 +239,19 @@ impl WorkflowData<'_> {
     fn extra_handles_error(
         interface: &Interface,
         channels: &ChannelsConfig<ChannelId>,
-        channel_kind: ChannelKind,
+        channel_kind: ChannelHalf,
     ) -> anyhow::Error {
         use std::fmt::Write as _;
 
         let (closure_in, closure_out);
         let (handle_keys, channel_filter) = match channel_kind {
-            ChannelKind::Inbound => {
-                closure_in = |name| interface.inbound_channel(name).is_none();
-                (channels.inbound.keys(), &closure_in as &dyn Fn(_) -> _)
+            ChannelHalf::Receiver => {
+                closure_in = |name| interface.receiver(name).is_none();
+                (channels.receivers.keys(), &closure_in as &dyn Fn(_) -> _)
             }
-            ChannelKind::Outbound => {
-                closure_out = |name| interface.outbound_channel(name).is_none();
-                (channels.outbound.keys(), &closure_out as &dyn Fn(_) -> _)
+            ChannelHalf::Sender => {
+                closure_out = |name| interface.sender(name).is_none();
+                (channels.senders.keys(), &closure_out as &dyn Fn(_) -> _)
             }
         };
 
@@ -423,7 +423,7 @@ impl SpawnFunctions {
         is_closed: i32,
     ) -> anyhow::Result<()> {
         let channel_kind =
-            ChannelKind::try_from_wasm(channel_kind).context("cannot parse channel kind")?;
+            ChannelHalf::try_from_wasm(channel_kind).context("cannot parse channel kind")?;
         let channel_config = match is_closed {
             0 => ChannelSpawnConfig::New,
             1 => ChannelSpawnConfig::Closed,
@@ -440,11 +440,11 @@ impl SpawnFunctions {
         let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
         let mut handles = handles.inner.lock().unwrap();
         match channel_kind {
-            ChannelKind::Inbound => {
-                handles.inbound.insert(name, channel_config);
+            ChannelHalf::Receiver => {
+                handles.receivers.insert(name, channel_config);
             }
-            ChannelKind::Outbound => {
-                handles.outbound.insert(name, channel_config);
+            ChannelHalf::Sender => {
+                handles.senders.insert(name, channel_config);
             }
         }
         tracing::debug!(?handles, "inserted channel handle");
@@ -459,7 +459,7 @@ impl SpawnFunctions {
         name_len: u32,
         sender: Option<ExternRef>,
     ) -> anyhow::Result<()> {
-        let channel_id = HostResource::from_ref(sender.as_ref())?.as_outbound_channel()?;
+        let channel_id = HostResource::from_ref(sender.as_ref())?.as_sender()?;
         let memory = ctx.data().exports().memory;
         let name = utils::copy_string_from_wasm(&ctx, &memory, name_ptr, name_len)?;
 
@@ -470,7 +470,7 @@ impl SpawnFunctions {
         let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
         let mut handles = handles.inner.lock().unwrap();
         handles
-            .outbound
+            .senders
             .insert(name, ChannelSpawnConfig::Existing(channel_id));
         tracing::debug!(?handles, "inserted channel handle");
         Ok(())

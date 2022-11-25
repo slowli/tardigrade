@@ -9,8 +9,8 @@ use std::{fmt, task::Poll};
 
 use crate::{
     data::{
-        Channels, ChildWorkflow, ConsumeError, InboundChannelState, OutboundChannelState,
-        PersistError, PersistedWorkflowData, Refs, TaskState, TimerState, Wakers, WorkflowData,
+        Channels, ChildWorkflow, ConsumeError, PersistError, PersistedWorkflowData, ReceiverState,
+        Refs, SenderState, TaskState, TimerState, Wakers, WorkflowData,
     },
     module::{DataSection, Services, WorkflowSpawner},
     receipt::WakeUpCause,
@@ -171,20 +171,16 @@ impl PersistedWorkflow {
         })
     }
 
-    pub(crate) fn inbound_channels(
-        &self,
-    ) -> impl Iterator<Item = (ChannelId, &InboundChannelState)> + '_ {
-        self.state.inbound_channels()
+    pub(crate) fn receivers(&self) -> impl Iterator<Item = (ChannelId, &ReceiverState)> + '_ {
+        self.state.receivers()
     }
 
-    pub(crate) fn inbound_channel(&self, channel_id: ChannelId) -> Option<&InboundChannelState> {
-        self.state.inbound_channel(channel_id)
+    pub(crate) fn receiver(&self, channel_id: ChannelId) -> Option<&ReceiverState> {
+        self.state.receiver(channel_id)
     }
 
-    pub(crate) fn outbound_channels(
-        &self,
-    ) -> impl Iterator<Item = (ChannelId, &OutboundChannelState)> + '_ {
-        self.state.outbound_channels()
+    pub(crate) fn senders(&self) -> impl Iterator<Item = (ChannelId, &SenderState)> + '_ {
+        self.state.senders()
     }
 
     /// Returns information about channels defined in this workflow interface.
@@ -193,27 +189,27 @@ impl PersistedWorkflow {
     }
 
     #[tracing::instrument(level = "debug", skip(self, message), err, fields(message.len = message.len()))]
-    pub(crate) fn push_inbound_message(
+    pub(crate) fn push_message_for_receiver(
         &mut self,
         channel_id: ChannelId,
         message: Vec<u8>,
     ) -> Result<(), ConsumeError> {
-        self.state.push_inbound_message(channel_id, message)
+        self.state.push_message_for_receiver(channel_id, message)
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
-    pub(crate) fn drop_inbound_message(&mut self, channel_id: ChannelId) {
-        self.state.drop_inbound_message(channel_id);
+    pub(crate) fn drop_message_for_receiver(&mut self, channel_id: ChannelId) {
+        self.state.drop_message_for_receiver(channel_id);
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
-    pub(crate) fn close_inbound_channel(&mut self, channel_id: ChannelId) {
-        self.state.close_inbound_channel(channel_id);
+    pub(crate) fn close_receiver(&mut self, channel_id: ChannelId) {
+        self.state.close_receiver(channel_id);
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
-    pub(crate) fn close_outbound_channel(&mut self, channel_id: ChannelId) {
-        self.state.close_outbound_channel(channel_id);
+    pub(crate) fn close_sender(&mut self, channel_id: ChannelId) {
+        self.state.close_sender(channel_id);
     }
 
     /// Returns the current state of a task with the specified ID.

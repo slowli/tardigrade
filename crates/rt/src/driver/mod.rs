@@ -34,12 +34,12 @@ enum ListenedEventOutput {
 }
 
 #[derive(Debug)]
-struct OutboundChannel {
+struct SenderWithCursor {
     sender: mpsc::UnboundedSender<Vec<u8>>,
     cursor: usize,
 }
 
-impl OutboundChannel {
+impl SenderWithCursor {
     /// Returns `true` if the channel should be removed (e.g., if the EOF marker is reached,
     /// or if it's not listened to by the client.
     async fn relay_messages(&mut self, id: ChannelId, transaction: &impl ReadChannels) -> bool {
@@ -96,7 +96,7 @@ pub enum Termination {
 /// ```
 /// use async_std::task;
 /// use futures::prelude::*;
-/// use tardigrade::interface::{InboundChannel, OutboundChannel};
+/// use tardigrade::interface::{ReceiverName, SenderName};
 /// # use tardigrade::WorkflowId;
 /// use tardigrade_rt::{driver::Driver, manager::WorkflowManager, AsyncIoScheduler};
 /// # use tardigrade_rt::storage::LocalStorage;
@@ -114,10 +114,10 @@ pub enum Termination {
 /// let mut driver = Driver::new();
 /// // Take relevant channels from the workflow and convert them to async form.
 /// let mut handle = workflow.handle();
-/// let mut commands_sx = handle.remove(InboundChannel("commands"))
+/// let mut commands_sx = handle.remove(ReceiverName("commands"))
 ///     .unwrap()
 ///     .into_sink(&mut driver);
-/// let events_rx = handle.remove(OutboundChannel("events"))
+/// let events_rx = handle.remove(SenderName("events"))
 ///     .unwrap()
 ///     .into_stream(&mut driver);
 ///
@@ -134,8 +134,8 @@ pub enum Termination {
 /// ```
 #[derive(Debug, Default)]
 pub struct Driver {
-    inbound_channels: HashMap<ChannelId, mpsc::Receiver<Vec<u8>>>,
-    outbound_channels: HashMap<ChannelId, OutboundChannel>,
+    receivers: HashMap<ChannelId, mpsc::Receiver<Vec<u8>>>,
+    senders: HashMap<ChannelId, SenderWithCursor>,
     results_sx: Option<mpsc::UnboundedSender<TickResult>>,
     drop_erroneous_messages: bool,
 }
@@ -188,13 +188,13 @@ impl Driver {
     async fn set_channel_cursors<M: AsManager>(&mut self, manager: &M) {
         let storage = &manager.as_manager().storage;
         let transaction = &storage.readonly_transaction().await;
-        let cursor_tasks = self.outbound_channels.keys().map(|&id| async move {
+        let cursor_tasks = self.senders.keys().map(|&id| async move {
             let cursor = transaction.channel(id).await.unwrap().received_messages;
             (id, cursor)
         });
         let channel_cursors = future::join_all(cursor_tasks).await;
         for (id, cursor) in channel_cursors {
-            let state = self.outbound_channels.get_mut(&id).unwrap();
+            let state = self.senders.get_mut(&id).unwrap();
             state.cursor = cursor;
         }
     }
@@ -208,7 +208,7 @@ impl Driver {
         let manager_ref = manager.as_manager();
         let nearest_timer_expiration = self.tick_manager(manager).await;
         self.gc(manager).await;
-        if nearest_timer_expiration.is_none() && self.inbound_channels.is_empty() {
+        if nearest_timer_expiration.is_none() && self.receivers.is_empty() {
             let termination = if manager_ref.workflow_count().await == 0 {
                 Termination::Finished
             } else {
@@ -218,7 +218,7 @@ impl Driver {
         }
 
         // Determine external events listened by the workflow.
-        let channel_futures = self.inbound_channels.iter_mut().map(|(&id, rx)| {
+        let channel_futures = self.receivers.iter_mut().map(|(&id, rx)| {
             rx.next()
                 .map(move |message| ListenedEventOutput::Channel { id, message })
                 .left_future()
@@ -285,23 +285,23 @@ impl Driver {
         let manager = manager.as_manager();
         let transaction = &manager.storage.readonly_transaction().await;
 
-        let channels = self.outbound_channels.iter_mut();
+        let channels = self.senders.iter_mut();
         let channel_tasks = channels.map(|(&id, channel)| async move {
             let should_drop = channel.relay_messages(id, transaction).await;
             Some(id).filter(|_| should_drop)
         });
         let dropped_channels = future::join_all(channel_tasks).await;
         for id in dropped_channels.into_iter().flatten() {
-            self.outbound_channels.remove(&id);
+            self.senders.remove(&id);
         }
     }
 
-    /// Garbage-collect receivers for closed inbound channels. This will signal
+    /// Garbage-collect receivers for closed receivers. This will signal
     /// to the consumers that the channel cannot be written to.
     #[tracing::instrument(level = "debug", skip_all)]
     async fn gc<M: AsManager>(&mut self, manager: &M) {
         let manager = manager.as_manager();
-        let channel_ids = self.inbound_channels.keys();
+        let channel_ids = self.receivers.keys();
         let check_closed_tasks = channel_ids.map(|&id| async move {
             let is_closed = manager
                 .channel(id)
@@ -312,17 +312,17 @@ impl Driver {
         let closed_channels = future::join_all(check_closed_tasks).await;
 
         for id in closed_channels.into_iter().flatten() {
-            self.inbound_channels.remove(&id);
-            tracing::debug!(id, "removed closed inbound channel");
+            self.receivers.remove(&id);
+            tracing::debug!(id, "removed closed receiver");
         }
     }
 }
 
 pin_project! {
-    /// Sink handle for an [inbound workflow channel](Receiver) that allows sending messages
+    /// Sink handle for an  workflow channel [`Receiver`] that allows sending messages
     /// via the channel.
     ///
-    /// Dropping the handle while [`AsyncEnv::run()`] is executing will signal to the workflow
+    /// Dropping the handle while [`Driver::run()`] is executing will signal to the workflow
     /// that the corresponding channel is closed by the host.
     #[derive(Debug)]
     pub struct MessageSender<T, C> {
@@ -347,7 +347,7 @@ impl<T, C: Encode<T>, M: AsManager> manager::MessageSender<'_, T, C, M> {
     /// Registers this sender in `driver`, allowing to later asynchronously send messages.
     pub fn into_sink(self, driver: &mut Driver) -> MessageSender<T, C> {
         let (sx, rx) = mpsc::channel(1);
-        driver.inbound_channels.insert(self.channel_id(), rx);
+        driver.receivers.insert(self.channel_id(), rx);
         MessageSender {
             raw_sender: sx,
             codec: self.codec,
@@ -379,7 +379,7 @@ impl<T, C: Encode<T>> Sink<T> for MessageSender<T, C> {
 }
 
 pin_project! {
-    /// Stream handle for an [outbound workflow channel](Sender) that allows receiving messages
+    /// Stream handle for an workflow channel [`Sender`] that allows receiving messages
     /// from the channel.
     ///
     /// The handle will receive all messages produced while the [`Driver`] it is connected to is
@@ -401,11 +401,11 @@ impl<T, C: Decode<T> + Default, M: AsManager> manager::MessageReceiver<'_, T, C,
     /// Registers this receiver in `driver`, allowing to later asynchronously receive messages.
     pub fn into_stream(self, driver: &mut Driver) -> MessageReceiver<T, C> {
         let (sx, rx) = mpsc::unbounded();
-        let state = OutboundChannel {
+        let state = SenderWithCursor {
             cursor: 0,
             sender: sx,
         };
-        driver.outbound_channels.insert(self.channel_id(), state);
+        driver.senders.insert(self.channel_id(), state);
         MessageReceiver {
             raw_receiver: rx,
             codec: self.codec,

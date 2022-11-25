@@ -134,8 +134,8 @@ impl<'a> WorkflowSeed<'a> {
                 WorkflowWaker::Timer(timer) => {
                     self.persisted.set_current_time(timer);
                 }
-                WorkflowWaker::OutboundChannelClosure(channel_id) => {
-                    self.persisted.close_outbound_channel(channel_id);
+                WorkflowWaker::SenderClosure(channel_id) => {
+                    self.persisted.close_sender(channel_id);
                 }
                 WorkflowWaker::ChildCompletion(child_id) => {
                     let child = transaction.workflow(child_id).await.unwrap();
@@ -152,7 +152,7 @@ impl<'a> WorkflowSeed<'a> {
         &mut self,
         transaction: &T,
     ) -> Option<PendingChannel> {
-        let channels = self.persisted.inbound_channels();
+        let channels = self.persisted.receivers();
         let pending_channels = channels.filter_map(|(id, state)| {
             if state.is_closed() {
                 None
@@ -174,7 +174,7 @@ impl<'a> WorkflowSeed<'a> {
             match message_or_eof {
                 Ok(message) if pending.waits_for_message && pending_channel.is_none() => {
                     self.persisted
-                        .push_inbound_message(pending.channel_id, message)
+                        .push_message_for_receiver(pending.channel_id, message)
                         .unwrap();
                     // ^ `unwrap()` is safe: no messages can be persisted
                     pending_channel = Some(pending);
@@ -182,7 +182,7 @@ impl<'a> WorkflowSeed<'a> {
                 Err(MessageError::NonExistingIndex { is_closed: true }) => {
                     // Signal to the workflow that the channel is closed. This can be performed
                     // on a persisted workflow, without executing it.
-                    self.persisted.close_inbound_channel(pending.channel_id);
+                    self.persisted.close_receiver(pending.channel_id);
                 }
                 _ => {
                     // Skip processing for now: we want to pinpoint consumption-related
@@ -384,9 +384,9 @@ impl<C: Clock, S: for<'a> Storage<'a>> WorkflowManager<C, S> {
             .ok_or_else(ConcurrencyError::new)?;
         let mut record = record.into_errored().ok_or_else(ConcurrencyError::new)?;
         let persisted = &mut record.state.persisted;
-        let state = persisted.inbound_channel(message_ref.channel_id).unwrap();
+        let state = persisted.receiver(message_ref.channel_id).unwrap();
         if state.received_message_count() == message_ref.index {
-            persisted.drop_inbound_message(message_ref.channel_id);
+            persisted.drop_message_for_receiver(message_ref.channel_id);
             transaction
                 .update_workflow(workflow_id, record.state.into())
                 .await;

@@ -30,8 +30,8 @@ struct ExecutionOutput {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[allow(clippy::unsafe_derive_deserialize)] // false positive
 pub(crate) struct ChannelIds {
-    pub inbound: HashMap<String, ChannelId>,
-    pub outbound: HashMap<String, ChannelId>,
+    pub receivers: HashMap<String, ChannelId>,
+    pub senders: HashMap<String, ChannelId>,
 }
 
 impl WorkflowSpawner<()> {

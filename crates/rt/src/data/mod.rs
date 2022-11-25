@@ -25,7 +25,7 @@ pub(crate) use self::{
     spawn::SpawnFunctions,
 };
 pub use self::{
-    channel::{Channels, InboundChannelState, OutboundChannelState},
+    channel::{Channels, ReceiverState, SenderState},
     spawn::ChildWorkflow,
     task::TaskState,
     time::TimerState,
@@ -88,22 +88,22 @@ impl<'a> WorkflowData<'a> {
     ) -> Self {
         debug_assert_eq!(
             interface
-                .inbound_channels()
+                .receivers()
                 .map(|(name, _)| name)
                 .collect::<HashSet<_>>(),
             channel_ids
-                .inbound
+                .receivers
                 .keys()
                 .map(String::as_str)
                 .collect::<HashSet<_>>()
         );
         debug_assert_eq!(
             interface
-                .outbound_channels()
+                .senders()
                 .map(|(name, _)| name)
                 .collect::<HashSet<_>>(),
             channel_ids
-                .outbound
+                .senders
                 .keys()
                 .map(String::as_str)
                 .collect::<HashSet<_>>()
@@ -129,33 +129,25 @@ impl<'a> WorkflowData<'a> {
     }
 
     #[cfg(test)]
-    pub(crate) fn inbound_channel_ref(
-        &self,
-        child_id: Option<WorkflowId>,
-        name: &str,
-    ) -> ExternRef {
+    pub(crate) fn receiver_ref(&self, child_id: Option<WorkflowId>, name: &str) -> ExternRef {
         let channels = if let Some(child_id) = child_id {
             self.persisted.child_workflow(child_id).unwrap().channels()
         } else {
             self.persisted.channels()
         };
         let channel_id = channels.receiver_id(name).unwrap();
-        HostResource::InboundChannel(channel_id).into_ref()
+        HostResource::Receiver(channel_id).into_ref()
     }
 
     #[cfg(test)]
-    pub(crate) fn outbound_channel_ref(
-        &self,
-        child_id: Option<WorkflowId>,
-        name: &str,
-    ) -> ExternRef {
+    pub(crate) fn sender_ref(&self, child_id: Option<WorkflowId>, name: &str) -> ExternRef {
         let channels = if let Some(child_id) = child_id {
             self.persisted.child_workflow(child_id).unwrap().channels()
         } else {
             self.persisted.channels()
         };
         let channel_id = channels.sender_id(name).unwrap();
-        HostResource::OutboundChannel(channel_id).into_ref()
+        HostResource::Sender(channel_id).into_ref()
     }
 
     #[cfg(test)]
@@ -178,12 +170,8 @@ impl WorkflowFunctions {
         tracing::Span::current().record("resource", field::debug(dropped));
 
         let wakers = match dropped {
-            HostResource::InboundChannel(channel_id) => {
-                ctx.data_mut().handle_inbound_channel_drop(*channel_id)
-            }
-            HostResource::OutboundChannel(channel_id) => {
-                ctx.data_mut().handle_outbound_channel_drop(*channel_id)
-            }
+            HostResource::Receiver(channel_id) => ctx.data_mut().handle_receiver_drop(*channel_id),
+            HostResource::Sender(channel_id) => ctx.data_mut().handle_sender_drop(*channel_id),
             HostResource::WorkflowStub(stub_id) => ctx.data_mut().handle_child_stub_drop(*stub_id),
             HostResource::Workflow(workflow_id) => {
                 ctx.data_mut().handle_child_handle_drop(*workflow_id)

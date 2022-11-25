@@ -42,7 +42,7 @@ fn answer_main_task(mut poll_fns: Answers<MockPollFn>) -> Answers<MockPollFn, Ta
 }
 
 fn initialize_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
-    // Emulate basic task startup: getting the inbound channel
+    // Emulate basic task startup: getting the channel receiver
     let (ptr, len) = WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"orders")?;
     let orders = WorkflowFunctions::get_receiver(ctx.as_context_mut(), None, ptr, len, ERROR_PTR)?;
 
@@ -55,7 +55,7 @@ fn initialize_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result
 }
 
 fn emit_event_and_flush(ctx: &mut StoreContextMut<'_, WorkflowData>) -> anyhow::Result<()> {
-    let events = Some(ctx.data_mut().outbound_channel_ref(None, "events"));
+    let events = Some(ctx.data_mut().sender_ref(None, "events"));
 
     let poll_res =
         WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), events.clone(), POLL_CX)?;
@@ -71,9 +71,9 @@ fn emit_event_and_flush(ctx: &mut StoreContextMut<'_, WorkflowData>) -> anyhow::
 }
 
 fn consume_message(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
-    let orders = Some(ctx.data().inbound_channel_ref(None, "orders"));
-    let events = Some(ctx.data_mut().outbound_channel_ref(None, "events"));
-    let traces = Some(ctx.data_mut().outbound_channel_ref(None, "traces"));
+    let orders = Some(ctx.data().receiver_ref(None, "orders"));
+    let events = Some(ctx.data_mut().sender_ref(None, "events"));
+    let traces = Some(ctx.data_mut().sender_ref(None, "traces"));
 
     // Poll the channel again, since we yielded on this previously
     let poll_res =
@@ -171,7 +171,7 @@ fn starting_workflow() {
     assert_matches!(
         &execution.events[0],
         Event::Channel(ChannelEvent {
-            kind: ChannelEventKind::InboundChannelPolled { result: Poll::Pending },
+            kind: ChannelEventKind::ReceiverPolled { result: Poll::Pending },
             channel_id
         }) if *channel_id == orders_id
     );
@@ -185,7 +185,7 @@ fn push_message_and_tick(workflow: &mut Workflow<'_>) -> Result<Receipt, Executi
     workflow
         .data_mut()
         .persisted
-        .push_inbound_message(orders_id, b"order #1".to_vec())
+        .push_message_for_receiver(orders_id, b"order #1".to_vec())
         .unwrap();
     workflow.tick()
 }
@@ -272,11 +272,11 @@ fn assert_inbound_message_receipt(workflow: &Workflow<'_>, receipt: &Receipt) {
         &events[0..6],
         [
             ChannelEvent {
-                kind: ChannelEventKind::InboundChannelPolled { result: Poll::Ready(Some(_)) },
+                kind: ChannelEventKind::ReceiverPolled { result: Poll::Ready(Some(_)) },
                 channel_id: orders,
             },
             ChannelEvent {
-                kind: ChannelEventKind::OutboundChannelReady {
+                kind: ChannelEventKind::SenderReady {
                     result: Poll::Ready(Ok(())),
                 },
                 channel_id: traces,
@@ -286,7 +286,7 @@ fn assert_inbound_message_receipt(workflow: &Workflow<'_>, receipt: &Receipt) {
                 channel_id: traces2,
             },
             ChannelEvent {
-                kind: ChannelEventKind::OutboundChannelReady {
+                kind: ChannelEventKind::SenderReady {
                     result: Poll::Ready(Ok(())),
                 },
                 channel_id: events,
@@ -296,7 +296,7 @@ fn assert_inbound_message_receipt(workflow: &Workflow<'_>, receipt: &Receipt) {
                 channel_id: events2,
             },
             ChannelEvent {
-                kind: ChannelEventKind::OutboundChannelFlushed { result: Poll::Pending },
+                kind: ChannelEventKind::SenderFlushed { result: Poll::Pending },
                 channel_id: events3,
             },
         ] if *orders == orders_id && *traces == traces_id && *traces2 == traces_id
@@ -547,7 +547,7 @@ fn rolling_back_emitting_messages_on_trap() {
     });
 
     let emit_message_and_trap: MockPollFn = |mut ctx| {
-        let traces = Some(ctx.data_mut().outbound_channel_ref(None, "traces"));
+        let traces = Some(ctx.data_mut().sender_ref(None, "traces"));
         let poll_res = WorkflowFunctions::poll_ready_for_sender(
             ctx.as_context_mut(),
             traces.clone(),
@@ -593,8 +593,8 @@ fn rolling_back_placing_waker_on_trap() {
         .scope(|| push_message_and_tick(&mut workflow))
         .unwrap_err();
 
-    let outbound_channels = workflow.data().persisted.channels.outbound.values();
-    let wakers: Vec<_> = outbound_channels
+    let senders = workflow.data().persisted.channels.senders.values();
+    let wakers: Vec<_> = senders
         .flat_map(|state| state.wakes_on_flush.iter().copied())
         .collect();
     assert!(wakers.is_empty(), "{:?}", wakers);
@@ -667,10 +667,10 @@ fn timers_basics() {
 }
 
 #[test]
-fn dropping_inbound_channel_in_workflow() {
+fn dropping_receiver_in_workflow() {
     let drop_channel: MockPollFn = |mut ctx| {
         let _ = initialize_task(ctx.as_context_mut())?;
-        let orders = ctx.data().inbound_channel_ref(None, "orders");
+        let orders = ctx.data().receiver_ref(None, "orders");
         WorkflowFunctions::drop_ref(ctx, Some(orders))?;
         Ok(Poll::Pending)
     };

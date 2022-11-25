@@ -24,7 +24,7 @@ use crate::{
 use tardigrade::{
     abi::{IntoWasm, PollMessage},
     channel::SendError,
-    interface::{AccessErrorKind, ChannelKind, Interface},
+    interface::{AccessErrorKind, ChannelHalf, Interface},
     ChannelId, WakerId, WorkflowId,
 };
 
@@ -79,31 +79,31 @@ impl ChannelMappingState {
 /// Mapping of channels (from names to IDs) for a workflow.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(super) struct ChannelMapping {
-    inbound: HashMap<String, ChannelMappingState>,
-    outbound: HashMap<String, ChannelMappingState>,
+    receivers: HashMap<String, ChannelMappingState>,
+    senders: HashMap<String, ChannelMappingState>,
 }
 
 impl ChannelMapping {
     pub fn new(ids: ChannelIds) -> Self {
-        let inbound = ids
-            .inbound
+        let receivers = ids
+            .receivers
             .into_iter()
             .map(|(name, id)| (name, ChannelMappingState::new(id)))
             .collect();
-        let outbound = ids
-            .outbound
+        let senders = ids
+            .senders
             .into_iter()
             .map(|(name, id)| (name, ChannelMappingState::new(id)))
             .collect();
-        Self { inbound, outbound }
+        Self { receivers, senders }
     }
 
     pub fn receiver_names(&self) -> impl Iterator<Item = &str> + '_ {
-        self.inbound.keys().map(String::as_str)
+        self.receivers.keys().map(String::as_str)
     }
 
     pub fn sender_names(&self) -> impl Iterator<Item = &str> + '_ {
-        self.outbound.keys().map(String::as_str)
+        self.senders.keys().map(String::as_str)
     }
 }
 
@@ -112,9 +112,9 @@ fn flip_bool(&flag: &bool) -> bool {
     !flag
 }
 
-/// State of an inbound workflow channel.
+/// State of a workflow channel receiver.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct InboundChannelState {
+pub struct ReceiverState {
     #[serde(default, skip_serializing_if = "flip_bool")]
     pub(super) is_closed: bool,
     pub(super) received_messages: usize,
@@ -124,7 +124,7 @@ pub struct InboundChannelState {
     pub(super) wakes_on_next_element: HashSet<WakerId>,
 }
 
-impl InboundChannelState {
+impl ReceiverState {
     pub(crate) fn new() -> Self {
         Self::default()
     }
@@ -154,9 +154,9 @@ impl InboundChannelState {
     }
 }
 
-/// State of an outbound workflow channel.
+/// State of a workflow channel sender.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OutboundChannelState {
+pub struct SenderState {
     pub(super) capacity: Option<usize>,
     /// Number of references to the channel (including non-acquired ones).
     pub(super) ref_count: usize,
@@ -168,7 +168,7 @@ pub struct OutboundChannelState {
     pub(super) wakes_on_flush: HashSet<WakerId>,
 }
 
-impl OutboundChannelState {
+impl SenderState {
     pub(crate) fn new(capacity: Option<usize>) -> Self {
         Self {
             capacity,
@@ -226,8 +226,8 @@ impl OutboundChannelState {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(super) struct ChannelStates {
-    pub inbound: HashMap<ChannelId, InboundChannelState>,
-    pub outbound: HashMap<ChannelId, OutboundChannelState>,
+    pub receivers: HashMap<ChannelId, ReceiverState>,
+    pub senders: HashMap<ChannelId, SenderState>,
     pub mapping: ChannelMapping,
 }
 
@@ -235,27 +235,25 @@ impl ChannelStates {
     pub fn new(channel_ids: ChannelIds, interface: &Interface) -> Self {
         let mut this = Self::default();
         this.insert_channels(&channel_ids, |name| {
-            interface.outbound_channel(name).unwrap().capacity
+            interface.sender(name).unwrap().capacity
         });
         this.mapping = ChannelMapping::new(channel_ids);
         this
     }
 
-    pub fn insert_channels<F>(&mut self, channel_ids: &ChannelIds, outbound_cap_fn: F)
+    pub fn insert_channels<F>(&mut self, channel_ids: &ChannelIds, sender_cap_fn: F)
     where
         F: Fn(&str) -> Option<usize>,
     {
-        for &id in channel_ids.inbound.values() {
-            self.inbound
-                .entry(id)
-                .or_insert_with(InboundChannelState::new);
+        for &id in channel_ids.receivers.values() {
+            self.receivers.entry(id).or_insert_with(ReceiverState::new);
         }
-        for (name, &id) in &channel_ids.outbound {
-            let capacity = outbound_cap_fn(name);
+        for (name, &id) in &channel_ids.senders {
+            let capacity = sender_cap_fn(name);
             let state = self
-                .outbound
+                .senders
                 .entry(id)
-                .or_insert_with(|| OutboundChannelState::new(capacity));
+                .or_insert_with(|| SenderState::new(capacity));
             state.ensure_capacity(capacity);
             state.ref_count += 1;
         }
@@ -277,19 +275,19 @@ impl<'a> Channels<'a> {
     /// Returns the channel ID of the receiver with the specified name, or `None` if the receiver
     /// is not present.
     pub fn receiver_id(&self, name: &str) -> Option<ChannelId> {
-        self.mapping.inbound.get(name).map(|state| state.id)
+        self.mapping.receivers.get(name).map(|state| state.id)
     }
 
     /// Returns information about the receiver with the specified name.
-    pub fn receiver(&self, name: &str) -> Option<&'a InboundChannelState> {
-        let channel_id = self.mapping.inbound.get(name)?.id;
-        self.states.inbound.get(&channel_id)
+    pub fn receiver(&self, name: &str) -> Option<&'a ReceiverState> {
+        let channel_id = self.mapping.receivers.get(name)?.id;
+        self.states.receivers.get(&channel_id)
     }
 
     /// Iterates over all receivers.
-    pub fn receivers(&self) -> impl Iterator<Item = (&'a str, &'a InboundChannelState)> + '_ {
-        self.mapping.inbound.iter().filter_map(|(name, state)| {
-            let state = self.states.inbound.get(&state.id)?;
+    pub fn receivers(&self) -> impl Iterator<Item = (&'a str, &'a ReceiverState)> + '_ {
+        self.mapping.receivers.iter().filter_map(|(name, state)| {
+            let state = self.states.receivers.get(&state.id)?;
             Some((name.as_str(), state))
         })
     }
@@ -297,43 +295,43 @@ impl<'a> Channels<'a> {
     /// Returns the channel ID of the sender with the specified name, or `None` if the sender
     /// is not present.
     pub fn sender_id(&self, name: &str) -> Option<ChannelId> {
-        self.mapping.outbound.get(name).map(|state| state.id)
+        self.mapping.senders.get(name).map(|state| state.id)
     }
 
     /// Returns information about the sender with the specified name.
-    pub fn sender(&self, name: &str) -> Option<&'a OutboundChannelState> {
-        let channel_id = self.mapping.outbound.get(name)?.id;
-        self.states.outbound.get(&channel_id)
+    pub fn sender(&self, name: &str) -> Option<&'a SenderState> {
+        let channel_id = self.mapping.senders.get(name)?.id;
+        self.states.senders.get(&channel_id)
     }
 
     /// Iterates over all senders.
-    pub fn senders(&self) -> impl Iterator<Item = (&'a str, &'a OutboundChannelState)> + '_ {
-        self.mapping.outbound.iter().filter_map(|(name, state)| {
-            let state = self.states.outbound.get(&state.id)?;
+    pub fn senders(&self) -> impl Iterator<Item = (&'a str, &'a SenderState)> + '_ {
+        self.mapping.senders.iter().filter_map(|(name, state)| {
+            let state = self.states.senders.get(&state.id)?;
             Some((name.as_str(), state))
         })
     }
 
     pub(crate) fn to_ids(self) -> ChannelIds {
-        let inbound = self.mapping.inbound.iter();
-        let inbound = inbound
+        let receivers = self.mapping.receivers.iter();
+        let receivers = receivers
             .map(|(name, state)| (name.clone(), state.id))
             .collect();
-        let outbound = self.mapping.outbound.iter();
-        let outbound = outbound
+        let senders = self.mapping.senders.iter();
+        let senders = senders
             .map(|(name, state)| (name.clone(), state.id))
             .collect();
-        ChannelIds { inbound, outbound }
+        ChannelIds { receivers, senders }
     }
 }
 
 impl PersistedWorkflowData {
-    pub(crate) fn push_inbound_message(
+    pub(crate) fn push_message_for_receiver(
         &mut self,
         channel_id: ChannelId,
         message: Vec<u8>,
     ) -> Result<(), ConsumeError> {
-        let channel_state = self.channels.inbound.get_mut(&channel_id).unwrap();
+        let channel_state = self.channels.receivers.get_mut(&channel_id).unwrap();
         if channel_state.is_closed {
             return Err(ConsumeError::Closed);
         }
@@ -343,7 +341,7 @@ impl PersistedWorkflowData {
 
         debug_assert!(
             channel_state.pending_message.is_none(),
-            "Multiple messages inserted for inbound channel {channel_id}"
+            "Multiple messages inserted for channel receiver {channel_id}"
         );
         let message_index = channel_state.received_messages;
         channel_state.pending_message = Some(message.into());
@@ -360,20 +358,20 @@ impl PersistedWorkflowData {
         Ok(())
     }
 
-    pub(crate) fn drop_inbound_message(&mut self, channel_id: ChannelId) {
-        let channel_state = self.channels.inbound.get_mut(&channel_id).unwrap();
+    pub(crate) fn drop_message_for_receiver(&mut self, channel_id: ChannelId) {
+        let channel_state = self.channels.receivers.get_mut(&channel_id).unwrap();
         channel_state.received_messages += 1;
     }
 
-    pub(crate) fn close_inbound_channel(&mut self, channel_id: ChannelId) {
-        let channel_state = self.channels.inbound.get_mut(&channel_id).unwrap();
+    pub(crate) fn close_receiver(&mut self, channel_id: ChannelId) {
+        let channel_state = self.channels.receivers.get_mut(&channel_id).unwrap();
         if channel_state.is_closed {
             return; // no further actions required
         }
 
         debug_assert!(
             channel_state.pending_message.is_none(),
-            "Inbound channel {channel_id} closed while it has a pending message"
+            "Receiver {channel_id} closed while it has a pending message"
         );
         channel_state.is_closed = true;
         channel_state.received_messages += 1; // EOF is a considered a message as well
@@ -382,8 +380,8 @@ impl PersistedWorkflowData {
         self.schedule_wakers(wakers, WakeUpCause::ChannelClosed { channel_id });
     }
 
-    pub(crate) fn close_outbound_channel(&mut self, channel_id: ChannelId) {
-        let channel_state = self.channels.outbound.get_mut(&channel_id).unwrap();
+    pub(crate) fn close_sender(&mut self, channel_id: ChannelId) {
+        let channel_state = self.channels.senders.get_mut(&channel_id).unwrap();
         channel_state.close();
     }
 
@@ -391,50 +389,38 @@ impl PersistedWorkflowData {
         Channels::new(&self.channels, &self.channels.mapping)
     }
 
-    pub(crate) fn inbound_channel(&self, channel_id: ChannelId) -> Option<&InboundChannelState> {
-        self.channels.inbound.get(&channel_id)
+    pub(crate) fn receiver(&self, channel_id: ChannelId) -> Option<&ReceiverState> {
+        self.channels.receivers.get(&channel_id)
     }
 
-    pub(crate) fn inbound_channels(
-        &self,
-    ) -> impl Iterator<Item = (ChannelId, &InboundChannelState)> + '_ {
-        self.channels.inbound.iter().map(|(&id, state)| (id, state))
-    }
-
-    pub(super) fn inbound_channel_mut(
-        &mut self,
-        channel_id: ChannelId,
-    ) -> Option<&mut InboundChannelState> {
-        self.channels.inbound.get_mut(&channel_id)
-    }
-
-    pub(super) fn inbound_channels_mut(
-        &mut self,
-    ) -> impl Iterator<Item = &mut InboundChannelState> + '_ {
-        self.channels.inbound.values_mut()
-    }
-
-    pub(super) fn outbound_channel_mut(
-        &mut self,
-        channel_id: ChannelId,
-    ) -> Option<&mut OutboundChannelState> {
-        self.channels.outbound.get_mut(&channel_id)
-    }
-
-    pub(crate) fn outbound_channels(
-        &self,
-    ) -> impl Iterator<Item = (ChannelId, &OutboundChannelState)> + '_ {
+    pub(crate) fn receivers(&self) -> impl Iterator<Item = (ChannelId, &ReceiverState)> + '_ {
         self.channels
-            .outbound
+            .receivers
             .iter()
             .map(|(&id, state)| (id, state))
     }
 
-    pub(crate) fn outbound_channels_mut(
+    pub(super) fn receiver_mut(&mut self, channel_id: ChannelId) -> Option<&mut ReceiverState> {
+        self.channels.receivers.get_mut(&channel_id)
+    }
+
+    pub(super) fn receivers_mut(&mut self) -> impl Iterator<Item = &mut ReceiverState> + '_ {
+        self.channels.receivers.values_mut()
+    }
+
+    pub(super) fn sender_mut(&mut self, channel_id: ChannelId) -> Option<&mut SenderState> {
+        self.channels.senders.get_mut(&channel_id)
+    }
+
+    pub(crate) fn senders(&self) -> impl Iterator<Item = (ChannelId, &SenderState)> + '_ {
+        self.channels.senders.iter().map(|(&id, state)| (id, state))
+    }
+
+    pub(crate) fn senders_mut(
         &mut self,
-    ) -> impl Iterator<Item = (ChannelId, &mut OutboundChannelState)> + '_ {
+    ) -> impl Iterator<Item = (ChannelId, &mut SenderState)> + '_ {
         self.channels
-            .outbound
+            .senders
             .iter_mut()
             .map(|(&id, state)| (id, state))
     }
@@ -442,7 +428,7 @@ impl PersistedWorkflowData {
     fn drain_messages(&mut self) -> HashMap<ChannelId, Vec<Message>> {
         let mut new_wakers = vec![];
         let messages_by_channel = self
-            .outbound_channels_mut()
+            .senders_mut()
             .filter_map(|(id, state)| {
                 let (messages, maybe_wakers) = state.take_messages(id);
                 if let Some(wakers) = maybe_wakers {
@@ -463,37 +449,31 @@ impl PersistedWorkflowData {
 }
 
 impl WorkflowData<'_> {
-    pub(super) fn handle_inbound_channel_drop(
-        &mut self,
-        channel_id: ChannelId,
-    ) -> HashSet<WakerId> {
+    pub(super) fn handle_receiver_drop(&mut self, channel_id: ChannelId) -> HashSet<WakerId> {
         let channel_state = self
             .persisted
             .channels
-            .inbound
+            .receivers
             .get_mut(&channel_id)
             .unwrap();
         let wakers = mem::take(&mut channel_state.wakes_on_next_element);
         if !channel_state.is_closed {
             channel_state.is_closed = true;
             self.current_execution()
-                .push_channel_closure(ChannelKind::Inbound, channel_id);
+                .push_channel_closure(ChannelHalf::Receiver, channel_id);
         }
         wakers
     }
 
-    pub(super) fn handle_outbound_channel_drop(
-        &mut self,
-        channel_id: ChannelId,
-    ) -> HashSet<WakerId> {
+    pub(super) fn handle_sender_drop(&mut self, channel_id: ChannelId) -> HashSet<WakerId> {
         let channels = &mut self.persisted.channels;
-        let state = channels.outbound.get_mut(&channel_id).unwrap();
+        let state = channels.senders.get_mut(&channel_id).unwrap();
         state.ref_count -= 1;
 
         if state.ref_count == 0 {
             let wakers = mem::take(&mut state.wakes_on_flush);
             self.current_execution()
-                .push_channel_closure(ChannelKind::Outbound, channel_id);
+                .push_channel_closure(ChannelHalf::Sender, channel_id);
             wakers
         } else {
             HashSet::new()
@@ -502,7 +482,7 @@ impl WorkflowData<'_> {
 
     pub(crate) fn take_pending_inbound_message(&mut self, channel_id: ChannelId) -> bool {
         let channels = &mut self.persisted.channels;
-        let state = channels.inbound.get_mut(&channel_id).unwrap();
+        let state = channels.receivers.get_mut(&channel_id).unwrap();
         let has_message = state.pending_message.take().is_some();
         if has_message {
             state.received_messages -= 1;
@@ -510,24 +490,24 @@ impl WorkflowData<'_> {
         has_message
     }
 
-    fn poll_inbound_channel(&mut self, channel_id: ChannelId, cx: &mut WasmContext) -> PollMessage {
+    fn poll_receiver(&mut self, channel_id: ChannelId, cx: &mut WasmContext) -> PollMessage {
         let channels = &mut self.persisted.channels;
-        let state = channels.inbound.get_mut(&channel_id).unwrap();
+        let state = channels.receivers.get_mut(&channel_id).unwrap();
         // ^ `unwrap()` safety is guaranteed by resource handling
 
         let poll_result = state.poll_next();
         self.current_execution()
-            .push_inbound_channel_event(channel_id, &poll_result);
-        poll_result.wake_if_pending(cx, || WakerPlacement::InboundChannel(channel_id))
+            .push_receiver_event(channel_id, &poll_result);
+        poll_result.wake_if_pending(cx, || WakerPlacement::Receiver(channel_id))
     }
 
-    fn poll_outbound_channel(
+    fn poll_sender(
         &mut self,
         channel_id: ChannelId,
         flush: bool,
         cx: &mut WasmContext,
     ) -> Poll<Result<(), SendError>> {
-        let channel_state = &self.persisted.channels.outbound[&channel_id];
+        let channel_state = &self.persisted.channels.senders[&channel_id];
 
         let should_block =
             !channel_state.is_ready() || (flush && !channel_state.messages.is_empty());
@@ -545,8 +525,8 @@ impl WorkflowData<'_> {
         };
 
         self.current_execution()
-            .push_outbound_poll_event(channel_id, flush, poll_result.clone());
-        poll_result.wake_if_pending(cx, || WakerPlacement::OutboundChannel(channel_id))
+            .push_sender_poll_event(channel_id, flush, poll_result.clone());
+        poll_result.wake_if_pending(cx, || WakerPlacement::Sender(channel_id))
     }
 
     fn push_outbound_message(
@@ -557,7 +537,7 @@ impl WorkflowData<'_> {
         let channel_state = self
             .persisted
             .channels
-            .outbound
+            .senders
             .get_mut(&channel_id)
             .unwrap();
         if channel_state.is_closed {
@@ -617,7 +597,7 @@ impl WorkflowFunctions {
         let mapping = Self::channel_mapping(data, child_id)?;
 
         let mapping = mapping
-            .inbound
+            .receivers
             .get_mut(&channel_name)
             .ok_or(AccessErrorKind::Unknown);
         let result = mapping.map(|mapping_state| mapping_state.acquire().ok());
@@ -625,7 +605,7 @@ impl WorkflowFunctions {
 
         let mut channel_ref = None;
         let result = result.map(|acquire_result| {
-            channel_ref = acquire_result.map(|id| HostResource::InboundChannel(id).into_ref());
+            channel_ref = acquire_result.map(|id| HostResource::Receiver(id).into_ref());
         });
         Self::write_access_result(&mut ctx, result, error_ptr)?;
         Ok(channel_ref)
@@ -652,13 +632,11 @@ impl WorkflowFunctions {
         channel_ref: Option<ExternRef>,
         poll_cx: WasmContextPtr,
     ) -> anyhow::Result<i64> {
-        let channel_id = HostResource::from_ref(channel_ref.as_ref())?.as_inbound_channel()?;
+        let channel_id = HostResource::from_ref(channel_ref.as_ref())?.as_receiver()?;
         tracing::Span::current().record("channel", field::debug(channel_ref));
 
         let mut poll_cx = WasmContext::new(poll_cx);
-        let poll_result = ctx
-            .data_mut()
-            .poll_inbound_channel(channel_id, &mut poll_cx);
+        let poll_result = ctx.data_mut().poll_receiver(channel_id, &mut poll_cx);
         tracing::debug!(result = ?utils::drop_value(&poll_result));
 
         if let Poll::Ready(maybe_message) = &poll_result {
@@ -693,7 +671,7 @@ impl WorkflowFunctions {
         let mapping = Self::channel_mapping(data, child_id)?;
 
         let mapping = mapping
-            .outbound
+            .senders
             .get_mut(&channel_name)
             .ok_or(AccessErrorKind::Unknown);
         let result = mapping.map(|mapping_state| mapping_state.acquire().ok());
@@ -701,7 +679,7 @@ impl WorkflowFunctions {
 
         let mut channel_ref = None;
         let result = result.map(|acquire_result| {
-            channel_ref = acquire_result.map(|id| HostResource::OutboundChannel(id).into_ref());
+            channel_ref = acquire_result.map(|id| HostResource::Sender(id).into_ref());
         });
         Self::write_access_result(&mut ctx, result, error_ptr)?;
         Ok(channel_ref)
@@ -713,13 +691,11 @@ impl WorkflowFunctions {
         channel_ref: Option<ExternRef>,
         cx: WasmContextPtr,
     ) -> anyhow::Result<i32> {
-        let channel_id = HostResource::from_ref(channel_ref.as_ref())?.as_outbound_channel()?;
+        let channel_id = HostResource::from_ref(channel_ref.as_ref())?.as_sender()?;
         tracing::Span::current().record("channel", field::debug(channel_ref));
 
         let mut cx = WasmContext::new(cx);
-        let poll_result = ctx
-            .data_mut()
-            .poll_outbound_channel(channel_id, false, &mut cx);
+        let poll_result = ctx.data_mut().poll_sender(channel_id, false, &mut cx);
         tracing::debug!(result = ?poll_result);
 
         cx.save_waker(&mut ctx)?;
@@ -738,7 +714,7 @@ impl WorkflowFunctions {
         message_ptr: u32,
         message_len: u32,
     ) -> anyhow::Result<i32> {
-        let channel_id = HostResource::from_ref(channel_ref.as_ref())?.as_outbound_channel()?;
+        let channel_id = HostResource::from_ref(channel_ref.as_ref())?.as_sender()?;
         tracing::Span::current().record("channel", field::debug(channel_id));
 
         let memory = ctx.data().exports().memory;
@@ -754,13 +730,11 @@ impl WorkflowFunctions {
         channel_ref: Option<ExternRef>,
         poll_cx: WasmContextPtr,
     ) -> anyhow::Result<i32> {
-        let channel_id = HostResource::from_ref(channel_ref.as_ref())?.as_outbound_channel()?;
+        let channel_id = HostResource::from_ref(channel_ref.as_ref())?.as_sender()?;
         tracing::Span::current().record("channel", field::debug(channel_id));
 
         let mut poll_cx = WasmContext::new(poll_cx);
-        let poll_result = ctx
-            .data_mut()
-            .poll_outbound_channel(channel_id, true, &mut poll_cx);
+        let poll_result = ctx.data_mut().poll_sender(channel_id, true, &mut poll_cx);
         tracing::debug!(result = ?poll_result);
 
         poll_cx.save_waker(&mut ctx)?;

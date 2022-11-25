@@ -8,7 +8,7 @@ use super::*;
 use crate::{data::SpawnFunctions, module::StashWorkflow, utils::copy_bytes_from_wasm};
 use tardigrade::{
     abi::TryFromWasm,
-    interface::{ChannelKind, Interface},
+    interface::{ChannelHalf, Interface},
     spawn::{HostError, ManageInterfaces},
     ChannelId,
 };
@@ -87,8 +87,8 @@ impl StashWorkflow for MockWorkflowManager {
         channels: ChannelsConfig<ChannelId>,
     ) {
         assert_eq!(id, "test:latest");
-        assert_eq!(channels.inbound.len(), 1);
-        assert_eq!(channels.outbound.len(), 1);
+        assert_eq!(channels.receivers.len(), 1);
+        assert_eq!(channels.senders.len(), 1);
         self.calls.push(NewWorkflowCall {
             stub_id,
             args,
@@ -121,10 +121,10 @@ fn spawn_child_workflow(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::R
         let memory = ctx.data().exports().memory;
         let interface = copy_bytes_from_wasm(&ctx, &memory, ptr, len)?;
         let interface = Interface::from_bytes(&interface);
-        assert_eq!(interface.inbound_channels().len(), 1);
-        assert!(interface.inbound_channel("commands").is_some());
-        assert_eq!(interface.outbound_channels().len(), 1);
-        assert!(interface.outbound_channel("traces").is_some());
+        assert_eq!(interface.receivers().len(), 1);
+        assert!(interface.receiver("commands").is_some());
+        assert_eq!(interface.senders().len(), 1);
+        assert!(interface.sender("traces").is_some());
     }
 
     // Emulate creating a spawner.
@@ -158,7 +158,7 @@ fn get_child_workflow_channel(
         SpawnFunctions::poll_workflow_init(ctx.as_context_mut(), stub, POLL_CX, ERROR_PTR)?;
     assert!(workflow.is_some());
 
-    // Emulate getting an inbound channel for the workflow.
+    // Emulate getting a receiver for the workflow.
     let (name_ptr, name_len) = WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"traces")?;
     let traces = WorkflowFunctions::get_receiver(
         ctx.as_context_mut(),
@@ -186,7 +186,7 @@ fn configure_handles(
     SpawnFunctions::set_channel_handle(
         ctx.as_context_mut(),
         handles.clone(),
-        ChannelKind::Inbound.into_abi_in_wasm(),
+        ChannelHalf::Receiver.into_abi_in_wasm(),
         name_ptr,
         name_len,
         0,
@@ -195,7 +195,7 @@ fn configure_handles(
     SpawnFunctions::set_channel_handle(
         ctx.as_context_mut(),
         handles,
-        ChannelKind::Outbound.into_abi_in_wasm(),
+        ChannelHalf::Sender.into_abi_in_wasm(),
         name_ptr,
         name_len,
         0,
@@ -285,7 +285,7 @@ fn spawning_child_workflow_with_extra_channel() {
         SpawnFunctions::set_channel_handle(
             ctx.as_context_mut(),
             handles.clone(),
-            ChannelKind::Inbound.into_abi_in_wasm(),
+            ChannelHalf::Receiver.into_abi_in_wasm(),
             id_ptr,
             id_len,
             0,
@@ -302,7 +302,7 @@ fn spawning_child_workflow_with_extra_channel() {
         .unwrap_err()
         .to_string();
 
-        assert_eq!(err, "extra inbound handles: `test:latest`");
+        assert_eq!(err, "extra receiver handles: `test:latest`");
         Ok(Poll::Pending)
     };
 
@@ -378,8 +378,8 @@ fn spawning_child_workflow_with_host_error() {
 fn consume_message_from_child(
     mut ctx: StoreContextMut<'_, WorkflowData>,
 ) -> anyhow::Result<Poll<()>> {
-    let traces = Some(ctx.data().inbound_channel_ref(Some(1), "traces"));
-    let commands = Some(ctx.data_mut().outbound_channel_ref(Some(1), "commands"));
+    let traces = Some(ctx.data().receiver_ref(Some(1), "traces"));
+    let commands = Some(ctx.data_mut().sender_ref(Some(1), "commands"));
 
     let poll_res =
         WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), traces, POLL_CX)?;
@@ -437,7 +437,7 @@ fn consuming_message_from_child_workflow() {
     workflow
         .data_mut()
         .persisted
-        .push_inbound_message(child_traces_id, b"trace #1".to_vec())
+        .push_message_for_receiver(child_traces_id, b"trace #1".to_vec())
         .unwrap();
     let receipt = poll_fn_sx
         .send(consume_message_from_child)
@@ -453,9 +453,9 @@ fn consuming_message_from_child_workflow() {
     assert_eq!(messages[&child_commands_id][0].as_ref(), b"command #1");
 
     let persisted = &workflow.data().persisted;
-    let child_traces = &persisted.channels.inbound[&child_traces_id];
+    let child_traces = &persisted.channels.receivers[&child_traces_id];
     assert_eq!(child_traces.received_messages, 1);
-    let child_commands = &persisted.channels.outbound[&child_commands_id];
+    let child_commands = &persisted.channels.senders[&child_commands_id];
     assert_eq!(child_commands.flushed_messages, 1);
 }
 
@@ -494,11 +494,11 @@ fn assert_child_inbound_message_receipt(workflow: &Workflow<'_>, receipt: &Recei
         &events[0..4],
         [
             ChannelEvent {
-                kind: ChannelEventKind::InboundChannelPolled { result: Poll::Ready(Some(_)) },
+                kind: ChannelEventKind::ReceiverPolled { result: Poll::Ready(Some(_)) },
                 channel_id: traces,
             },
             ChannelEvent {
-                kind: ChannelEventKind::OutboundChannelReady {
+                kind: ChannelEventKind::SenderReady {
                     result: Poll::Ready(Ok(())),
                 },
                 channel_id: commands,
@@ -508,7 +508,7 @@ fn assert_child_inbound_message_receipt(workflow: &Workflow<'_>, receipt: &Recei
                 channel_id: commands2,
             },
             ChannelEvent {
-                kind: ChannelEventKind::OutboundChannelFlushed { result: Poll::Pending },
+                kind: ChannelEventKind::SenderFlushed { result: Poll::Pending },
                 channel_id: commands3,
             },
         ] if *traces == child_traces_id && *commands == child_commands_id

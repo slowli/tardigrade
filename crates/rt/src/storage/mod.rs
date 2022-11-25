@@ -459,8 +459,8 @@ pub enum WorkflowWaker {
     Internal,
     /// Waker produced by a timer.
     Timer(DateTime<Utc>),
-    /// Waker produced by an outbound channel closure.
-    OutboundChannelClosure(ChannelId),
+    /// Waker produced by a sender closure.
+    SenderClosure(ChannelId),
     /// Waker produced by a completed child workflow.
     ChildCompletion(WorkflowId),
 }
