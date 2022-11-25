@@ -35,7 +35,7 @@ impl PizzaDeliveryHandle {
                     let builder =
                         Workflows.new_workflow::<Baking>(DEFINITION_ID, (counter, order))?;
                     builder.handle().events.copy_from(events);
-                    // FIXME: add another outbound channel to close?
+                    // FIXME: add another sender to close?
                     let handle = builder.build().await?;
                     handle.workflow.await.map_err(TaskError::from)
                 }

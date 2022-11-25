@@ -7,7 +7,7 @@ use std::{collections::HashSet, task::Poll};
 
 use crate::create_module;
 use tardigrade::{
-    interface::{InboundChannel, OutboundChannel},
+    interface::{ReceiverName, SenderName},
     spawn::ManageWorkflowsExt,
     Decode, Encode, Json,
 };
@@ -92,13 +92,18 @@ async fn basic_workflow() -> TestResult {
     assert!(execution.task_result.is_none());
 
     assert_eq!(execution.events.len(), 1);
+    let orders_id = workflow
+        .persisted()
+        .channels()
+        .receiver_id("orders")
+        .unwrap();
     assert_matches!(
         &execution.events[0],
         Event::Channel(ChannelEvent {
-            kind: ChannelEventKind::InboundChannelPolled { result: Poll::Pending },
-            channel_name,
+            kind: ChannelEventKind::ReceiverPolled { result: Poll::Pending },
+            channel_id,
             ..
-        }) if channel_name == "orders"
+        }) if *channel_id == orders_id
     );
 
     workflow.update().await?;
@@ -124,9 +129,10 @@ async fn basic_workflow() -> TestResult {
     let persisted = workflow.persisted();
     let wakeup_causes: Vec<_> = persisted.pending_wakeup_causes().collect();
     assert_eq!(wakeup_causes.len(), 1);
+    let events_id = handle.shared.events.channel_id();
     assert_matches!(
         wakeup_causes[0],
-        WakeUpCause::Flush { workflow_id: None, channel_name, .. } if channel_name == "events"
+        WakeUpCause::Flush { channel_id, .. } if *channel_id == events_id
     );
 
     manager.tick().await?.drop_handle().into_inner()?;
@@ -345,19 +351,19 @@ async fn untyped_workflow() -> TestResult {
         kind: PizzaKind::Pepperoni,
         delivery_distance: 10,
     };
-    handle[InboundChannel("orders")]
+    handle[ReceiverName("orders")]
         .send(Json.encode_value(order))
         .await?;
     manager.tick().await?.drop_handle().into_inner()?; // TODO: assert on receipt
 
-    let event = handle[OutboundChannel("events")].receive_message(0).await?;
+    let event = handle[SenderName("events")].receive_message(0).await?;
     let event: DomainEvent = Json.try_decode_bytes(event.decode().unwrap())?;
     assert_eq!(event, DomainEvent::OrderTaken { index: 1, order });
 
-    let chan = handle[InboundChannel("orders")].channel_info().await;
+    let chan = handle[ReceiverName("orders")].channel_info().await;
     assert!(!chan.is_closed);
     assert_eq!(chan.received_messages, 1);
-    let chan = handle[OutboundChannel("events")].channel_info().await;
+    let chan = handle[SenderName("events")].channel_info().await;
     assert_eq!(chan.received_messages, 1);
     Ok(())
 }
@@ -377,7 +383,7 @@ async fn workflow_recovery_after_trap() -> TestResult {
         .build()
         .await?;
     let mut handle = workflow.handle();
-    let mut events_drain = Drain::new(handle.remove(OutboundChannel("events")).unwrap());
+    let mut events_drain = Drain::new(handle.remove(SenderName("events")).unwrap());
     manager.tick().await?.drop_handle().into_inner()?;
 
     let order = PizzaOrder {
@@ -393,7 +399,7 @@ async fn workflow_recovery_after_trap() -> TestResult {
     });
 
     for (i, message) in messages.enumerate() {
-        handle[InboundChannel("orders")].send(message).await?;
+        handle[ReceiverName("orders")].send(message).await?;
 
         let result = loop {
             let tick_result = manager.tick().await?;
