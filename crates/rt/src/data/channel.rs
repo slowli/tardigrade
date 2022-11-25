@@ -25,6 +25,7 @@ use tardigrade::{
     abi::{IntoWasm, PollMessage},
     channel::SendError,
     interface::{AccessErrorKind, ChannelHalf, Interface},
+    spawn::{ChannelSpawnConfig, ChannelsConfig},
     ChannelId, WakerId, WorkflowId,
 };
 
@@ -104,6 +105,21 @@ impl ChannelMapping {
 
     pub fn sender_names(&self) -> impl Iterator<Item = &str> + '_ {
         self.senders.keys().map(String::as_str)
+    }
+
+    pub fn acquire_non_captured_channels(&mut self, config: &ChannelsConfig<ChannelId>) {
+        for (name, channel_config) in &config.receivers {
+            if matches!(channel_config, ChannelSpawnConfig::Existing(_)) {
+                let state = self.senders.get_mut(name).unwrap();
+                state.is_acquired = true;
+            }
+        }
+        for (name, channel_config) in &config.senders {
+            if matches!(channel_config, ChannelSpawnConfig::Existing(_)) {
+                let state = self.receivers.get_mut(name).unwrap();
+                state.is_acquired = true;
+            }
+        }
     }
 }
 

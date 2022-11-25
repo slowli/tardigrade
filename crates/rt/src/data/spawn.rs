@@ -165,22 +165,12 @@ impl PersistedWorkflowData {
         stub.result = Poll::Ready(Ok(workflow_id));
         let wakers = mem::take(&mut stub.wakes_on_init);
         self.schedule_wakers(wakers, WakeUpCause::InitWorkflow { stub_id });
-
-        for (name, channel_config) in &config.receivers {
-            if matches!(channel_config, ChannelSpawnConfig::Existing(_)) {
-                channel_ids.receivers.remove(name);
-            }
-        }
-        for (name, channel_config) in &config.senders {
-            if matches!(channel_config, ChannelSpawnConfig::Existing(_)) {
-                channel_ids.senders.remove(name);
-            }
-        }
         mem::swap(&mut channel_ids.receivers, &mut channel_ids.senders);
 
         // TODO: what is the appropriate capacity?
         self.channels.insert_channels(&channel_ids, |_| Some(1));
-        let child_state = ChildWorkflowState::new(channel_ids);
+        let mut child_state = ChildWorkflowState::new(channel_ids);
+        child_state.channels.acquire_non_captured_channels(config);
         self.child_workflows.insert(workflow_id, child_state);
     }
 
