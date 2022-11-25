@@ -14,8 +14,9 @@ use std::{
 
 use crate::{
     data::{
+        channel::{ChannelMapping, ChannelStates, Channels},
         helpers::{HostResource, WakeIfPending, WakerPlacement, WasmContext, WasmContextPtr},
-        ChannelMapping, PersistedWorkflowData, WorkflowData,
+        PersistedWorkflowData, WorkflowData,
     },
     receipt::{ResourceEventKind, ResourceId, WakeUpCause},
     utils::{self, WasmAllocator},
@@ -74,10 +75,9 @@ impl ChildWorkflowStubs {
     }
 }
 
-/// State of child workflow as viewed by its parent.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ChildWorkflowState {
-    pub(super) channels: ChannelMapping,
+pub(super) struct ChildWorkflowState {
+    pub channels: ChannelMapping,
     #[serde(with = "utils::serde_poll_res")]
     completion_result: Poll<Result<(), JoinError>>,
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]
@@ -103,17 +103,11 @@ impl ChildWorkflowState {
         }
     }
 
-    /// Returns the current poll state of this workflow.
-    pub fn result(&self) -> Poll<Result<(), &JoinError>> {
+    fn result(&self) -> Poll<Result<(), &JoinError>> {
         match &self.completion_result {
             Poll::Pending => Poll::Pending,
             Poll::Ready(res) => Poll::Ready(res.as_ref().copied()),
         }
-    }
-
-    /// Returns the mapping of *local* channels.
-    pub fn channels(&self) -> &ChannelMapping {
-        &self.channels
     }
 
     pub(super) fn insert_waker(&mut self, waker_id: WakerId) {
@@ -121,13 +115,43 @@ impl ChildWorkflowState {
     }
 }
 
-impl PersistedWorkflowData {
-    pub fn child_workflows(&self) -> impl Iterator<Item = (WorkflowId, &ChildWorkflowState)> + '_ {
-        self.child_workflows.iter().map(|(id, state)| (*id, state))
+/// State of child workflow as viewed by its parent.
+#[derive(Debug, Clone, Copy)]
+pub struct ChildWorkflow<'a> {
+    state: &'a ChildWorkflowState,
+    channels: Channels<'a>,
+}
+
+impl<'a> ChildWorkflow<'a> {
+    fn new(state: &'a ChildWorkflowState, channel_states: &'a ChannelStates) -> Self {
+        Self {
+            state,
+            channels: Channels::new(channel_states, &state.channels),
+        }
     }
 
-    pub fn child_workflow(&self, id: WorkflowId) -> Option<&ChildWorkflowState> {
-        self.child_workflows.get(&id)
+    /// Returns *local* channels connecting to this child workflow.
+    pub fn channels(&self) -> Channels<'a> {
+        self.channels
+    }
+
+    /// Returns the current poll state of this workflow.
+    pub fn result(&self) -> Poll<Result<(), &'a JoinError>> {
+        self.state.result()
+    }
+}
+
+impl PersistedWorkflowData {
+    pub fn child_workflows(&self) -> impl Iterator<Item = (WorkflowId, ChildWorkflow<'_>)> + '_ {
+        self.child_workflows.iter().map(|(id, state)| {
+            let child = ChildWorkflow::new(state, &self.channels);
+            (*id, child)
+        })
+    }
+
+    pub fn child_workflow(&self, id: WorkflowId) -> Option<ChildWorkflow<'_>> {
+        let state = self.child_workflows.get(&id)?;
+        Some(ChildWorkflow::new(state, &self.channels))
     }
 
     pub fn notify_on_child_init(
@@ -309,7 +333,7 @@ impl WorkflowData<'_> {
     }
 
     fn workflow_task_error(&self, workflow_id: WorkflowId) -> Option<&TaskError> {
-        let result = self.persisted.child_workflows[&workflow_id].result();
+        let result = &self.persisted.child_workflows[&workflow_id].completion_result;
         if let Poll::Ready(Err(JoinError::Err(err))) = result {
             Some(err)
         } else {

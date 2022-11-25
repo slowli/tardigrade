@@ -84,10 +84,10 @@ impl OutboundChannelState {
 
 impl ChannelStates {
     fn check_on_restore(&self, interface: &Interface) -> anyhow::Result<()> {
-        for (name, _) in self.mapping.inbound_ids() {
+        for name in self.mapping.receiver_names() {
             InboundChannelState::check_on_restore(interface, name)?;
         }
-        for (name, _) in self.mapping.outbound_ids() {
+        for name in self.mapping.sender_names() {
             OutboundChannelState::check_on_restore(interface, name)?;
         }
         Ok(())

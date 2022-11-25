@@ -137,9 +137,9 @@ async fn spawning_child_workflow() {
     );
     let mut children: Vec<_> = persisted.child_workflows().collect();
     assert_eq!(children.len(), 1);
-    let (child_id, child_state) = children.pop().unwrap();
+    let (child_id, child) = children.pop().unwrap();
     assert_eq!(child_id, CHILD_ID);
-    let traces_id = child_state.channels().inbound_id("traces").unwrap();
+    let traces_id = child.channels().receiver_id("traces").unwrap();
 
     poll_fn_sx
         .send(poll_child_traces)
@@ -259,8 +259,8 @@ async fn sending_message_to_child() {
         .unwrap();
 
     let child = manager.workflow(CHILD_ID).await.unwrap();
-    let child_channels = child.persisted().channel_mapping();
-    let child_orders_id = child_channels.inbound_id("orders").unwrap();
+    let child_channels = child.persisted().channels();
+    let child_orders_id = child_channels.receiver_id("orders").unwrap();
     {
         let transaction = manager.storage.readonly_transaction().await;
         let child_orders = peek_channel(&transaction, child_orders_id).await;
@@ -347,8 +347,8 @@ async fn test_child_workflow_channel_management(complete_child: bool) {
     assert_eq!(children.len(), 1);
     let (child_id, child_state) = children.pop().unwrap();
     assert_eq!(child_id, CHILD_ID);
-    let orders_id = child_state.channels().outbound_id("orders").unwrap();
-    let traces_id = child_state.channels().inbound_id("traces").unwrap();
+    let orders_id = child_state.channels().sender_id("orders").unwrap();
+    let traces_id = child_state.channels().receiver_id("traces").unwrap();
 
     let poll_child_workflow: MockPollFn = if complete_child {
         |_| Ok(Poll::Ready(()))
@@ -532,11 +532,7 @@ async fn spawning_child_with_copied_outbound_channel() {
         HashSet::from_iter([workflow_id, CHILD_ID])
     );
     let child = manager.workflow(CHILD_ID).await.unwrap();
-    let child_events_id = child
-        .persisted()
-        .channel_mapping()
-        .outbound_id("events")
-        .unwrap();
+    let child_events_id = child.persisted().channels().sender_id("events").unwrap();
     assert_eq!(child_events_id, events_id);
 
     let write_event_and_complete_child: MockPollFn = |mut ctx| {

@@ -166,8 +166,8 @@ fn starting_workflow() {
     );
     assert_eq!(execution.events.len(), 1);
 
-    let mapping = workflow.data().persisted.channel_mapping();
-    let orders_id = mapping.inbound_id("orders").unwrap();
+    let mapping = workflow.data().persisted.channels();
+    let orders_id = mapping.receiver_id("orders").unwrap();
     assert_matches!(
         &execution.events[0],
         Event::Channel(ChannelEvent {
@@ -180,8 +180,8 @@ fn starting_workflow() {
 }
 
 fn push_message_and_tick(workflow: &mut Workflow<'_>) -> Result<Receipt, ExecutionError> {
-    let mapping = workflow.data().persisted.channel_mapping();
-    let orders_id = mapping.inbound_id("orders").unwrap();
+    let mapping = workflow.data().persisted.channels();
+    let orders_id = mapping.receiver_id("orders").unwrap();
     workflow
         .data_mut()
         .persisted
@@ -216,11 +216,11 @@ fn receiving_inbound_message() {
     assert_inbound_message_receipt(&workflow, &receipt);
 
     let messages = workflow.data_mut().drain_messages();
-    let mapping = workflow.data().persisted.channel_mapping();
-    let traces_id = mapping.outbound_id("traces").unwrap();
+    let mapping = workflow.data().persisted.channels();
+    let traces_id = mapping.sender_id("traces").unwrap();
     assert_eq!(messages[&traces_id].len(), 1);
     assert_eq!(messages[&traces_id][0].as_ref(), b"trace #1");
-    let events_id = mapping.outbound_id("events").unwrap();
+    let events_id = mapping.sender_id("events").unwrap();
     assert_eq!(messages[&events_id].len(), 1);
     assert_eq!(messages[&events_id][0].as_ref(), b"event #1");
 
@@ -237,10 +237,10 @@ fn receiving_inbound_message() {
 }
 
 fn assert_inbound_message_receipt(workflow: &Workflow<'_>, receipt: &Receipt) {
-    let mapping = &workflow.data().persisted.channels.mapping;
-    let orders_id = mapping.inbound_id("orders").unwrap();
-    let events_id = mapping.outbound_id("events").unwrap();
-    let traces_id = mapping.outbound_id("traces").unwrap();
+    let mapping = workflow.data().persisted.channels();
+    let orders_id = mapping.receiver_id("orders").unwrap();
+    let events_id = mapping.sender_id("events").unwrap();
+    let traces_id = mapping.sender_id("traces").unwrap();
 
     assert_eq!(receipt.executions().len(), 2);
     assert_matches!(

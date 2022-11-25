@@ -78,13 +78,13 @@ impl ChannelMappingState {
 
 /// Mapping of channels (from names to IDs) for a workflow.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ChannelMapping {
+pub(super) struct ChannelMapping {
     inbound: HashMap<String, ChannelMappingState>,
     outbound: HashMap<String, ChannelMappingState>,
 }
 
 impl ChannelMapping {
-    pub(super) fn new(ids: ChannelIds) -> Self {
+    pub fn new(ids: ChannelIds) -> Self {
         let inbound = ids
             .inbound
             .into_iter()
@@ -98,42 +98,12 @@ impl ChannelMapping {
         Self { inbound, outbound }
     }
 
-    /// Returns the ID of the specified named inbound channel.
-    pub fn inbound_id(&self, name: &str) -> Option<ChannelId> {
-        self.inbound.get(name).map(|state| state.id)
+    pub fn receiver_names(&self) -> impl Iterator<Item = &str> + '_ {
+        self.inbound.keys().map(String::as_str)
     }
 
-    /// Iterates over (name, ID) pairs for all inbound channels in this mapping.
-    pub fn inbound_ids(&self) -> impl Iterator<Item = (&str, ChannelId)> + '_ {
-        self.inbound
-            .iter()
-            .map(|(name, state)| (name.as_str(), state.id))
-    }
-
-    /// Returns the ID of the specified named outbound channel.
-    pub fn outbound_id(&self, name: &str) -> Option<ChannelId> {
-        self.outbound.get(name).map(|state| state.id)
-    }
-
-    /// Iterates over (name, ID) pairs for all outbound channels in this mapping.
-    pub fn outbound_ids(&self) -> impl Iterator<Item = (&str, ChannelId)> + '_ {
-        self.outbound
-            .iter()
-            .map(|(name, state)| (name.as_str(), state.id))
-    }
-
-    pub(crate) fn to_ids(&self) -> ChannelIds {
-        let inbound = self
-            .inbound
-            .iter()
-            .map(|(name, state)| (name.clone(), state.id))
-            .collect();
-        let outbound = self
-            .outbound
-            .iter()
-            .map(|(name, state)| (name.clone(), state.id))
-            .collect();
-        ChannelIds { inbound, outbound }
+    pub fn sender_names(&self) -> impl Iterator<Item = &str> + '_ {
+        self.outbound.keys().map(String::as_str)
     }
 }
 
@@ -292,6 +262,71 @@ impl ChannelStates {
     }
 }
 
+/// Information about channels for a particular workflow interface.
+#[derive(Debug, Clone, Copy)]
+pub struct Channels<'a> {
+    states: &'a ChannelStates,
+    mapping: &'a ChannelMapping,
+}
+
+impl<'a> Channels<'a> {
+    pub(super) fn new(states: &'a ChannelStates, mapping: &'a ChannelMapping) -> Self {
+        Self { states, mapping }
+    }
+
+    /// Returns the channel ID of the receiver with the specified name, or `None` if the receiver
+    /// is not present.
+    pub fn receiver_id(&self, name: &str) -> Option<ChannelId> {
+        self.mapping.inbound.get(name).map(|state| state.id)
+    }
+
+    /// Returns information about the receiver with the specified name.
+    pub fn receiver(&self, name: &str) -> Option<&'a InboundChannelState> {
+        let channel_id = self.mapping.inbound.get(name)?.id;
+        self.states.inbound.get(&channel_id)
+    }
+
+    /// Iterates over all receivers.
+    pub fn receivers(&self) -> impl Iterator<Item = (&'a str, &'a InboundChannelState)> + '_ {
+        self.mapping.inbound.iter().filter_map(|(name, state)| {
+            let state = self.states.inbound.get(&state.id)?;
+            Some((name.as_str(), state))
+        })
+    }
+
+    /// Returns the channel ID of the sender with the specified name, or `None` if the sender
+    /// is not present.
+    pub fn sender_id(&self, name: &str) -> Option<ChannelId> {
+        self.mapping.outbound.get(name).map(|state| state.id)
+    }
+
+    /// Returns information about the sender with the specified name.
+    pub fn sender(&self, name: &str) -> Option<&'a OutboundChannelState> {
+        let channel_id = self.mapping.outbound.get(name)?.id;
+        self.states.outbound.get(&channel_id)
+    }
+
+    /// Iterates over all senders.
+    pub fn senders(&self) -> impl Iterator<Item = (&'a str, &'a OutboundChannelState)> + '_ {
+        self.mapping.outbound.iter().filter_map(|(name, state)| {
+            let state = self.states.outbound.get(&state.id)?;
+            Some((name.as_str(), state))
+        })
+    }
+
+    pub(crate) fn to_ids(self) -> ChannelIds {
+        let inbound = self.mapping.inbound.iter();
+        let inbound = inbound
+            .map(|(name, state)| (name.clone(), state.id))
+            .collect();
+        let outbound = self.mapping.outbound.iter();
+        let outbound = outbound
+            .map(|(name, state)| (name.clone(), state.id))
+            .collect();
+        ChannelIds { inbound, outbound }
+    }
+}
+
 impl PersistedWorkflowData {
     pub(crate) fn push_inbound_message(
         &mut self,
@@ -352,8 +387,8 @@ impl PersistedWorkflowData {
         channel_state.close();
     }
 
-    pub(crate) fn channel_mapping(&self) -> &ChannelMapping {
-        &self.channels.mapping
+    pub(crate) fn channels(&self) -> Channels<'_> {
+        Channels::new(&self.channels, &self.channels.mapping)
     }
 
     pub(crate) fn inbound_channel(&self, channel_id: ChannelId) -> Option<&InboundChannelState> {

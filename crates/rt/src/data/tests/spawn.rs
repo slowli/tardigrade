@@ -225,8 +225,8 @@ fn spawning_child_workflow() {
     let mut children: Vec<_> = workflow.data().persisted.child_workflows().collect();
     assert_eq!(children.len(), 1);
     let (_, child) = children.pop().unwrap();
-    let commands_id = child.channels().outbound_id("commands").unwrap();
-    let traces_id = child.channels().inbound_id("traces").unwrap();
+    let commands_id = child.channels().sender_id("commands").unwrap();
+    let traces_id = child.channels().receiver_id("traces").unwrap();
     assert_ne!(commands_id, traces_id);
 }
 
@@ -431,8 +431,8 @@ fn consuming_message_from_child_workflow() {
 
     let persisted = &workflow.data().persisted;
     let child = persisted.child_workflow(1).unwrap();
-    let child_commands_id = child.channels().outbound_id("commands").unwrap();
-    let child_traces_id = child.channels().inbound_id("traces").unwrap();
+    let child_commands_id = child.channels().sender_id("commands").unwrap();
+    let child_traces_id = child.channels().receiver_id("traces").unwrap();
 
     workflow
         .data_mut()
@@ -460,10 +460,10 @@ fn consuming_message_from_child_workflow() {
 }
 
 fn assert_child_inbound_message_receipt(workflow: &Workflow<'_>, receipt: &Receipt) {
-    let children = &workflow.data().persisted.child_workflows;
-    let child = children.values().next().unwrap();
-    let child_commands_id = child.channels().outbound_id("commands").unwrap();
-    let child_traces_id = child.channels().inbound_id("traces").unwrap();
+    let mut children = workflow.data().persisted.child_workflows();
+    let (_, child) = children.next().unwrap();
+    let child_commands_id = child.channels().sender_id("commands").unwrap();
+    let child_traces_id = child.channels().receiver_id("traces").unwrap();
 
     assert_matches!(
         &receipt.executions()[0],

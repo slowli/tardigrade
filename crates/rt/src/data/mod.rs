@@ -25,8 +25,8 @@ pub(crate) use self::{
     spawn::SpawnFunctions,
 };
 pub use self::{
-    channel::{ChannelMapping, InboundChannelState, OutboundChannelState},
-    spawn::ChildWorkflowState,
+    channel::{Channels, InboundChannelState, OutboundChannelState},
+    spawn::ChildWorkflow,
     task::TaskState,
     time::TimerState,
 };
@@ -34,7 +34,7 @@ pub use self::{
 use self::{
     channel::ChannelStates,
     helpers::{CurrentExecution, HostResource},
-    spawn::ChildWorkflowStubs,
+    spawn::{ChildWorkflowState, ChildWorkflowStubs},
     task::TaskQueue,
     time::Timers,
 };
@@ -134,12 +134,12 @@ impl<'a> WorkflowData<'a> {
         child_id: Option<WorkflowId>,
         name: &str,
     ) -> ExternRef {
-        let mapping = if let Some(child_id) = child_id {
-            &self.persisted.child_workflows[&child_id].channels
+        let channels = if let Some(child_id) = child_id {
+            self.persisted.child_workflow(child_id).unwrap().channels()
         } else {
-            &self.persisted.channels.mapping
+            self.persisted.channels()
         };
-        let channel_id = mapping.inbound_id(name).unwrap();
+        let channel_id = channels.receiver_id(name).unwrap();
         HostResource::InboundChannel(channel_id).into_ref()
     }
 
@@ -149,12 +149,12 @@ impl<'a> WorkflowData<'a> {
         child_id: Option<WorkflowId>,
         name: &str,
     ) -> ExternRef {
-        let mapping = if let Some(child_id) = child_id {
-            &self.persisted.child_workflows[&child_id].channels
+        let channels = if let Some(child_id) = child_id {
+            self.persisted.child_workflow(child_id).unwrap().channels()
         } else {
-            &self.persisted.channels.mapping
+            self.persisted.channels()
         };
-        let channel_id = mapping.outbound_id(name).unwrap();
+        let channel_id = channels.sender_id(name).unwrap();
         HostResource::OutboundChannel(channel_id).into_ref()
     }
 

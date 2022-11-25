@@ -9,9 +9,8 @@ use std::{fmt, task::Poll};
 
 use crate::{
     data::{
-        ChannelMapping, ChildWorkflowState, ConsumeError, InboundChannelState,
-        OutboundChannelState, PersistError, PersistedWorkflowData, Refs, TaskState, TimerState,
-        Wakers, WorkflowData,
+        Channels, ChildWorkflow, ConsumeError, InboundChannelState, OutboundChannelState,
+        PersistError, PersistedWorkflowData, Refs, TaskState, TimerState, Wakers, WorkflowData,
     },
     module::{DataSection, Services, WorkflowSpawner},
     receipt::WakeUpCause,
@@ -188,6 +187,11 @@ impl PersistedWorkflow {
         self.state.outbound_channels()
     }
 
+    /// Returns information about channels defined in this workflow interface.
+    pub fn channels(&self) -> Channels<'_> {
+        self.state.channels()
+    }
+
     #[tracing::instrument(level = "debug", skip(self, message), err, fields(message.len = message.len()))]
     pub(crate) fn push_inbound_message(
         &mut self,
@@ -229,13 +233,13 @@ impl PersistedWorkflow {
     }
 
     /// Enumerates child workflows.
-    pub fn child_workflows(&self) -> impl Iterator<Item = (WorkflowId, &ChildWorkflowState)> + '_ {
+    pub fn child_workflows(&self) -> impl Iterator<Item = (WorkflowId, ChildWorkflow<'_>)> + '_ {
         self.state.child_workflows()
     }
 
     /// Returns the local state of the child workflow with the specified ID, or `None`
     /// if a workflow with such ID was not spawned by this workflow.
-    pub fn child_workflow(&self, id: WorkflowId) -> Option<&ChildWorkflowState> {
+    pub fn child_workflow(&self, id: WorkflowId) -> Option<ChildWorkflow<'_>> {
         self.state.child_workflow(id)
     }
 
@@ -303,11 +307,6 @@ impl PersistedWorkflow {
     /// Iterates over pending [`WakeUpCause`]s.
     pub fn pending_wakeup_causes(&self) -> impl Iterator<Item = &WakeUpCause> + '_ {
         self.state.waker_queue.iter().map(Wakers::cause)
-    }
-
-    // FIXME: make public
-    pub(crate) fn channel_mapping(&self) -> &ChannelMapping {
-        self.state.channel_mapping()
     }
 
     /// Restores a workflow from the persisted state and the `spawner` defining the workflow.

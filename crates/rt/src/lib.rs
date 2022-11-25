@@ -140,8 +140,7 @@ mod workflow;
 pub use crate::backends::AsyncIoScheduler;
 pub use crate::{
     data::{
-        ChannelMapping, ChildWorkflowState, InboundChannelState, OutboundChannelState, TaskState,
-        TimerState,
+        Channels, ChildWorkflow, InboundChannelState, OutboundChannelState, TaskState, TimerState,
     },
     module::{
         Clock, ExtendLinker, Schedule, TimerFuture, WorkflowEngine, WorkflowModule, WorkflowSpawner,
