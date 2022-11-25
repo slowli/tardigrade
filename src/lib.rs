@@ -13,7 +13,7 @@
 //!
 //! Timers [can be created dynamically](sleep) during workflow operation; likewise, tasks
 //! can be [`spawn()`](task::spawn())ed to achieve concurrency (but not parallelism!).
-//! In contrast, the set of channels and their direction (inbound or outbound)
+//! In contrast, the set of channel halves and their direction (receiver or sender)
 //! are static / predefined in the workflow [`Interface`].
 //!
 //! A workflow is sandboxed by the virtue of being implemented as a WASM module.
@@ -112,8 +112,8 @@ pub use crate::{
 /// #[tardigrade::handle]
 /// #[derive(Debug)]
 /// pub struct MyHandle<Env> {
-///     pub inbound: Handle<Receiver<i64, Json>, Env>,
-///     pub outbound: Handle<Sender<i64, Json>, Env>,
+///     pub receiver: Handle<Receiver<i64, Json>, Env>,
+///     pub sender: Handle<Sender<i64, Json>, Env>,
 /// }
 /// ```
 ///

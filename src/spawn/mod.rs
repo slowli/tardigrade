@@ -81,9 +81,7 @@ pub use crate::error::HostError;
 
 use crate::{
     channel::{RawReceiver, RawSender, Receiver, SendError, Sender},
-    interface::{
-        AccessError, AccessErrorKind, ChannelKind, InboundChannel, Interface, OutboundChannel,
-    },
+    interface::{AccessError, AccessErrorKind, ChannelHalf, Interface, ReceiverName, SenderName},
     task::JoinError,
     workflow::{GetInterface, TakeHandle, UntypedHandle, WorkflowFn},
     Decode, Encode,
@@ -131,17 +129,17 @@ impl<T> ChannelSpawnConfig<T> {
 #[doc(hidden)] // used only in low-level `ManageWorkflows` API
 #[allow(clippy::unsafe_derive_deserialize)] // unsafe methods do not concern type data
 pub struct ChannelsConfig<In, Out = In> {
-    /// Configurations of inbound channels.
-    pub inbound: HashMap<String, ChannelSpawnConfig<In>>,
-    /// Configurations of outbound channels.
-    pub outbound: HashMap<String, ChannelSpawnConfig<Out>>,
+    /// Configurations of channel receivers.
+    pub receivers: HashMap<String, ChannelSpawnConfig<In>>,
+    /// Configurations of channel senders.
+    pub senders: HashMap<String, ChannelSpawnConfig<Out>>,
 }
 
 impl<In, Out> Default for ChannelsConfig<In, Out> {
     fn default() -> Self {
         Self {
-            inbound: HashMap::new(),
-            outbound: HashMap::new(),
+            receivers: HashMap::new(),
+            senders: HashMap::new(),
         }
     }
 }
@@ -149,30 +147,30 @@ impl<In, Out> Default for ChannelsConfig<In, Out> {
 impl<In, Out> ChannelsConfig<In, Out> {
     /// Creates channel configuration from the provided interface.
     pub fn from_interface(interface: &Interface) -> Self {
-        let inbound = interface
-            .inbound_channels()
+        let receivers = interface
+            .receivers()
             .map(|(name, _)| (name.to_owned(), ChannelSpawnConfig::default()))
             .collect();
-        let outbound = interface
-            .outbound_channels()
+        let senders = interface
+            .senders()
             .map(|(name, _)| (name.to_owned(), ChannelSpawnConfig::default()))
             .collect();
-        Self { inbound, outbound }
+        Self { receivers, senders }
     }
 
-    fn close_channel(&mut self, kind: ChannelKind, name: &str) {
+    fn close_channel(&mut self, kind: ChannelHalf, name: &str) {
         match kind {
-            ChannelKind::Inbound => {
-                *self.inbound.get_mut(name).unwrap() = ChannelSpawnConfig::Closed;
+            ChannelHalf::Receiver => {
+                *self.receivers.get_mut(name).unwrap() = ChannelSpawnConfig::Closed;
             }
-            ChannelKind::Outbound => {
-                *self.outbound.get_mut(name).unwrap() = ChannelSpawnConfig::Closed;
+            ChannelHalf::Sender => {
+                *self.senders.get_mut(name).unwrap() = ChannelSpawnConfig::Closed;
             }
         }
     }
 
-    fn copy_outbound_channel(&mut self, name: &str, source: Out) {
-        *self.outbound.get_mut(name).unwrap() = ChannelSpawnConfig::Existing(source);
+    fn copy_sender(&mut self, name: &str, source: Out) {
+        *self.senders.get_mut(name).unwrap() = ChannelSpawnConfig::Existing(source);
     }
 }
 
@@ -182,15 +180,15 @@ pub trait ManageInterfaces {
     fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>>;
 }
 
-/// Specifier of inbound and outbound channel handles when [spawning workflows](WorkflowBuilder).
+/// Specifier of channel handles when [spawning workflows](WorkflowBuilder).
 ///
 /// Depending on the environment (e.g., workflow code vs host code), channel handles
 /// can be specified in different ways. This trait encapsulates this variability.
 pub trait SpecifyWorkflowChannels {
-    /// Type of an inbound channel handle.
-    type Inbound;
-    /// Type of an outbound channel handle.
-    type Outbound;
+    /// Type of a channel receiver handle.
+    type Receiver;
+    /// Type of a channel sender handle.
+    type Sender;
 }
 
 /// Manager of workflows that allows spawning workflows of a certain type.
@@ -214,7 +212,7 @@ pub trait ManageWorkflows<'a, W: WorkflowFn>: ManageInterfaces + SpecifyWorkflow
         &'a self,
         definition_id: &str,
         args: Vec<u8>,
-        channels: ChannelsConfig<Self::Inbound, Self::Outbound>,
+        channels: ChannelsConfig<Self::Receiver, Self::Sender>,
     ) -> Result<Self::Handle, Self::Error>;
 }
 
@@ -255,8 +253,8 @@ impl<'a, M: ManageWorkflows<'a, ()>> ManageWorkflowsExt<'a> for M {}
 pub struct Workflows;
 
 impl SpecifyWorkflowChannels for Workflows {
-    type Inbound = RawReceiver;
-    type Outbound = RawSender;
+    type Receiver = RawReceiver;
+    type Sender = RawSender;
 }
 
 #[async_trait]
@@ -317,7 +315,7 @@ struct SpawnerInner<Ch: SpecifyWorkflowChannels> {
     definition_id: String,
     interface: Interface,
     args: Vec<u8>,
-    channels: RefCell<ChannelsConfig<Ch::Inbound, Ch::Outbound>>,
+    channels: RefCell<ChannelsConfig<Ch::Receiver, Ch::Sender>>,
 }
 
 impl<Ch: SpecifyWorkflowChannels> SpawnerInner<Ch> {
@@ -330,19 +328,19 @@ impl<Ch: SpecifyWorkflowChannels> SpawnerInner<Ch> {
         }
     }
 
-    fn close_inbound_channel(&self, channel_name: &str) {
+    fn close_receiver(&self, channel_name: &str) {
         let mut borrow = self.channels.borrow_mut();
-        borrow.close_channel(ChannelKind::Inbound, channel_name);
+        borrow.close_channel(ChannelHalf::Receiver, channel_name);
     }
 
-    fn close_outbound_channel(&self, channel_name: &str) {
+    fn close_sender(&self, channel_name: &str) {
         let mut borrow = self.channels.borrow_mut();
-        borrow.close_channel(ChannelKind::Outbound, channel_name);
+        borrow.close_channel(ChannelHalf::Sender, channel_name);
     }
 
-    fn copy_outbound_channel(&self, channel_name: &str, sender: Ch::Outbound) {
+    fn copy_sender(&self, channel_name: &str, sender: Ch::Sender) {
         let mut borrow = self.channels.borrow_mut();
-        borrow.copy_outbound_channel(channel_name, sender);
+        borrow.copy_sender(channel_name, sender);
     }
 }
 
@@ -355,8 +353,8 @@ pub struct Spawner<Ch: SpecifyWorkflowChannels = Workflows> {
 impl<Ch> fmt::Debug for Spawner<Ch>
 where
     Ch: SpecifyWorkflowChannels + fmt::Debug,
-    Ch::Inbound: fmt::Debug,
-    Ch::Outbound: fmt::Debug,
+    Ch::Receiver: fmt::Debug,
+    Ch::Sender: fmt::Debug,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -392,7 +390,7 @@ impl<Ch: SpecifyWorkflowChannels> TakeHandle<Spawner<Ch>> for () {
     }
 }
 
-/// Configurator of an [inbound workflow channel](Receiver).
+/// Configurator of a workflow channel [`Receiver`].
 pub struct ReceiverConfig<Ch: SpecifyWorkflowChannels, T, C> {
     spawner: Spawner<Ch>,
     channel_name: String,
@@ -402,8 +400,8 @@ pub struct ReceiverConfig<Ch: SpecifyWorkflowChannels, T, C> {
 impl<Ch, T, C> fmt::Debug for ReceiverConfig<Ch, T, C>
 where
     Ch: SpecifyWorkflowChannels + fmt::Debug,
-    Ch::Inbound: fmt::Debug,
-    Ch::Outbound: fmt::Debug,
+    Ch::Receiver: fmt::Debug,
+    Ch::Sender: fmt::Debug,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -421,7 +419,7 @@ where
 {
     /// Closes the channel immediately on workflow instantiation.
     pub fn close(&self) {
-        self.spawner.inner.close_inbound_channel(&self.channel_name);
+        self.spawner.inner.close_receiver(&self.channel_name);
     }
 }
 
@@ -442,7 +440,7 @@ where
     }
 }
 
-/// Configurator of an [outbound workflow channel](Sender).
+/// Configurator of a workflow channel [`Sender`].
 pub struct SenderConfig<Ch: SpecifyWorkflowChannels, T, C> {
     spawner: Spawner<Ch>,
     channel_name: String,
@@ -452,8 +450,8 @@ pub struct SenderConfig<Ch: SpecifyWorkflowChannels, T, C> {
 impl<Ch, T, C> fmt::Debug for SenderConfig<Ch, T, C>
 where
     Ch: SpecifyWorkflowChannels + fmt::Debug,
-    Ch::Inbound: fmt::Debug,
-    Ch::Outbound: fmt::Debug,
+    Ch::Receiver: fmt::Debug,
+    Ch::Sender: fmt::Debug,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -471,9 +469,7 @@ where
 {
     /// Closes the channel immediately on workflow instantiation.
     pub fn close(&self) {
-        self.spawner
-            .inner
-            .close_outbound_channel(&self.channel_name);
+        self.spawner.inner.close_sender(&self.channel_name);
     }
 }
 
@@ -483,7 +479,7 @@ impl<T, C: Encode<T>> SenderConfig<Workflows, T, C> {
     pub fn copy_from(&self, sender: Sender<T, C>) {
         self.spawner
             .inner
-            .copy_outbound_channel(&self.channel_name, sender.into_raw());
+            .copy_sender(&self.channel_name, sender.into_raw());
     }
 }
 
@@ -600,8 +596,8 @@ impl Future for RemoteWorkflow {
 /// Handle to a remote workflow together with channel handles connected to the workflow.
 #[non_exhaustive]
 pub struct WorkflowHandle<W: TakeHandle<RemoteWorkflow>> {
-    /// Channel handles associated with the workflow. Each inbound channel in the remote workflow
-    /// is mapped to a local outbound channel, and vice versa.
+    /// Channel handles associated with the workflow. Each channel receiver in the remote workflow
+    /// is mapped to a local sender, and vice versa.
     pub api: <W as TakeHandle<RemoteWorkflow>>::Handle,
     /// Workflow handle that can be polled for completion.
     pub workflow: RemoteWorkflow,
@@ -628,8 +624,8 @@ impl<T, C: Encode<T> + Default> TakeHandle<RemoteWorkflow> for Receiver<T, C> {
     fn take_handle(env: &mut RemoteWorkflow, id: &str) -> Result<Self::Handle, AccessError> {
         let raw_sender = env
             .inner
-            .take_inbound_channel(id)
-            .ok_or_else(|| AccessErrorKind::Unknown.with_location(InboundChannel(id)))?;
+            .take_receiver(id)
+            .ok_or_else(|| AccessErrorKind::Unknown.with_location(ReceiverName(id)))?;
         Ok(raw_sender.map(|raw| raw.with_codec(C::default())))
     }
 }
@@ -652,8 +648,8 @@ impl<T, C: Decode<T> + Default> TakeHandle<RemoteWorkflow> for Sender<T, C> {
     fn take_handle(env: &mut RemoteWorkflow, id: &str) -> Result<Self::Handle, AccessError> {
         let raw_receiver = env
             .inner
-            .take_outbound_channel(id)
-            .ok_or_else(|| AccessErrorKind::Unknown.with_location(OutboundChannel(id)))?;
+            .take_sender(id)
+            .ok_or_else(|| AccessErrorKind::Unknown.with_location(SenderName(id)))?;
         Ok(raw_receiver.map(|raw| raw.with_codec(C::default())))
     }
 }

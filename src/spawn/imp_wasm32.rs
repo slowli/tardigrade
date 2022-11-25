@@ -20,7 +20,7 @@ use crate::{
         imp::{mpsc_receiver_get, mpsc_sender_get, MpscSender, ACCESS_ERROR_PAD},
         RawReceiver, RawSender,
     },
-    interface::{ChannelKind, Interface},
+    interface::{ChannelHalf, Interface},
     task::{JoinError, TaskError},
 };
 
@@ -151,7 +151,7 @@ impl ChannelSpawnConfig<RawReceiver> {
             Self::New | Self::Closed => {
                 insert_handle(
                     spawner,
-                    ChannelKind::Inbound.into_abi_in_wasm(),
+                    ChannelHalf::Receiver.into_abi_in_wasm(),
                     channel_name.as_ptr(),
                     channel_name.len(),
                     matches!(self, Self::Closed),
@@ -172,7 +172,7 @@ impl ChannelSpawnConfig<RawSender> {
             Self::New | Self::Closed => {
                 insert_handle(
                     spawner,
-                    ChannelKind::Outbound.into_abi_in_wasm(),
+                    ChannelHalf::Sender.into_abi_in_wasm(),
                     channel_name.as_ptr(),
                     channel_name.len(),
                     matches!(self, Self::Closed),
@@ -193,10 +193,10 @@ impl ChannelSpawnConfig<RawSender> {
 impl ChannelsConfig<RawReceiver, RawSender> {
     unsafe fn into_resource(self) -> Resource<Self> {
         let resource = create_handles();
-        for (name, config) in self.inbound {
+        for (name, config) in self.receivers {
             config.configure(&resource, &name);
         }
-        for (name, config) in self.outbound {
+        for (name, config) in self.senders {
             config.configure(&resource, &name);
         }
         resource
@@ -209,7 +209,7 @@ pub(crate) struct RemoteWorkflow {
 }
 
 impl RemoteWorkflow {
-    pub fn take_inbound_channel(&mut self, channel_name: &str) -> Option<Remote<RawSender>> {
+    pub fn take_receiver(&mut self, channel_name: &str) -> Option<Remote<RawSender>> {
         let channel = unsafe {
             mpsc_sender_get(
                 Some(&self.resource),
@@ -230,7 +230,7 @@ impl RemoteWorkflow {
         }
     }
 
-    pub fn take_outbound_channel(&mut self, channel_name: &str) -> Option<Remote<RawReceiver>> {
+    pub fn take_sender(&mut self, channel_name: &str) -> Option<Remote<RawReceiver>> {
         let channel = unsafe {
             mpsc_receiver_get(
                 Some(&self.resource),

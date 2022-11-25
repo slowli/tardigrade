@@ -19,7 +19,7 @@ use super::{
 use crate::{
     channel::{imp::raw_channel, RawReceiver, RawSender},
     error::HostError,
-    interface::ChannelKind,
+    interface::ChannelHalf,
     task::{JoinError, JoinHandle},
     test::Runtime,
     workflow::{UntypedHandle, Wasm},
@@ -71,11 +71,11 @@ struct ChannelPair {
 }
 
 impl ChannelPair {
-    fn closed(local_channel_kind: ChannelKind) -> Self {
+    fn closed(local_channel_kind: ChannelHalf) -> Self {
         let mut pair = Self::default();
         match local_channel_kind {
-            ChannelKind::Inbound => pair.sx = None,
-            ChannelKind::Outbound => pair.rx = None,
+            ChannelHalf::Receiver => pair.sx = None,
+            ChannelHalf::Sender => pair.rx = None,
         }
         pair
     }
@@ -111,42 +111,36 @@ impl From<RawReceiver> for ChannelPair {
 
 impl ChannelsConfig<RawReceiver, RawSender> {
     fn create_handles(self) -> (UntypedHandle<super::RemoteWorkflow>, UntypedHandle<Wasm>) {
-        let mut inbound_channel_pairs: HashMap<_, _> =
-            Self::map_config(self.inbound, ChannelKind::Inbound);
-        let mut outbound_channel_pairs: HashMap<_, _> =
-            Self::map_config(self.outbound, ChannelKind::Outbound);
+        let mut receiving_channel_pairs: HashMap<_, _> =
+            Self::map_config(self.receivers, ChannelHalf::Receiver);
+        let mut sending_channel_pairs: HashMap<_, _> =
+            Self::map_config(self.senders, ChannelHalf::Sender);
 
-        let inbound_channels = inbound_channel_pairs
+        let receivers = receiving_channel_pairs
             .iter_mut()
             .map(|(name, channel)| (name.clone(), channel.rx.take().unwrap()))
             .collect();
-        let outbound_channels = outbound_channel_pairs
+        let senders = sending_channel_pairs
             .iter_mut()
             .map(|(name, channel)| (name.clone(), channel.sx.take().unwrap()))
             .collect();
-        let remote = UntypedHandle {
-            inbound_channels,
-            outbound_channels,
-        };
+        let remote = UntypedHandle { receivers, senders };
 
-        let inbound_channels = inbound_channel_pairs
+        let receivers = receiving_channel_pairs
             .into_iter()
             .map(|(name, channel)| (name, Remote::from_option(channel.sx)))
             .collect();
-        let outbound_channels = outbound_channel_pairs
+        let senders = sending_channel_pairs
             .into_iter()
             .map(|(name, channel)| (name, Remote::from_option(channel.rx)))
             .collect();
-        let local = UntypedHandle {
-            inbound_channels,
-            outbound_channels,
-        };
+        let local = UntypedHandle { receivers, senders };
         (local, remote)
     }
 
     fn map_config<T: Into<ChannelPair>>(
         config: HashMap<String, ChannelSpawnConfig<T>>,
-        local_channel_kind: ChannelKind,
+        local_channel_kind: ChannelHalf,
     ) -> HashMap<String, ChannelPair> {
         config
             .into_iter()
@@ -172,16 +166,16 @@ pin_project! {
 }
 
 impl RemoteWorkflow {
-    pub fn take_inbound_channel(&mut self, channel_name: &str) -> Option<Remote<RawSender>> {
+    pub fn take_receiver(&mut self, channel_name: &str) -> Option<Remote<RawSender>> {
         self.handle
-            .inbound_channels
+            .receivers
             .get_mut(channel_name)
             .map(|channel| mem::replace(channel, Remote::NotCaptured))
     }
 
-    pub fn take_outbound_channel(&mut self, channel_name: &str) -> Option<Remote<RawReceiver>> {
+    pub fn take_sender(&mut self, channel_name: &str) -> Option<Remote<RawReceiver>> {
         self.handle
-            .outbound_channels
+            .senders
             .get_mut(channel_name)
             .map(|channel| mem::replace(channel, Remote::NotCaptured))
     }

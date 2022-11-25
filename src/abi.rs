@@ -13,7 +13,7 @@ use std::{error, fmt, task::Poll};
 
 use crate::{
     error::{HostError, SendError, TaskError},
-    interface::{AccessErrorKind, ChannelKind},
+    interface::{AccessErrorKind, ChannelHalf},
 };
 
 /// Result of polling a receiver end of a channel.
@@ -351,20 +351,20 @@ impl IntoWasm for Result<(), HostError> {
     }
 }
 
-impl TryFromWasm for ChannelKind {
+impl TryFromWasm for ChannelHalf {
     type Abi = i32;
 
     fn into_abi_in_wasm(self) -> Self::Abi {
         match self {
-            Self::Inbound => 0,
-            Self::Outbound => 1,
+            Self::Receiver => 0,
+            Self::Sender => 1,
         }
     }
 
     fn try_from_wasm(abi: Self::Abi) -> Result<Self, FromWasmError> {
         match abi {
-            0 => Ok(Self::Inbound),
-            1 => Ok(Self::Outbound),
+            0 => Ok(Self::Receiver),
+            1 => Ok(Self::Sender),
             _ => Err(FromWasmError::new("unexpected `ChannelKind` value")),
         }
     }
