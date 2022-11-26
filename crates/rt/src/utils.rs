@@ -1,11 +1,17 @@
 //! Misc utils.
 
-use anyhow::Context;
-use futures::future::Aborted;
+use anyhow::Context as _;
+use futures::{future::Aborted, stream::BoxStream, Stream, StreamExt};
+use ouroboros::self_referencing;
 use serde::{Deserialize, Serialize};
 use wasmtime::{AsContext, AsContextMut, Memory, StoreContextMut};
 
-use std::{fmt, task::Poll};
+use std::{
+    fmt,
+    marker::PhantomData,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 use crate::data::WorkflowData;
 use tardigrade::{abi::AllocateBytes, task::JoinError};
@@ -148,6 +154,42 @@ pub(crate) fn extract_task_poll_result(result: Result<(), &JoinError>) -> Result
         JoinError::Err(_) => Ok(()),
         JoinError::Aborted => Err(Aborted),
     })
+}
+
+/// Self-referential stream that borrows from a source. Used with readonly transactions.
+#[self_referencing]
+pub(crate) struct RefStream<'a, S: 'a, T> {
+    // Fake lifetime to make ouroboros-generated code happy (otherwise, `S` is required
+    // to have `'static` lifetime).
+    lifetime: PhantomData<&'a ()>,
+    source: S,
+    #[borrows(source)]
+    #[covariant]
+    stream: BoxStream<'this, T>,
+}
+
+impl<'a, S: 'a, T> RefStream<'a, S, T> {
+    pub fn from_source(source: S, stream_builder: impl FnOnce(&S) -> BoxStream<'_, T>) -> Self {
+        RefStreamBuilder {
+            lifetime: PhantomData,
+            source,
+            stream_builder,
+        }
+        .build()
+    }
+}
+
+impl<'a, S: 'a, T> Stream for RefStream<'a, S, T> {
+    type Item = T;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.with_stream_mut(|stream| stream.poll_next_unpin(cx))
+    }
+
+    #[allow(clippy::redundant_closure_for_method_calls)] // false positive
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.with_stream(|stream| stream.size_hint())
+    }
 }
 
 pub(crate) mod serde_b64 {

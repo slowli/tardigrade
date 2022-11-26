@@ -39,7 +39,7 @@ use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 use tracing_tunnel::{PersistedMetadata, PersistedSpans};
 
-use std::{collections::HashSet, error, fmt, sync::Arc};
+use std::{collections::HashSet, error, fmt, ops, sync::Arc};
 
 mod local;
 
@@ -156,13 +156,19 @@ pub trait ReadChannels {
     /// Retrieves information about the channel with the specified ID.
     async fn channel(&self, id: ChannelId) -> Option<ChannelRecord>;
 
-    /// Receives a message with the specified 0-based index from the specified channel.
+    /// Gets a message with the specified 0-based index from the specified channel.
     ///
     /// # Errors
     ///
     /// Returns an error if the message cannot be retrieved.
-    // TODO: add retrieving messages by an index range?
     async fn channel_message(&self, id: ChannelId, index: usize) -> Result<Vec<u8>, MessageError>;
+
+    /// Gets messages with indices in the specified range from the specified channel.
+    fn channel_messages(
+        &self,
+        id: ChannelId,
+        indices: ops::RangeInclusive<usize>,
+    ) -> BoxStream<'_, (usize, Vec<u8>)>;
 }
 
 /// Allows modifying stored information about channels.
@@ -532,6 +538,14 @@ impl<T: ReadonlyStorageTransaction> ReadChannels for Readonly<T> {
 
     async fn channel_message(&self, id: ChannelId, index: usize) -> Result<Vec<u8>, MessageError> {
         self.0.channel_message(id, index).await
+    }
+
+    fn channel_messages(
+        &self,
+        id: ChannelId,
+        indices: ops::RangeInclusive<usize>,
+    ) -> BoxStream<'_, (usize, Vec<u8>)> {
+        self.0.channel_messages(id, indices)
     }
 }
 

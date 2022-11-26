@@ -2,6 +2,7 @@
 
 use assert_matches::assert_matches;
 use async_trait::async_trait;
+use futures::{StreamExt, TryStreamExt};
 
 use std::{collections::HashSet, task::Poll};
 
@@ -14,7 +15,7 @@ use tardigrade::{
 use tardigrade_rt::{
     manager::{AsManager, CreateModule, MessageReceiver, WorkflowManager},
     receipt::{ChannelEvent, ChannelEventKind, Event, ExecutedFunction, WakeUpCause},
-    storage::{LocalStorageSnapshot, MessageError, ModuleRecord},
+    storage::{LocalStorageSnapshot, ModuleRecord},
     test::MockScheduler,
     WorkflowModule,
 };
@@ -43,20 +44,15 @@ where
     }
 
     async fn drain(&mut self) -> TestResult<Vec<T>> {
-        let mut messages = vec![];
-        loop {
-            match self.receiver.receive_message(self.cursor).await {
-                Ok(message) => {
-                    messages.push(message.decode()?);
-                    self.cursor += 1;
-                }
-                Err(MessageError::NonExistingIndex { .. }) => {
-                    self.receiver.truncate(self.cursor).await;
-                    break Ok(messages);
-                }
-                Err(err) => break Err(err.into()),
-            }
-        }
+        self.receiver
+            .receive_messages(self.cursor..)
+            .map(|message| {
+                assert_eq!(message.index(), self.cursor);
+                self.cursor += 1;
+                message.decode().map_err(Into::into)
+            })
+            .try_collect()
+            .await
     }
 }
 

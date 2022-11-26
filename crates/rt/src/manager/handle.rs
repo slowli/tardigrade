@@ -1,8 +1,8 @@
 //! Handles for workflows in a `WorkflowManager` and their components (e.g., channels).
 
-use futures::future;
+use futures::{future, FutureExt, Stream, StreamExt};
 
-use std::{collections::HashSet, error, fmt, marker::PhantomData};
+use std::{collections::HashSet, error, fmt, marker::PhantomData, ops};
 
 use crate::{
     manager::{AsManager, WorkflowAndChannelIds},
@@ -12,6 +12,7 @@ use crate::{
         MessageError, ReadChannels, ReadWorkflows, Storage, StorageTransaction, WorkflowState,
         WriteChannels,
     },
+    utils::RefStream,
     workflow::ChannelIds,
     PersistedWorkflow,
 };
@@ -339,6 +340,43 @@ impl<T, C: Decode<T> + Default, M: AsManager> MessageReceiver<'_, T, C, M> {
             codec: C::default(),
             _item: PhantomData,
         })
+    }
+
+    /// Receives the messages with the specified indices.
+    ///
+    /// Since the messages can be truncated or not exist, it is not guaranteed that
+    /// the range of indices for returned messages is precisely the requested one. It *is*
+    /// guaranteed that indices of returned messages are sequential and are in the requested
+    /// range.
+    pub fn receive_messages(
+        &self,
+        indices: impl ops::RangeBounds<usize>,
+    ) -> impl Stream<Item = ReceivedMessage<T, C>> + '_ {
+        let start_idx = match indices.start_bound() {
+            ops::Bound::Unbounded => 0,
+            ops::Bound::Included(i) => *i,
+            ops::Bound::Excluded(i) => *i + 1,
+        };
+        let end_idx = match indices.end_bound() {
+            ops::Bound::Unbounded => usize::MAX,
+            ops::Bound::Included(i) => *i,
+            ops::Bound::Excluded(i) => i.saturating_sub(1),
+        };
+        let indices = start_idx..=end_idx;
+
+        let manager = self.manager.as_manager();
+        let messages_future = async {
+            let tx = manager.storage.readonly_transaction().await;
+            RefStream::from_source(tx, |tx| tx.channel_messages(self.channel_id, indices))
+        };
+        messages_future
+            .flatten_stream()
+            .map(|(index, raw_message)| ReceivedMessage {
+                index,
+                raw_message,
+                codec: C::default(),
+                _item: PhantomData,
+            })
     }
 
     /// Truncates this channel so that its minimum message index is no less than `min_index`.
