@@ -264,21 +264,21 @@ impl<C: Clock, S> SpecifyWorkflowChannels for WorkflowManager<C, S> {
 }
 
 #[async_trait]
-impl<'a, W, C, S> ManageWorkflows<'a, W> for WorkflowManager<C, S>
+impl<W, C, S> ManageWorkflows<W> for WorkflowManager<C, S>
 where
     W: WorkflowFn,
     C: Clock,
     S: Storage,
 {
-    type Handle = WorkflowHandle<'a, W, Self>;
+    type Handle<'s> = WorkflowHandle<'s, W, Self>;
     type Error = anyhow::Error;
 
     async fn create_workflow(
-        &'a self,
+        &self,
         definition_id: &str,
         args: Vec<u8>,
         channels: ChannelsConfig<ChannelId>,
-    ) -> Result<Self::Handle, Self::Error> {
+    ) -> Result<Self::Handle<'_>, Self::Error> {
         let mut new_workflows = NewWorkflows::new(None, self.shared());
         new_workflows.stash_workflow(0, definition_id, args, channels);
         let mut transaction = self.storage.transaction().await;

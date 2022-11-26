@@ -197,9 +197,11 @@ pub trait SpecifyWorkflowChannels {
 ///
 /// This trait is low-level; use [`ManageWorkflowsExt`] for a high-level alternative.
 #[async_trait]
-pub trait ManageWorkflows<'a, W: WorkflowFn>: ManageInterfaces + SpecifyWorkflowChannels {
+pub trait ManageWorkflows<W: WorkflowFn>: ManageInterfaces + SpecifyWorkflowChannels {
     /// Handle to an instantiated workflow.
-    type Handle;
+    type Handle<'s>
+    where
+        Self: 's;
     /// Error spawning a workflow.
     type Error: 'static + Send + Sync;
 
@@ -211,29 +213,29 @@ pub trait ManageWorkflows<'a, W: WorkflowFn>: ManageInterfaces + SpecifyWorkflow
     /// are incorrect.
     #[doc(hidden)] // implementation detail; should only be used via `WorkflowBuilder`
     async fn create_workflow(
-        &'a self,
+        &self,
         definition_id: &str,
         args: Vec<u8>,
         channels: ChannelsConfig<Self::Receiver, Self::Sender>,
-    ) -> Result<Self::Handle, Self::Error>;
+    ) -> Result<Self::Handle<'_>, Self::Error>;
 }
 
 /// Extension trait for [workflow managers](ManageWorkflows).
-pub trait ManageWorkflowsExt<'a>: ManageWorkflows<'a, ()> + Sized {
+pub trait ManageWorkflowsExt: ManageWorkflows<()> + Sized {
     /// Returns a workflow builder for the specified definition and args.
     ///
     /// # Errors
     ///
     /// Returns an error if the definition is unknown, or does not conform to the interface
     /// specified via the type param of this trait.
-    fn new_workflow<W>(
+    fn new_workflow<'a, W>(
         &'a self,
         definition_id: &'a str,
         args: W::Args,
     ) -> Result<WorkflowBuilder<'a, Self, W>, AccessError>
     where
         W: WorkflowFn + GetInterface + TakeHandle<Spawner<Self>, Id = ()>,
-        Self: ManageWorkflows<'a, W>,
+        Self: ManageWorkflows<W>,
     {
         let provided_interface = self
             .interface(definition_id)
@@ -248,7 +250,7 @@ pub trait ManageWorkflowsExt<'a>: ManageWorkflows<'a, ()> + Sized {
     }
 }
 
-impl<'a, M: ManageWorkflows<'a, ()>> ManageWorkflowsExt<'a> for M {}
+impl<M: ManageWorkflows<()>> ManageWorkflowsExt for M {}
 
 /// Client-side connection to a [workflow manager][`ManageWorkflows`].
 #[derive(Debug)]
@@ -260,19 +262,19 @@ impl SpecifyWorkflowChannels for Workflows {
 }
 
 #[async_trait]
-impl<'a, W> ManageWorkflows<'a, W> for Workflows
+impl<W> ManageWorkflows<W> for Workflows
 where
     W: WorkflowFn + TakeHandle<RemoteWorkflow, Id = ()>,
 {
-    type Handle = WorkflowHandle<W>;
+    type Handle<'s> = WorkflowHandle<W>;
     type Error = HostError;
 
     async fn create_workflow(
-        &'a self,
+        &self,
         definition_id: &str,
         args: Vec<u8>,
         channels: ChannelsConfig<RawReceiver, RawSender>,
-    ) -> Result<Self::Handle, Self::Error> {
+    ) -> Result<Self::Handle<'_>, Self::Error> {
         let mut workflow =
             <Self as ManageWorkflows<()>>::create_workflow(self, definition_id, args, channels)
                 .await?;
@@ -510,9 +512,9 @@ where
     }
 }
 
-impl<'a, M, W, H, E> WorkflowBuilder<'a, M, W>
+impl<'a, M, W, E> WorkflowBuilder<'a, M, W>
 where
-    M: ManageWorkflows<'a, W, Handle = H, Error = E>,
+    M: ManageWorkflows<W, Error = E>,
     W: WorkflowFn + TakeHandle<Spawner<M>, Id = ()>,
 {
     fn new(manager: &'a M, interface: Interface, definition_id: &str, args: W::Args) -> Self {
@@ -540,7 +542,7 @@ where
     /// Returns an error if instantiation fails for whatever reasons. Error handling is specific
     /// to the [manager](ManageWorkflows) being used.
     #[allow(clippy::missing_panics_doc)] // false positive
-    pub async fn build(self) -> Result<H, E> {
+    pub async fn build(self) -> Result<M::Handle<'a>, E> {
         drop(self.handle);
         let spawner = Rc::try_unwrap(self.spawner.inner).map_err(drop).unwrap();
         self.manager

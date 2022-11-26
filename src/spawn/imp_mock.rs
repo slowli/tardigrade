@@ -36,16 +36,16 @@ impl ManageInterfaces for Workflows {
 }
 
 #[async_trait]
-impl<'a> ManageWorkflows<'a, ()> for Workflows {
-    type Handle = super::RemoteWorkflow;
+impl ManageWorkflows<()> for Workflows {
+    type Handle<'s> = super::RemoteWorkflow;
     type Error = HostError;
 
     async fn create_workflow(
-        &'a self,
+        &self,
         definition_id: &str,
         args: Vec<u8>,
         channels: ChannelsConfig<RawReceiver, RawSender>,
-    ) -> Result<Self::Handle, Self::Error> {
+    ) -> Result<Self::Handle<'_>, Self::Error> {
         let (local_handles, remote_handles) = channels.create_handles();
         let main_task =
             Runtime::with_mut(|rt| rt.create_workflow(definition_id, args, remote_handles));
