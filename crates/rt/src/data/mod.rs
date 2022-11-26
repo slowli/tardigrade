@@ -1,9 +1,10 @@
 //! Workflow state.
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use tracing::field;
 use tracing_tunnel::TracingEvent;
-use wasmtime::{AsContextMut, ExternRef, StoreContextMut, Trap};
+use wasmtime::{AsContextMut, ExternRef, StoreContextMut};
 
 use std::collections::{HashMap, HashSet};
 
@@ -24,8 +25,8 @@ pub(crate) use self::{
     spawn::SpawnFunctions,
 };
 pub use self::{
-    channel::{InboundChannelState, OutboundChannelState},
-    spawn::ChildWorkflowState,
+    channel::{Channels, ReceiverState, SenderState},
+    spawn::ChildWorkflow,
     task::TaskState,
     time::TimerState,
 };
@@ -33,7 +34,7 @@ pub use self::{
 use self::{
     channel::ChannelStates,
     helpers::{CurrentExecution, HostResource},
-    spawn::ChildWorkflowStubs,
+    spawn::{ChildWorkflowState, ChildWorkflowStubs},
     task::TaskQueue,
     time::Timers,
 };
@@ -63,20 +64,6 @@ pub(crate) struct PersistedWorkflowData {
     pub waker_queue: Vec<Wakers>,
 }
 
-/// Non-persisted counters associated with the workflow.
-#[derive(Debug, Default)]
-struct WorkflowCounters {
-    next_outbound_message_index: usize,
-}
-
-impl WorkflowCounters {
-    fn new_outbound_message_index(&mut self) -> usize {
-        let index = self.next_outbound_message_index;
-        self.next_outbound_message_index += 1;
-        index
-    }
-}
-
 #[derive(Debug)]
 pub struct WorkflowData<'a> {
     /// Functions exported by the `Instance`. Instantiated immediately after instance.
@@ -85,8 +72,6 @@ pub struct WorkflowData<'a> {
     services: Services<'a>,
     /// Persisted workflow data.
     persisted: PersistedWorkflowData,
-    /// Non-persisted counters associated with the workflow.
-    counters: WorkflowCounters,
     /// Data related to the currently executing WASM call.
     current_execution: Option<CurrentExecution>,
     /// Tasks that should be polled after `current_task`.
@@ -98,27 +83,27 @@ pub struct WorkflowData<'a> {
 impl<'a> WorkflowData<'a> {
     pub(crate) fn new(
         interface: &Interface,
-        channel_ids: &ChannelIds,
+        channel_ids: ChannelIds,
         services: Services<'a>,
     ) -> Self {
         debug_assert_eq!(
             interface
-                .inbound_channels()
+                .receivers()
                 .map(|(name, _)| name)
                 .collect::<HashSet<_>>(),
             channel_ids
-                .inbound
+                .receivers
                 .keys()
                 .map(String::as_str)
                 .collect::<HashSet<_>>()
         );
         debug_assert_eq!(
             interface
-                .outbound_channels()
+                .senders()
                 .map(|(name, _)| name)
                 .collect::<HashSet<_>>(),
             channel_ids
-                .outbound
+                .senders
                 .keys()
                 .map(String::as_str)
                 .collect::<HashSet<_>>()
@@ -128,7 +113,6 @@ impl<'a> WorkflowData<'a> {
             persisted: PersistedWorkflowData::new(interface, channel_ids, services.clock.now()),
             exports: None,
             services,
-            counters: WorkflowCounters::default(),
             current_execution: None,
             task_queue: TaskQueue::default(),
             current_wakeup_cause: None,
@@ -145,19 +129,25 @@ impl<'a> WorkflowData<'a> {
     }
 
     #[cfg(test)]
-    pub(crate) fn inbound_channel_ref(
-        workflow_id: Option<WorkflowId>,
-        name: impl Into<String>,
-    ) -> ExternRef {
-        HostResource::inbound_channel(workflow_id, name.into()).into_ref()
+    pub(crate) fn receiver_ref(&self, child_id: Option<WorkflowId>, name: &str) -> ExternRef {
+        let channels = if let Some(child_id) = child_id {
+            self.persisted.child_workflow(child_id).unwrap().channels()
+        } else {
+            self.persisted.channels()
+        };
+        let channel_id = channels.receiver_id(name).unwrap();
+        HostResource::Receiver(channel_id).into_ref()
     }
 
     #[cfg(test)]
-    pub(crate) fn outbound_channel_ref(
-        workflow_id: Option<WorkflowId>,
-        name: impl Into<String>,
-    ) -> ExternRef {
-        HostResource::outbound_channel(workflow_id, name.into()).into_ref()
+    pub(crate) fn sender_ref(&self, child_id: Option<WorkflowId>, name: &str) -> ExternRef {
+        let channels = if let Some(child_id) = child_id {
+            self.persisted.child_workflow(child_id).unwrap().channels()
+        } else {
+            self.persisted.channels()
+        };
+        let channel_id = channels.sender_id(name).unwrap();
+        HostResource::Sender(channel_id).into_ref()
     }
 
     #[cfg(test)]
@@ -175,17 +165,13 @@ impl WorkflowFunctions {
     pub fn drop_ref(
         mut ctx: StoreContextMut<'_, WorkflowData>,
         dropped: Option<ExternRef>,
-    ) -> Result<(), Trap> {
+    ) -> anyhow::Result<()> {
         let dropped = HostResource::from_ref(dropped.as_ref())?;
         tracing::Span::current().record("resource", field::debug(dropped));
 
         let wakers = match dropped {
-            HostResource::InboundChannel(channel_ref) => {
-                ctx.data_mut().handle_inbound_channel_drop(channel_ref)
-            }
-            HostResource::OutboundChannel(channel_ref) => {
-                ctx.data_mut().handle_outbound_channel_drop(channel_ref)
-            }
+            HostResource::Receiver(channel_id) => ctx.data_mut().handle_receiver_drop(*channel_id),
+            HostResource::Sender(channel_id) => ctx.data_mut().handle_sender_drop(*channel_id),
             HostResource::WorkflowStub(stub_id) => ctx.data_mut().handle_child_stub_drop(*stub_id),
             HostResource::Workflow(workflow_id) => {
                 ctx.data_mut().handle_child_handle_drop(*workflow_id)
@@ -217,7 +203,7 @@ impl WorkflowFunctions {
         filename_len: u32,
         line: u32,
         column: u32,
-    ) -> Result<(), Trap> {
+    ) -> anyhow::Result<()> {
         Self::report_error_or_panic(
             ctx,
             ReportedErrorKind::Panic,
@@ -240,7 +226,7 @@ impl WorkflowFunctions {
         filename_len: u32,
         line: u32,
         column: u32,
-    ) -> Result<(), Trap> {
+    ) -> anyhow::Result<()> {
         let memory = ctx.data().exports().memory;
         let message = if message_ptr == 0 {
             None
@@ -295,13 +281,11 @@ impl TracingFunctions {
         mut ctx: StoreContextMut<'_, WorkflowData>,
         trace_ptr: u32,
         trace_len: u32,
-    ) -> Result<(), Trap> {
+    ) -> anyhow::Result<()> {
         let memory = ctx.data().exports().memory;
         let trace = copy_string_from_wasm(&ctx, &memory, trace_ptr, trace_len)?;
-        let trace: TracingEvent = serde_json::from_str(&trace).map_err(|err| {
-            let message = format!("`TracingEvent` deserialization failed: {err}");
-            Trap::new(message)
-        })?;
+        let trace: TracingEvent =
+            serde_json::from_str(&trace).context("`TracingEvent` deserialization failed")?;
         tracing::trace!(?trace, "received client trace");
 
         if let Some(tracing) = ctx.data_mut().services.tracer.as_mut() {

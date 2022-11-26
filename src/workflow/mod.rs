@@ -18,9 +18,9 @@
 //! #[tardigrade::handle]
 //! #[derive(Debug)]
 //! pub struct MyHandle<Env = Wasm> {
-//!     /// Inbound channel with commands.
+//!     /// Receiver for commands.
 //!     pub commands: Handle<Receiver<Command, Json>, Env>,
-//!     /// Outbound channel with events.
+//!     /// Sender for events.
 //!     pub events: Handle<Sender<Event, Json>, Env>,
 //! }
 //!
@@ -328,18 +328,15 @@ impl Wasm {
         Self { handles }
     }
 
-    pub(crate) fn take_inbound_channel(
+    pub(crate) fn take_receiver(
         &mut self,
         channel_name: &str,
     ) -> Option<crate::channel::RawReceiver> {
-        self.handles.inbound_channels.remove(channel_name)
+        self.handles.receivers.remove(channel_name)
     }
 
-    pub(crate) fn take_outbound_channel(
-        &mut self,
-        channel_name: &str,
-    ) -> Option<crate::channel::RawSender> {
-        self.handles.outbound_channels.remove(channel_name)
+    pub(crate) fn take_sender(&mut self, channel_name: &str) -> Option<crate::channel::RawSender> {
+        self.handles.senders.remove(channel_name)
     }
 }
 

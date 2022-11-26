@@ -9,9 +9,8 @@
 //! [`WorkflowModule`]: crate::WorkflowModule
 
 use serde::{Deserialize, Serialize};
-use wasmtime::Trap;
 
-use std::{error, fmt, ops::Range, task::Poll};
+use std::{error, fmt, ops::Range, sync::Arc, task::Poll};
 
 use crate::utils::{serde_poll, serde_poll_res, serde_trap};
 use tardigrade::{
@@ -27,29 +26,20 @@ use tardigrade::{
 pub enum WakeUpCause {
     /// Woken up by an inbound message.
     InboundMessage {
-        /// ID of the remote workflow that the channel is attached to, or `None` if the channel
-        /// is local.
-        workflow_id: Option<WorkflowId>,
-        /// Name of the inbound channel that has received a message.
-        channel_name: String,
+        /// ID of the channel.
+        channel_id: ChannelId,
         /// 0-based message index.
         message_index: usize,
     },
-    /// Woken up by an inbound channel getting closed.
+    /// Woken up by a channel getting closed.
     ChannelClosed {
-        /// ID of the remote workflow that the channel is attached to, or `None` if the channel
-        /// is local.
-        workflow_id: Option<WorkflowId>,
-        /// Name of the inbound channel that was closed.
-        channel_name: String,
+        /// ID of the channel.
+        channel_id: ChannelId,
     },
-    /// Woken up by flushing an outbound channel.
+    /// Woken up by flushing a channel.
     Flush {
-        /// ID of the remote workflow that the channel is attached to, or `None` if the channel
-        /// is local.
-        workflow_id: Option<WorkflowId>,
-        /// Name of the outbound channel that was flushed.
-        channel_name: String,
+        /// ID of the channel.
+        channel_id: ChannelId,
         /// Indexes of flushed messages.
         message_indexes: Range<usize>,
     },
@@ -190,52 +180,44 @@ pub struct ResourceEvent {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ChannelEventKind {
-    /// Inbound channel was polled for messages.
-    InboundChannelPolled {
+    /// Channel receiver was polled for messages.
+    ReceiverPolled {
         /// Result of a poll, with the message replaced with its byte length.
         #[serde(with = "serde_poll")]
         result: Poll<Option<usize>>,
     },
-    /// Inbound channel closed by the workflow logic.
-    InboundChannelClosed(ChannelId),
+    /// Channel receiver closed by the workflow logic.
+    ReceiverClosed,
 
-    /// Outbound channel was polled for readiness.
-    OutboundChannelReady {
+    /// Channel sender was polled for readiness.
+    SenderReady {
         /// Result of a poll.
         #[serde(with = "serde_poll_res")]
         result: Poll<Result<(), SendError>>,
     },
-    /// Message was sent via an outbound channel.
+    /// Message was sent via a channel sender.
     OutboundMessageSent {
         /// Byte length of the sent message.
         message_len: usize,
     },
-    /// Outbound channel was polled for flush.
-    OutboundChannelFlushed {
+    /// Channel sender was polled for flush.
+    SenderFlushed {
         /// Result of a poll.
         #[serde(with = "serde_poll_res")]
         result: Poll<Result<(), SendError>>,
     },
-    /// Outbound channel closed by the workflow logic.
-    OutboundChannelClosed {
-        /// Channel ID.
-        channel_id: ChannelId,
-        /// Number of remaining outbound workflow channels with the same ID.
-        remaining_alias_count: usize,
-    },
+    /// Channel sender closed by the workflow logic.
+    SenderClosed,
 }
 
-/// Event related to an inbound or outbound workflow channel.
+/// Event related to a workflow channel receiver or sender.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ChannelEvent {
     /// Event kind.
     pub kind: ChannelEventKind,
-    /// Name of the channel.
-    pub channel_name: String,
-    /// ID of the remote workflow that the channel is attached to, or `None` if the channel
-    /// is local.
-    pub workflow_id: Option<WorkflowId>,
+    /// ID of the channel.
+    pub channel_id: ChannelId,
 }
 
 /// Event included into a [`Receipt`].
@@ -245,7 +227,7 @@ pub struct ChannelEvent {
 pub enum Event {
     /// Event related to a host-managed resource (a task or a timer).
     Resource(ResourceEvent),
-    /// Event related to an inbound or outbound channel.
+    /// Event related to a channel sender / receiver.
     Channel(ChannelEvent),
 }
 
@@ -347,22 +329,26 @@ impl Receipt {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionError {
     #[serde(with = "serde_trap")]
-    trap: Trap,
+    trap: Arc<anyhow::Error>,
     panic_info: Option<PanicInfo>,
     receipt: Receipt,
 }
 
 impl ExecutionError {
-    pub(crate) fn new(trap: Trap, panic_info: Option<PanicInfo>, receipt: Receipt) -> Self {
+    pub(crate) fn new(
+        trap: anyhow::Error,
+        panic_info: Option<PanicInfo>,
+        receipt: Receipt,
+    ) -> Self {
         Self {
-            trap,
+            trap: Arc::new(trap),
             panic_info,
             receipt,
         }
     }
 
-    /// Returns a [`Trap`] that has led to an error.
-    pub fn trap(&self) -> &Trap {
+    /// Returns an [`Error`](anyhow::Error) that has led to this execution error.
+    pub fn trap(&self) -> &anyhow::Error {
         &self.trap
     }
 
@@ -385,16 +371,16 @@ impl fmt::Display for ExecutionError {
         let execution = self.receipt.executions.last().unwrap();
         execution.function.write_summary(formatter)?;
         if let Some(panic_info) = &self.panic_info {
-            write!(formatter, ": {}", panic_info)
+            write!(formatter, ": {panic_info}")
         } else {
-            write!(formatter, ": {}", self.trap.display_reason())
+            write!(formatter, ": {}", self.trap)
         }
     }
 }
 
 impl error::Error for ExecutionError {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
-        Some(&self.trap)
+        Some(anyhow::Error::as_ref(&self.trap))
     }
 }
 

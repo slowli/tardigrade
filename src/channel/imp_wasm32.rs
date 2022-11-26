@@ -13,7 +13,7 @@ use std::{
 use crate::{
     abi::IntoWasm,
     channel::SendError,
-    interface::{AccessError, AccessErrorKind, InboundChannel, OutboundChannel},
+    interface::{AccessError, AccessErrorKind, ReceiverName, SenderName},
     spawn::imp::RemoteWorkflow,
     workflow::{TakeHandle, Wasm},
 };
@@ -52,7 +52,7 @@ impl TakeHandle<Wasm> for MpscReceiver {
             let resource = mpsc_receiver_get(None, id.as_ptr(), id.len(), &mut ACCESS_ERROR_PAD);
             Result::<(), AccessErrorKind>::from_abi_in_wasm(ACCESS_ERROR_PAD)
                 .map(|()| resource.unwrap().into())
-                .map_err(|kind| kind.with_location(InboundChannel(id)))
+                .map_err(|kind| kind.with_location(ReceiverName(id)))
         }
     }
 }
@@ -91,7 +91,7 @@ extern "C" {
     ) -> Option<Resource<MpscSender>>;
 }
 
-/// Unbounded sender end of an MPSC channel. Guaranteed to never close.
+/// Unbounded sender end of an MPSC channel.
 #[derive(Debug, Clone)]
 pub struct MpscSender {
     resource: Arc<Resource<Self>>,
@@ -120,7 +120,7 @@ impl TakeHandle<Wasm> for MpscSender {
             let resource = mpsc_sender_get(None, id.as_ptr(), id.len(), &mut ACCESS_ERROR_PAD);
             Result::<(), AccessErrorKind>::from_abi_in_wasm(ACCESS_ERROR_PAD)
                 .map(|()| resource.unwrap().into())
-                .map_err(|kind| kind.with_location(OutboundChannel(id)))
+                .map_err(|kind| kind.with_location(SenderName(id)))
         }
     }
 }

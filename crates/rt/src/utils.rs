@@ -1,10 +1,11 @@
 //! Misc utils.
 
+use anyhow::Context;
 use futures::future::Aborted;
 use serde::{Deserialize, Serialize};
-use wasmtime::{AsContext, AsContextMut, Memory, StoreContextMut, Trap};
+use wasmtime::{AsContext, AsContextMut, Memory, StoreContextMut};
 
-use std::{cmp::Ordering, fmt, mem, task::Poll};
+use std::{fmt, task::Poll};
 
 use crate::data::WorkflowData;
 use tardigrade::{abi::AllocateBytes, task::JoinError};
@@ -67,21 +68,20 @@ impl<'ctx, 'a> WasmAllocator<'ctx, 'a> {
 }
 
 impl AllocateBytes for WasmAllocator<'_, '_> {
-    type Error = Trap;
+    type Error = anyhow::Error;
 
     #[tracing::instrument(level = "trace", skip_all, ret, err, fields(bytes.len = bytes.len()))]
-    fn copy_to_wasm(&mut self, bytes: &[u8]) -> Result<(u32, u32), Trap> {
-        let bytes_len = u32::try_from(bytes.len())
-            .map_err(|_| Trap::new("integer overflow for message length"))?;
+    fn copy_to_wasm(&mut self, bytes: &[u8]) -> anyhow::Result<(u32, u32)> {
+        let bytes_len =
+            u32::try_from(bytes.len()).context("integer overflow for message length")?;
         let exports = self.0.data().exports();
         let ptr = exports.alloc_bytes(self.0.as_context_mut(), bytes_len)?;
 
         let host_ptr = usize::try_from(ptr).unwrap();
         let memory = self.0.data_mut().exports().memory;
-        memory.write(&mut self.0, host_ptr, bytes).map_err(|err| {
-            let message = format!("cannot write to WASM memory: {}", err);
-            Trap::new(message)
-        })?;
+        memory
+            .write(&mut self.0, host_ptr, bytes)
+            .context("cannot write to WASM memory")?;
         Ok((ptr, bytes_len))
     }
 }
@@ -91,14 +91,13 @@ pub(crate) fn copy_bytes_from_wasm(
     memory: &Memory,
     ptr: u32,
     len: u32,
-) -> Result<Vec<u8>, Trap> {
+) -> anyhow::Result<Vec<u8>> {
     let ptr = usize::try_from(ptr).unwrap();
     let len = usize::try_from(len).unwrap();
     let mut buffer = vec![0_u8; len];
-    memory.read(ctx, ptr, &mut buffer).map_err(|err| {
-        let message = format!("error copying memory from WASM: {}", err);
-        Trap::new(message)
-    })?;
+    memory
+        .read(ctx, ptr, &mut buffer)
+        .context("error copying memory from WASM")?;
     Ok(buffer)
 }
 
@@ -107,9 +106,9 @@ pub(crate) fn copy_string_from_wasm(
     memory: &Memory,
     ptr: u32,
     len: u32,
-) -> Result<String, Trap> {
+) -> anyhow::Result<String> {
     let buffer = copy_bytes_from_wasm(ctx, memory, ptr, len)?;
-    String::from_utf8(buffer).map_err(|err| Trap::new(format!("invalid UTF-8 string: {}", err)))
+    String::from_utf8(buffer).map_err(From::from)
 }
 
 #[cfg(test)]
@@ -125,62 +124,6 @@ pub(crate) fn drop_value<T>(poll_result: &Poll<T>) -> Poll<()> {
         Poll::Pending => Poll::Pending,
         Poll::Ready(_) => Poll::Ready(()),
     }
-}
-
-/// Merges two ordered `Vec`s into a single ordered `Vec`.
-pub(crate) fn merge_vec<T: Ord>(target: &mut Vec<T>, source: Vec<T>) {
-    debug_assert!(target.windows(2).all(|window| match window {
-        [prev, next] => prev <= next,
-        _ => unreachable!(),
-    }));
-    debug_assert!(source.windows(2).all(|window| match window {
-        [prev, next] => prev <= next,
-        _ => unreachable!(),
-    }));
-
-    if target.is_empty() {
-        *target = source;
-        return;
-    }
-
-    let mut xs = mem::replace(target, Vec::with_capacity(target.len() + source.len()))
-        .into_iter()
-        .peekable();
-    let mut ys = source.into_iter().peekable();
-    loop {
-        match (xs.peek(), ys.peek()) {
-            (Some(x), Some(y)) => match x.cmp(y) {
-                Ordering::Less => target.push(xs.next().unwrap()),
-                Ordering::Greater => target.push(ys.next().unwrap()),
-                Ordering::Equal => {
-                    target.push(xs.next().unwrap());
-                    target.push(ys.next().unwrap());
-                }
-            },
-            (Some(_), None) => {
-                target.extend(xs);
-                break;
-            }
-            (None, Some(_)) => {
-                target.extend(ys);
-                break;
-            }
-            (None, None) => break,
-        }
-    }
-}
-
-#[test]
-fn merging_vectors() {
-    let mut target = vec![];
-    merge_vec(&mut target, vec![1, 3, 4, 7, 9]);
-    assert_eq!(target, [1, 3, 4, 7, 9]);
-
-    merge_vec(&mut target, vec![2, 3, 3, 8, 13, 20]);
-    assert_eq!(target, [1, 2, 3, 3, 3, 4, 7, 8, 9, 13, 20]);
-
-    merge_vec(&mut target, vec![5]);
-    assert_eq!(target, [1, 2, 3, 3, 3, 4, 5, 7, 8, 9, 13, 20]);
 }
 
 pub(crate) fn clone_join_error(err: &JoinError) -> JoinError {
@@ -375,16 +318,20 @@ pub(crate) mod serde_poll_res {
 
 pub(crate) mod serde_trap {
     use serde::{Deserialize, Deserializer, Serializer};
-    use wasmtime::Trap;
 
-    pub fn serialize<S: Serializer>(trap: &Trap, serializer: S) -> Result<S::Ok, S::Error> {
+    use std::sync::Arc;
+
+    pub fn serialize<S: Serializer>(
+        trap: &anyhow::Error,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&trap.to_string())
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Trap, D::Error>
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Arc<anyhow::Error>, D::Error>
     where
         D: Deserializer<'de>,
     {
-        String::deserialize(deserializer).map(Trap::new)
+        String::deserialize(deserializer).map(|message| Arc::new(anyhow::Error::msg(message)))
     }
 }

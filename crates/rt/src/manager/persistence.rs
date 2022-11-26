@@ -15,7 +15,7 @@ use crate::{
     utils::{clone_join_error, Message},
     PersistedWorkflow,
 };
-use tardigrade::{interface::ChannelKind, ChannelId, WorkflowId};
+use tardigrade::{interface::ChannelHalf, ChannelId, WorkflowId};
 
 impl ChannelRecord {
     fn close_side(&mut self, side: ChannelSide) {
@@ -90,12 +90,12 @@ impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
     ) {
         let completion_receiver = if workflow.result().is_ready() {
             // Close all channels linked to the workflow.
-            for (.., state) in workflow.inbound_channels() {
-                self.close_channel_side(state.id(), ChannelSide::Receiver)
+            for (channel_id, _) in workflow.receivers() {
+                self.close_channel_side(channel_id, ChannelSide::Receiver)
                     .await;
             }
-            for (.., state) in workflow.outbound_channels() {
-                self.close_channel_side(state.id(), ChannelSide::WorkflowSender(id))
+            for (channel_id, _) in workflow.senders() {
+                self.close_channel_side(channel_id, ChannelSide::WorkflowSender(id))
                     .await;
             }
             parent_id
@@ -129,8 +129,8 @@ impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
     pub async fn close_channels(&mut self, workflow_id: WorkflowId, receipt: &Receipt) {
         for (channel_kind, channel_id) in receipt.closed_channel_ids() {
             let side = match channel_kind {
-                ChannelKind::Inbound => ChannelSide::Receiver,
-                ChannelKind::Outbound => ChannelSide::WorkflowSender(workflow_id),
+                ChannelHalf::Receiver => ChannelSide::Receiver,
+                ChannelHalf::Sender => ChannelSide::WorkflowSender(workflow_id),
             };
             self.close_channel_side(channel_id, side).await;
         }
@@ -152,7 +152,7 @@ impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
         }
 
         for &sender_workflow_id in &channel_state.sender_workflow_ids {
-            let waker = WorkflowWaker::OutboundChannelClosure(channel_id);
+            let waker = WorkflowWaker::SenderClosure(channel_id);
             self.inner.insert_waker(sender_workflow_id, waker).await;
         }
     }
@@ -174,17 +174,12 @@ impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
 }
 
 impl Receipt {
-    fn closed_channel_ids(&self) -> impl Iterator<Item = (ChannelKind, ChannelId)> + '_ {
+    fn closed_channel_ids(&self) -> impl Iterator<Item = (ChannelHalf, ChannelId)> + '_ {
         self.events().filter_map(|event| {
-            if let Some(ChannelEvent { kind, .. }) = event.as_channel_event() {
+            if let Some(ChannelEvent { kind, channel_id }) = event.as_channel_event() {
                 return match kind {
-                    ChannelEventKind::InboundChannelClosed(channel_id) => {
-                        Some((ChannelKind::Inbound, *channel_id))
-                    }
-                    ChannelEventKind::OutboundChannelClosed {
-                        channel_id,
-                        remaining_alias_count: 0,
-                    } => Some((ChannelKind::Outbound, *channel_id)),
+                    ChannelEventKind::ReceiverClosed => Some((ChannelHalf::Receiver, *channel_id)),
+                    ChannelEventKind::SenderClosed => Some((ChannelHalf::Sender, *channel_id)),
                     _ => None,
                 };
             }

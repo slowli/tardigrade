@@ -139,7 +139,7 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 ///
 /// # Examples
 ///
-/// `Requests` instance can be built from a pair of inbound / outbound channels:
+/// `Requests` instance can be built from a pair of sender / receiver channel halves:
 ///
 /// ```
 /// # use async_trait::async_trait;

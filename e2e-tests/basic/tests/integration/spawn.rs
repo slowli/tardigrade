@@ -64,7 +64,7 @@ async fn spawning_child_workflows() -> TestResult {
 
     // Check domain events produced by child workflows
     let events: Vec<_> = events_rx.try_collect().await?;
-    assert_eq!(events.len(), orders.len() * 2);
+    assert_eq!(events.len(), orders.len() * 2, "{events:?}");
     for i in 1..=orders.len() {
         let order_events: Vec<_> = events.iter().filter(|event| event.index() == i).collect();
         assert_matches!(

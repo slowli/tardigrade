@@ -2,7 +2,7 @@
 //!
 //! The runtime provides a [`WorkflowManager`] in which workflows defined in a WASM module
 //! can be executed and [persisted](PersistedWorkflow) / restored. Interaction with a workflow
-//! (e.g., submitting messages to inbound channels or taking messages from outbound channels)
+//! (e.g., submitting messages to channel receivers or taking messages from senders)
 //! can be performed using low-level, synchronous [`WorkflowHandle`], or by driving the manager
 //! with the [`Driver`].
 //!
@@ -23,6 +23,12 @@
 //! [`Driver`]: crate::driver::Driver
 //!
 //! # Crate features
+//!
+//! ## `test`
+//!
+//! *(Off by default)*
+//!
+//! Provides the [`test`](crate::test) module with helpers for integration testing of workflows.
 //!
 //! ## `async-io`
 //!
@@ -119,9 +125,13 @@ mod backends;
 mod data;
 pub mod driver;
 pub mod manager;
+#[cfg(any(test, feature = "test"))]
+mod mock_scheduler;
 mod module;
 pub mod receipt;
 pub mod storage;
+#[cfg(feature = "test")]
+#[cfg_attr(docsrs, doc(cfg(feature = "test")))]
 pub mod test;
 mod utils;
 mod workflow;
@@ -129,7 +139,7 @@ mod workflow;
 #[cfg(feature = "async-io")]
 pub use crate::backends::AsyncIoScheduler;
 pub use crate::{
-    data::{ChildWorkflowState, InboundChannelState, OutboundChannelState, TaskState, TimerState},
+    data::{Channels, ChildWorkflow, ReceiverState, SenderState, TaskState, TimerState},
     module::{
         Clock, ExtendLinker, Schedule, TimerFuture, WorkflowEngine, WorkflowModule, WorkflowSpawner,
     },

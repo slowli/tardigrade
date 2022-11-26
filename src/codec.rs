@@ -7,7 +7,7 @@ use std::{convert::Infallible, error};
 /// When used in workflows (e.g., in [`Receiver`]), [`Self::decode_bytes()`] method
 /// is used. That is, decoding operations panic if an error occurs during decoding. This is usually
 /// the intended behavior, since the primary reason of such a panic would be an incorrect input
-/// supplied via arguments or an inbound channel. The workflow runtime is expected to roll back
+/// supplied via arguments or a channel receiver. The workflow runtime is expected to roll back
 /// the workflow state in this case.
 ///
 /// [`Receiver`]: crate::channel::Receiver

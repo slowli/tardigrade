@@ -2,8 +2,8 @@
 //!
 //! Channels have a similar interface to async [channels][future-chan] from the `futures` crate;
 //! their ends implement [`Stream`] / [`Sink`] traits.
-//! A workflow owns a single end of a channel (either an inbound [`Receiver`] or outbound
-//! [`Sender`]s), while the other end is owned by the host environment.
+//! A workflow owns a single end of a channel (either a [`Receiver`] or
+//! [`Sender`]s), while the other end is owned by the host environment or another workflow.
 //!
 //! A `Sender` or `Receiver` can be obtained from the environment using [`TakeHandle`] trait.
 //! This process is usually automated via workflow types. When executed in WASM, channels
@@ -24,7 +24,7 @@ use std::{
 
 use crate::{
     codec::{Decode, Encode, Raw},
-    interface::{AccessError, InboundChannelSpec, InterfaceBuilder, OutboundChannelSpec},
+    interface::{AccessError, InterfaceBuilder, ReceiverSpec, SenderSpec},
     workflow::{TakeHandle, Wasm},
 };
 
@@ -44,7 +44,7 @@ pub use self::{
 pub use crate::error::SendError;
 
 pin_project! {
-    /// Receiver for an inbound channel provided to the workflow.
+    /// Receiver for a channel provided to the workflow.
     ///
     /// A receiver is characterized by the type of messages and the codec used to convert messages
     /// from / to bytes.
@@ -124,11 +124,11 @@ where
 
     #[cfg(not(target_arch = "wasm32"))]
     fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, AccessError> {
-        use crate::interface::{AccessErrorKind, InboundChannel};
+        use crate::interface::{AccessErrorKind, ReceiverName};
 
         let raw = env
-            .take_inbound_channel(id)
-            .ok_or_else(|| AccessErrorKind::Unknown.with_location(InboundChannel(id)))?;
+            .take_receiver(id)
+            .ok_or_else(|| AccessErrorKind::Unknown.with_location(ReceiverName(id)))?;
         Ok(raw.with_codec(C::default()))
     }
 }
@@ -141,20 +141,20 @@ where
     type Handle = ();
 
     fn take_handle(env: &mut InterfaceBuilder, id: &Self::Id) -> Result<(), AccessError> {
-        env.insert_inbound_channel(id, InboundChannelSpec::default());
+        env.insert_receiver(id, ReceiverSpec::default());
         Ok(())
     }
 }
 
 pin_project! {
-    /// Sender for an outbound channel provided to the workflow.
+    /// Sender for a workflow channel provided to the workflow.
     ///
     /// A sender is characterized by the type of messages and the codec used to convert messages
     /// from / to bytes.
     ///
     /// Unlike [`Receiver`]s, `Sender` parts of the channel can be cloned. Another difference
-    /// is ability to control readiness / flushing of outbound channels via channel capacity;
-    /// if the outbound channel reaches its capacity of non-flushed messages, it becomes not ready
+    /// is ability to control readiness / flushing when sending messages via channel capacity;
+    /// if the channel reaches its capacity of non-flushed messages, it becomes not ready
     /// to accept more messages.
     pub struct Sender<T, C> {
         #[pin]
@@ -238,11 +238,11 @@ where
 
     #[cfg(not(target_arch = "wasm32"))]
     fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, AccessError> {
-        use crate::interface::{AccessErrorKind, OutboundChannel};
+        use crate::interface::{AccessErrorKind, SenderName};
 
         let raw = env
-            .take_outbound_channel(id)
-            .ok_or_else(|| AccessErrorKind::Unknown.with_location(OutboundChannel(id)))?;
+            .take_sender(id)
+            .ok_or_else(|| AccessErrorKind::Unknown.with_location(SenderName(id)))?;
         Ok(raw.with_codec(C::default()))
     }
 }
@@ -277,7 +277,7 @@ where
     type Handle = ();
 
     fn take_handle(env: &mut InterfaceBuilder, id: &Self::Id) -> Result<(), AccessError> {
-        env.insert_outbound_channel(id, OutboundChannelSpec::default());
+        env.insert_sender(id, SenderSpec::default());
         Ok(())
     }
 }

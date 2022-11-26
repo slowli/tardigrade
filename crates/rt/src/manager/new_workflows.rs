@@ -47,8 +47,8 @@ impl ChannelIds {
     ) -> Self {
         futures::pin_mut!(new_channel_ids);
         Self {
-            inbound: Self::map_channels(channels.inbound, &mut new_channel_ids).await,
-            outbound: Self::map_channels(channels.outbound, &mut new_channel_ids).await,
+            receivers: Self::map_channels(channels.receivers, &mut new_channel_ids).await,
+            senders: Self::map_channels(channels.senders, &mut new_channel_ids).await,
         }
     }
 
@@ -95,7 +95,7 @@ impl WorkflowStub {
         });
         let channel_ids = ChannelIds::new(self.channels.clone(), new_channel_ids).await;
         let args = mem::take(&mut self.args);
-        let workflow = spawner.spawn(args, &channel_ids, services)?;
+        let workflow = spawner.spawn(args, channel_ids.clone(), services)?;
         let persisted = workflow.persist();
         Ok((persisted, channel_ids))
     }
@@ -169,19 +169,19 @@ impl<'a> NewWorkflows<'a> {
         let child_id = transaction.allocate_workflow_id().await;
 
         tracing::debug!(?channel_ids, "handling channels for new workflow");
-        for (name, &channel_id) in &channel_ids.inbound {
+        for (name, &channel_id) in &channel_ids.receivers {
             let state = ChannelRecord::new(executed_workflow_id, Some(child_id));
             let state = transaction.get_or_insert_channel(channel_id, state).await;
             if state.is_closed {
-                persisted.close_inbound_channel(None, name);
+                persisted.close_receiver(channel_id);
             }
-            tracing::debug!(name, channel_id, ?state, "prepared inbound channel");
+            tracing::debug!(name, channel_id, ?state, "prepared channel receiver");
         }
-        for (name, &channel_id) in &channel_ids.outbound {
+        for (name, &channel_id) in &channel_ids.senders {
             let state = ChannelRecord::new(Some(child_id), executed_workflow_id);
             let state = transaction.get_or_insert_channel(channel_id, state).await;
             if state.is_closed {
-                persisted.close_outbound_channel(None, name);
+                persisted.close_sender(channel_id);
             } else {
                 transaction
                     .manipulate_channel(channel_id, |channel| {
@@ -189,7 +189,7 @@ impl<'a> NewWorkflows<'a> {
                     })
                     .await;
             }
-            tracing::debug!(name, channel_id, ?state, "prepared outbound channel");
+            tracing::debug!(name, channel_id, ?state, "prepared channel sender");
         }
 
         let (module_id, name_in_module) =
@@ -259,8 +259,8 @@ impl<C: Clock, S> ManageInterfaces for WorkflowManager<C, S> {
 }
 
 impl<C: Clock, S> SpecifyWorkflowChannels for WorkflowManager<C, S> {
-    type Inbound = ChannelId;
-    type Outbound = ChannelId;
+    type Receiver = ChannelId;
+    type Sender = ChannelId;
 }
 
 #[async_trait]

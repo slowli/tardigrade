@@ -1,25 +1,23 @@
 //! Types related to workflow interface definition.
 
-// TODO: Consider unifying terms: inbound / outbound vs receiver / sender
-
 use serde::{Deserialize, Serialize};
 
 use std::{collections::HashMap, error, fmt, ops};
 
-/// Kind of a channel in a workflow interface.
+/// Kind of a channel half (sender or receiver) in a workflow interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ChannelKind {
-    /// Inbound channel.
-    Inbound = 0,
-    /// Outbound channel.
-    Outbound = 1,
+pub enum ChannelHalf {
+    /// Receiver.
+    Receiver = 0,
+    /// Sender.
+    Sender = 1,
 }
 
-impl fmt::Display for ChannelKind {
+impl fmt::Display for ChannelHalf {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::Inbound => "inbound",
-            Self::Outbound => "outbound",
+            Self::Receiver => "receiver",
+            Self::Sender => "sender",
         })
     }
 }
@@ -65,7 +63,7 @@ pub enum InterfaceLocation {
     /// Channel in the workflow interface.
     Channel {
         /// Channel kind.
-        kind: ChannelKind,
+        kind: ChannelHalf,
         /// Channel name.
         name: String,
     },
@@ -135,29 +133,29 @@ impl AccessError {
     }
 }
 
-/// Specification of an inbound channel in the workflow [`Interface`].
+/// Specification of a channel receiver in the workflow [`Interface`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[non_exhaustive]
-pub struct InboundChannelSpec {
+pub struct ReceiverSpec {
     /// Human-readable channel description.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
 }
 
-/// Specification of an outbound workflow channel in the workflow [`Interface`].
+/// Specification of a channel sender in the workflow [`Interface`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
-pub struct OutboundChannelSpec {
+pub struct SenderSpec {
     /// Human-readable channel description.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
     /// Channel capacity, i.e., the number of messages that can be buffered locally before
     /// the channel needs to be flushed. `None` means unbounded capacity.
-    #[serde(default = "OutboundChannelSpec::default_capacity")]
+    #[serde(default = "SenderSpec::default_capacity")]
     pub capacity: Option<usize>,
 }
 
-impl Default for OutboundChannelSpec {
+impl Default for SenderSpec {
     fn default() -> Self {
         Self {
             description: String::new(),
@@ -166,7 +164,7 @@ impl Default for OutboundChannelSpec {
     }
 }
 
-impl OutboundChannelSpec {
+impl SenderSpec {
     #[allow(clippy::unnecessary_wraps)] // required by `serde`
     const fn default_capacity() -> Option<usize> {
         Some(1)
@@ -179,7 +177,7 @@ impl OutboundChannelSpec {
             let expected = self.capacity;
             let provided = provided.capacity;
             let msg = format!(
-                "outbound channel capacity mismatch: expected {expected:?}, got {provided:?}"
+                "channel sender capacity mismatch: expected {expected:?}, got {provided:?}"
             );
             Err(AccessErrorKind::custom(msg))
         }
@@ -195,45 +193,45 @@ pub struct ArgsSpec {
     pub description: String,
 }
 
-/// Newtype for indexing inbound channels, e.g., in an [`Interface`].
+/// Newtype for indexing channel receivers, e.g., in an [`Interface`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct InboundChannel<'a>(pub &'a str);
+pub struct ReceiverName<'a>(pub &'a str);
 
-impl fmt::Display for InboundChannel<'_> {
+impl fmt::Display for ReceiverName<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "inbound channel `{}`", self.0)
+        write!(formatter, "channel receiver `{}`", self.0)
     }
 }
 
-impl From<InboundChannel<'_>> for InterfaceLocation {
-    fn from(channel: InboundChannel<'_>) -> Self {
+impl From<ReceiverName<'_>> for InterfaceLocation {
+    fn from(channel: ReceiverName<'_>) -> Self {
         Self::Channel {
-            kind: ChannelKind::Inbound,
+            kind: ChannelHalf::Receiver,
             name: channel.0.to_owned(),
         }
     }
 }
 
-/// Newtype for indexing outbound channels, e.g., in an [`Interface`].
+/// Newtype for indexing channel senders, e.g., in an [`Interface`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct OutboundChannel<'a>(pub &'a str);
+pub struct SenderName<'a>(pub &'a str);
 
-impl fmt::Display for OutboundChannel<'_> {
+impl fmt::Display for SenderName<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "outbound channel `{}`", self.0)
+        write!(formatter, "channel sender `{}`", self.0)
     }
 }
 
-impl From<OutboundChannel<'_>> for InterfaceLocation {
-    fn from(channel: OutboundChannel<'_>) -> Self {
+impl From<SenderName<'_>> for InterfaceLocation {
+    fn from(channel: SenderName<'_>) -> Self {
         Self::Channel {
-            kind: ChannelKind::Outbound,
+            kind: ChannelHalf::Sender,
             name: channel.0.to_owned(),
         }
     }
 }
 
-/// Specification of a workflow interface. Contains info about inbound / outbound channels,
+/// Specification of a workflow interface. Contains info about channel senders / receivers,
 /// arguments etc.
 ///
 /// # Examples
@@ -248,14 +246,14 @@ impl From<OutboundChannel<'_>> for InterfaceLocation {
 /// let interface: Interface = // ...
 /// #     Interface::from_bytes(INTERFACE_BYTES);
 ///
-/// let spec = interface.inbound_channel("commands").unwrap();
+/// let spec = interface.receiver("commands").unwrap();
 /// println!("{}", spec.description);
 ///
 /// assert!(interface
-///     .outbound_channels()
+///     .senders()
 ///     .all(|(_, spec)| spec.capacity == Some(1)));
 /// // Indexing is also possible using newtype wrappers from the module
-/// let commands = &interface[InboundChannel("commands")];
+/// let commands = &interface[ReceiverName("commands")];
 /// println!("{}", commands.description);
 /// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -263,9 +261,9 @@ pub struct Interface {
     #[serde(rename = "v")]
     version: u32,
     #[serde(rename = "in", default, skip_serializing_if = "HashMap::is_empty")]
-    inbound_channels: HashMap<String, InboundChannelSpec>,
+    receivers: HashMap<String, ReceiverSpec>,
     #[serde(rename = "out", default, skip_serializing_if = "HashMap::is_empty")]
-    outbound_channels: HashMap<String, OutboundChannelSpec>,
+    senders: HashMap<String, SenderSpec>,
     #[serde(rename = "args", default)]
     args: ArgsSpec,
 }
@@ -303,32 +301,28 @@ impl Interface {
         self.version
     }
 
-    /// Returns spec for an inbound channel, or `None` if a channel with the specified `name`
+    /// Returns spec for a channel receiver, or `None` if a receiver with the specified `name`
     /// is not present in this interface.
-    pub fn inbound_channel(&self, name: &str) -> Option<&InboundChannelSpec> {
-        self.inbound_channels.get(name)
+    pub fn receiver(&self, name: &str) -> Option<&ReceiverSpec> {
+        self.receivers.get(name)
     }
 
-    /// Lists all inbound channels in this interface.
-    pub fn inbound_channels(
-        &self,
-    ) -> impl ExactSizeIterator<Item = (&str, &InboundChannelSpec)> + '_ {
-        self.inbound_channels
+    /// Lists all channel receivers in this interface.
+    pub fn receivers(&self) -> impl ExactSizeIterator<Item = (&str, &ReceiverSpec)> + '_ {
+        self.receivers
             .iter()
             .map(|(name, spec)| (name.as_str(), spec))
     }
 
-    /// Returns spec for an outbound channel, or `None` if a channel with the specified `name`
+    /// Returns spec for a channel sender, or `None` if a sender with the specified `name`
     /// is not present in this interface.
-    pub fn outbound_channel(&self, name: &str) -> Option<&OutboundChannelSpec> {
-        self.outbound_channels.get(name)
+    pub fn sender(&self, name: &str) -> Option<&SenderSpec> {
+        self.senders.get(name)
     }
 
-    /// Lists all outbound channels in this interface.
-    pub fn outbound_channels(
-        &self,
-    ) -> impl ExactSizeIterator<Item = (&str, &OutboundChannelSpec)> + '_ {
-        self.outbound_channels
+    /// Lists all channel senders in this interface.
+    pub fn senders(&self) -> impl ExactSizeIterator<Item = (&str, &SenderSpec)> + '_ {
+        self.senders
             .iter()
             .map(|(name, spec)| (name.as_str(), spec))
     }
@@ -346,42 +340,40 @@ impl Interface {
     ///
     /// Returns an error if the provided interface does not match expectations.
     pub fn check_compatibility(&self, provided: &Self) -> Result<(), AccessError> {
-        self.inbound_channels.keys().try_fold((), |(), name| {
+        self.receivers.keys().try_fold((), |(), name| {
             provided
-                .inbound_channels
+                .receivers
                 .get(name)
                 .map(drop)
-                .ok_or_else(|| AccessErrorKind::Unknown.with_location(InboundChannel(name)))
+                .ok_or_else(|| AccessErrorKind::Unknown.with_location(ReceiverName(name)))
         })?;
-        self.outbound_channels
-            .iter()
-            .try_fold((), |(), (name, spec)| {
-                let other_spec = provided
-                    .outbound_channels
-                    .get(name)
-                    .ok_or_else(|| AccessErrorKind::Unknown.with_location(OutboundChannel(name)))?;
-                spec.check_compatibility(other_spec)
-                    .map_err(|err| err.with_location(OutboundChannel(name)))
-            })?;
+        self.senders.iter().try_fold((), |(), (name, spec)| {
+            let other_spec = provided
+                .senders
+                .get(name)
+                .ok_or_else(|| AccessErrorKind::Unknown.with_location(SenderName(name)))?;
+            spec.check_compatibility(other_spec)
+                .map_err(|err| err.with_location(SenderName(name)))
+        })?;
 
         Ok(())
     }
 }
 
-impl ops::Index<InboundChannel<'_>> for Interface {
-    type Output = InboundChannelSpec;
+impl ops::Index<ReceiverName<'_>> for Interface {
+    type Output = ReceiverSpec;
 
-    fn index(&self, index: InboundChannel<'_>) -> &Self::Output {
-        self.inbound_channel(index.0)
+    fn index(&self, index: ReceiverName<'_>) -> &Self::Output {
+        self.receiver(index.0)
             .unwrap_or_else(|| panic!("{} is not defined", index))
     }
 }
 
-impl ops::Index<OutboundChannel<'_>> for Interface {
-    type Output = OutboundChannelSpec;
+impl ops::Index<SenderName<'_>> for Interface {
+    type Output = SenderSpec;
 
-    fn index(&self, index: OutboundChannel<'_>) -> &Self::Output {
-        self.outbound_channel(index.0)
+    fn index(&self, index: SenderName<'_>) -> &Self::Output {
+        self.sender(index.0)
             .unwrap_or_else(|| panic!("{} is not defined", index))
     }
 }
@@ -403,14 +395,14 @@ impl InterfaceBuilder {
         }
     }
 
-    /// Adds an inbound channel spec to this builder.
-    pub fn insert_inbound_channel(&mut self, name: impl Into<String>, spec: InboundChannelSpec) {
-        self.interface.inbound_channels.insert(name.into(), spec);
+    /// Adds a channel receiver spec to this builder.
+    pub fn insert_receiver(&mut self, name: impl Into<String>, spec: ReceiverSpec) {
+        self.interface.receivers.insert(name.into(), spec);
     }
 
-    /// Adds an outbound channel spec to this builder.
-    pub fn insert_outbound_channel(&mut self, name: impl Into<String>, spec: OutboundChannelSpec) {
-        self.interface.outbound_channels.insert(name.into(), spec);
+    /// Adds a channel sender spec to this builder.
+    pub fn insert_sender(&mut self, name: impl Into<String>, spec: SenderSpec) {
+        self.interface.senders.insert(name.into(), spec);
     }
 
     /// Builds an interface from this builder.

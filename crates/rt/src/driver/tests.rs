@@ -6,26 +6,25 @@ use futures::{
     SinkExt, TryStreamExt,
 };
 use mimicry::Answers;
-use wasmtime::{AsContextMut, StoreContextMut, Trap};
+use wasmtime::{AsContextMut, StoreContextMut};
 
 use super::*;
 use crate::{
     data::{WasmContextPtr, WorkflowData, WorkflowFunctions},
-    manager::tests::{create_test_manager, create_test_workflow},
+    manager::tests::{create_test_manager, create_test_workflow, is_consumption},
+    mock_scheduler::MockScheduler,
     module::{ExportsMock, MockPollFn},
-    receipt::{ChannelEventKind, Event},
-    test::MockScheduler,
     utils::WasmAllocator,
 };
 use tardigrade::{
     abi::AllocateBytes,
-    interface::{InboundChannel, OutboundChannel},
+    interface::{ReceiverName, SenderName},
 };
 
 const POLL_CX: WasmContextPtr = 123;
 
-fn poll_orders(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
-    let orders = Some(WorkflowData::inbound_channel_ref(None, "orders"));
+fn poll_orders(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
+    let orders = Some(ctx.data().receiver_ref(None, "orders"));
     let poll_result =
         WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
     assert_eq!(poll_result, -1); // Pending
@@ -33,14 +32,14 @@ fn poll_orders(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, T
     Ok(Poll::Pending)
 }
 
-fn handle_order(mut ctx: StoreContextMut<'_, WorkflowData>) -> Result<Poll<()>, Trap> {
-    let orders = Some(WorkflowData::inbound_channel_ref(None, "orders"));
+fn handle_order(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
+    let orders = Some(ctx.data().receiver_ref(None, "orders"));
     let poll_result =
         WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
     assert_ne!(poll_result, -1);
     assert_ne!(poll_result, -2); // Ready(Some(_))
 
-    let events = Some(WorkflowData::outbound_channel_ref(None, "events"));
+    let events = Some(ctx.data_mut().sender_ref(None, "events"));
     let (event_ptr, event_len) =
         WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"event #1")?;
     WorkflowFunctions::start_send(ctx.as_context_mut(), events, event_ptr, event_len)?;
@@ -57,9 +56,9 @@ async fn completing_workflow_via_driver() {
     let mut workflow = create_test_workflow(&manager).await;
     let mut handle = workflow.handle();
     let mut driver = Driver::new();
-    let orders_sx = handle.remove(InboundChannel("orders")).unwrap();
+    let orders_sx = handle.remove(ReceiverName("orders")).unwrap();
     let mut orders_sx = orders_sx.into_sink(&mut driver);
-    let events_rx = handle.remove(OutboundChannel("events")).unwrap();
+    let events_rx = handle.remove(SenderName("events")).unwrap();
     let events_rx = events_rx.into_stream(&mut driver);
 
     let input_actions = async move {
@@ -75,12 +74,12 @@ async fn completing_workflow_via_driver() {
 
 async fn test_driver_with_multiple_messages(start_after_tick: bool) {
     let poll_orders_and_send_event: MockPollFn = |mut ctx| {
-        let orders = Some(WorkflowData::inbound_channel_ref(None, "orders"));
+        let orders = Some(ctx.data().receiver_ref(None, "orders"));
         let poll_result =
             WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
         assert_eq!(poll_result, -1); // Pending
 
-        let events = Some(WorkflowData::outbound_channel_ref(None, "events"));
+        let events = Some(ctx.data_mut().sender_ref(None, "events"));
         let (event_ptr, event_len) =
             WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"event #0")?;
         WorkflowFunctions::start_send(ctx.as_context_mut(), events, event_ptr, event_len)?;
@@ -93,8 +92,8 @@ async fn test_driver_with_multiple_messages(start_after_tick: bool) {
     let mut manager = create_test_manager(MockScheduler::default()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let mut handle = workflow.handle();
-    let events_rx = handle.remove(OutboundChannel("events")).unwrap();
-    let orders_sx = handle.remove(InboundChannel("orders")).unwrap();
+    let events_rx = handle.remove(SenderName("events")).unwrap();
+    let orders_sx = handle.remove(ReceiverName("orders")).unwrap();
 
     if start_after_tick {
         manager.tick().await.unwrap().into_inner().unwrap();
@@ -147,9 +146,10 @@ async fn selecting_from_driver_and_other_future() {
     let mut handle = workflow.handle();
     let mut driver = Driver::new();
     let mut tick_results = driver.tick_results();
-    let orders_sx = handle.remove(InboundChannel("orders")).unwrap();
+    let orders_sx = handle.remove(ReceiverName("orders")).unwrap();
+    let orders_id = orders_sx.channel_id();
     let mut orders_sx = orders_sx.into_sink(&mut driver);
-    let events_rx = handle.remove(OutboundChannel("events")).unwrap();
+    let events_rx = handle.remove(SenderName("events")).unwrap();
     let events_rx = events_rx.into_stream(&mut driver);
 
     let input_actions = orders_sx.send(b"order".to_vec()).map(Result::unwrap);
@@ -157,7 +157,10 @@ async fn selecting_from_driver_and_other_future() {
         let mut consumed_order = false;
         while let Some(tick_result) = tick_results.next().await {
             let receipt = tick_result.as_ref().unwrap();
-            if receipt.events().any(is_order_consumption) {
+            if receipt
+                .events()
+                .any(|event| is_consumption(event, orders_id))
+            {
                 consumed_order = true;
                 break;
             }
@@ -184,24 +187,10 @@ async fn selecting_from_driver_and_other_future() {
     // The `manager` can be used again.
     let mut workflow = manager.workflow(workflow_id).await.unwrap();
     let mut handle = workflow.handle();
-    handle[InboundChannel("orders")]
+    handle[ReceiverName("orders")]
         .send(b"order #2".to_vec())
         .await
         .unwrap();
     manager.tick().await.unwrap().into_inner().unwrap();
     workflow.update().await.unwrap_err();
-}
-
-fn is_order_consumption(event: &Event) -> bool {
-    if let Some(event) = event.as_channel_event() {
-        event.channel_name == "orders"
-            && matches!(
-                event.kind,
-                ChannelEventKind::InboundChannelPolled {
-                    result: Poll::Ready(_)
-                }
-            )
-    } else {
-        false
-    }
 }

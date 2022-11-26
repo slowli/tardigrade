@@ -5,7 +5,7 @@ use std::{collections::HashMap, fmt, ops};
 use super::TakeHandle;
 use crate::{
     channel::{RawReceiver, RawSender},
-    interface::{AccessError, InboundChannel, Interface, OutboundChannel},
+    interface::{AccessError, Interface, ReceiverName, SenderName},
 };
 
 /// Dynamically-typed handle to a workflow containing handles to its channels.
@@ -14,8 +14,8 @@ where
     RawReceiver: TakeHandle<Env, Id = str>,
     RawSender: TakeHandle<Env, Id = str>,
 {
-    pub(crate) inbound_channels: HashMap<String, <RawReceiver as TakeHandle<Env>>::Handle>,
-    pub(crate) outbound_channels: HashMap<String, <RawSender as TakeHandle<Env>>::Handle>,
+    pub(crate) receivers: HashMap<String, <RawReceiver as TakeHandle<Env>>::Handle>,
+    pub(crate) senders: HashMap<String, <RawSender as TakeHandle<Env>>::Handle>,
 }
 
 impl<Env> Default for UntypedHandle<Env>
@@ -25,8 +25,8 @@ where
 {
     fn default() -> Self {
         Self {
-            inbound_channels: HashMap::new(),
-            outbound_channels: HashMap::new(),
+            receivers: HashMap::new(),
+            senders: HashMap::new(),
         }
     }
 }
@@ -42,8 +42,8 @@ where
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("UntypedHandle")
-            .field("inbound_channels", &self.inbound_channels)
-            .field("outbound_channels", &self.outbound_channels)
+            .field("receivers", &self.receivers)
+            .field("senders", &self.senders)
             .finish()
     }
 }
@@ -75,19 +75,16 @@ where
     fn take_handle(env: &mut Env, _id: &()) -> Result<Self, AccessError> {
         let interface = Interface::take_handle(env, &())?;
 
-        let inbound_channels = interface
-            .inbound_channels()
+        let receivers = interface
+            .receivers()
             .map(|(name, _)| Ok((name.to_owned(), RawReceiver::take_handle(&mut *env, name)?)))
             .collect::<Result<_, AccessError>>()?;
-        let outbound_channels = interface
-            .outbound_channels()
+        let senders = interface
+            .senders()
             .map(|(name, _)| Ok((name.to_owned(), RawSender::take_handle(&mut *env, name)?)))
             .collect::<Result<_, AccessError>>()?;
 
-        Ok(Self {
-            inbound_channels,
-            outbound_channels,
-        })
+        Ok(Self { receivers, senders })
     }
 }
 
@@ -134,8 +131,8 @@ macro_rules! impl_index {
     };
 }
 
-impl_index!(InboundChannel<'_> => RawReceiver, inbound_channels);
-impl_index!(OutboundChannel<'_> => RawSender, outbound_channels);
+impl_index!(ReceiverName<'_> => RawReceiver, receivers);
+impl_index!(SenderName<'_> => RawSender, senders);
 
 impl<Env, I> ops::Index<I> for UntypedHandle<Env>
 where

@@ -9,8 +9,8 @@ use std::{fmt, task::Poll};
 
 use crate::{
     data::{
-        ChildWorkflowState, ConsumeError, InboundChannelState, OutboundChannelState, PersistError,
-        PersistedWorkflowData, Refs, TaskState, TimerState, Wakers, WorkflowData,
+        Channels, ChildWorkflow, ConsumeError, PersistError, PersistedWorkflowData, ReceiverState,
+        Refs, SenderState, TaskState, TimerState, Wakers, WorkflowData,
     },
     module::{DataSection, Services, WorkflowSpawner},
     receipt::WakeUpCause,
@@ -171,70 +171,45 @@ impl PersistedWorkflow {
         })
     }
 
-    pub(crate) fn inbound_channels(
-        &self,
-    ) -> impl Iterator<Item = (Option<WorkflowId>, &str, &InboundChannelState)> + '_ {
-        self.state.inbound_channels()
+    pub(crate) fn receivers(&self) -> impl Iterator<Item = (ChannelId, &ReceiverState)> + '_ {
+        self.state.receivers()
     }
 
-    pub(crate) fn find_inbound_channel(
-        &self,
-        channel_id: ChannelId,
-    ) -> (Option<WorkflowId>, &str, &InboundChannelState) {
-        self.state.find_inbound_channel(channel_id)
+    pub(crate) fn receiver(&self, channel_id: ChannelId) -> Option<&ReceiverState> {
+        self.state.receiver(channel_id)
     }
 
-    pub(crate) fn outbound_channels(
-        &self,
-    ) -> impl Iterator<Item = (Option<WorkflowId>, &str, &OutboundChannelState)> + '_ {
-        self.state.outbound_channels()
+    pub(crate) fn senders(&self) -> impl Iterator<Item = (ChannelId, &SenderState)> + '_ {
+        self.state.senders()
+    }
+
+    /// Returns information about channels defined in this workflow interface.
+    pub fn channels(&self) -> Channels<'_> {
+        self.state.channels()
     }
 
     #[tracing::instrument(level = "debug", skip(self, message), err, fields(message.len = message.len()))]
-    pub(crate) fn push_inbound_message(
+    pub(crate) fn push_message_for_receiver(
         &mut self,
-        workflow_id: Option<WorkflowId>,
-        channel_name: &str,
+        channel_id: ChannelId,
         message: Vec<u8>,
     ) -> Result<(), ConsumeError> {
-        self.state
-            .push_inbound_message(workflow_id, channel_name, message)
+        self.state.push_message_for_receiver(channel_id, message)
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
-    pub(crate) fn drop_inbound_message(
-        &mut self,
-        workflow_id: Option<WorkflowId>,
-        channel_name: &str,
-    ) {
-        self.state.drop_inbound_message(workflow_id, channel_name);
+    pub(crate) fn drop_message_for_receiver(&mut self, channel_id: ChannelId) {
+        self.state.drop_message_for_receiver(channel_id);
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
-    pub(crate) fn close_inbound_channel(
-        &mut self,
-        workflow_id: Option<WorkflowId>,
-        channel_name: &str,
-    ) {
-        self.state.close_inbound_channel(workflow_id, channel_name);
+    pub(crate) fn close_receiver(&mut self, channel_id: ChannelId) {
+        self.state.close_receiver(channel_id);
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
-    pub(crate) fn close_outbound_channel(
-        &mut self,
-        workflow_id: Option<WorkflowId>,
-        channel_name: &str,
-    ) {
-        self.state.close_outbound_channel(workflow_id, channel_name);
-    }
-
-    #[tracing::instrument(level = "debug", skip(self))]
-    pub(crate) fn close_outbound_channels_by_id(&mut self, channel_id: ChannelId) {
-        for (_, _, channel_state) in self.state.outbound_channels_mut() {
-            if channel_state.id() == channel_id {
-                channel_state.close();
-            }
-        }
+    pub(crate) fn close_sender(&mut self, channel_id: ChannelId) {
+        self.state.close_sender(channel_id);
     }
 
     /// Returns the current state of a task with the specified ID.
@@ -254,13 +229,13 @@ impl PersistedWorkflow {
     }
 
     /// Enumerates child workflows.
-    pub fn child_workflows(&self) -> impl Iterator<Item = (WorkflowId, &ChildWorkflowState)> + '_ {
+    pub fn child_workflows(&self) -> impl Iterator<Item = (WorkflowId, ChildWorkflow<'_>)> + '_ {
         self.state.child_workflows()
     }
 
     /// Returns the local state of the child workflow with the specified ID, or `None`
     /// if a workflow with such ID was not spawned by this workflow.
-    pub fn child_workflow(&self, id: WorkflowId) -> Option<&ChildWorkflowState> {
+    pub fn child_workflow(&self, id: WorkflowId) -> Option<ChildWorkflow<'_>> {
         self.state.child_workflow(id)
     }
 
@@ -328,10 +303,6 @@ impl PersistedWorkflow {
     /// Iterates over pending [`WakeUpCause`]s.
     pub fn pending_wakeup_causes(&self) -> impl Iterator<Item = &WakeUpCause> + '_ {
         self.state.waker_queue.iter().map(Wakers::cause)
-    }
-
-    pub(crate) fn channel_ids(&self) -> ChannelIds {
-        self.state.channel_ids()
     }
 
     /// Restores a workflow from the persisted state and the `spawner` defining the workflow.

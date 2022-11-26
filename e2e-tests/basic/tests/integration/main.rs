@@ -80,14 +80,12 @@ fn enable_tracing_assertions() -> (DefaultGuard, SharedStorage) {
 #[test]
 fn module_information_is_correct() -> TestResult {
     let interfaces: HashMap<_, _> = MODULE.interfaces().collect();
+    assert!(interfaces["PizzaDelivery"].receiver("orders").is_some());
     assert!(interfaces["PizzaDelivery"]
-        .inbound_channel("orders")
-        .is_some());
-    assert!(interfaces["PizzaDelivery"]
-        .inbound_channel("baking_responses")
+        .receiver("baking_responses")
         .is_none());
     assert!(interfaces["PizzaDeliveryWithRequests"]
-        .inbound_channel("baking_responses")
+        .receiver("baking_responses")
         .is_some());
     Ok(())
 }

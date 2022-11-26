@@ -39,14 +39,14 @@ impl PizzaKind {
     }
 }
 
-/// Orders sent to the workflow via an inbound channel (see [`PizzaDeliveryHandle`]).
+/// Orders sent to the workflow via a channel (see [`PizzaDeliveryHandle`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PizzaOrder {
     pub kind: PizzaKind,
     pub delivery_distance: u64,
 }
 
-/// Domain events emitted by the workflow and sent via the corresponding outbound channel.
+/// Domain events emitted by the workflow and sent via the corresponding channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DomainEvent {
     OrderTaken { index: usize, order: PizzaOrder },
@@ -73,13 +73,13 @@ pub struct Args {
     pub deliverer_count: usize,
 }
 
-/// Cloneable part of the workflow handle consisting of its outbound channels.
+/// Cloneable part of the workflow handle consisting of its channel senders.
 #[tardigrade::handle]
 // ^ Proc macro that derives some helper traits for the handle.
 #[derive(Debug, Clone)]
 pub struct SharedHandle<Env> {
     // For the proc macro to work, fields need to be defined as `Handle<T, Env>`, where
-    // `T` describes a workflow element (in this case, an outbound channel).
+    // `T` describes a workflow element (in this case, a receiver).
     pub events: Handle<Sender<DomainEvent, Json>, Env>,
 }
 

@@ -2,8 +2,8 @@
 
 use anyhow::{anyhow, ensure, Context};
 use wasmtime::{
-    AsContextMut, ExternType, Instance, Memory, Module, Store, StoreContextMut, Table, Trap,
-    TypedFunc, ValType, WasmParams, WasmResults,
+    AsContextMut, ExternType, Instance, Memory, Module, Store, StoreContextMut, Table, TypedFunc,
+    ValType, WasmParams, WasmResults,
 };
 
 use std::{collections::HashMap, fmt, str, task::Poll};
@@ -30,20 +30,17 @@ pub(crate) struct ModuleExports {
 
 #[cfg_attr(test, mimicry::mock(using = "super::tests::ExportsMock"))]
 impl ModuleExports {
-    #[tracing::instrument(level = "debug", skip_all, ret, err, fields(args.len = raw_data.len()))]
+    #[tracing::instrument(level = "debug", skip_all, ret, err, fields(args.len = raw_args.len()))]
     pub fn create_main_task(
         &self,
         mut ctx: StoreContextMut<'_, WorkflowData>,
-        raw_data: &[u8],
-    ) -> Result<TaskId, Trap> {
-        let data_len = u32::try_from(raw_data.len()).expect("data is too large");
+        raw_args: &[u8],
+    ) -> anyhow::Result<TaskId> {
+        let data_len = u32::try_from(raw_args.len()).expect("data is too large");
         let data_ptr = self.alloc_bytes(ctx.as_context_mut(), data_len)?;
         self.memory
-            .write(ctx.as_context_mut(), data_ptr as usize, raw_data)
-            .map_err(|err| {
-                let message = format!("cannot write to WASM memory: {err}");
-                Trap::new(message)
-            })?;
+            .write(ctx.as_context_mut(), data_ptr as usize, raw_args)
+            .context("cannot write workflow args to WASM memory")?;
         self.create_main_task.call(ctx, (data_ptr, data_len))
     }
 
@@ -52,10 +49,9 @@ impl ModuleExports {
         &self,
         ctx: StoreContextMut<'_, WorkflowData>,
         task_id: TaskId,
-    ) -> Result<Poll<()>, Trap> {
-        self.poll_task
-            .call(ctx, task_id)
-            .and_then(|res| <Poll<()>>::try_from_wasm(res).map_err(Trap::new))
+    ) -> anyhow::Result<Poll<()>> {
+        let res = self.poll_task.call(ctx, task_id)?;
+        <Poll<()>>::try_from_wasm(res).map_err(From::from)
     }
 
     #[tracing::instrument(level = "debug", skip(self, ctx), err)]
@@ -63,7 +59,7 @@ impl ModuleExports {
         &self,
         ctx: StoreContextMut<'_, WorkflowData>,
         task_id: TaskId,
-    ) -> Result<(), Trap> {
+    ) -> anyhow::Result<()> {
         self.drop_task.call(ctx, task_id)
     }
 
@@ -72,7 +68,7 @@ impl ModuleExports {
         &self,
         ctx: StoreContextMut<'_, WorkflowData>,
         capacity: u32,
-    ) -> Result<u32, Trap> {
+    ) -> anyhow::Result<u32> {
         self.alloc_bytes.call(ctx, capacity)
     }
 
@@ -81,7 +77,7 @@ impl ModuleExports {
         &self,
         ctx: StoreContextMut<'_, WorkflowData>,
         cx_ptr: WasmContextPtr,
-    ) -> Result<WakerId, Trap> {
+    ) -> anyhow::Result<WakerId> {
         self.create_waker.call(ctx, cx_ptr)
     }
 
@@ -90,7 +86,7 @@ impl ModuleExports {
         &self,
         ctx: StoreContextMut<'_, WorkflowData>,
         waker_id: WakerId,
-    ) -> Result<(), Trap> {
+    ) -> anyhow::Result<()> {
         self.wake_waker.call(ctx, waker_id)
     }
 
@@ -99,7 +95,7 @@ impl ModuleExports {
         &self,
         ctx: StoreContextMut<'_, WorkflowData>,
         waker_id: WakerId,
-    ) -> Result<(), Trap> {
+    ) -> anyhow::Result<()> {
         self.drop_waker.call(ctx, waker_id)
     }
 }
@@ -278,7 +274,7 @@ mod tests {
             _: &ModuleExports,
             _: StoreContextMut<'_, WorkflowData>,
             _: &[u8],
-        ) -> Result<TaskId, Trap> {
+        ) -> anyhow::Result<TaskId> {
             Ok(0)
         }
 
@@ -287,7 +283,7 @@ mod tests {
             _: &ModuleExports,
             ctx: StoreContextMut<'_, WorkflowData>,
             task_id: TaskId,
-        ) -> Result<Poll<()>, Trap> {
+        ) -> anyhow::Result<Poll<()>> {
             let poll_fn = this.borrow().poll_fns.next_for(task_id);
             poll_fn(ctx)
         }
@@ -297,7 +293,7 @@ mod tests {
             _: &ModuleExports,
             _: StoreContextMut<'_, WorkflowData>,
             task_id: TaskId,
-        ) -> Result<(), Trap> {
+        ) -> anyhow::Result<()> {
             assert!(
                 this.borrow().dropped_tasks.insert(task_id),
                 "task {} dropped twice",
@@ -311,7 +307,7 @@ mod tests {
             _: &ModuleExports,
             _: StoreContextMut<'_, WorkflowData>,
             capacity: u32,
-        ) -> Result<u32, Trap> {
+        ) -> anyhow::Result<u32> {
             let ptr = this.borrow().heap_pos;
             this.borrow().heap_pos += capacity;
             Ok(ptr)
@@ -322,7 +318,7 @@ mod tests {
             _: &ModuleExports,
             _: StoreContextMut<'_, WorkflowData>,
             _: WasmContextPtr,
-        ) -> Result<WakerId, Trap> {
+        ) -> anyhow::Result<WakerId> {
             let mut this = this.borrow();
             let next_waker = this.next_waker;
             this.next_waker += 1;
@@ -334,7 +330,7 @@ mod tests {
             _: &ModuleExports,
             ctx: StoreContextMut<'_, WorkflowData>,
             waker_id: WakerId,
-        ) -> Result<(), Trap> {
+        ) -> anyhow::Result<()> {
             this.borrow().consume_waker(waker_id);
             WorkflowFunctions::wake_task(ctx, 0).unwrap();
             Ok(())
@@ -354,7 +350,7 @@ mod tests {
             _: &ModuleExports,
             _: StoreContextMut<'_, WorkflowData>,
             waker_id: WakerId,
-        ) -> Result<(), Trap> {
+        ) -> anyhow::Result<()> {
             this.borrow().consume_waker(waker_id);
             Ok(())
         }

@@ -17,7 +17,7 @@ use crate::{
 };
 use tardigrade::{
     channel::{Receiver, SendError, Sender},
-    interface::{AccessError, AccessErrorKind, InboundChannel, Interface, OutboundChannel},
+    interface::{AccessError, AccessErrorKind, Interface, ReceiverName, SenderName},
     task::JoinError,
     workflow::{GetInterface, TakeHandle, UntypedHandle},
     ChannelId, Decode, Encode, Raw, WorkflowId,
@@ -44,8 +44,8 @@ impl error::Error for ConcurrencyError {}
 /// Handle to an active workflow in a [`WorkflowManager`].
 ///
 /// This type is used as a type param for the [`TakeHandle`] trait. The returned handles
-/// allow interacting with the workflow (e.g., [send messages](MessageSender) via inbound channels
-/// and [take messages](MessageReceiver) from outbound channels).
+/// allow interacting with the workflow (e.g., [send messages](MessageSender)
+/// and [take messages](MessageReceiver) via channels).
 ///
 /// See [`Driver`] for a more high-level alternative.
 ///
@@ -55,7 +55,7 @@ impl error::Error for ConcurrencyError {}
 /// # Examples
 ///
 /// ```
-/// use tardigrade::interface::{InboundChannel, OutboundChannel};
+/// use tardigrade::interface::{ReceiverName, SenderName};
 /// use tardigrade_rt::manager::WorkflowHandle;
 /// # use tardigrade_rt::manager::AsManager;
 ///
@@ -68,12 +68,12 @@ impl error::Error for ConcurrencyError {}
 /// // We can create a handle to manipulate the workflow.
 /// let mut handle = workflow.handle();
 ///
-/// // Let's send a message via an inbound channel.
+/// // Let's send a message via a channel.
 /// let message = b"hello".to_vec();
-/// handle[InboundChannel("commands")].send(message).await?;
+/// handle[ReceiverName("commands")].send(message).await?;
 ///
 /// // Let's then take outbound messages from a certain channel:
-/// let message = handle[OutboundChannel("events")]
+/// let message = handle[SenderName("events")]
 ///     .receive_message(0)
 ///     .await?;
 /// let message: Vec<u8> = message.decode()?;
@@ -115,7 +115,7 @@ impl<'a, M: AsManager> WorkflowHandle<'a, (), M> {
     ) -> WorkflowHandle<'a, (), M> {
         let ids = WorkflowAndChannelIds {
             workflow_id: id,
-            channel_ids: state.persisted.channel_ids(),
+            channel_ids: state.persisted.channels().to_ids(),
         };
         let host_receiver_channels =
             Self::find_host_receiver_channels(transaction, &ids.channel_ids).await;
@@ -134,8 +134,8 @@ impl<'a, M: AsManager> WorkflowHandle<'a, (), M> {
         transaction: &impl ReadChannels,
         channel_ids: &ChannelIds,
     ) -> HashSet<ChannelId> {
-        let outbound_channel_ids = channel_ids.outbound.values();
-        let channel_tasks = outbound_channel_ids.map(|&id| async move {
+        let sender_ids = channel_ids.senders.values();
+        let channel_tasks = sender_ids.map(|&id| async move {
             let channel = transaction.channel(id).await.unwrap();
             Some(id).filter(|_| channel.receiver_workflow_id.is_none())
         });
@@ -224,7 +224,7 @@ impl<W: TakeHandle<Self, Id = ()>, M: AsManager> WorkflowHandle<'_, W, M> {
     }
 }
 
-/// Handle for an [inbound workflow channel](Receiver) that allows sending messages
+/// Handle for an workflow channel [`Receiver`] that allows sending messages
 /// via the channel.
 #[derive(Debug)]
 pub struct MessageSender<'a, T, C, M> {
@@ -277,7 +277,7 @@ where
         env: &mut WorkflowHandle<'a, W, M>,
         id: &str,
     ) -> Result<Self::Handle, AccessError> {
-        if let Some(channel_id) = env.ids.channel_ids.inbound.get(id).copied() {
+        if let Some(channel_id) = env.ids.channel_ids.receivers.get(id).copied() {
             Ok(MessageSender {
                 manager: env.manager,
                 channel_id,
@@ -285,12 +285,12 @@ where
                 _item: PhantomData,
             })
         } else {
-            Err(AccessErrorKind::Unknown.with_location(InboundChannel(id)))
+            Err(AccessErrorKind::Unknown.with_location(ReceiverName(id)))
         }
     }
 }
 
-/// Handle for an [outbound workflow channel](Sender) that allows taking messages
+/// Handle for an workflow channel [`Sender`] that allows taking messages
 /// from the channel.
 #[derive(Debug)]
 pub struct MessageReceiver<'a, T, C, M> {
@@ -364,7 +364,7 @@ impl<T, C: Decode<T> + Default, M: AsManager> MessageReceiver<'_, T, C, M> {
     }
 }
 
-/// Message or end of stream received from an outbound workflow channel.
+/// Message or end of stream received from a workflow channel.
 #[derive(Debug)]
 pub struct ReceivedMessage<T, C> {
     index: usize,
@@ -401,7 +401,7 @@ where
         env: &mut WorkflowHandle<'a, W, M>,
         id: &str,
     ) -> Result<Self::Handle, AccessError> {
-        if let Some(channel_id) = env.ids.channel_ids.outbound.get(id).copied() {
+        if let Some(channel_id) = env.ids.channel_ids.senders.get(id).copied() {
             Ok(MessageReceiver {
                 manager: env.manager,
                 channel_id,
@@ -410,7 +410,7 @@ where
                 _item: PhantomData,
             })
         } else {
-            Err(AccessErrorKind::Unknown.with_location(OutboundChannel(id)))
+            Err(AccessErrorKind::Unknown.with_location(SenderName(id)))
         }
     }
 }
