@@ -7,7 +7,7 @@
 //! world via well-defined interfaces:
 //!
 //! - Arguments provided to the workflow on creation
-//! - Message [channels](crate::channel) similar [to ones from the `future` crate][future-chan]
+//! - Message [channels](channel) similar [to ones from the `future` crate][future-chan]
 //! - Timers
 //! - Tasks
 //!
@@ -32,7 +32,7 @@
 //!
 //! [`Future`]: std::future::Future
 //! [future-chan]: https://docs.rs/futures/latest/futures/channel/index.html
-//! [`Interface`]: crate::interface::Interface
+//! [`Interface`]: interface::Interface
 //!
 //! # Crate features
 //!
@@ -40,7 +40,7 @@
 //!
 //! *(On by default)*
 //!
-//! Exposes [`Json`] [codec](crate::Encode) for messages received by a workflow.
+//! Exposes [`Json`] [codec](Encode) for messages received by a workflow.
 //!
 //! ## `tracing`
 //!
@@ -106,12 +106,12 @@ pub use crate::{
 /// # Examples
 ///
 /// ```
-/// use tardigrade::{channel::{Sender, Receiver}, workflow::Handle, Json};
+/// use tardigrade::{channel::{Sender, Receiver}, workflow::{Handle, WorkflowEnv}, Json};
 ///
 /// /// Handle for the workflow.
 /// #[tardigrade::handle]
 /// #[derive(Debug)]
-/// pub struct MyHandle<Env> {
+/// pub struct MyHandle<Env: WorkflowEnv> {
 ///     pub receiver: Handle<Receiver<i64, Json>, Env>,
 ///     pub sender: Handle<Sender<i64, Json>, Env>,
 /// }
@@ -147,13 +147,13 @@ pub type ChannelId = u128;
 ///
 /// An entry point must be specified for a workflow type in a workflow module in order
 /// for the module to properly function (i.e., being able to spawn workflow instances).
-/// The specified type must implement [`SpawnWorkflow`](crate::workflow::SpawnWorkflow).
+/// The specified type must implement [`SpawnWorkflow`](workflow::SpawnWorkflow).
 ///
-/// The macro will automatically implement [`NamedWorkflow`](crate::workflow::NamedWorkflow).
+/// The macro will automatically implement [`NamedWorkflow`](workflow::NamedWorkflow).
 ///
 /// # Examples
 ///
-/// See the [`workflow`](crate::workflow) module docs for an end-to-end example of usage.
+/// See the [`workflow`] module docs for an end-to-end example of usage.
 #[macro_export]
 macro_rules! workflow_entry {
     ($workflow:ident) => {

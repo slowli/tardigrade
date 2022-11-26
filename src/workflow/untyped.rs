@@ -3,7 +3,7 @@
 use std::{collections::HashMap, fmt, ops};
 
 use super::{Handle, TakeHandle, WorkflowEnv};
-use crate::workflow::{DescriptiveEnv, WithHandle};
+use crate::workflow::{DescribeEnv, WithHandle};
 use crate::{
     channel::{RawReceiver, RawSender},
     interface::{AccessError, ReceiverName, SenderName},
@@ -54,7 +54,7 @@ impl WithHandle for () {
     type Handle<Env: WorkflowEnv> = UntypedHandle<Env>;
 }
 
-impl<Env: DescriptiveEnv> TakeHandle<Env> for () {
+impl<Env: DescribeEnv> TakeHandle<Env> for () {
     fn take_handle(env: &mut Env, _id: &()) -> Result<UntypedHandle<Env>, AccessError> {
         let interface = env.interface().into_owned();
 

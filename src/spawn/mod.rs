@@ -11,7 +11,7 @@
 //! # use tardigrade::{
 //! #     channel::{Sender, Receiver},
 //! #     task::TaskResult,
-//! #     workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
+//! #     workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
 //! #     Json,
 //! # };
 //! // Assume we want to spawn a child workflow defined as follows:
@@ -21,7 +21,7 @@
 //!
 //! #[tardigrade::handle]
 //! #[derive(Debug)]
-//! pub struct ChildHandle<Env> {
+//! pub struct ChildHandle<Env: WorkflowEnv> {
 //!     pub commands: Handle<Receiver<String, Json>, Env>,
 //!     pub events: Handle<Sender<String, Json>, Env>,
 //! }
@@ -84,7 +84,7 @@ use crate::{
     interface::{AccessError, AccessErrorKind, ChannelHalf, Interface, ReceiverName, SenderName},
     task::JoinError,
     workflow::{
-        DescriptiveEnv, GetInterface, Handle, TakeHandle, WithHandle, WorkflowEnv, WorkflowFn,
+        DescribeEnv, GetInterface, Handle, TakeHandle, WithHandle, WorkflowEnv, WorkflowFn,
     },
     Decode, Encode,
 };
@@ -401,7 +401,7 @@ impl<Ch: SpecifyWorkflowChannels> WorkflowEnv for Spawner<Ch> {
     }
 }
 
-impl<Ch: SpecifyWorkflowChannels> DescriptiveEnv for Spawner<Ch> {
+impl<Ch: SpecifyWorkflowChannels> DescribeEnv for Spawner<Ch> {
     fn interface(&self) -> Cow<'_, Interface> {
         Cow::Borrowed(&self.inner.interface)
     }

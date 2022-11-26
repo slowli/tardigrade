@@ -17,7 +17,7 @@
 //! # use tardigrade::{
 //! #     channel::Sender,
 //! #     task::TaskResult,
-//! #     workflow::{Handle, GetInterface, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
+//! #     workflow::{Handle, GetInterface, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
 //! #     Json,
 //! # };
 //! // Assume we want to test a workflow.
@@ -28,7 +28,7 @@
 //! /// Workflow handle.
 //! #[tardigrade::handle]
 //! #[derive(Debug)]
-//! pub struct MyHandle<Env> {
+//! pub struct MyHandle<Env: WorkflowEnv> {
 //!     pub events: Handle<Sender<Event, Json>, Env>,
 //! }
 //!

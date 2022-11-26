@@ -1,7 +1,5 @@
 //! Handle-related logic.
 
-#![allow(missing_docs, clippy::missing_errors_doc)]
-
 use std::borrow::Cow;
 
 use crate::{
@@ -9,25 +7,42 @@ use crate::{
     Decode, Encode,
 };
 
+/// Workflow environment containing its elements (channel senders and receivers).
 pub trait WorkflowEnv {
+    /// Receiver handle in this environment.
     type Receiver<T, C: Encode<T> + Decode<T>>;
+    /// Sender handle in this environment.
     type Sender<T, C: Encode<T> + Decode<T>>;
 
+    /// Obtains a receiver handle with the specified ID from this environment.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a receiver with this ID is missing from the environment.
     fn take_receiver<T, C: Encode<T> + Decode<T>>(
         &mut self,
         id: &str,
     ) -> Result<Self::Receiver<T, C>, AccessError>;
+
+    /// Obtains a sender handle with the specified ID from this environment.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a sender with this ID is missing from the environment.
     fn take_sender<T, C: Encode<T> + Decode<T>>(
         &mut self,
         id: &str,
     ) -> Result<Self::Sender<T, C>, AccessError>;
 }
 
-pub trait DescriptiveEnv: WorkflowEnv {
+/// [Workflow environment](WorkflowEnv) the interface of which can be summarized
+/// as an [`Interface`].
+pub trait DescribeEnv: WorkflowEnv {
+    /// Returns the interface describing this environment.
     fn interface(&self) -> Cow<'_, Interface>;
 }
 
-/// Type with a handle in a certain environment.
+/// Type with a handle in workflow [environments](WorkflowEnv).
 pub trait WithHandle {
     /// ID of the handle, usually a `str` (for named handles) or `()` (for singleton handles).
     type Id: ?Sized;
@@ -35,7 +50,7 @@ pub trait WithHandle {
     type Handle<Env: WorkflowEnv>;
 }
 
-/// Type with a handle in a certain environment.
+/// Type the [handle](WithHandle) of which can be obtained in a certain environment.
 ///
 /// This trait is implemented for elements of the workflow interface, such as channels,
 /// and can be derived for workflow types using the corresponding macro.

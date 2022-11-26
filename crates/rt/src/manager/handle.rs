@@ -17,12 +17,11 @@ use crate::{
     workflow::ChannelIds,
     PersistedWorkflow,
 };
-use tardigrade::workflow::DescriptiveEnv;
 use tardigrade::{
     channel::SendError,
     interface::{AccessError, AccessErrorKind, Interface, ReceiverName, SenderName},
     task::JoinError,
-    workflow::{GetInterface, Handle, TakeHandle, WorkflowEnv},
+    workflow::{DescribeEnv, GetInterface, Handle, TakeHandle, WorkflowEnv},
     ChannelId, Decode, Encode, Raw, WorkflowId,
 };
 
@@ -303,7 +302,7 @@ impl<'a, W, M: AsManager> WorkflowEnv for WorkflowHandle<'a, W, M> {
     }
 }
 
-impl<'a, W, M: AsManager> DescriptiveEnv for WorkflowHandle<'a, W, M> {
+impl<'a, W, M: AsManager> DescribeEnv for WorkflowHandle<'a, W, M> {
     fn interface(&self) -> Cow<'_, Interface> {
         Cow::Borrowed(self.interface)
     }

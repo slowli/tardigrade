@@ -148,7 +148,10 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 /// # use tardigrade::{
 /// #     channel::{Requests, Sender, Receiver, WithId},
 /// #     task::{TaskResult, ErrorContextExt},
-/// #     workflow::{GetInterface, Handle, SpawnWorkflow, TaskHandle, TakeHandle, Wasm, WorkflowFn},
+/// #     workflow::{
+/// #         GetInterface, Handle, SpawnWorkflow, TaskHandle, TakeHandle, Wasm, WorkflowEnv,
+/// #         WorkflowFn,
+/// #     },
 /// #     Json,
 /// # };
 /// #[derive(Debug, Serialize, Deserialize)]
@@ -166,7 +169,7 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 ///
 /// #[tardigrade::handle]
 /// #[derive(Debug)]
-/// pub struct MyHandle<Env> {
+/// pub struct MyHandle<Env: WorkflowEnv> {
 ///     pub requests: Handle<Sender<WithId<Request>, Json>, Env>,
 ///     pub responses: Handle<Receiver<WithId<Response>, Json>, Env>,
 /// }

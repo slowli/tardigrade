@@ -17,7 +17,7 @@
 //! /// Handle for the workflow. Fields are public for integration testing.
 //! #[tardigrade::handle]
 //! #[derive(Debug)]
-//! pub struct MyHandle<Env = Wasm> {
+//! pub struct MyHandle<Env: WorkflowEnv = Wasm> {
 //!     /// Receiver for commands.
 //!     pub commands: Handle<Receiver<Command, Json>, Env>,
 //!     /// Sender for events.
@@ -117,7 +117,7 @@ mod handle;
 mod untyped;
 
 pub use self::{
-    handle::{DescriptiveEnv, Handle, TakeHandle, WithHandle, WorkflowEnv},
+    handle::{DescribeEnv, Handle, TakeHandle, WithHandle, WorkflowEnv},
     untyped::{UntypedHandle, UntypedHandleIndex},
 };
 
@@ -246,7 +246,7 @@ impl WorkflowEnv for InterfaceBuilder {
     }
 }
 
-impl DescriptiveEnv for InterfaceBuilder {
+impl DescribeEnv for InterfaceBuilder {
     fn interface(&self) -> Cow<'_, Interface> {
         Cow::Owned(Interface::default())
     }
