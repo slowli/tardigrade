@@ -560,11 +560,11 @@ impl StorageTransaction for LocalTransaction<'_> {
 }
 
 #[async_trait]
-impl<'a> Storage<'a> for LocalStorage {
-    type Transaction = LocalTransaction<'a>;
-    type ReadonlyTransaction = Readonly<LocalTransaction<'a>>;
+impl Storage for LocalStorage {
+    type Transaction<'a> = LocalTransaction<'a>;
+    type ReadonlyTransaction<'a> = Readonly<LocalTransaction<'a>>;
 
-    async fn transaction(&'a self) -> Self::Transaction {
+    async fn transaction(&self) -> Self::Transaction<'_> {
         let target = self.inner.lock().await;
         LocalTransaction {
             inner: target.clone(),
@@ -576,7 +576,7 @@ impl<'a> Storage<'a> for LocalStorage {
         }
     }
 
-    async fn readonly_transaction(&'a self) -> Self::ReadonlyTransaction {
+    async fn readonly_transaction(&self) -> Self::ReadonlyTransaction<'_> {
         Readonly::from(self.transaction().await)
     }
 }

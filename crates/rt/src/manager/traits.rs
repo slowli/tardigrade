@@ -14,7 +14,7 @@ use crate::{
 /// Trait encapsulating all type params of a [`WorkflowManager`].
 pub trait AsManager {
     /// Storage used by the manager.
-    type Storage: for<'a> Storage<'a>;
+    type Storage: Storage;
     /// Clock used by the manager.
     type Clock: Clock;
 
@@ -22,7 +22,7 @@ pub trait AsManager {
     fn as_manager(&self) -> &WorkflowManager<Self::Clock, Self::Storage>;
 }
 
-impl<C: Clock, S: for<'a> Storage<'a>> AsManager for WorkflowManager<C, S> {
+impl<C: Clock, S: Storage> AsManager for WorkflowManager<C, S> {
     type Storage = S;
     type Clock = C;
 

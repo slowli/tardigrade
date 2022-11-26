@@ -207,7 +207,7 @@ impl<'a> WorkflowSeed<'a> {
     }
 }
 
-impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
+impl<C: Clock, S: Storage> WorkflowManager<C, S> {
     #[tracing::instrument(
         level = "debug",
         skip_all,
@@ -217,9 +217,9 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
             name_in_module = record.name_in_module
         )
     )]
-    async fn restore_workflow(
+    async fn restore_workflow<'a>(
         &'a self,
-        transaction: &S::Transaction,
+        transaction: &S::Transaction<'a>,
         record: WorkflowRecord<ActiveWorkflowState>,
     ) -> (WorkflowSeed<'_>, TracingEventReceiver) {
         let state = record.state;
@@ -247,9 +247,9 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn tick_workflow(
+    async fn tick_workflow<'a>(
         &'a self,
-        transaction: &mut S::Transaction,
+        transaction: &mut S::Transaction<'a>,
         workflow: WorkflowRecord<ActiveWorkflowState>,
         wakers: Vec<WorkflowWaker>,
     ) -> (Result<Receipt, ExecutionError>, Option<PendingChannel>) {
@@ -297,9 +297,7 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
 
         (result, pending_channel)
     }
-}
 
-impl<C: Clock, S: for<'a> Storage<'a>> WorkflowManager<C, S> {
     /// Attempts to advance a single workflow within this manager.
     ///
     /// A workflow can be advanced if it has outstanding wakers, e.g., ones produced by

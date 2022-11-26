@@ -268,7 +268,7 @@ impl<'a, W, C, S> ManageWorkflows<'a, W> for WorkflowManager<C, S>
 where
     W: WorkflowFn,
     C: Clock,
-    S: for<'s> Storage<'s>,
+    S: Storage,
 {
     type Handle = WorkflowHandle<'a, W, Self>;
     type Error = anyhow::Error;

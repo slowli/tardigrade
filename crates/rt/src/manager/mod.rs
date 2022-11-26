@@ -164,7 +164,7 @@ pub struct WorkflowManager<C, S> {
 }
 
 #[allow(clippy::mismatching_type_param_order)] // false positive
-impl<S: for<'a> Storage<'a>> WorkflowManager<(), S> {
+impl<S: Storage> WorkflowManager<(), S> {
     /// Creates a builder that will use the specified storage.
     pub fn builder(storage: S) -> WorkflowManagerBuilder<'static, (), S> {
         WorkflowManagerBuilder {
@@ -175,7 +175,7 @@ impl<S: for<'a> Storage<'a>> WorkflowManager<(), S> {
     }
 }
 
-impl<C: Clock, S: for<'a> Storage<'a>> WorkflowManager<C, S> {
+impl<C: Clock, S: Storage> WorkflowManager<C, S> {
     async fn new(clock: C, storage: S, module_creator: &dyn CreateModule) -> anyhow::Result<Self> {
         let spawners = {
             let transaction = storage.readonly_transaction().await;
@@ -278,10 +278,8 @@ impl<C: Clock, S: for<'a> Storage<'a>> WorkflowManager<C, S> {
     pub fn into_storage(self) -> S {
         self.storage
     }
-}
 
-impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
-    fn shared(&'a self) -> Shared<'a> {
+    fn shared(&self) -> Shared<'_> {
         Shared {
             clock: &self.clock,
             spawners: &self.spawners,
@@ -289,7 +287,7 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
     }
 
     pub(crate) async fn send_message(
-        &'a self,
+        &self,
         channel_id: ChannelId,
         message: Vec<u8>,
     ) -> Result<(), SendError> {
@@ -304,7 +302,7 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
         Ok(())
     }
 
-    pub(crate) async fn close_host_sender(&'a self, channel_id: ChannelId) {
+    pub(crate) async fn close_host_sender(&self, channel_id: ChannelId) {
         let mut transaction = self.storage.transaction().await;
         StorageHelper::new(&mut transaction)
             .close_channel_side(channel_id, ChannelSide::HostSender)
@@ -312,7 +310,7 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
         transaction.commit().await;
     }
 
-    pub(crate) async fn close_host_receiver(&'a self, channel_id: ChannelId) {
+    pub(crate) async fn close_host_receiver(&self, channel_id: ChannelId) {
         let mut transaction = self.storage.transaction().await;
         if cfg!(debug_assertions) {
             let channel = transaction.channel(channel_id).await.unwrap();
@@ -331,7 +329,7 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
     /// Sets the current time for this manager. This may expire timers in some of the contained
     /// workflows.
     #[tracing::instrument(skip(self))]
-    pub async fn set_current_time(&'a self, time: DateTime<Utc>) {
+    pub async fn set_current_time(&self, time: DateTime<Utc>) {
         let mut transaction = self.storage.transaction().await;
         StorageHelper::new(&mut transaction)
             .set_current_time(time)
@@ -342,7 +340,7 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
     /// Aborts the workflow with the specified ID. The parent workflow, if any, will be notified,
     /// and all channel handles owned by the workflow will be properly disposed.
     #[tracing::instrument(skip(self))]
-    async fn abort_workflow(&'a self, workflow_id: WorkflowId) -> Result<(), ConcurrencyError> {
+    async fn abort_workflow(&self, workflow_id: WorkflowId) -> Result<(), ConcurrencyError> {
         let mut transaction = self.storage.transaction().await;
         let record = transaction
             .workflow_for_update(workflow_id)
@@ -364,7 +362,7 @@ impl<'a, C: Clock, S: Storage<'a>> WorkflowManager<C, S> {
     }
 
     #[tracing::instrument(skip(self))]
-    async fn repair_workflow(&'a self, workflow_id: WorkflowId) -> Result<(), ConcurrencyError> {
+    async fn repair_workflow(&self, workflow_id: WorkflowId) -> Result<(), ConcurrencyError> {
         let mut transaction = self.storage.transaction().await;
         let record = transaction
             .workflow_for_update(workflow_id)
@@ -389,7 +387,7 @@ pub struct WorkflowManagerBuilder<'r, C, S> {
 }
 
 #[allow(clippy::mismatching_type_param_order)] // false positive
-impl<'r, S: for<'a> Storage<'a>> WorkflowManagerBuilder<'r, (), S> {
+impl<'r, S: Storage> WorkflowManagerBuilder<'r, (), S> {
     /// Sets the wall clock to be used in the manager.
     #[must_use]
     pub fn with_clock<C: Clock>(self, clock: C) -> WorkflowManagerBuilder<'r, C, S> {
@@ -401,7 +399,7 @@ impl<'r, S: for<'a> Storage<'a>> WorkflowManagerBuilder<'r, (), S> {
     }
 }
 
-impl<'r, C: Clock, S: for<'a> Storage<'a>> WorkflowManagerBuilder<'r, C, S> {
+impl<'r, C: Clock, S: Storage> WorkflowManagerBuilder<'r, C, S> {
     /// Specifies the [module creator](CreateModule) to use.
     #[must_use]
     pub fn with_module_creator(mut self, creator: impl CreateModule + 'r) -> Self {

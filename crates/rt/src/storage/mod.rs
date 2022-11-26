@@ -56,17 +56,17 @@ use tardigrade::{task::JoinError, ChannelId, WakerId, WorkflowId};
 ///
 /// A storage is required to instantiate a [`WorkflowManager`](crate::manager::WorkflowManager).
 #[async_trait]
-pub trait Storage<'a>: 'static + Send + Sync {
+pub trait Storage: 'static + Send + Sync {
     /// Read/write transaction for the storage. See [`StorageTransaction`] for required
     /// transaction semantics.
-    type Transaction: 'a + StorageTransaction;
+    type Transaction<'a>: 'a + StorageTransaction;
     /// Readonly transaction for the storage.
-    type ReadonlyTransaction: 'a + ReadonlyStorageTransaction;
+    type ReadonlyTransaction<'a>: 'a + ReadonlyStorageTransaction;
 
     /// Creates a new read/write transaction.
-    async fn transaction(&'a self) -> Self::Transaction;
+    async fn transaction(&self) -> Self::Transaction<'_>;
     /// Creates a new readonly transaction.
-    async fn readonly_transaction(&'a self) -> Self::ReadonlyTransaction;
+    async fn readonly_transaction(&self) -> Self::ReadonlyTransaction<'_>;
 }
 
 /// [`Storage`] transaction with readonly access to the storage.
