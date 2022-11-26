@@ -169,14 +169,6 @@ impl TargetField {
         }
     }
 
-    pub(crate) fn id_ty(&self) -> impl ToTokens {
-        if self.flatten {
-            quote!(())
-        } else {
-            quote!(str)
-        }
-    }
-
     pub(crate) fn id(&self) -> impl ToTokens {
         if self.flatten {
             quote!(&())
@@ -262,7 +254,7 @@ impl TargetStruct {
     fn impl_std_trait(&self, tr: impl ToTokens, methods: impl ToTokens) -> impl ToTokens {
         let handle = &self.ident;
         let (impl_generics, ty_generics, where_clause) = self.generics.split_for_impl();
-        let mut where_clause = where_clause.unwrap().clone();
+        let mut where_clause = where_clause.cloned().unwrap_or_else(|| parse_quote!(where));
         for field in &self.fields {
             let ty = &field.ty;
             where_clause.predicates.push(parse_quote!(#ty: #tr));

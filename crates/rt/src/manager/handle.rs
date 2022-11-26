@@ -2,6 +2,7 @@
 
 use futures::{future, FutureExt, Stream, StreamExt};
 
+use std::borrow::Cow;
 use std::{collections::HashSet, error, fmt, marker::PhantomData, ops};
 
 use crate::{
@@ -16,11 +17,12 @@ use crate::{
     workflow::ChannelIds,
     PersistedWorkflow,
 };
+use tardigrade::workflow::DescriptiveEnv;
 use tardigrade::{
-    channel::{Receiver, SendError, Sender},
+    channel::SendError,
     interface::{AccessError, AccessErrorKind, Interface, ReceiverName, SenderName},
     task::JoinError,
-    workflow::{GetInterface, TakeHandle, UntypedHandle},
+    workflow::{GetInterface, Handle, TakeHandle, WorkflowEnv},
     ChannelId, Decode, Encode, Raw, WorkflowId,
 };
 
@@ -220,7 +222,7 @@ impl<W: TakeHandle<Self, Id = ()>, M: AsManager> WorkflowHandle<'_, W, M> {
 
     /// Returns a handle for the workflow that allows interacting with its channels.
     #[allow(clippy::missing_panics_doc)] // false positive
-    pub fn handle(&mut self) -> <W as TakeHandle<Self>>::Handle {
+    pub fn handle(&mut self) -> Handle<W, Self> {
         W::take_handle(self, &()).unwrap()
     }
 }
@@ -231,8 +233,7 @@ impl<W: TakeHandle<Self, Id = ()>, M: AsManager> WorkflowHandle<'_, W, M> {
 pub struct MessageSender<'a, T, C, M> {
     manager: &'a M,
     channel_id: ChannelId,
-    pub(crate) codec: C,
-    _item: PhantomData<fn(T)>,
+    _ty: PhantomData<(fn(T), C)>,
 }
 
 impl<T, C: Encode<T>, M: AsManager> MessageSender<'_, T, C, M> {
@@ -254,7 +255,7 @@ impl<T, C: Encode<T>, M: AsManager> MessageSender<'_, T, C, M> {
     ///
     /// Returns an error if the channel is full or closed.
     pub async fn send(&mut self, message: T) -> Result<(), SendError> {
-        let raw_message = self.codec.encode_value(message);
+        let raw_message = C::encode_value(message);
         let manager = self.manager.as_manager();
         manager.send_message(self.channel_id, raw_message).await
     }
@@ -266,28 +267,45 @@ impl<T, C: Encode<T>, M: AsManager> MessageSender<'_, T, C, M> {
     }
 }
 
-impl<'a, T, C, W, M> TakeHandle<WorkflowHandle<'a, W, M>> for Receiver<T, C>
-where
-    C: Encode<T> + Default,
-    M: AsManager,
-{
-    type Id = str;
-    type Handle = MessageSender<'a, T, C, M>;
+impl<'a, W, M: AsManager> WorkflowEnv for WorkflowHandle<'a, W, M> {
+    type Receiver<T, C: Encode<T> + Decode<T>> = MessageSender<'a, T, C, M>;
+    type Sender<T, C: Encode<T> + Decode<T>> = MessageReceiver<'a, T, C, M>;
 
-    fn take_handle(
-        env: &mut WorkflowHandle<'a, W, M>,
+    fn take_receiver<T, C: Encode<T> + Decode<T>>(
+        &mut self,
         id: &str,
-    ) -> Result<Self::Handle, AccessError> {
-        if let Some(channel_id) = env.ids.channel_ids.receivers.get(id).copied() {
+    ) -> Result<Self::Receiver<T, C>, AccessError> {
+        if let Some(channel_id) = self.ids.channel_ids.receivers.get(id).copied() {
             Ok(MessageSender {
-                manager: env.manager,
+                manager: self.manager,
                 channel_id,
-                codec: C::default(),
-                _item: PhantomData,
+                _ty: PhantomData,
             })
         } else {
             Err(AccessErrorKind::Unknown.with_location(ReceiverName(id)))
         }
+    }
+
+    fn take_sender<T, C: Encode<T> + Decode<T>>(
+        &mut self,
+        id: &str,
+    ) -> Result<Self::Sender<T, C>, AccessError> {
+        if let Some(channel_id) = self.ids.channel_ids.senders.get(id).copied() {
+            Ok(MessageReceiver {
+                manager: self.manager,
+                channel_id,
+                can_manipulate: self.host_receiver_channels.contains(&channel_id),
+                _ty: PhantomData,
+            })
+        } else {
+            Err(AccessErrorKind::Unknown.with_location(SenderName(id)))
+        }
+    }
+}
+
+impl<'a, W, M: AsManager> DescriptiveEnv for WorkflowHandle<'a, W, M> {
+    fn interface(&self) -> Cow<'_, Interface> {
+        Cow::Borrowed(self.interface)
     }
 }
 
@@ -298,8 +316,7 @@ pub struct MessageReceiver<'a, T, C, M> {
     manager: &'a M,
     channel_id: ChannelId,
     can_manipulate: bool,
-    pub(crate) codec: C,
-    _item: PhantomData<fn() -> T>,
+    _ty: PhantomData<(C, fn() -> T)>,
 }
 
 impl<T, C: Decode<T> + Default, M: AsManager> MessageReceiver<'_, T, C, M> {
@@ -337,8 +354,7 @@ impl<T, C: Decode<T> + Default, M: AsManager> MessageReceiver<'_, T, C, M> {
         Ok(ReceivedMessage {
             index,
             raw_message,
-            codec: C::default(),
-            _item: PhantomData,
+            _ty: PhantomData,
         })
     }
 
@@ -374,8 +390,7 @@ impl<T, C: Decode<T> + Default, M: AsManager> MessageReceiver<'_, T, C, M> {
             .map(|(index, raw_message)| ReceivedMessage {
                 index,
                 raw_message,
-                codec: C::default(),
-                _item: PhantomData,
+                _ty: PhantomData,
             })
     }
 
@@ -407,8 +422,7 @@ impl<T, C: Decode<T> + Default, M: AsManager> MessageReceiver<'_, T, C, M> {
 pub struct ReceivedMessage<T, C> {
     index: usize,
     raw_message: Vec<u8>,
-    codec: C,
-    _item: PhantomData<fn() -> T>,
+    _ty: PhantomData<(C, fn() -> T)>,
 }
 
 impl<T, C: Decode<T>> ReceivedMessage<T, C> {
@@ -422,58 +436,8 @@ impl<T, C: Decode<T>> ReceivedMessage<T, C> {
     /// # Errors
     ///
     /// Returns a decoding error, if any.
-    pub fn decode(mut self) -> Result<T, C::Error> {
-        self.codec.try_decode_bytes(self.raw_message.clone())
-    }
-}
-
-impl<'a, T, C, W, M> TakeHandle<WorkflowHandle<'a, W, M>> for Sender<T, C>
-where
-    C: Decode<T> + Default,
-    M: AsManager,
-{
-    type Id = str;
-    type Handle = MessageReceiver<'a, T, C, M>;
-
-    fn take_handle(
-        env: &mut WorkflowHandle<'a, W, M>,
-        id: &str,
-    ) -> Result<Self::Handle, AccessError> {
-        if let Some(channel_id) = env.ids.channel_ids.senders.get(id).copied() {
-            Ok(MessageReceiver {
-                manager: env.manager,
-                channel_id,
-                can_manipulate: env.host_receiver_channels.contains(&channel_id),
-                codec: C::default(),
-                _item: PhantomData,
-            })
-        } else {
-            Err(AccessErrorKind::Unknown.with_location(SenderName(id)))
-        }
-    }
-}
-
-impl<M: AsManager> TakeHandle<WorkflowHandle<'_, (), M>> for Interface {
-    type Id = ();
-    type Handle = Self;
-
-    fn take_handle(
-        env: &mut WorkflowHandle<'_, (), M>,
-        _id: &Self::Id,
-    ) -> Result<Self::Handle, AccessError> {
-        Ok(env.interface.clone())
-    }
-}
-
-impl<'a, M: AsManager> TakeHandle<WorkflowHandle<'a, (), M>> for () {
-    type Id = ();
-    type Handle = UntypedHandle<WorkflowHandle<'a, (), M>>;
-
-    fn take_handle(
-        env: &mut WorkflowHandle<'a, (), M>,
-        _id: &Self::Id,
-    ) -> Result<Self::Handle, AccessError> {
-        UntypedHandle::take_handle(env, &())
+    pub fn decode(self) -> Result<T, C::Error> {
+        C::try_decode_bytes(self.raw_message)
     }
 }
 
@@ -625,8 +589,7 @@ impl<M: AsManager> ErroneousMessage<'_, M> {
         Ok(ReceivedMessage {
             index: self.message_ref.index,
             raw_message,
-            codec: Raw,
-            _item: PhantomData,
+            _ty: PhantomData,
         })
     }
 

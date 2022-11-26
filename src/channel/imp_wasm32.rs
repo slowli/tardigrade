@@ -15,7 +15,6 @@ use crate::{
     channel::SendError,
     interface::{AccessError, AccessErrorKind, ReceiverName, SenderName},
     spawn::imp::RemoteWorkflow,
-    workflow::{TakeHandle, Wasm},
 };
 
 pub(crate) static mut ACCESS_ERROR_PAD: i64 = 0;
@@ -33,7 +32,7 @@ extern "C" {
 }
 
 #[derive(Debug)]
-pub struct MpscReceiver {
+pub(crate) struct MpscReceiver {
     resource: Resource<Self>,
 }
 
@@ -43,11 +42,8 @@ impl From<Resource<Self>> for MpscReceiver {
     }
 }
 
-impl TakeHandle<Wasm> for MpscReceiver {
-    type Id = str;
-    type Handle = Self;
-
-    fn take_handle(_env: &mut Wasm, id: &str) -> Result<Self, AccessError> {
+impl MpscReceiver {
+    pub(super) fn from_env(id: &str) -> Result<Self, AccessError> {
         unsafe {
             let resource = mpsc_receiver_get(None, id.as_ptr(), id.len(), &mut ACCESS_ERROR_PAD);
             Result::<(), AccessErrorKind>::from_abi_in_wasm(ACCESS_ERROR_PAD)
@@ -93,7 +89,7 @@ extern "C" {
 
 /// Unbounded sender end of an MPSC channel.
 #[derive(Debug, Clone)]
-pub struct MpscSender {
+pub(crate) struct MpscSender {
     resource: Arc<Resource<Self>>,
 }
 
@@ -106,22 +102,17 @@ impl From<Resource<Self>> for MpscSender {
 }
 
 impl MpscSender {
-    pub(super) fn as_resource(&self) -> &Resource<Self> {
-        &self.resource
-    }
-}
-
-impl TakeHandle<Wasm> for MpscSender {
-    type Id = str;
-    type Handle = Self;
-
-    fn take_handle(_env: &mut Wasm, id: &str) -> Result<Self, AccessError> {
+    pub(super) fn from_env(id: &str) -> Result<Self, AccessError> {
         unsafe {
             let resource = mpsc_sender_get(None, id.as_ptr(), id.len(), &mut ACCESS_ERROR_PAD);
             Result::<(), AccessErrorKind>::from_abi_in_wasm(ACCESS_ERROR_PAD)
                 .map(|()| resource.unwrap().into())
                 .map_err(|kind| kind.with_location(SenderName(id)))
         }
+    }
+
+    pub(super) fn as_resource(&self) -> &Resource<Self> {
+        &self.resource
     }
 }
 

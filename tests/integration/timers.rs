@@ -10,12 +10,12 @@ use tardigrade::{
     channel::Sender,
     task::TaskResult,
     test::{Runtime, Timers},
-    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm},
+    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv},
     Json, Timer,
 };
 
 #[tardigrade::handle]
-struct TestHandle<Env> {
+struct TestHandle<Env: WorkflowEnv> {
     timestamps: Handle<Sender<DateTime<Utc>, Json>, Env>,
 }
 

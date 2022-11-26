@@ -500,7 +500,7 @@ async fn launching_env_after_pause() -> TestResult {
 async fn dynamically_typed_async_handle() -> TestResult {
     let mut manager = create_manager(AsyncIoScheduler).await?;
 
-    let data = Json.encode_value(Args {
+    let data = Json::encode_value(Args {
         oven_count: 1,
         deliverer_count: 1,
     });
@@ -526,11 +526,11 @@ async fn dynamically_typed_async_handle() -> TestResult {
         kind: PizzaKind::Pepperoni,
         delivery_distance: 10,
     };
-    orders_sx.send(Json.encode_value(order)).await?;
+    orders_sx.send(Json::encode_value(order)).await?;
     drop(orders_sx); // to terminate the workflow
 
     let events: Vec<_> = events_rx
-        .map(|res| Decode::<DomainEvent>::try_decode_bytes(&mut Json, res.unwrap()))
+        .map(|res| <Json as Decode<DomainEvent>>::try_decode_bytes(res.unwrap()))
         .try_collect()
         .await?;
     assert_matches!(
@@ -556,7 +556,7 @@ async fn dynamically_typed_async_handle() -> TestResult {
 async fn rollbacks_on_trap() -> TestResult {
     let mut manager = create_manager(AsyncIoScheduler).await?;
 
-    let data = Json.encode_value(Args {
+    let data = Json::encode_value(Args {
         oven_count: 1,
         deliverer_count: 1,
     });

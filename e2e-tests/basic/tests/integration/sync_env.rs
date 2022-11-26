@@ -331,7 +331,7 @@ async fn persisting_workflow() -> TestResult {
 async fn untyped_workflow() -> TestResult {
     let manager = create_manager(()).await?;
 
-    let data = Json.encode_value(Args {
+    let data = Json::encode_value(Args {
         oven_count: 1,
         deliverer_count: 1,
     });
@@ -348,12 +348,12 @@ async fn untyped_workflow() -> TestResult {
         delivery_distance: 10,
     };
     handle[ReceiverName("orders")]
-        .send(Json.encode_value(order))
+        .send(Json::encode_value(order))
         .await?;
     manager.tick().await?.drop_handle().into_inner()?; // TODO: assert on receipt
 
     let event = handle[SenderName("events")].receive_message(0).await?;
-    let event: DomainEvent = Json.try_decode_bytes(event.decode().unwrap())?;
+    let event: DomainEvent = Json::try_decode_bytes(event.decode().unwrap())?;
     assert_eq!(event, DomainEvent::OrderTaken { index: 1, order });
 
     let chan = handle[ReceiverName("orders")].channel_info().await;
@@ -370,7 +370,7 @@ async fn workflow_recovery_after_trap() -> TestResult {
 
     let manager = create_manager(()).await?;
 
-    let data = Json.encode_value(Args {
+    let data = Json::encode_value(Args {
         oven_count: SAMPLES,
         deliverer_count: 1,
     });
@@ -390,7 +390,7 @@ async fn workflow_recovery_after_trap() -> TestResult {
         if i % 2 == 0 {
             b"invalid".to_vec()
         } else {
-            Json.encode_value(order)
+            Json::encode_value(order)
         }
     });
 
@@ -442,7 +442,7 @@ async fn workflow_recovery_after_trap() -> TestResult {
             result.unwrap();
             let mut events = events_drain.drain().await?;
             assert_eq!(events.len(), 1);
-            let event: DomainEvent = Json.try_decode_bytes(events.pop().unwrap())?;
+            let event: DomainEvent = Json::try_decode_bytes(events.pop().unwrap())?;
             let expected_idx = (i + 1) / 2;
             assert_matches!(
                 event,

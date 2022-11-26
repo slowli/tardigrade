@@ -12,7 +12,7 @@ use tardigrade::{
     channel::{Receiver, Sender},
     sleep,
     task::TaskResult,
-    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
+    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
     Json,
 };
 
@@ -77,7 +77,7 @@ pub struct Args {
 #[tardigrade::handle]
 // ^ Proc macro that derives some helper traits for the handle.
 #[derive(Debug, Clone)]
-pub struct SharedHandle<Env> {
+pub struct SharedHandle<Env: WorkflowEnv> {
     // For the proc macro to work, fields need to be defined as `Handle<T, Env>`, where
     // `T` describes a workflow element (in this case, a receiver).
     pub events: Handle<Sender<DomainEvent, Json>, Env>,
@@ -86,7 +86,7 @@ pub struct SharedHandle<Env> {
 /// Handle for the workflow.
 #[tardigrade::handle]
 #[derive(Debug)]
-pub struct PizzaDeliveryHandle<Env = Wasm> {
+pub struct PizzaDeliveryHandle<Env: WorkflowEnv = Wasm> {
     pub orders: Handle<Receiver<PizzaOrder, Json>, Env>,
     #[tardigrade(flatten)]
     pub shared: Handle<SharedHandle<Wasm>, Env>,

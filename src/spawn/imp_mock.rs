@@ -23,7 +23,6 @@ use crate::{
     task::{JoinError, JoinHandle},
     test::Runtime,
     workflow::{UntypedHandle, Wasm},
-    Raw,
 };
 
 impl ManageInterfaces for Workflows {
@@ -85,8 +84,8 @@ impl Default for ChannelPair {
     fn default() -> Self {
         let (sx, rx) = raw_channel();
         Self {
-            sx: Some(RawSender::new(sx, Raw)),
-            rx: Some(RawReceiver::new(rx, Raw)),
+            sx: Some(RawSender::new(sx)),
+            rx: Some(RawReceiver::new(rx)),
         }
     }
 }

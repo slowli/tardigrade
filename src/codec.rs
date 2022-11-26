@@ -20,7 +20,7 @@ pub trait Decode<T> {
     /// # Errors
     ///
     /// Returns an error if `bytes` do not represent valid data.
-    fn try_decode_bytes(&mut self, bytes: Vec<u8>) -> Result<T, Self::Error>;
+    fn try_decode_bytes(bytes: Vec<u8>) -> Result<T, Self::Error>;
 
     /// Decodes `bytes`. This is a convenience method that `unwrap()`s the result
     /// of [`Self::try_decode_bytes()`].
@@ -28,8 +28,8 @@ pub trait Decode<T> {
     /// # Panics
     ///
     /// Panics if `bytes` do not represent valid data.
-    fn decode_bytes(&mut self, bytes: Vec<u8>) -> T {
-        self.try_decode_bytes(bytes).expect("Cannot decode bytes")
+    fn decode_bytes(bytes: Vec<u8>) -> T {
+        Self::try_decode_bytes(bytes).expect("Cannot decode bytes")
     }
 }
 
@@ -38,7 +38,7 @@ pub trait Decode<T> {
 /// Unlike [`Decode`]rs, `Encode`rs are assumed to be infallible.
 pub trait Encode<T> {
     /// Encodes `value`.
-    fn encode_value(&mut self, value: T) -> Vec<u8>;
+    fn encode_value(value: T) -> Vec<u8>;
 }
 
 /// Raw / identity codec that passes through byte [`Vec`]s without changes.
@@ -46,7 +46,7 @@ pub trait Encode<T> {
 pub struct Raw;
 
 impl Encode<Vec<u8>> for Raw {
-    fn encode_value(&mut self, value: Vec<u8>) -> Vec<u8> {
+    fn encode_value(value: Vec<u8>) -> Vec<u8> {
         value
     }
 }
@@ -54,7 +54,7 @@ impl Encode<Vec<u8>> for Raw {
 impl Decode<Vec<u8>> for Raw {
     type Error = Infallible;
 
-    fn try_decode_bytes(&mut self, bytes: Vec<u8>) -> Result<Vec<u8>, Self::Error> {
+    fn try_decode_bytes(bytes: Vec<u8>) -> Result<Vec<u8>, Self::Error> {
         Ok(bytes)
     }
 }
@@ -73,7 +73,7 @@ mod json {
     /// Panics if the value cannot be serialized. Serialization errors are usually confined
     /// to edge cases (e.g., very deeply nested / recursive objects).
     impl<T: Serialize> Encode<T> for Json {
-        fn encode_value(&mut self, value: T) -> Vec<u8> {
+        fn encode_value(value: T) -> Vec<u8> {
             serde_json::to_vec(&value).expect("cannot serialize value")
         }
     }
@@ -81,7 +81,7 @@ mod json {
     impl<T: DeserializeOwned> Decode<T> for Json {
         type Error = serde_json::Error;
 
-        fn try_decode_bytes(&mut self, bytes: Vec<u8>) -> Result<T, Self::Error> {
+        fn try_decode_bytes(bytes: Vec<u8>) -> Result<T, Self::Error> {
             serde_json::from_slice(&bytes)
         }
     }

@@ -328,8 +328,7 @@ pin_project! {
     pub struct MessageSender<T, C> {
         #[pin]
         raw_sender: mpsc::Sender<Vec<u8>>,
-        codec: C,
-        _item: PhantomData<fn(T)>,
+        _ty: PhantomData<(C, fn(T))>,
     }
 }
 
@@ -337,8 +336,7 @@ impl<T, C: Clone> Clone for MessageSender<T, C> {
     fn clone(&self) -> Self {
         Self {
             raw_sender: self.raw_sender.clone(),
-            codec: self.codec.clone(),
-            _item: PhantomData,
+            _ty: PhantomData,
         }
     }
 }
@@ -350,8 +348,7 @@ impl<T, C: Encode<T>, M: AsManager> manager::MessageSender<'_, T, C, M> {
         driver.receivers.insert(self.channel_id(), rx);
         MessageSender {
             raw_sender: sx,
-            codec: self.codec,
-            _item: PhantomData,
+            _ty: PhantomData,
         }
     }
 }
@@ -365,7 +362,7 @@ impl<T, C: Encode<T>> Sink<T> for MessageSender<T, C> {
 
     fn start_send(self: Pin<&mut Self>, item: T) -> Result<(), Self::Error> {
         let projection = self.project();
-        let item = projection.codec.encode_value(item);
+        let item = C::encode_value(item);
         projection.raw_sender.start_send(item)
     }
 
@@ -392,8 +389,7 @@ pin_project! {
     pub struct MessageReceiver<T, C> {
         #[pin]
         raw_receiver: mpsc::UnboundedReceiver<Vec<u8>>,
-        codec: C,
-        _item: PhantomData<fn() -> T>,
+        _ty: PhantomData<(C, fn() -> T)>,
     }
 }
 
@@ -408,8 +404,7 @@ impl<T, C: Decode<T> + Default, M: AsManager> manager::MessageReceiver<'_, T, C,
         driver.senders.insert(self.channel_id(), state);
         MessageReceiver {
             raw_receiver: rx,
-            codec: self.codec,
-            _item: PhantomData,
+            _ty: PhantomData,
         }
     }
 }
@@ -422,7 +417,7 @@ impl<T, C: Decode<T>> Stream for MessageReceiver<T, C> {
         match projection.raw_receiver.poll_next(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(None) => Poll::Ready(None),
-            Poll::Ready(Some(bytes)) => Poll::Ready(Some(projection.codec.try_decode_bytes(bytes))),
+            Poll::Ready(Some(bytes)) => Poll::Ready(Some(C::try_decode_bytes(bytes))),
         }
     }
 }

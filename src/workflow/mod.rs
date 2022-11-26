@@ -104,8 +104,10 @@ pub use tardigrade_derive::GetInterface;
 pub use tardigrade_derive::TakeHandle;
 
 use crate::{
+    channel::{Receiver, Sender},
     interface::{
         AccessError, AccessErrorKind, ArgsSpec, Interface, InterfaceBuilder, InterfaceLocation,
+        ReceiverSpec, SenderSpec,
     },
     task::TaskResult,
     Decode, Encode, Raw,
@@ -115,7 +117,7 @@ mod handle;
 mod untyped;
 
 pub use self::{
-    handle::{Handle, TakeHandle},
+    handle::{DescriptiveEnv, Handle, TakeHandle, WithHandle, WorkflowEnv},
     untyped::{UntypedHandle, UntypedHandleIndex},
 };
 
@@ -211,15 +213,6 @@ pub trait GetInterface: TakeHandle<InterfaceBuilder, Id = ()> + Sized + 'static 
     }
 }
 
-impl TakeHandle<InterfaceBuilder> for () {
-    type Id = ();
-    type Handle = ();
-
-    fn take_handle(_env: &mut InterfaceBuilder, _id: &Self::Id) -> Result<(), AccessError> {
-        Ok(())
-    }
-}
-
 impl GetInterface for () {}
 
 #[doc(hidden)]
@@ -230,6 +223,33 @@ where
     let mut builder = InterfaceBuilder::new(ArgsSpec::default());
     W::take_handle(&mut builder, &()).expect("failed describing workflow interface");
     builder.build()
+}
+
+impl WorkflowEnv for InterfaceBuilder {
+    type Receiver<T, C: Encode<T> + Decode<T>> = ();
+    type Sender<T, C: Encode<T> + Decode<T>> = ();
+
+    fn take_receiver<T, C: Encode<T> + Decode<T>>(
+        &mut self,
+        id: &str,
+    ) -> Result<Self::Receiver<T, C>, AccessError> {
+        self.insert_receiver(id, ReceiverSpec::default());
+        Ok(())
+    }
+
+    fn take_sender<T, C: Encode<T> + Decode<T>>(
+        &mut self,
+        id: &str,
+    ) -> Result<Self::Sender<T, C>, AccessError> {
+        self.insert_sender(id, SenderSpec::default());
+        Ok(())
+    }
+}
+
+impl DescriptiveEnv for InterfaceBuilder {
+    fn interface(&self) -> Cow<'_, Interface> {
+        Cow::Owned(Interface::default())
+    }
 }
 
 /// Workflow that is accessible by its name from a module.
@@ -249,6 +269,53 @@ pub trait NamedWorkflow {
 pub struct Wasm {
     #[cfg(not(target_arch = "wasm32"))]
     handles: UntypedHandle<Self>,
+}
+
+impl WorkflowEnv for Wasm {
+    type Receiver<T, C: Encode<T> + Decode<T>> = Receiver<T, C>;
+    type Sender<T, C: Encode<T> + Decode<T>> = Sender<T, C>;
+
+    #[cfg(target_arch = "wasm32")]
+    fn take_receiver<T, C: Encode<T> + Decode<T>>(
+        &mut self,
+        id: &str,
+    ) -> Result<Self::Receiver<T, C>, AccessError> {
+        Receiver::from_env(id)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn take_receiver<T, C: Encode<T> + Decode<T>>(
+        &mut self,
+        id: &str,
+    ) -> Result<Self::Receiver<T, C>, AccessError> {
+        use crate::interface::ReceiverName;
+
+        let raw = self
+            .take_receiver(id)
+            .ok_or_else(|| AccessErrorKind::Unknown.with_location(ReceiverName(id)))?;
+        Ok(Receiver::from_raw(raw))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn take_sender<T, C: Encode<T> + Decode<T>>(
+        &mut self,
+        id: &str,
+    ) -> Result<Self::Sender<T, C>, AccessError> {
+        Sender::from_env(id)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn take_sender<T, C: Encode<T> + Decode<T>>(
+        &mut self,
+        id: &str,
+    ) -> Result<Self::Sender<T, C>, AccessError> {
+        use crate::interface::SenderName;
+
+        let raw = self
+            .take_sender(id)
+            .ok_or_else(|| AccessErrorKind::Unknown.with_location(SenderName(id)))?;
+        Ok(Sender::from_raw(raw))
+    }
 }
 
 impl Wasm {
@@ -346,7 +413,7 @@ pub trait WorkflowFn {
     type Args;
     /// Codec used for [`Self::Args`] to encode / decode the arguments in order to pass them from
     /// the host to WASM.
-    type Codec: Default + Encode<Self::Args> + Decode<Self::Args>;
+    type Codec: Encode<Self::Args> + Decode<Self::Args>;
 }
 
 impl WorkflowFn for () {
@@ -379,7 +446,7 @@ pub trait SpawnWorkflow: GetInterface + TakeHandle<Wasm, Id = ()> + WorkflowFn {
     /// [`spawn`]: crate::task::spawn()
     /// [`JoinHandle`]: crate::task::JoinHandle
     /// [`TaskError`]: crate::task::TaskError
-    async fn spawn(args: Self::Args, handle: <Self as TakeHandle<Wasm>>::Handle) -> TaskResult;
+    async fn spawn(args: Self::Args, handle: Handle<Self, Wasm>) -> TaskResult;
 }
 
 /// Handle to a task, essentially equivalent to a boxed [`Future`].
@@ -402,12 +469,10 @@ impl TaskHandle {
         raw_args: Vec<u8>,
         mut wasm: Wasm,
     ) -> Result<Self, AccessError> {
-        let args = W::Codec::default()
-            .try_decode_bytes(raw_args)
-            .map_err(|err| {
-                AccessErrorKind::Custom(Box::new(err)).with_location(InterfaceLocation::Args)
-            })?;
-        let handle = <W as TakeHandle<Wasm>>::take_handle(&mut wasm, &())?;
+        let args = W::Codec::try_decode_bytes(raw_args).map_err(|err| {
+            AccessErrorKind::Custom(Box::new(err)).with_location(InterfaceLocation::Args)
+        })?;
+        let handle = W::take_handle(&mut wasm, &())?;
         Ok(Self::new(W::spawn(args, handle)))
     }
 

@@ -72,7 +72,6 @@ impl Handle {
 
         let derive_clone = take_derive(&mut input.attrs, "Clone");
         let derive_debug = take_derive(&mut input.attrs, "Debug");
-        Self::extend_handle_generics(&mut input.generics, &base.fields);
         base.generics = input.generics.clone();
 
         Ok(Self {
@@ -97,28 +96,19 @@ impl Handle {
         }
     }
 
-    fn extend_handle_generics(generics: &mut Generics, fields: &[TargetField]) {
-        let mut where_clause = generics
-            .where_clause
-            .take()
-            .unwrap_or_else(|| parse_quote!(where));
-
-        for field in fields {
-            let wrapper = field.wrapper.as_ref().unwrap();
-            let ty = &wrapper.inner_types[0];
-            let env = &wrapper.inner_types[1];
-            let id_ty = field.id_ty();
-            let tr = quote!(tardigrade::workflow::TakeHandle<#env, Id = #id_ty>);
-            where_clause.predicates.push(parse_quote!(#ty: #tr));
-        }
-        generics.where_clause = Some(where_clause);
-    }
-
     fn impl_take_handle(&self) -> impl ToTokens {
         let handle = &self.base.ident;
         let env = &self.env;
-        let tr = quote!(tardigrade::workflow::TakeHandle);
-        let (impl_generics, ty_generics, where_clause) = self.base.generics.split_for_impl();
+        let env_tr = quote!(tardigrade::workflow::WorkflowEnv);
+        let wasm = quote!(tardigrade::workflow::Wasm);
+        let (.., where_clause) = self.base.generics.split_for_impl();
+        let tr = quote!(tardigrade::workflow::WithHandle);
+        let with_handle_impl = quote! {
+            impl #tr for #handle <#wasm> #where_clause {
+                type Id = ();
+                type Handle<#env: #env_tr> = #handle <#env>;
+            }
+        };
 
         let handle_fields = self.base.fields.iter().enumerate();
         let handle_fields = handle_fields.map(|(idx, field)| field.init_by_take_handle(idx));
@@ -126,16 +116,15 @@ impl Handle {
             Style::Struct => quote!({ #(#handle_fields,)* }),
             Style::Tuple | Style::Unit => quote!(( #(#handle_fields,)* )),
         };
-
+        let tr = quote!(tardigrade::workflow::TakeHandle);
         quote! {
-            impl #impl_generics #tr<#env> for #handle <tardigrade::workflow::Wasm> #where_clause {
-                type Id = ();
-                type Handle = #handle #ty_generics;
+            #with_handle_impl
 
+            impl<#env: #env_tr> #tr <#env> for #handle <#wasm> #where_clause {
                 fn take_handle(
                     env: &mut #env,
                     _id: &(),
-                ) -> core::result::Result<Self::Handle, tardigrade::interface::AccessError> {
+                ) -> core::result::Result<Self::Handle<#env>, tardigrade::interface::AccessError> {
                     core::result::Result::Ok(#handle #handle_fields)
                 }
             }
@@ -187,35 +176,38 @@ fn derive_take_handle(input: &DeriveInput) -> darling::Result<impl ToTokens> {
         let msg = "#[tardigrade(handle = ..)] must be specified";
         darling::Error::custom(msg).with_span(&meta)
     })?;
-    let handle = quote!(#handle <tardigrade::workflow::Wasm>);
 
-    let (_, ty_generics, _) = input.generics.split_for_impl();
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let target = &input.ident;
+    let tr = quote!(tardigrade::workflow::WithHandle);
+    let env_tr = quote!(tardigrade::workflow::WorkflowEnv);
+    let with_handle_impl = quote! {
+        impl #impl_generics #tr for #target #ty_generics #where_clause {
+            type Id = ();
+            type Handle<Env: #env_tr> = #handle <Env>;
+        }
+    };
+
     let tr = quote!(tardigrade::workflow::TakeHandle);
+    let wasm = quote!(tardigrade::workflow::Wasm);
     let mut extended_generics = input.generics.clone();
-    extended_generics.params.push(parse_quote!(Env));
     extended_generics
-        .where_clause
-        .get_or_insert_with(|| parse_quote!(where))
-        .predicates
-        .push(parse_quote!(#handle : #tr<Env, Id = ()>));
+        .params
+        .push(parse_quote!(Env: tardigrade::workflow::WorkflowEnv));
     let (impl_generics, _, where_clause) = extended_generics.split_for_impl();
 
-    let take_handle = quote! {
+    let take_handle_impl = quote! {
         impl #impl_generics #tr<Env> for #target #ty_generics #where_clause {
-            type Id = ();
-            type Handle = <#handle as #tr<Env>>::Handle;
-
             fn take_handle(
                 env: &mut Env,
                 _id: &(),
-            ) -> core::result::Result<Self::Handle, tardigrade::interface::AccessError> {
-                <#handle as #tr<Env>>::take_handle(env, &())
+            ) -> core::result::Result<Self::Handle<Env>, tardigrade::interface::AccessError> {
+                <#handle <#wasm> as #tr<Env>>::take_handle(env, &())
             }
         }
     };
 
-    Ok(quote!(#take_handle))
+    Ok(quote!(#with_handle_impl #take_handle_impl))
 }
 
 pub(crate) fn impl_take_handle(input: TokenStream) -> TokenStream {
