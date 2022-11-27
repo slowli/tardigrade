@@ -5,7 +5,7 @@ use wasmtime::ExternRef;
 use std::borrow::Cow;
 
 use super::*;
-use crate::{data::SpawnFunctions, module::StashWorkflow, utils::copy_bytes_from_wasm};
+use crate::{module::StashWorkflow, utils::copy_bytes_from_wasm};
 use tardigrade::{
     abi::TryFromWasm,
     interface::{ChannelHalf, Interface},

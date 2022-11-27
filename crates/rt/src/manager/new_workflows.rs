@@ -4,16 +4,18 @@ use async_trait::async_trait;
 use futures::{stream, Stream, StreamExt};
 use tracing_tunnel::PersistedSpans;
 
-use std::{borrow::Cow, collections::HashMap, mem};
+use std::{borrow::Cow, collections::HashMap, mem, sync::Arc};
 
 use super::{Shared, WorkflowAndChannelIds, WorkflowHandle, WorkflowManager, WorkflowSpawners};
+use crate::data::WorkflowData;
 use crate::{
+    engine::{CreateWorkflow, WorkflowEngine},
     module::{Clock, Services, StashWorkflow},
     storage::{
         ActiveWorkflowState, ChannelRecord, Storage, StorageTransaction, WorkflowRecord,
         WorkflowWaker,
     },
-    workflow::{ChannelIds, PersistedWorkflow},
+    workflow::{ChannelIds, PersistedWorkflow, Workflow},
 };
 use tardigrade::{
     interface::Interface,
@@ -78,14 +80,14 @@ struct WorkflowStub {
 
 impl WorkflowStub {
     // **NB.** Should be called only once per instance because `args` are taken out.
-    async fn spawn<T: StorageTransaction>(
+    async fn spawn<S: CreateWorkflow, T: StorageTransaction>(
         &mut self,
-        shared: Shared<'_>,
+        shared: &Shared<S>,
         transaction: &mut T,
     ) -> anyhow::Result<(PersistedWorkflow, ChannelIds)> {
         let spawner = shared.spawners.for_full_id(&self.definition_id).unwrap();
         let services = Services {
-            clock: shared.clock,
+            clock: Arc::clone(&shared.clock),
             workflows: None,
             tracer: None,
         };
@@ -95,21 +97,22 @@ impl WorkflowStub {
         });
         let channel_ids = ChannelIds::new(self.channels.clone(), new_channel_ids).await;
         let args = mem::take(&mut self.args);
-        let workflow = spawner.spawn(args, channel_ids.clone(), services)?;
+        let data = WorkflowData::new(spawner.interface(), channel_ids.clone(), services);
+        let workflow = Workflow::new(spawner, data, Some(args.into()))?;
         let persisted = workflow.persist();
         Ok((persisted, channel_ids))
     }
 }
 
 #[derive(Debug)]
-pub(super) struct NewWorkflows<'a> {
+pub(super) struct NewWorkflows<S> {
     executing_workflow_id: Option<WorkflowId>,
-    shared: Shared<'a>,
+    shared: Shared<S>,
     new_workflows: HashMap<WorkflowId, WorkflowStub>,
 }
 
-impl<'a> NewWorkflows<'a> {
-    pub fn new(executing_workflow_id: Option<WorkflowId>, shared: Shared<'a>) -> Self {
+impl<S: CreateWorkflow> NewWorkflows<S> {
+    pub fn new(executing_workflow_id: Option<WorkflowId>, shared: Shared<S>) -> Self {
         Self {
             executing_workflow_id,
             shared,
@@ -127,7 +130,7 @@ impl<'a> NewWorkflows<'a> {
         for (stub_id, mut child_stub) in self.new_workflows {
             let result = Self::commit_child(
                 executed_workflow_id,
-                self.shared,
+                &self.shared,
                 transaction,
                 &mut child_stub,
             );
@@ -155,13 +158,13 @@ impl<'a> NewWorkflows<'a> {
         debug_assert!(self.executing_workflow_id.is_none());
         debug_assert_eq!(self.new_workflows.len(), 1);
         let (_, mut child_stub) = self.new_workflows.into_iter().next().unwrap();
-        let child = Self::commit_child(None, self.shared, transaction, &mut child_stub);
+        let child = Self::commit_child(None, &self.shared, transaction, &mut child_stub);
         Ok(child.await?.workflow_id)
     }
 
     async fn commit_child<T: StorageTransaction>(
         executed_workflow_id: Option<WorkflowId>,
-        shared: Shared<'_>,
+        shared: &Shared<S>,
         transaction: &mut T,
         child_stub: &mut WorkflowStub,
     ) -> anyhow::Result<WorkflowAndChannelIds> {
@@ -193,7 +196,7 @@ impl<'a> NewWorkflows<'a> {
         }
 
         let (module_id, name_in_module) =
-            WorkflowSpawners::split_full_id(&child_stub.definition_id).unwrap();
+            WorkflowSpawners::<S>::split_full_id(&child_stub.definition_id).unwrap();
         let state = ActiveWorkflowState {
             persisted,
             tracing_spans: PersistedSpans::default(),
@@ -217,7 +220,7 @@ impl<'a> NewWorkflows<'a> {
     }
 }
 
-impl ManageInterfaces for NewWorkflows<'_> {
+impl<S: CreateWorkflow> ManageInterfaces for NewWorkflows<S> {
     fn interface(&self, id: &str) -> Option<Cow<'_, Interface>> {
         Some(Cow::Borrowed(
             self.shared.spawners.for_full_id(id)?.interface(),
@@ -225,7 +228,7 @@ impl ManageInterfaces for NewWorkflows<'_> {
     }
 }
 
-impl StashWorkflow for NewWorkflows<'_> {
+impl<S: CreateWorkflow> StashWorkflow for NewWorkflows<S> {
     #[tracing::instrument(skip(self, args), fields(args.len = args.len()))]
     fn stash_workflow(
         &mut self,
@@ -250,7 +253,7 @@ impl StashWorkflow for NewWorkflows<'_> {
     }
 }
 
-impl<C: Clock, S> ManageInterfaces for WorkflowManager<C, S> {
+impl<E: WorkflowEngine, C, S> ManageInterfaces for WorkflowManager<E, C, S> {
     fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
         Some(Cow::Borrowed(
             self.spawners.for_full_id(definition_id)?.interface(),
@@ -258,15 +261,16 @@ impl<C: Clock, S> ManageInterfaces for WorkflowManager<C, S> {
     }
 }
 
-impl<C: Clock, S> SpecifyWorkflowChannels for WorkflowManager<C, S> {
+impl<E: WorkflowEngine, C, S> SpecifyWorkflowChannels for WorkflowManager<E, C, S> {
     type Receiver = ChannelId;
     type Sender = ChannelId;
 }
 
 #[async_trait]
-impl<W, C, S> ManageWorkflows<W> for WorkflowManager<C, S>
+impl<W, E, C, S> ManageWorkflows<W> for WorkflowManager<E, C, S>
 where
     W: WorkflowFn,
+    E: WorkflowEngine,
     C: Clock,
     S: Storage,
 {

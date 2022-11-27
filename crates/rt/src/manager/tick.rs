@@ -3,14 +3,15 @@
 use chrono::{DateTime, Utc};
 use tracing_tunnel::TracingEventReceiver;
 
-use std::{error, fmt};
+use std::{error, fmt, sync::Arc};
 
 use super::{
     new_workflows::NewWorkflows, persistence::StorageHelper, AsManager, ConcurrencyError,
     ErroredWorkflowHandle, WorkflowManager,
 };
 use crate::{
-    module::{Clock, Services},
+    engine::{CreateWorkflow, WorkflowEngine},
+    module::{Clock, Services, StashWorkflow},
     receipt::{ExecutionError, Receipt},
     storage::{
         ActiveWorkflowState, ErroneousMessageRef, MessageError, ReadChannels, ReadModules,
@@ -92,7 +93,7 @@ struct PendingChannel {
 }
 
 impl PendingChannel {
-    fn take_pending_message(&self, workflow: &mut Workflow<'_>) {
+    fn take_pending_message<E: WorkflowEngine>(&self, workflow: &mut Workflow<E::Instance>) {
         if workflow.take_pending_inbound_message(self.channel_id) {
             // The message was not consumed. We still persist the workflow in order to
             // consume wakers (otherwise, we would loop indefinitely), and place the message
@@ -114,13 +115,13 @@ impl PendingChannel {
 
 /// Temporary value holding parts necessary to restore a `Workflow`.
 #[derive(Debug)]
-struct WorkflowSeed<'a> {
-    clock: &'a dyn Clock,
-    spawner: &'a WorkflowSpawner<()>,
+struct WorkflowSeed<'a, S> {
+    clock: Arc<dyn Clock>,
+    spawner: &'a WorkflowSpawner<S>,
     persisted: PersistedWorkflow,
 }
 
-impl<'a> WorkflowSeed<'a> {
+impl<'a, S: CreateWorkflow> WorkflowSeed<'a, S> {
     async fn apply_wakers<T: ReadWorkflows>(
         &mut self,
         transaction: &T,
@@ -195,19 +196,32 @@ impl<'a> WorkflowSeed<'a> {
 
     fn restore(
         self,
-        workflows: &'a mut NewWorkflows,
-        tracer: &'a mut TracingEventReceiver,
-    ) -> Workflow<'a> {
+        workflows: NewWorkflows<S>,
+        tracer: TracingEventReceiver,
+    ) -> Workflow<S::Spawned> {
         let services = Services {
             clock: self.clock,
-            workflows: Some(workflows),
+            workflows: Some(Box::new(workflows)),
             tracer: Some(tracer),
         };
         self.persisted.restore(self.spawner, services).unwrap()
     }
+
+    #[allow(clippy::cast_ptr_alignment)] // FIXME: is this safe?
+    fn extract_services(services: Services) -> (NewWorkflows<S>, TracingEventReceiver) {
+        let workflows = services.workflows.unwrap();
+        let workflows = unsafe {
+            // SAFETY: we have placed `NewWorkflows<S>` into the `Box` previously
+            // and it is never replaced in the `Workflow` code.
+            let leaked = (Box::leak(workflows) as *mut dyn StashWorkflow).cast::<NewWorkflows<S>>();
+            *Box::from_raw(leaked)
+        };
+        let receiver = services.tracer.unwrap();
+        (workflows, receiver)
+    }
 }
 
-impl<C: Clock, S: Storage> WorkflowManager<C, S> {
+impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
     #[tracing::instrument(
         level = "debug",
         skip_all,
@@ -221,7 +235,7 @@ impl<C: Clock, S: Storage> WorkflowManager<C, S> {
         &'a self,
         transaction: &S::Transaction<'a>,
         record: WorkflowRecord<ActiveWorkflowState>,
-    ) -> (WorkflowSeed<'_>, TracingEventReceiver) {
+    ) -> (WorkflowSeed<E::Spawner>, TracingEventReceiver) {
         let state = record.state;
         let spawner = self.spawners.get(&record.module_id, &record.name_in_module);
         tracing::debug!(?spawner, "using spawner to restore workflow");
@@ -239,7 +253,7 @@ impl<C: Clock, S: Storage> WorkflowManager<C, S> {
             .unwrap_or_default();
         let tracer = TracingEventReceiver::new(tracing_metadata, state.tracing_spans, local_spans);
         let template = WorkflowSeed {
-            clock: &self.clock,
+            clock: Arc::clone(&self.clock) as Arc<dyn Clock>,
             spawner,
             persisted: state.persisted,
         };
@@ -256,20 +270,23 @@ impl<C: Clock, S: Storage> WorkflowManager<C, S> {
         let workflow_id = workflow.id;
         let parent_id = workflow.parent_id;
         let module_id = workflow.module_id.clone();
-        let (mut template, mut tracer) = self.restore_workflow(transaction, workflow).await;
+        let (mut template, tracer) = self.restore_workflow(transaction, workflow).await;
         template.apply_wakers(transaction, wakers).await;
         let pending_channel = template.update_inbound_channels(transaction).await;
-        let mut children = NewWorkflows::new(Some(workflow_id), self.shared());
-        let mut workflow = template.restore(&mut children, &mut tracer);
+        let children = NewWorkflows::new(Some(workflow_id), self.shared());
+        let mut workflow = template.restore(children, tracer);
 
         let result = workflow.tick();
         if let Ok(receipt) = &result {
             if let Some(pending) = &pending_channel {
-                pending.take_pending_message(&mut workflow);
+                pending.take_pending_message::<E>(&mut workflow);
             }
 
             let span = tracing::debug_span!("persist_workflow_and_messages", workflow_id);
             let _entered = span.enter();
+
+            let (children, tracer) =
+                WorkflowSeed::<E::Spawner>::extract_services(workflow.take_services());
             let messages = workflow.drain_messages();
             let mut persisted = workflow.persist();
             children.commit(transaction, &mut persisted).await;

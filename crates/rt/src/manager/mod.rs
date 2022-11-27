@@ -14,8 +14,8 @@ mod persistence;
 mod tick;
 mod traits;
 
-#[cfg(test)]
-pub(crate) mod tests;
+//#[cfg(test)]
+//pub(crate) mod tests;
 
 pub use self::{
     handle::{
@@ -23,18 +23,19 @@ pub use self::{
         ErroredWorkflowHandle, MessageReceiver, MessageSender, ReceivedMessage, WorkflowHandle,
     },
     tick::{TickResult, WouldBlock},
-    traits::{AsManager, CreateModule},
+    traits::AsManager,
 };
 
 use self::persistence::StorageHelper;
 use crate::{
+    engine::{WorkflowEngine, WorkflowModule},
     module::Clock,
     storage::{
         ChannelRecord, ModuleRecord, ReadChannels, ReadModules, ReadWorkflows, Storage,
         StorageTransaction, WorkflowState, WriteChannels, WriteModules, WriteWorkflows,
     },
     workflow::ChannelIds,
-    WorkflowEngine, WorkflowModule, WorkflowSpawner,
+    WorkflowSpawner,
 };
 use tardigrade::{channel::SendError, ChannelId, WorkflowId};
 
@@ -44,13 +45,21 @@ struct WorkflowAndChannelIds {
     channel_ids: ChannelIds,
 }
 
-#[derive(Debug, Default)]
-struct WorkflowSpawners {
-    inner: HashMap<String, HashMap<String, WorkflowSpawner<()>>>,
+#[derive(Debug)]
+struct WorkflowSpawners<S> {
+    inner: HashMap<String, HashMap<String, WorkflowSpawner<S>>>,
 }
 
-impl WorkflowSpawners {
-    fn get(&self, module_id: &str, name_in_module: &str) -> &WorkflowSpawner<()> {
+impl<S> Default for WorkflowSpawners<S> {
+    fn default() -> Self {
+        Self {
+            inner: HashMap::new(),
+        }
+    }
+}
+
+impl<S> WorkflowSpawners<S> {
+    fn get(&self, module_id: &str, name_in_module: &str) -> &WorkflowSpawner<S> {
         &self.inner[module_id][name_in_module]
     }
 
@@ -58,22 +67,22 @@ impl WorkflowSpawners {
         full_id.split_once("::")
     }
 
-    fn for_full_id(&self, full_id: &str) -> Option<&WorkflowSpawner<()>> {
+    fn for_full_id(&self, full_id: &str) -> Option<&WorkflowSpawner<S>> {
         let (module_id, name_in_module) = Self::split_full_id(full_id)?;
         self.inner.get(module_id)?.get(name_in_module)
     }
 
-    fn insert(&mut self, module_id: String, name_in_module: String, spawner: WorkflowSpawner<()>) {
+    fn insert(&mut self, module_id: String, name_in_module: String, spawner: WorkflowSpawner<S>) {
         let module_entry = self.inner.entry(module_id).or_default();
         module_entry.insert(name_in_module, spawner);
     }
 }
 
 /// Part of the manager used during workflow instantiation.
-#[derive(Debug, Clone, Copy)]
-struct Shared<'a> {
-    clock: &'a dyn Clock,
-    spawners: &'a WorkflowSpawners,
+#[derive(Debug, Clone)]
+struct Shared<S> {
+    clock: Arc<dyn Clock>,
+    spawners: Arc<WorkflowSpawners<S>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -156,34 +165,34 @@ enum ChannelSide {
 /// # }
 /// ```
 #[derive(Debug)]
-pub struct WorkflowManager<C, S> {
-    pub(crate) clock: C,
+pub struct WorkflowManager<E: WorkflowEngine, C, S> {
+    pub(crate) clock: Arc<C>,
     pub(crate) storage: S,
-    spawners: WorkflowSpawners,
+    spawners: Arc<WorkflowSpawners<E::Spawner>>,
     local_spans: Mutex<HashMap<WorkflowId, LocalSpans>>,
 }
 
 #[allow(clippy::mismatching_type_param_order)] // false positive
-impl<S: Storage> WorkflowManager<(), S> {
+impl<E: WorkflowEngine, S: Storage> WorkflowManager<E, (), S> {
     /// Creates a builder that will use the specified storage.
-    pub fn builder(storage: S) -> WorkflowManagerBuilder<'static, (), S> {
+    pub fn builder(engine: E, storage: S) -> WorkflowManagerBuilder<E, (), S> {
         WorkflowManagerBuilder {
-            module_creator: Box::new(WorkflowEngine::default()),
+            engine,
             clock: (),
             storage,
         }
     }
 }
 
-impl<C: Clock, S: Storage> WorkflowManager<C, S> {
-    async fn new(clock: C, storage: S, module_creator: &dyn CreateModule) -> anyhow::Result<Self> {
+impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
+    async fn new(engine: E, clock: C, storage: S) -> anyhow::Result<Self> {
         let spawners = {
             let transaction = storage.readonly_transaction().await;
             let mut spawners = WorkflowSpawners::default();
             let mut module_records = transaction.modules();
             while let Some(record) = module_records.next().await {
-                let module = module_creator.create_module(&record).await?;
-                for (name, spawner) in module.into_spawners() {
+                let module = engine.create_module(&record).await?;
+                for (name, spawner) in module {
                     spawners.insert(record.id.clone(), name, spawner);
                 }
             }
@@ -191,25 +200,26 @@ impl<C: Clock, S: Storage> WorkflowManager<C, S> {
         };
 
         Ok(Self {
-            clock,
-            spawners,
+            clock: Arc::new(clock),
+            spawners: Arc::new(spawners),
             storage,
             local_spans: Mutex::default(),
         })
     }
 
     /// Inserts the specified module into the manager.
-    pub async fn insert_module(&mut self, id: &str, module: WorkflowModule) {
+    pub async fn insert_module(&mut self, id: &str, module: E::Module) {
         let mut transaction = self.storage.transaction().await;
         let module_record = ModuleRecord {
             id: id.to_owned(),
-            bytes: Arc::clone(&module.bytes),
+            bytes: module.bytes(),
             tracing_metadata: PersistedMetadata::default(),
         };
         transaction.insert_module(module_record).await;
 
-        for (name, spawner) in module.into_spawners() {
-            self.spawners.insert(id.to_owned(), name, spawner);
+        for (name, spawner) in module {
+            let spawners = Arc::get_mut(&mut self.spawners).expect("leaked spawners");
+            spawners.insert(id.to_owned(), name, spawner);
         }
         transaction.commit().await;
     }
@@ -279,10 +289,10 @@ impl<C: Clock, S: Storage> WorkflowManager<C, S> {
         self.storage
     }
 
-    fn shared(&self) -> Shared<'_> {
+    fn shared(&self) -> Shared<E::Spawner> {
         Shared {
-            clock: &self.clock,
-            spawners: &self.spawners,
+            clock: Arc::clone(&self.clock) as Arc<dyn Clock>,
+            spawners: Arc::clone(&self.spawners),
         }
     }
 
@@ -380,39 +390,32 @@ impl<C: Clock, S: Storage> WorkflowManager<C, S> {
 
 /// Builder for a [`WorkflowManager`].
 #[derive(Debug)]
-pub struct WorkflowManagerBuilder<'r, C, S> {
+pub struct WorkflowManagerBuilder<E, C, S> {
+    engine: E,
     clock: C,
-    module_creator: Box<dyn CreateModule + 'r>,
     storage: S,
 }
 
 #[allow(clippy::mismatching_type_param_order)] // false positive
-impl<'r, S: Storage> WorkflowManagerBuilder<'r, (), S> {
+impl<E: WorkflowEngine, S: Storage> WorkflowManagerBuilder<E, (), S> {
     /// Sets the wall clock to be used in the manager.
     #[must_use]
-    pub fn with_clock<C: Clock>(self, clock: C) -> WorkflowManagerBuilder<'r, C, S> {
+    pub fn with_clock<C: Clock>(self, clock: C) -> WorkflowManagerBuilder<E, C, S> {
         WorkflowManagerBuilder {
+            engine: self.engine,
             clock,
-            module_creator: self.module_creator,
             storage: self.storage,
         }
     }
 }
 
-impl<'r, C: Clock, S: Storage> WorkflowManagerBuilder<'r, C, S> {
-    /// Specifies the [module creator](CreateModule) to use.
-    #[must_use]
-    pub fn with_module_creator(mut self, creator: impl CreateModule + 'r) -> Self {
-        self.module_creator = Box::new(creator);
-        self
-    }
-
+impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManagerBuilder<E, C, S> {
     /// Finishes building the manager.
     ///
     /// # Errors
     ///
     /// Returns an error if [module instantiation](CreateModule) fails.
-    pub async fn build(self) -> anyhow::Result<WorkflowManager<C, S>> {
-        WorkflowManager::new(self.clock, self.storage, self.module_creator.as_ref()).await
+    pub async fn build(self) -> anyhow::Result<WorkflowManager<E, C, S>> {
+        WorkflowManager::new(self.engine, self.clock, self.storage).await
     }
 }

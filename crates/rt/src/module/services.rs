@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use tracing_tunnel::TracingEventReceiver;
 
-use std::{fmt, future::Future, pin::Pin};
+use std::{fmt, future::Future, pin::Pin, sync::Arc};
 
 use tardigrade::{
     spawn::{ChannelsConfig, ManageInterfaces},
@@ -62,13 +62,13 @@ pub(crate) trait StashWorkflow: Send + Sync + ManageInterfaces {
 }
 
 /// Dynamically dispatched services available to workflows.
-pub(crate) struct Services<'a> {
-    pub clock: &'a dyn Clock,
-    pub workflows: Option<&'a mut dyn StashWorkflow>,
-    pub tracer: Option<&'a mut TracingEventReceiver>,
+pub(crate) struct Services {
+    pub clock: Arc<dyn Clock>,
+    pub workflows: Option<Box<dyn StashWorkflow>>,
+    pub tracer: Option<TracingEventReceiver>,
 }
 
-impl fmt::Debug for Services<'_> {
+impl fmt::Debug for Services {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.debug_struct("Services").finish_non_exhaustive()
     }

@@ -2,7 +2,6 @@
 
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
-use wasmtime::StoreContextMut;
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -11,15 +10,15 @@ use std::{
 };
 
 use super::{
-    helpers::{CurrentExecution, WakeIfPending, WakerPlacement, WasmContext, WasmContextPtr},
-    PersistedWorkflowData, ReportedErrorKind, WorkflowData, WorkflowFunctions,
+    helpers::{CurrentExecution, WakeIfPending, WakerPlacement, WasmContext},
+    PersistedWorkflowData, WorkflowData,
 };
 use crate::{
     receipt::{Event, ExecutedFunction, PanicInfo, ResourceEventKind, ResourceId, WakeUpCause},
-    utils::{self, WasmAllocator},
+    utils,
 };
 use tardigrade::{
-    abi::{IntoWasm, PollTask},
+    abi::PollTask,
     task::{JoinError, TaskResult},
     TaskId, WakerId,
 };
@@ -167,7 +166,7 @@ impl PersistedWorkflowData {
     }
 }
 
-impl WorkflowData<'_> {
+impl WorkflowData {
     pub(crate) fn result(&self) -> Poll<Result<(), &JoinError>> {
         self.persisted.result()
     }
@@ -216,7 +215,9 @@ impl WorkflowData<'_> {
         result
     }
 
-    fn spawn_task(&mut self, task_id: TaskId, task_name: String) -> anyhow::Result<()> {
+    /// Records a spawned task.
+    #[tracing::instrument(level = "debug", skip(self), err)]
+    pub fn spawn_task(&mut self, task_id: TaskId, task_name: String) -> anyhow::Result<()> {
         if self.persisted.tasks.contains_key(&task_id) {
             let err = anyhow!("ABI misuse: task ID {task_id} is reused");
             return Err(err);
@@ -242,7 +243,9 @@ impl WorkflowData<'_> {
         self.task_queue.insert_task(task_id, &WakeUpCause::Spawned);
     }
 
-    fn poll_task_completion(&mut self, task_id: TaskId, cx: &mut WasmContext) -> PollTask {
+    /// Polls task completion.
+    #[tracing::instrument(level = "debug", skip(self, cx), ret)]
+    pub fn poll_task_completion(&mut self, task_id: TaskId, cx: &mut WasmContext) -> PollTask {
         let poll_result = self.persisted.tasks[&task_id]
             .result()
             .map(utils::extract_task_poll_result);
@@ -254,7 +257,9 @@ impl WorkflowData<'_> {
         poll_result.wake_if_pending(cx, || WakerPlacement::TaskCompletion(task_id))
     }
 
-    fn schedule_task_wakeup(&mut self, task_id: TaskId) -> anyhow::Result<()> {
+    /// Schedules wakeup of the specified task.
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub fn schedule_task_wakeup(&mut self, task_id: TaskId) -> anyhow::Result<()> {
         if !self.persisted.tasks.contains_key(&task_id) {
             let err = anyhow!("unknown task ID {task_id} scheduled for wakeup");
             return Err(err);
@@ -272,7 +277,9 @@ impl WorkflowData<'_> {
         Ok(())
     }
 
-    fn schedule_task_abortion(&mut self, task_id: TaskId) -> anyhow::Result<()> {
+    /// Schedules a task to be aborted.
+    #[tracing::instrument(level = "debug", skip(self), err)]
+    pub fn schedule_task_abortion(&mut self, task_id: TaskId) -> anyhow::Result<()> {
         if !self.persisted.tasks.contains_key(&task_id) {
             let err = anyhow!("unknown task {task_id} scheduled for abortion");
             return Err(err);
@@ -293,83 +300,5 @@ impl WorkflowData<'_> {
 
     pub(crate) fn clear_task_queue(&mut self) {
         self.task_queue.clear();
-    }
-}
-
-/// Task-related functions exported to WASM.
-impl WorkflowFunctions {
-    #[tracing::instrument(level = "debug", skip(ctx, poll_cx), err)]
-    pub fn poll_task_completion(
-        mut ctx: StoreContextMut<'_, WorkflowData>,
-        task_id: TaskId,
-        poll_cx: WasmContextPtr,
-    ) -> anyhow::Result<i64> {
-        let mut poll_cx = WasmContext::new(poll_cx);
-        let poll_result = ctx.data_mut().poll_task_completion(task_id, &mut poll_cx);
-        tracing::debug!(result = ?poll_result);
-
-        poll_cx.save_waker(&mut ctx)?;
-        poll_result.into_wasm(&mut WasmAllocator::new(ctx))
-    }
-
-    #[tracing::instrument(
-        level = "debug",
-        skip(ctx, task_name_ptr, task_name_len),
-        err,
-        fields(task_name)
-    )]
-    pub fn spawn_task(
-        mut ctx: StoreContextMut<'_, WorkflowData>,
-        task_name_ptr: u32,
-        task_name_len: u32,
-        task_id: TaskId,
-    ) -> anyhow::Result<()> {
-        let memory = ctx.data().exports().memory;
-        let task_name = utils::copy_string_from_wasm(&ctx, &memory, task_name_ptr, task_name_len)?;
-        tracing::Span::current().record("task_name", &task_name);
-        ctx.data_mut().spawn_task(task_id, task_name)
-    }
-
-    #[tracing::instrument(level = "debug", skip(ctx), err)]
-    pub fn wake_task(
-        mut ctx: StoreContextMut<'_, WorkflowData>,
-        task_id: TaskId,
-    ) -> anyhow::Result<()> {
-        ctx.data_mut().schedule_task_wakeup(task_id)
-    }
-
-    #[tracing::instrument(level = "debug", skip(ctx), err)]
-    pub fn schedule_task_abortion(
-        mut ctx: StoreContextMut<'_, WorkflowData>,
-        task_id: TaskId,
-    ) -> anyhow::Result<()> {
-        ctx.data_mut().schedule_task_abortion(task_id)
-    }
-
-    #[tracing::instrument(
-        level = "debug",
-        skip(ctx, message_ptr, message_len, filename_ptr, filename_len),
-        err,
-        fields(message, filename)
-    )]
-    pub fn report_task_error(
-        ctx: StoreContextMut<'_, WorkflowData>,
-        message_ptr: u32,
-        message_len: u32,
-        filename_ptr: u32,
-        filename_len: u32,
-        line: u32,
-        column: u32,
-    ) -> anyhow::Result<()> {
-        Self::report_error_or_panic(
-            ctx,
-            ReportedErrorKind::TaskError,
-            message_ptr,
-            message_len,
-            filename_ptr,
-            filename_len,
-            line,
-            column,
-        )
     }
 }

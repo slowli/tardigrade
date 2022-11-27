@@ -1,9 +1,8 @@
 //! Time utilities.
 
 use anyhow::anyhow;
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use wasmtime::StoreContextMut;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -12,14 +11,11 @@ use std::{
 };
 
 use super::{
-    helpers::{WakeIfPending, WakerPlacement, Wakers, WasmContext, WasmContextPtr},
-    PersistedWorkflowData, WorkflowData, WorkflowFunctions,
+    helpers::{WakeIfPending, WakerPlacement, Wakers, WasmContext},
+    PersistedWorkflowData, WorkflowData,
 };
-use crate::{
-    receipt::{ResourceEventKind, ResourceId, WakeUpCause},
-    utils::WasmAllocator,
-};
-use tardigrade::{abi::IntoWasm, TimerDefinition, TimerId, WakerId};
+use crate::receipt::{ResourceEventKind, ResourceId, WakeUpCause};
+use tardigrade::{TimerDefinition, TimerId, WakerId};
 
 /// State of a workflow timer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,23 +153,25 @@ impl PersistedWorkflowData {
     }
 }
 
-impl WorkflowData<'_> {
-    fn timer_definition(timestamp_millis: i64) -> anyhow::Result<TimerDefinition> {
-        let expires_at = Utc
-            .timestamp_millis_opt(timestamp_millis)
-            .single()
-            .ok_or_else(|| anyhow!("timestamp overflow"))?;
-        Ok(TimerDefinition { expires_at })
+impl WorkflowData {
+    /// Returns the current timestamp.
+    #[tracing::instrument(level = "debug", skip(self), ret)]
+    pub fn current_timestamp(&self) -> DateTime<Utc> {
+        self.services().clock.now()
     }
 
-    fn create_timer(&mut self, definition: TimerDefinition) -> TimerId {
+    /// Creates a new timer.
+    #[tracing::instrument(level = "debug", skip(self), ret)]
+    pub fn create_timer(&mut self, definition: TimerDefinition) -> TimerId {
         let timer_id = self.persisted.timers.insert(definition);
         self.current_execution()
             .push_resource_event(ResourceId::Timer(timer_id), ResourceEventKind::Created);
         timer_id
     }
 
-    fn drop_timer(&mut self, timer_id: TimerId) -> anyhow::Result<()> {
+    /// Drops the specified timer.
+    #[tracing::instrument(level = "debug", skip(self), err)]
+    pub fn drop_timer(&mut self, timer_id: TimerId) -> anyhow::Result<()> {
         if self.persisted.timers.get(timer_id).is_none() {
             let err = anyhow!("Timer ID {timer_id} is not defined");
             return Err(err);
@@ -183,7 +181,9 @@ impl WorkflowData<'_> {
         Ok(())
     }
 
-    fn poll_timer(
+    /// Polls the specified timer.
+    #[tracing::instrument(level = "debug", skip(self, cx), ret, err)]
+    pub fn poll_timer(
         &mut self,
         timer_id: TimerId,
         cx: &mut WasmContext,
@@ -194,45 +194,5 @@ impl WorkflowData<'_> {
             ResourceEventKind::Polled(poll_result.map(drop)),
         );
         Ok(poll_result.wake_if_pending(cx, || WakerPlacement::Timer(timer_id)))
-    }
-}
-
-/// Timer-related functions exported to WASM.
-impl WorkflowFunctions {
-    #[tracing::instrument(level = "debug", skip_all, ret)]
-    #[allow(clippy::needless_pass_by_value)] // for uniformity with other functions
-    pub fn current_timestamp(ctx: StoreContextMut<'_, WorkflowData>) -> i64 {
-        ctx.data().services.clock.now().timestamp_millis()
-    }
-
-    #[tracing::instrument(level = "debug", skip(ctx), ret)]
-    pub fn create_timer(
-        mut ctx: StoreContextMut<'_, WorkflowData>,
-        timestamp_millis: i64,
-    ) -> anyhow::Result<TimerId> {
-        let definition = WorkflowData::timer_definition(timestamp_millis)?;
-        Ok(ctx.data_mut().create_timer(definition))
-    }
-
-    #[tracing::instrument(level = "debug", skip(ctx), err)]
-    pub fn drop_timer(
-        mut ctx: StoreContextMut<'_, WorkflowData>,
-        timer_id: TimerId,
-    ) -> anyhow::Result<()> {
-        ctx.data_mut().drop_timer(timer_id)
-    }
-
-    #[tracing::instrument(level = "debug", skip(ctx, poll_cx), err)]
-    pub fn poll_timer(
-        mut ctx: StoreContextMut<'_, WorkflowData>,
-        timer_id: TimerId,
-        poll_cx: WasmContextPtr,
-    ) -> anyhow::Result<i64> {
-        let mut poll_cx = WasmContext::new(poll_cx);
-        let poll_result = ctx.data_mut().poll_timer(timer_id, &mut poll_cx)?;
-        tracing::debug!(result = ?poll_result);
-
-        poll_cx.save_waker(&mut ctx)?;
-        poll_result.into_wasm(&mut WasmAllocator::new(ctx))
     }
 }

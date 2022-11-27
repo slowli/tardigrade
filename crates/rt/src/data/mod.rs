@@ -1,10 +1,7 @@
 //! Workflow state.
 
-use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use tracing::field;
 use tracing_tunnel::TracingEvent;
-use wasmtime::{AsContextMut, ExternRef, StoreContextMut};
 
 use std::collections::{HashMap, HashSet};
 
@@ -15,17 +12,17 @@ mod spawn;
 mod task;
 mod time;
 
-#[cfg(test)]
-pub(crate) mod tests;
+//#[cfg(test)]
+//pub(crate) mod tests;
 
 pub(crate) use self::{
     channel::ConsumeError,
     helpers::{Wakers, WasmContextPtr},
-    persistence::{PersistError, Refs},
-    spawn::SpawnFunctions,
+    persistence::PersistError,
 };
 pub use self::{
     channel::{Channels, ReceiverState, SenderState},
+    helpers::WasmContext,
     spawn::ChildWorkflow,
     task::TaskState,
     time::TimerState,
@@ -33,23 +30,25 @@ pub use self::{
 
 use self::{
     channel::ChannelStates,
-    helpers::{CurrentExecution, HostResource},
+    helpers::CurrentExecution,
     spawn::{ChildWorkflowState, ChildWorkflowStubs},
     task::TaskQueue,
     time::Timers,
 };
 use crate::{
-    module::{ModuleExports, Services},
+    module::Services,
     receipt::{PanicInfo, WakeUpCause},
-    utils::copy_string_from_wasm,
     workflow::ChannelIds,
 };
 use tardigrade::{interface::Interface, task::ErrorLocation, TaskId, WorkflowId};
 
 /// Kinds of errors reported by workflows.
 #[derive(Debug, Clone, Copy)]
-enum ReportedErrorKind {
+#[non_exhaustive]
+pub enum ReportedErrorKind {
+    /// Panic (non-recoverable error).
     Panic,
+    /// Structured task error.
     TaskError,
 }
 
@@ -64,12 +63,11 @@ pub(crate) struct PersistedWorkflowData {
     pub waker_queue: Vec<Wakers>,
 }
 
+/// Data associated with a workflow instance.
 #[derive(Debug)]
-pub struct WorkflowData<'a> {
-    /// Functions exported by the `Instance`. Instantiated immediately after instance.
-    exports: Option<ModuleExports>,
+pub struct WorkflowData {
     /// Services available to the workflow.
-    services: Services<'a>,
+    services: Option<Services>,
     /// Persisted workflow data.
     persisted: PersistedWorkflowData,
     /// Data related to the currently executing WASM call.
@@ -80,12 +78,8 @@ pub struct WorkflowData<'a> {
     current_wakeup_cause: Option<WakeUpCause>,
 }
 
-impl<'a> WorkflowData<'a> {
-    pub(crate) fn new(
-        interface: &Interface,
-        channel_ids: ChannelIds,
-        services: Services<'a>,
-    ) -> Self {
+impl WorkflowData {
+    pub(crate) fn new(interface: &Interface, channel_ids: ChannelIds, services: Services) -> Self {
         debug_assert_eq!(
             interface
                 .receivers()
@@ -111,147 +105,39 @@ impl<'a> WorkflowData<'a> {
 
         Self {
             persisted: PersistedWorkflowData::new(interface, channel_ids, services.clock.now()),
-            exports: None,
-            services,
+            services: Some(services),
             current_execution: None,
             task_queue: TaskQueue::default(),
             current_wakeup_cause: None,
         }
     }
 
-    pub(crate) fn exports(&self) -> ModuleExports {
-        self.exports
-            .expect("exports accessed before `State` is fully initialized")
+    pub(crate) fn services(&self) -> &Services {
+        self.services
+            .as_ref()
+            .expect("services accessed after taken out")
     }
 
-    pub(crate) fn set_exports(&mut self, exports: ModuleExports) {
-        self.exports = Some(exports);
+    fn services_mut(&mut self) -> &mut Services {
+        self.services
+            .as_mut()
+            .expect("services accessed after taken out")
     }
 
-    #[cfg(test)]
-    pub(crate) fn receiver_ref(&self, child_id: Option<WorkflowId>, name: &str) -> ExternRef {
-        let channels = if let Some(child_id) = child_id {
-            self.persisted.child_workflow(child_id).unwrap().channels()
-        } else {
-            self.persisted.channels()
-        };
-        let channel_id = channels.receiver_id(name).unwrap();
-        HostResource::Receiver(channel_id).into_ref()
+    pub(crate) fn take_services(&mut self) -> Services {
+        self.services.take().expect("services already taken out")
     }
 
-    #[cfg(test)]
-    pub(crate) fn sender_ref(&self, child_id: Option<WorkflowId>, name: &str) -> ExternRef {
-        let channels = if let Some(child_id) = child_id {
-            self.persisted.child_workflow(child_id).unwrap().channels()
-        } else {
-            self.persisted.channels()
-        };
-        let channel_id = channels.sender_id(name).unwrap();
-        HostResource::Sender(channel_id).into_ref()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn child_ref(workflow_id: WorkflowId) -> ExternRef {
-        HostResource::Workflow(workflow_id).into_ref()
-    }
-}
-
-/// Functions operating on `WorkflowData` exported to WASM.
-pub(crate) struct WorkflowFunctions;
-
-impl WorkflowFunctions {
-    #[tracing::instrument(level = "debug", skip_all, err, fields(resource))]
-    #[allow(clippy::needless_pass_by_value)] // required by wasmtime
-    pub fn drop_ref(
-        mut ctx: StoreContextMut<'_, WorkflowData>,
-        dropped: Option<ExternRef>,
-    ) -> anyhow::Result<()> {
-        let dropped = HostResource::from_ref(dropped.as_ref())?;
-        tracing::Span::current().record("resource", field::debug(dropped));
-
-        let wakers = match dropped {
-            HostResource::Receiver(channel_id) => ctx.data_mut().handle_receiver_drop(*channel_id),
-            HostResource::Sender(channel_id) => ctx.data_mut().handle_sender_drop(*channel_id),
-            HostResource::WorkflowStub(stub_id) => ctx.data_mut().handle_child_stub_drop(*stub_id),
-            HostResource::Workflow(workflow_id) => {
-                ctx.data_mut().handle_child_handle_drop(*workflow_id)
-            }
-
-            HostResource::ChannelHandles(_) => return Ok(()),
-            // ^ no associated wakers, thus no cleanup necessary
-        };
-
-        let exports = ctx.data().exports();
-        for waker in wakers {
-            let result = exports.drop_waker(ctx.as_context_mut(), waker);
-            result.ok(); // We assume traps during dropping wakers is not significant
-        }
-        Ok(())
-    }
-
-    #[tracing::instrument(
-        level = "debug",
-        skip(ctx, message_ptr, message_len, filename_ptr, filename_len),
-        err,
-        fields(message, filename)
-    )]
-    pub fn report_panic(
-        ctx: StoreContextMut<'_, WorkflowData>,
-        message_ptr: u32,
-        message_len: u32,
-        filename_ptr: u32,
-        filename_len: u32,
-        line: u32,
-        column: u32,
-    ) -> anyhow::Result<()> {
-        Self::report_error_or_panic(
-            ctx,
-            ReportedErrorKind::Panic,
-            message_ptr,
-            message_len,
-            filename_ptr,
-            filename_len,
-            line,
-            column,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)] // acceptable for internal fn
-    fn report_error_or_panic(
-        mut ctx: StoreContextMut<'_, WorkflowData>,
+    /// Reports an error or panic that has occurred in the workflow.
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub fn report_error_or_panic(
+        &mut self,
         error_kind: ReportedErrorKind,
-        message_ptr: u32,
-        message_len: u32,
-        filename_ptr: u32,
-        filename_len: u32,
+        message: Option<String>,
+        filename: Option<String>,
         line: u32,
         column: u32,
-    ) -> anyhow::Result<()> {
-        let memory = ctx.data().exports().memory;
-        let message = if message_ptr == 0 {
-            None
-        } else {
-            Some(copy_string_from_wasm(
-                &ctx,
-                &memory,
-                message_ptr,
-                message_len,
-            )?)
-        };
-        let filename = if filename_ptr == 0 {
-            None
-        } else {
-            Some(copy_string_from_wasm(
-                &ctx,
-                &memory,
-                filename_ptr,
-                filename_len,
-            )?)
-        };
-        tracing::Span::current()
-            .record("message", &message)
-            .record("filename", &filename);
-
+    ) {
         let info = PanicInfo {
             message,
             location: filename.map(|filename| ErrorLocation {
@@ -262,37 +148,22 @@ impl WorkflowFunctions {
         };
         match error_kind {
             ReportedErrorKind::TaskError => {
-                ctx.data_mut().current_execution().push_task_error(info);
+                self.current_execution().push_task_error(info);
             }
             ReportedErrorKind::Panic => {
-                ctx.data_mut().current_execution().set_panic(info);
+                self.current_execution().set_panic(info);
             }
         }
-        Ok(())
     }
-}
 
-#[derive(Debug)]
-pub(crate) struct TracingFunctions;
-
-impl TracingFunctions {
-    #[allow(clippy::needless_pass_by_value)] // required by wasmtime
-    pub fn send_trace(
-        mut ctx: StoreContextMut<'_, WorkflowData>,
-        trace_ptr: u32,
-        trace_len: u32,
-    ) -> anyhow::Result<()> {
-        let memory = ctx.data().exports().memory;
-        let trace = copy_string_from_wasm(&ctx, &memory, trace_ptr, trace_len)?;
-        let trace: TracingEvent =
-            serde_json::from_str(&trace).context("`TracingEvent` deserialization failed")?;
+    /// Reports a tracing event that has occurred in the workflow.
+    pub fn send_trace(&mut self, trace: TracingEvent) {
         tracing::trace!(?trace, "received client trace");
 
-        if let Some(tracing) = ctx.data_mut().services.tracer.as_mut() {
+        if let Some(tracing) = self.services_mut().tracer.as_mut() {
             if let Err(err) = tracing.try_receive(trace) {
                 tracing::warn!(%err, "received bogus tracing event");
             }
         }
-        Ok(())
     }
 }

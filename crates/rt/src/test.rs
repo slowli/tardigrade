@@ -7,7 +7,7 @@
 //!
 //! ```no_run
 //! use once_cell::sync::Lazy;
-//! use tardigrade_rt::{test::*, WorkflowEngine, WorkflowModule};
+//! use tardigrade_rt::{test::*, WasmtimeEngine, WorkflowModule};
 //!
 //! static MODULE: Lazy<WorkflowModule> = Lazy::new(|| {
 //!     let module_bytes = ModuleCompiler::new(env!("CARGO_PKG_NAME"))
@@ -15,7 +15,7 @@
 //!         .set_profile("wasm")
 //!         .set_wasm_opt(WasmOpt::default())
 //!         .compile();
-//!     let engine = WorkflowEngine::default();
+//!     let engine = WasmtimeEngine::default();
 //!     WorkflowModule::new(&engine, module_bytes).unwrap()
 //! });
 //! // The module can then be used in tests

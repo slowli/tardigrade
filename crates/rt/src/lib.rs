@@ -48,14 +48,14 @@
 //! use tardigrade_rt::{
 //!     manager::{WorkflowHandle, WorkflowManager},
 //!     storage::LocalStorage,
-//!     WorkflowEngine, WorkflowModule,
+//!     WasmtimeEngine, WorkflowModule,
 //! };
 //! use tardigrade::spawn::ManageWorkflowsExt;
 //!
 //! # async fn test_wrapper() -> anyhow::Result<()> {
 //! let module_bytes: Vec<u8> = // e.g., take from a file
 //! #   vec![];
-//! let engine = WorkflowEngine::default();
+//! let engine = WasmtimeEngine::default();
 //! let module = WorkflowModule::new(&engine, module_bytes)?;
 //! // It is possible to inspect module definitions:
 //! for (workflow_name, interface) in module.interfaces() {
@@ -113,6 +113,8 @@
 //! # }
 //! ```
 
+#![allow(missing_docs)] // FIXME
+
 // Documentation settings.
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![doc(html_root_url = "https://docs.rs/tardigrade-rt/0.1.0")]
@@ -124,6 +126,7 @@
 mod backends;
 mod data;
 pub mod driver;
+pub mod engine;
 pub mod manager;
 mod module;
 pub mod receipt;
@@ -138,8 +141,6 @@ mod workflow;
 pub use crate::backends::AsyncIoScheduler;
 pub use crate::{
     data::{Channels, ChildWorkflow, ReceiverState, SenderState, TaskState, TimerState},
-    module::{
-        Clock, ExtendLinker, Schedule, TimerFuture, WorkflowEngine, WorkflowModule, WorkflowSpawner,
-    },
+    module::{Clock, Schedule, TimerFuture, WorkflowSpawner},
     workflow::PersistedWorkflow,
 };
