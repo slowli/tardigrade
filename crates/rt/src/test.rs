@@ -29,7 +29,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-pub use crate::mock_scheduler::MockScheduler;
+pub use crate::backends::MockScheduler;
 
 /// Options for the `wasm-opt` optimizer.
 ///

@@ -15,7 +15,7 @@ mod spawn;
 
 use super::*;
 use crate::{
-    mock_scheduler::MockScheduler,
+    backends::MockScheduler,
     module::{ExportsMock, MockPollFn, WorkflowEngine, WorkflowModule},
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, Execution, ExecutionError,

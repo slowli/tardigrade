@@ -125,8 +125,6 @@ mod backends;
 mod data;
 pub mod driver;
 pub mod manager;
-#[cfg(any(test, feature = "test"))]
-mod mock_scheduler;
 mod module;
 pub mod receipt;
 pub mod storage;

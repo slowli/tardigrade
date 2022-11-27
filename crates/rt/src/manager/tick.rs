@@ -323,14 +323,8 @@ impl<C: Clock, S: Storage> WorkflowManager<C, S> {
                 .await;
             vec![]
         };
-        let (waker_ids, wakers): (Vec<_>, Vec<_>) = waker_records
-            .into_iter()
-            .map(|record| (record.waker_id, record.waker))
-            .unzip();
 
-        let workflow = if let Some(workflow) = workflow {
-            workflow
-        } else {
+        let Some(workflow) = workflow else {
             let err = WouldBlock {
                 nearest_timer_expiration: transaction.nearest_timer_expiration().await,
             };
@@ -338,6 +332,11 @@ impl<C: Clock, S: Storage> WorkflowManager<C, S> {
             return Err(err);
         };
         let workflow_id = workflow.id;
+
+        let (waker_ids, wakers): (Vec<_>, Vec<_>) = waker_records
+            .into_iter()
+            .map(|record| (record.waker_id, record.waker))
+            .unzip();
 
         let (result, pending_channel) =
             self.tick_workflow(&mut transaction, workflow, wakers).await;

@@ -10,9 +10,9 @@ use wasmtime::{AsContextMut, StoreContextMut};
 
 use super::*;
 use crate::{
+    backends::MockScheduler,
     data::{WasmContextPtr, WorkflowData, WorkflowFunctions},
     manager::tests::{create_test_manager, create_test_workflow, is_consumption},
-    mock_scheduler::MockScheduler,
     module::{ExportsMock, MockPollFn},
     utils::WasmAllocator,
 };

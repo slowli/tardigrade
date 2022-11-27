@@ -117,11 +117,8 @@ impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
         erroneous_messages: Vec<ErroneousMessageRef>,
     ) {
         let state = self.inner.workflow(workflow_id).await.unwrap().state;
-        let state = if let WorkflowState::Active(state) = state {
-            state.with_error(error, erroneous_messages)
-        } else {
-            unreachable!()
-        };
+        let WorkflowState::Active(state) = state else { unreachable!() };
+        let state = state.with_error(error, erroneous_messages);
         self.inner.update_workflow(workflow_id, state.into()).await;
     }
 

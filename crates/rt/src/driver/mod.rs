@@ -1,4 +1,4 @@
-//! [`Driver`] for a [`WorkflowManager`](crate::manager::WorkflowManager) that drives
+//! [`Driver`] for a [`WorkflowManager`](manager::WorkflowManager) that drives
 //! workflows contained in the manager to completion.
 //!
 //! See `Driver` docs for examples of usage.
@@ -63,7 +63,7 @@ impl SenderWithCursor {
 
 /// Terminal status of a [`WorkflowManager`].
 ///
-/// [`WorkflowManager`]: crate::manager::WorkflowManager
+/// [`WorkflowManager`]: manager::WorkflowManager
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Termination {
@@ -76,7 +76,7 @@ pub enum Termination {
 
 /// Environment for driving workflow execution in a [`WorkflowManager`].
 ///
-/// [`WorkflowManager`]: crate::manager::WorkflowManager
+/// [`WorkflowManager`]: manager::WorkflowManager
 ///
 /// # Error handling
 ///
@@ -89,7 +89,7 @@ pub enum Termination {
 /// Whether this makes sense, depends on a use case; e.g., it seems reasonable to roll back
 /// deserialization errors for dynamically typed workflows.
 ///
-/// [errored state]: crate::manager::WorkflowManager#workflow-lifecycle
+/// [errored state]: manager::WorkflowManager#workflow-lifecycle
 ///
 /// # Examples
 ///
@@ -167,7 +167,7 @@ impl Driver {
     /// Note that it is possible to cancel this future (e.g., by [`select`]ing between it
     /// and a cancellation signal) and continue working with the provided workflow manager.
     ///
-    /// [`WorkflowManager`]: crate::manager::WorkflowManager
+    /// [`WorkflowManager`]: manager::WorkflowManager
     /// [`select`]: futures::select
     pub async fn drive<M>(mut self, manager: &mut M) -> Termination
     where
