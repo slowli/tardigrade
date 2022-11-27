@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tardigrade::{
     channel::{Receiver, Requests, Sender, WithId},
     task::TaskResult,
-    test::Runtime,
+    test::TestInstance,
     workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
     Json,
 };
@@ -103,7 +103,7 @@ fn test_requests(init: TestInit) {
     println!("Testing with {:?}", init.options);
 
     let expected_strings = init.strings.clone();
-    Runtime::default().test::<TestedWorkflow, _, _>(init, |mut api| async move {
+    TestInstance::<TestedWorkflow>::new(init).run(|mut api| async move {
         let mut strings = vec![];
         while let Some(WithId { id, data }) = api.requests.next().await {
             let response = WithId {

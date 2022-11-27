@@ -62,7 +62,7 @@
 //! }
 //!
 //! // We can test the workflow as follows:
-//! use tardigrade::{spawn::RemoteWorkflow, test::{Runtime, Timers}};
+//! use tardigrade::{spawn::RemoteWorkflow, test::{TestInstance, Timers}};
 //!
 //! async fn test_workflow(handle: MyHandle<RemoteWorkflow>) {
 //!     // The workflow should be waiting for a timer to emit an event.
@@ -76,10 +76,7 @@
 //!     let event = events.next().await.unwrap();
 //!     assert_matches!(event, Event::Count(0));
 //! }
-//! Runtime::default().test::<MyWorkflow, _, _>(
-//!     Args { counter: 1 },
-//!     test_workflow,
-//! );
+//! TestInstance::<MyWorkflow>::new(Args { counter: 1 }).run(test_workflow);
 //! ```
 
 use chrono::{DateTime, TimeZone, Utc};
@@ -268,7 +265,7 @@ pub struct WorkflowRegistry {
 impl WorkflowRegistry {
     /// Inserts a new workflow into this registry.
     #[allow(clippy::missing_panics_doc)] // false positive
-    pub fn insert<W: SpawnWorkflow, S: Into<String>>(&mut self, id: S) {
+    pub fn insert<W: SpawnWorkflow>(&mut self, id: impl Into<String>) {
         let interface = W::interface();
         self.definitions.insert(
             id.into(),
@@ -453,29 +450,67 @@ impl Runtime {
     ///
     /// This method can be used to handle more complex tests than [`Self::test()`], e.g.,
     /// ones that do not want to spin a specific workflow.
-    ///
-    /// [`Workflows`]: crate::spawn::Workflows
-    pub fn run<T, Fut>(self, test_future: Fut) -> T
-    where
-        Fut: Future<Output = T>,
-    {
+    pub fn run<Fut: Future>(self, test_future: Fut) -> Fut::Output {
         let (_guard, mut local_pool) = self.setup();
         local_pool.run_until(test_future)
     }
 
-    /// Executes the provided test code for a specific workflow definition in the context
-    /// of this runtime.
-    #[allow(clippy::missing_panics_doc)] // false positive
-    pub fn test<W, F, Fut>(mut self, args: W::Args, test_fn: F)
+    /// Tests the specified workflow definition in the context of this runtime.
+    pub fn test<W>(self, args: W::Args) -> TestInstance<W>
     where
         W: SpawnWorkflow + TakeHandle<Spawner, Id = ()> + TakeHandle<RemoteWorkflow, Id = ()>,
+    {
+        TestInstance {
+            runtime: self,
+            args,
+        }
+    }
+}
+
+/// Instance of a workflow combined with a [`Runtime`].
+#[must_use = "Instances do nothing unless `run()`"]
+pub struct TestInstance<W: SpawnWorkflow> {
+    runtime: Runtime,
+    args: W::Args,
+}
+
+impl<W> fmt::Debug for TestInstance<W>
+where
+    W: SpawnWorkflow,
+    W::Args: fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TestInstance")
+            .field("args", &self.args)
+            .finish()
+    }
+}
+
+impl<W> TestInstance<W>
+where
+    W: SpawnWorkflow + TakeHandle<Spawner, Id = ()> + TakeHandle<RemoteWorkflow, Id = ()>,
+{
+    /// Creates a test instance with the default [`Runtime`].
+    pub fn new(args: W::Args) -> Self {
+        Self {
+            runtime: Runtime::default(),
+            args,
+        }
+    }
+
+    /// Executes the provided test code for this test instance.
+    #[allow(clippy::missing_panics_doc)] // false positive
+    pub fn run<F, Fut>(mut self, test_fn: F)
+    where
         F: FnOnce(Handle<W, RemoteWorkflow>) -> Fut,
         Fut: Future<Output = ()>,
     {
         const DEFINITION_ID: &str = "__tested_workflow";
 
-        self.workflow_registry.insert::<W, _>(DEFINITION_ID);
-        self.run(async {
+        let args = self.args;
+        self.runtime.workflow_registry.insert::<W>(DEFINITION_ID);
+        self.runtime.run(async {
             let builder = Workflows.new_workflow::<W>(DEFINITION_ID, args).unwrap();
             let workflow = builder.build().await.expect("failed spawning workflow");
             task::yield_now().await; // allow the workflow to initialize

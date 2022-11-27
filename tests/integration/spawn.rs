@@ -56,8 +56,8 @@ fn forwarding_outbound_channel_for_child_workflow() {
     let mut runtime = Runtime::default();
     runtime
         .workflow_registry_mut()
-        .insert::<TestedWorkflow, _>("child");
-    runtime.test::<ParentWorkflow, _, _>(1, |mut api| async {
+        .insert::<TestedWorkflow>("child");
+    runtime.test::<ParentWorkflow>(1).run(|mut api| async {
         let mut items = stream::iter([Ok(23), Ok(42)]);
         api.commands.send_all(&mut items).await.unwrap();
         drop(api.commands);
@@ -72,8 +72,8 @@ fn concurrent_child_workflows() {
     let mut runtime = Runtime::default();
     runtime
         .workflow_registry_mut()
-        .insert::<TestedWorkflow, _>("child");
-    runtime.test::<ParentWorkflow, _, _>(3, |mut api| async {
+        .insert::<TestedWorkflow>("child");
+    runtime.test::<ParentWorkflow>(3).run(|mut api| async {
         let mut items = stream::iter((0..10).map(Ok));
         api.commands.send_all(&mut items).await.unwrap();
         drop(api.commands);
