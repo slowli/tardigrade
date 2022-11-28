@@ -16,8 +16,34 @@ pub use self::mock::{MockAnswers, MockEngine, MockInstance, MockModule, MockPoll
 pub use self::wasmtime::{Wasmtime, WasmtimeInstance, WasmtimeModule, WasmtimeSpawner};
 pub use crate::data::{ReportedErrorKind, WorkflowData};
 
-use crate::{storage::ModuleRecord, WorkflowSpawner};
-use tardigrade::{TaskId, WakerId};
+use crate::storage::ModuleRecord;
+use tardigrade::{interface::Interface, TaskId, WakerId};
+
+/// Spawner of workflows of a specific type.
+///
+/// Can be created using [`WorkflowModule::for_workflow`] or
+/// [`WorkflowModule::for_untyped_workflow`].
+#[derive(Debug)]
+pub struct WorkflowSpawner<S> {
+    interface: Interface,
+    inner: S,
+}
+
+impl<S: CreateWorkflow> WorkflowSpawner<S> {
+    /// Creates a new spawner from the provided parts.
+    pub fn new(interface: Interface, inner: S) -> Self {
+        Self { interface, inner }
+    }
+
+    /// Returns the interface of the workflow spawned by this spawner.
+    pub fn interface(&self) -> &Interface {
+        &self.interface
+    }
+
+    pub(crate) fn create_workflow(&self, data: WorkflowData) -> anyhow::Result<S::Spawned> {
+        self.inner.create_workflow(data)
+    }
+}
 
 #[async_trait]
 pub trait WorkflowEngine: 'static + Send + Sync {

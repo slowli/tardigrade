@@ -31,7 +31,7 @@ use self::{
     time::Timers,
 };
 use crate::{
-    module::Services,
+    manager::Services,
     receipt::{PanicInfo, WakeUpCause},
     workflow::ChannelIds,
 };

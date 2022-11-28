@@ -6,11 +6,13 @@ use tracing_tunnel::PersistedSpans;
 
 use std::{borrow::Cow, collections::HashMap, mem, sync::Arc};
 
-use super::{Shared, WorkflowAndChannelIds, WorkflowHandle, WorkflowManager, WorkflowSpawners};
-use crate::data::WorkflowData;
+use super::{
+    Clock, Services, Shared, StashWorkflow, WorkflowAndChannelIds, WorkflowHandle, WorkflowManager,
+    WorkflowSpawners,
+};
 use crate::{
+    data::WorkflowData,
     engine::{CreateWorkflow, WorkflowEngine},
-    module::{Clock, Services, StashWorkflow},
     storage::{
         ActiveWorkflowState, ChannelRecord, Storage, StorageTransaction, WorkflowRecord,
         WorkflowWaker,

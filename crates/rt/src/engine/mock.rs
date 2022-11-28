@@ -10,14 +10,13 @@ use std::{
     task::Poll,
 };
 
-use crate::storage::ModuleRecord;
 use crate::{
     data::WorkflowData,
     engine::{
         AsWorkflowData, CreateWaker, CreateWorkflow, PersistWorkflow, RunWorkflow, WorkflowEngine,
-        WorkflowModule,
+        WorkflowModule, WorkflowSpawner,
     },
-    WorkflowSpawner,
+    storage::ModuleRecord,
 };
 use tardigrade::{interface::Interface, TaskId, WakerId};
 

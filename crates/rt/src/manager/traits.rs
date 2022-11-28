@@ -1,7 +1,7 @@
 //! Helper traits for `WorkflowManager`.
 
-use super::WorkflowManager;
-use crate::{engine::WorkflowEngine, module::Clock, storage::Storage};
+use super::{Clock, WorkflowManager};
+use crate::{engine::WorkflowEngine, storage::Storage};
 
 /// Trait encapsulating all type params of a [`WorkflowManager`].
 pub trait AsManager {

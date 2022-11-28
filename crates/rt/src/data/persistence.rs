@@ -12,7 +12,7 @@ use super::{
     time::Timers,
     PersistedWorkflowData, WorkflowData,
 };
-use crate::{module::Services, workflow::ChannelIds};
+use crate::{manager::Services, workflow::ChannelIds};
 use tardigrade::{
     interface::{ChannelHalf, Interface},
     ChannelId,

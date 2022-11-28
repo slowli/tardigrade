@@ -6,12 +6,11 @@ use tracing_tunnel::TracingEventReceiver;
 use std::{error, fmt, sync::Arc};
 
 use super::{
-    new_workflows::NewWorkflows, persistence::StorageHelper, AsManager, ConcurrencyError,
-    ErroredWorkflowHandle, WorkflowManager,
+    new_workflows::NewWorkflows, persistence::StorageHelper, AsManager, Clock, ConcurrencyError,
+    ErroredWorkflowHandle, Services, WorkflowManager,
 };
 use crate::{
-    engine::{CreateWorkflow, WorkflowEngine},
-    module::{Clock, Services},
+    engine::{CreateWorkflow, WorkflowEngine, WorkflowSpawner},
     receipt::{ExecutionError, Receipt},
     storage::{
         ActiveWorkflowState, ErroneousMessageRef, MessageError, ReadChannels, ReadModules,
@@ -19,7 +18,7 @@ use crate::{
         WriteWorkflowWakers, WriteWorkflows,
     },
     workflow::Workflow,
-    PersistedWorkflow, WorkflowSpawner,
+    PersistedWorkflow,
 };
 use tardigrade::{ChannelId, WorkflowId};
 

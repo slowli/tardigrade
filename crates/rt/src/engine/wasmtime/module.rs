@@ -13,8 +13,7 @@ use super::{
 };
 use crate::{
     data::WorkflowData,
-    engine::{CreateWorkflow, WorkflowModule},
-    WorkflowSpawner,
+    engine::{CreateWorkflow, WorkflowModule, WorkflowSpawner},
 };
 use tardigrade::interface::Interface;
 

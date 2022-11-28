@@ -450,7 +450,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        data::WorkflowData, engine::wasmtime::module::LowLevelExtendLinker, module::Services,
+        data::WorkflowData, engine::wasmtime::module::LowLevelExtendLinker, manager::Services,
         workflow::ChannelIds,
     };
     use tardigrade::interface::Interface;

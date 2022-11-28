@@ -128,7 +128,6 @@ mod data;
 pub mod driver;
 pub mod engine;
 pub mod manager;
-mod module;
 pub mod receipt;
 pub mod storage;
 #[cfg(feature = "test")]
@@ -141,6 +140,6 @@ mod workflow;
 pub use crate::backends::AsyncIoScheduler;
 pub use crate::{
     data::{Channels, ChildWorkflow, ReceiverState, SenderState, TaskState, TimerState},
-    module::{Clock, Schedule, TimerFuture, WorkflowSpawner},
+    manager::{Clock, Schedule, TimerFuture},
     workflow::PersistedWorkflow,
 };

@@ -11,31 +11,32 @@ use std::{collections::HashMap, sync::Arc};
 mod handle;
 mod new_workflows;
 mod persistence;
+mod services;
 mod tick;
 mod traits;
 
 #[cfg(test)]
 pub(crate) mod tests;
 
+pub(crate) use self::services::{Services, StashWorkflow};
 pub use self::{
     handle::{
         AnyWorkflowHandle, CompletedWorkflowHandle, ConcurrencyError, ErroneousMessage,
         ErroredWorkflowHandle, MessageReceiver, MessageSender, ReceivedMessage, WorkflowHandle,
     },
+    services::{Clock, Schedule, TimerFuture},
     tick::{TickResult, WouldBlock},
     traits::AsManager,
 };
 
 use self::persistence::StorageHelper;
 use crate::{
-    engine::{WorkflowEngine, WorkflowModule},
-    module::Clock,
+    engine::{WorkflowEngine, WorkflowModule, WorkflowSpawner},
     storage::{
         ChannelRecord, ModuleRecord, ReadChannels, ReadModules, ReadWorkflows, Storage,
         StorageTransaction, WorkflowState, WriteChannels, WriteModules, WriteWorkflows,
     },
     workflow::ChannelIds,
-    WorkflowSpawner,
 };
 use tardigrade::{channel::SendError, ChannelId, WorkflowId};
 

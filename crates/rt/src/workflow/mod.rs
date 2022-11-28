@@ -11,8 +11,8 @@ pub use self::persistence::PersistedWorkflow;
 
 use crate::{
     data::WorkflowData,
-    engine::{CreateWorkflow, PersistWorkflow, RunWorkflow},
-    module::{Services, WorkflowSpawner},
+    engine::{CreateWorkflow, PersistWorkflow, RunWorkflow, WorkflowSpawner},
+    manager::Services,
     receipt::{
         Event, ExecutedFunction, Execution, ExecutionError, Receipt, ResourceEventKind, ResourceId,
         WakeUpCause,

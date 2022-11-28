@@ -3,11 +3,10 @@
 use std::borrow::Cow;
 
 use super::*;
-use crate::module::StashWorkflow;
-use tardigrade::spawn::ChannelSpawnConfig;
+use crate::manager::StashWorkflow;
 use tardigrade::{
     interface::Interface,
-    spawn::{HostError, ManageInterfaces},
+    spawn::{ChannelSpawnConfig, HostError, ManageInterfaces},
     ChannelId,
 };
 
