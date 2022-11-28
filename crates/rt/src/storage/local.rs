@@ -32,6 +32,7 @@ use tardigrade::{ChannelId, WakerId, WorkflowId};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LocalChannel {
+    #[serde(flatten)]
     record: ChannelRecord,
     messages: VecDeque<Message>,
 }
@@ -360,7 +361,7 @@ impl ReadChannels for LocalTransaction<'_> {
 #[async_trait]
 impl WriteChannels for LocalTransaction<'_> {
     async fn allocate_channel_id(&mut self) -> ChannelId {
-        ChannelId::from(self.next_channel_id.fetch_add(1, Ordering::SeqCst))
+        self.next_channel_id.fetch_add(1, Ordering::SeqCst)
     }
 
     async fn get_or_insert_channel(

@@ -13,11 +13,11 @@ use tardigrade::{
     Decode, Encode, Json,
 };
 use tardigrade_rt::{
-    manager::{AsManager, CreateModule, MessageReceiver, WorkflowManager},
+    engine::{WasmtimeInstance, WasmtimeModule, WasmtimeSpawner, WorkflowEngine},
+    manager::{AsManager, MessageReceiver, WorkflowManager},
     receipt::{ChannelEvent, ChannelEventKind, Event, ExecutedFunction, WakeUpCause},
     storage::{LocalStorageSnapshot, ModuleRecord},
     test::MockScheduler,
-    WorkflowModule,
 };
 use tardigrade_test_basic::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOrder};
 
@@ -231,13 +231,17 @@ async fn workflow_with_concurrency() -> TestResult {
     Ok(())
 }
 
-/// Workflow module creator that reuses the statically allocated module.
+/// Workflow engine that reuses the statically allocated module.
 #[derive(Debug)]
-struct DummyModuleCreator;
+struct SingleModuleEngine;
 
 #[async_trait]
-impl CreateModule for DummyModuleCreator {
-    async fn create_module(&self, module: &ModuleRecord) -> anyhow::Result<WorkflowModule> {
+impl WorkflowEngine for SingleModuleEngine {
+    type Instance = WasmtimeInstance;
+    type Spawner = WasmtimeSpawner;
+    type Module = WasmtimeModule;
+
+    async fn create_module(&self, module: &ModuleRecord) -> anyhow::Result<Self::Module> {
         assert_eq!(module.id, "test");
         Ok(create_module().await)
     }
@@ -280,13 +284,12 @@ async fn persisting_workflow() -> TestResult {
         module.set_bytes(vec![]);
     }
     let persisted_json = serde_json::to_string(&snapshot)?;
-    assert!(persisted_json.len() < 5_000, "{persisted_json}");
+    assert!(persisted_json.len() < 6_000, "{persisted_json}");
     let snapshot: LocalStorageSnapshot<'_> = serde_json::from_str(&persisted_json)?;
     storage = snapshot.into();
 
-    let manager = WorkflowManager::builder(storage)
+    let manager = WorkflowManager::builder(SingleModuleEngine, storage)
         .with_clock(clock.clone())
-        .with_module_creator(DummyModuleCreator)
         .build()
         .await?;
 

@@ -234,15 +234,24 @@ impl error::Error for MessageError {}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelRecord {
     /// ID of the receiver workflow, or `None` if the receiver is external.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver_workflow_id: Option<WorkflowId>,
     /// IDs of sender workflows.
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     pub sender_workflow_ids: HashSet<WorkflowId>,
     /// `true` if the channel has an external sender.
+    #[serde(default, skip_serializing_if = "is_false")]
     pub has_external_sender: bool,
     /// `true` if the channel is closed (i.e., no more messages can be written to it).
+    #[serde(default, skip_serializing_if = "is_false")]
     pub is_closed: bool,
     /// Number of messages written to the channel.
     pub received_messages: usize,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // required by serde
+fn is_false(&flag: &bool) -> bool {
+    !flag
 }
 
 /// Allows reading information about workflows.

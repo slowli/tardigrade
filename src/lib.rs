@@ -141,7 +141,7 @@ pub type FutureId = u64;
 /// ID of a workflow.
 pub type WorkflowId = u64;
 /// ID of a channel.
-pub type ChannelId = u128;
+pub type ChannelId = u64;
 
 /// Creates an entry point for the specified workflow type.
 ///

@@ -30,6 +30,12 @@ impl fmt::Debug for Wasmtime {
     }
 }
 
+impl Wasmtime {
+    pub fn create_module(&self, bytes: impl Into<Arc<[u8]>>) -> anyhow::Result<WasmtimeModule> {
+        WasmtimeModule::new(&self.0, bytes.into())
+    }
+}
+
 #[async_trait]
 impl WorkflowEngine for Wasmtime {
     type Instance = WasmtimeInstance;
@@ -37,7 +43,7 @@ impl WorkflowEngine for Wasmtime {
     type Module = WasmtimeModule;
 
     async fn create_module(&self, record: &ModuleRecord) -> anyhow::Result<Self::Module> {
-        WasmtimeModule::new(&self.0, Arc::clone(&record.bytes))
+        self.create_module(Arc::clone(&record.bytes))
     }
 }
 

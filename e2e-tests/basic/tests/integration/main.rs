@@ -11,10 +11,11 @@ use tracing_subscriber::{
 use std::{collections::HashMap, error};
 
 use tardigrade_rt::{
+    engine::{Wasmtime, WasmtimeModule},
     manager::WorkflowManager,
     storage::LocalStorage,
     test::{ModuleCompiler, WasmOpt},
-    Clock, WorkflowEngine, WorkflowModule,
+    Clock,
 };
 
 mod async_env;
@@ -24,9 +25,9 @@ mod sync_env;
 mod tasks;
 
 type TestResult<T = ()> = Result<T, Box<dyn error::Error>>;
-type LocalManager<C> = WorkflowManager<C, LocalStorage>;
+type LocalManager<C> = WorkflowManager<Wasmtime, C, LocalStorage>;
 
-static MODULE: Lazy<WorkflowModule> = Lazy::new(|| {
+static MODULE: Lazy<WasmtimeModule> = Lazy::new(|| {
     // Since this closure is called once, it is a good place to do other initialization
     tracing::subscriber::set_global_default(create_fmt_subscriber()).ok();
 
@@ -35,11 +36,11 @@ static MODULE: Lazy<WorkflowModule> = Lazy::new(|| {
         .set_profile("wasm")
         .set_wasm_opt(WasmOpt::default())
         .compile();
-    let engine = WorkflowEngine::default();
-    WorkflowModule::new(&engine, module_bytes).unwrap()
+    let engine = Wasmtime::default();
+    engine.create_module(module_bytes).unwrap()
 });
 
-async fn create_module() -> WorkflowModule {
+async fn create_module() -> WasmtimeModule {
     task::spawn_blocking(|| &*MODULE).await.clone()
 }
 
@@ -47,7 +48,7 @@ async fn create_manager<C: Clock>(clock: C) -> TestResult<LocalManager<C>> {
     let module = create_module().await;
     let mut storage = LocalStorage::default();
     storage.truncate_workflow_messages();
-    let mut manager = WorkflowManager::builder(storage)
+    let mut manager = WorkflowManager::builder(Wasmtime::default(), storage)
         .with_clock(clock)
         .build()
         .await?;
