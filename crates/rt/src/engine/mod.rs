@@ -7,8 +7,12 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use std::{fmt, sync::Arc, task::Poll};
 
+#[cfg(test)]
+mod mock;
 mod wasmtime;
 
+#[cfg(test)]
+pub use self::mock::{MockAnswers, MockEngine, MockInstance, MockModule, MockPollFn, MockSpawner};
 pub use self::wasmtime::{Wasmtime, WasmtimeInstance, WasmtimeModule, WasmtimeSpawner};
 pub use crate::data::{ReportedErrorKind, WorkflowData};
 
