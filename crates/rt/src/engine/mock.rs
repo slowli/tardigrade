@@ -13,8 +13,8 @@ use std::{
 use crate::{
     data::WorkflowData,
     engine::{
-        AsWorkflowData, CreateWaker, CreateWorkflow, PersistWorkflow, RunWorkflow, WorkflowEngine,
-        WorkflowModule, WorkflowSpawner,
+        AsWorkflowData, CreateWaker, DefineWorkflow, PersistWorkflow, RunWorkflow, WorkflowEngine,
+        WorkflowModule,
     },
     storage::ModuleRecord,
 };
@@ -47,7 +47,7 @@ impl MockEngine {
 #[async_trait]
 impl WorkflowEngine for MockEngine {
     type Instance = MockInstance;
-    type Spawner = MockSpawner;
+    type Definition = MockDefinition;
     type Module = MockModule;
 
     async fn create_module(&self, _record: &ModuleRecord) -> anyhow::Result<Self::Module> {
@@ -64,49 +64,52 @@ pub struct MockModule {
 }
 
 impl IntoIterator for MockModule {
-    type Item = (String, WorkflowSpawner<MockSpawner>);
-    type IntoIter = iter::Once<(String, WorkflowSpawner<MockSpawner>)>;
+    type Item = (String, MockDefinition);
+    type IntoIter = iter::Once<(String, MockDefinition)>;
 
     fn into_iter(self) -> Self::IntoIter {
         let name = "TestWorkflow".to_owned();
         let interface = Interface::from_bytes(INTERFACE);
-        let spawner = WorkflowSpawner::new(
+        let definition = MockDefinition {
+            poll_fns: Arc::clone(&self.poll_fns),
             interface,
-            MockSpawner {
-                poll_fns: Arc::clone(&self.poll_fns),
-            },
-        );
-        iter::once((name, spawner))
+        };
+        iter::once((name, definition))
     }
 }
 
 impl WorkflowModule for MockModule {
-    type Spawner = MockSpawner;
+    type Definition = MockDefinition;
 
     fn bytes(&self) -> Arc<[u8]> {
         Arc::new([])
     }
 }
 
-/// Mock workflow spawner.
+/// Mock workflow definition.
 #[derive(Debug)]
-pub struct MockSpawner {
+pub struct MockDefinition {
     poll_fns: SharedAnswers,
+    interface: Interface,
 }
 
-impl MockSpawner {
-    pub fn wrapped(poll_fns: MockAnswers) -> WorkflowSpawner<Self> {
-        let this = Self {
+impl MockDefinition {
+    pub fn new(poll_fns: MockAnswers) -> Self {
+        Self {
             poll_fns: Arc::new(Mutex::new(poll_fns)),
-        };
-        WorkflowSpawner::new(Interface::from_bytes(INTERFACE), this)
+            interface: Interface::from_bytes(INTERFACE),
+        }
     }
 }
 
-impl CreateWorkflow for MockSpawner {
-    type Spawned = MockInstance;
+impl DefineWorkflow for MockDefinition {
+    type Instance = MockInstance;
 
-    fn create_workflow(&self, data: WorkflowData) -> anyhow::Result<Self::Spawned> {
+    fn interface(&self) -> &Interface {
+        &self.interface
+    }
+
+    fn create_workflow(&self, data: WorkflowData) -> anyhow::Result<Self::Instance> {
         Ok(MockInstance::new(data, Arc::clone(&self.poll_fns)))
     }
 }

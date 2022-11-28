@@ -1,7 +1,5 @@
 //! Workflow engine abstraction.
 
-#![allow(missing_docs, clippy::missing_errors_doc)]
-
 use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -12,84 +10,117 @@ mod mock;
 mod wasmtime;
 
 #[cfg(test)]
-pub use self::mock::{MockAnswers, MockEngine, MockInstance, MockModule, MockPollFn, MockSpawner};
-pub use self::wasmtime::{Wasmtime, WasmtimeInstance, WasmtimeModule, WasmtimeSpawner};
-pub use crate::data::{ReportedErrorKind, WorkflowData};
+pub use self::mock::{
+    MockAnswers, MockDefinition, MockEngine, MockInstance, MockModule, MockPollFn,
+};
+pub use self::wasmtime::{Wasmtime, WasmtimeDefinition, WasmtimeInstance, WasmtimeModule};
+pub use crate::data::{ReportedErrorKind, WorkflowData, WorkflowPoll};
 
 use crate::storage::ModuleRecord;
 use tardigrade::{interface::Interface, TaskId, WakerId};
 
-/// Spawner of workflows of a specific type.
-///
-/// Can be created using [`WorkflowModule::for_workflow`] or
-/// [`WorkflowModule::for_untyped_workflow`].
-#[derive(Debug)]
-pub struct WorkflowSpawner<S> {
-    interface: Interface,
-    inner: S,
-}
-
-impl<S: CreateWorkflow> WorkflowSpawner<S> {
-    /// Creates a new spawner from the provided parts.
-    pub fn new(interface: Interface, inner: S) -> Self {
-        Self { interface, inner }
-    }
-
-    /// Returns the interface of the workflow spawned by this spawner.
-    pub fn interface(&self) -> &Interface {
-        &self.interface
-    }
-
-    pub(crate) fn create_workflow(&self, data: WorkflowData) -> anyhow::Result<S::Spawned> {
-        self.inner.create_workflow(data)
-    }
-}
-
+/// Workflow engine.
 #[async_trait]
 pub trait WorkflowEngine: 'static + Send + Sync {
+    /// Instance of a workflow created by this engine.
     type Instance: RunWorkflow + PersistWorkflow;
-    type Spawner: CreateWorkflow<Spawned = Self::Instance>;
-    type Module: WorkflowModule<Spawner = Self::Spawner>;
+    /// Spawner of [instances](Self::Instance) created by this engine.
+    type Definition: DefineWorkflow<Instance = Self::Instance>;
+    /// Module defining one or more workflows.
+    type Module: WorkflowModule<Definition = Self::Definition>;
 
+    /// Creates a module given the specified storage record.
     async fn create_module(&self, record: &ModuleRecord) -> anyhow::Result<Self::Module>;
 }
 
-pub trait WorkflowModule: IntoIterator<Item = (String, WorkflowSpawner<Self::Spawner>)> {
-    type Spawner: CreateWorkflow;
-
+/// Workflow module.
+pub trait WorkflowModule: IntoIterator<Item = (String, Self::Definition)> {
+    /// Workflow definition contained in a module of this type.
+    type Definition: DefineWorkflow;
+    /// Returns module bytes.
     fn bytes(&self) -> Arc<[u8]>;
 }
 
-pub trait CreateWorkflow: 'static + fmt::Debug + Send + Sync {
-    type Spawned: RunWorkflow + PersistWorkflow;
+/// Workflow definition.
+pub trait DefineWorkflow: 'static + fmt::Debug + Send + Sync {
+    /// Instance of a workflow created from this definition.
+    type Instance: RunWorkflow + PersistWorkflow;
 
-    fn create_workflow(&self, data: WorkflowData) -> anyhow::Result<Self::Spawned>;
+    /// Returns the interface of the workflow spawned from this definition.
+    fn interface(&self) -> &Interface;
+
+    /// Creates a workflow instance from this definition.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation fails, e.g., due to WASM linking errors.
+    fn create_workflow(&self, data: WorkflowData) -> anyhow::Result<Self::Instance>;
 }
 
+/// Provides access to wrapped [`WorkflowData`].
 pub trait AsWorkflowData {
+    /// Provides a shared reference to the workflow data.
     fn data(&self) -> &WorkflowData;
-
+    /// Provides an exclusive reference to the workflow data.
     fn data_mut(&mut self) -> &mut WorkflowData;
 }
 
+/// Workflow execution logic.
 pub trait RunWorkflow: AsWorkflowData {
+    /// Creates the main workflow task and returns its ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if creating the main task fails.
     fn create_main_task(&mut self, raw_args: &[u8]) -> anyhow::Result<TaskId>;
 
+    /// Polls a task with the specified ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if polling the task fails, e.g., due to a WASM trap.
     fn poll_task(&mut self, task_id: TaskId) -> anyhow::Result<Poll<()>>;
 
+    /// Drops a task with the specified ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if dropping the task fails, e.g., due to a WASM trap.
     fn drop_task(&mut self, task_id: TaskId) -> anyhow::Result<()>;
 
+    /// Wakes a waker with the specified ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if waking the waker fails, e.g., due to a WASM trap.
     fn wake_waker(&mut self, waker_id: WakerId) -> anyhow::Result<()>;
 }
 
+/// Creating wakers in workflows. This is used in [`WorkflowPoll`] to unwrap the contained
+/// [`Poll`] result.
 pub trait CreateWaker: AsWorkflowData {
+    /// Creates a new waker.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if creating the waker fails, e.g., due to a WASM trap.
     fn create_waker(&mut self) -> anyhow::Result<WakerId>;
 }
 
+/// Workflow persistence logic.
 pub trait PersistWorkflow {
+    /// Persisted workflow data. This data should not include [`WorkflowData`] (it is persisted
+    /// separately), but rather engine-specific data, such as the WASM memory.
     type Persisted: Serialize + DeserializeOwned;
 
+    /// Persists this workflow.
     fn persist(&mut self) -> Self::Persisted;
 
+    /// Restores this workflow from a previously persisted state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if restoration fails for whatever reason (e.g., the persisted data format
+    /// is not recognized).
     fn restore(&mut self, persisted: Self::Persisted) -> anyhow::Result<()>;
 }

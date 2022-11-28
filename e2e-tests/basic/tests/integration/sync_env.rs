@@ -13,7 +13,7 @@ use tardigrade::{
     Decode, Encode, Json,
 };
 use tardigrade_rt::{
-    engine::{WasmtimeInstance, WasmtimeModule, WasmtimeSpawner, WorkflowEngine},
+    engine::{WasmtimeDefinition, WasmtimeInstance, WasmtimeModule, WorkflowEngine},
     manager::{AsManager, MessageReceiver, WorkflowManager},
     receipt::{ChannelEvent, ChannelEventKind, Event, ExecutedFunction, WakeUpCause},
     storage::{LocalStorageSnapshot, ModuleRecord},
@@ -238,7 +238,7 @@ struct SingleModuleEngine;
 #[async_trait]
 impl WorkflowEngine for SingleModuleEngine {
     type Instance = WasmtimeInstance;
-    type Spawner = WasmtimeSpawner;
+    type Definition = WasmtimeDefinition;
     type Module = WasmtimeModule;
 
     async fn create_module(&self, module: &ModuleRecord) -> anyhow::Result<Self::Module> {

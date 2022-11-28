@@ -1,4 +1,4 @@
-//! Modules and spawners for wasmtime.
+//! `wasmtime`-powered modules and definitions.
 
 use anyhow::{anyhow, bail, ensure, Context};
 use once_cell::sync::OnceCell;
@@ -13,12 +13,11 @@ use super::{
 };
 use crate::{
     data::WorkflowData,
-    engine::{CreateWorkflow, WorkflowModule, WorkflowSpawner},
+    engine::{DefineWorkflow, WorkflowModule},
 };
 use tardigrade::interface::Interface;
 
-/// Workflow module that combines a WASM module with the workflow logic and the declared
-/// workflow [`Interface`].
+/// Workflow module wrapping a [`Module`] from the `wasmtime` crate.
 #[derive(Clone)]
 pub struct WasmtimeModule {
     pub(crate) inner: Module,
@@ -139,17 +138,6 @@ impl WasmtimeModule {
             .map(|(name, interface)| (name.as_str(), interface))
     }
 
-    /// Validates the provided WASM module and wraps it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error in any of the following cases:
-    ///
-    /// - `module_bytes` is not a valid WASM module.
-    /// - The module has bogus imports from the `tardigrade_rt` module, such as an unknown function
-    ///   or a known function with an incorrect signature.
-    /// - The module does not have necessary exports.
-    /// - The module does not have a custom section with the workflow interface definition(s).
     pub(super) fn new(engine: &Engine, module_bytes: Arc<[u8]>) -> anyhow::Result<Self> {
         let module =
             Module::from_binary(engine, &module_bytes).context("cannot parse WASM module")?;
@@ -163,55 +151,57 @@ impl WasmtimeModule {
         })
     }
 
-    fn into_spawners(self) -> impl Iterator<Item = (String, WorkflowSpawner<WasmtimeSpawner>)> {
+    fn into_definitions(self) -> impl Iterator<Item = (String, WasmtimeDefinition)> {
         let module = self.inner;
         self.interfaces.into_iter().map(move |(name, interface)| {
-            let inner = WasmtimeSpawner::new(module.clone(), name.clone());
-            let spawner = WorkflowSpawner::new(interface, inner);
-            (name, spawner)
+            let definition = WasmtimeDefinition::new(module.clone(), name.clone(), interface);
+            (name, definition)
         })
     }
 }
 
 impl IntoIterator for WasmtimeModule {
-    type Item = (String, WorkflowSpawner<WasmtimeSpawner>);
+    type Item = (String, WasmtimeDefinition);
     type IntoIter = Box<dyn Iterator<Item = Self::Item>>;
 
     fn into_iter(self) -> Self::IntoIter {
-        Box::new(self.into_spawners())
+        Box::new(self.into_definitions())
     }
 }
 
 impl WorkflowModule for WasmtimeModule {
-    type Spawner = WasmtimeSpawner;
+    type Definition = WasmtimeDefinition;
 
     fn bytes(&self) -> Arc<[u8]> {
         Arc::clone(&self.bytes)
     }
 }
 
-pub struct WasmtimeSpawner {
+/// Workflow definition powered by the `wasmtime` crate.
+pub struct WasmtimeDefinition {
     pub(super) module: Module,
     pub(super) workflow_name: String,
+    interface: Interface,
     linker_extensions: Vec<Box<dyn LowLevelExtendLinker>>,
     data_section: OnceCell<Arc<DataSection>>,
 }
 
-impl fmt::Debug for WasmtimeSpawner {
+impl fmt::Debug for WasmtimeDefinition {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("WasmtimeSpawner")
+            .debug_struct("WasmtimeDefinition")
             .field("workflow_name", &self.workflow_name)
             .field("data_section", &self.data_section)
             .finish()
     }
 }
 
-impl WasmtimeSpawner {
-    fn new(module: Module, workflow_name: String) -> Self {
+impl WasmtimeDefinition {
+    fn new(module: Module, workflow_name: String, interface: Interface) -> Self {
         Self {
             module,
             workflow_name,
+            interface,
             linker_extensions: vec![
                 Box::new(WorkflowFunctions),
                 Box::new(SpawnFunctions),
@@ -247,10 +237,14 @@ impl WasmtimeSpawner {
     }
 }
 
-impl CreateWorkflow for WasmtimeSpawner {
-    type Spawned = WasmtimeInstance;
+impl DefineWorkflow for WasmtimeDefinition {
+    type Instance = WasmtimeInstance;
 
-    fn create_workflow(&self, data: WorkflowData) -> anyhow::Result<Self::Spawned> {
+    fn interface(&self) -> &Interface {
+        &self.interface
+    }
+
+    fn create_workflow(&self, data: WorkflowData) -> anyhow::Result<Self::Instance> {
         WasmtimeInstance::new(self, data)
     }
 }
@@ -303,11 +297,6 @@ impl DataSection {
 
 /// WASM linker extension allowing to define additional functions (besides ones provided
 /// by the Tardigrade runtime) to be imported into the workflow WASM module.
-///
-/// Implementations of this trait [can be used] by [`WorkflowSpawner`] to support extended
-/// workflow functionality.
-///
-/// [can be used]: WorkflowSpawner::insert_imports()
 pub(super) trait ExtendLinker: Send + Sync + 'static {
     /// Name of the module imported into WASM.
     const MODULE_NAME: &'static str;

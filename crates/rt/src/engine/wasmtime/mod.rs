@@ -13,7 +13,7 @@ mod module;
 
 pub use self::{
     instance::WasmtimeInstance,
-    module::{WasmtimeModule, WasmtimeSpawner},
+    module::{WasmtimeDefinition, WasmtimeModule},
 };
 
 use self::instance::InstanceData;
@@ -21,6 +21,7 @@ use super::WorkflowEngine;
 use crate::storage::ModuleRecord;
 use tardigrade::abi::AllocateBytes;
 
+/// [`WorkflowEngine`] based on the `wasmtime` crate.
 #[derive(Default)]
 pub struct Wasmtime(Engine);
 
@@ -31,6 +32,17 @@ impl fmt::Debug for Wasmtime {
 }
 
 impl Wasmtime {
+    /// Creates a module from the specified WASM module bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error in any of the following cases:
+    ///
+    /// - `bytes` is not a valid WASM module.
+    /// - The module has bogus imports from the `tardigrade_rt` module, such as an unknown function
+    ///   or a known function with an incorrect signature.
+    /// - The module does not have necessary exports.
+    /// - The module does not have a custom section with the workflow interface definition(s).
     pub fn create_module(&self, bytes: impl Into<Arc<[u8]>>) -> anyhow::Result<WasmtimeModule> {
         WasmtimeModule::new(&self.0, bytes.into())
     }
@@ -39,7 +51,7 @@ impl Wasmtime {
 #[async_trait]
 impl WorkflowEngine for Wasmtime {
     type Instance = WasmtimeInstance;
-    type Spawner = WasmtimeSpawner;
+    type Definition = WasmtimeDefinition;
     type Module = WasmtimeModule;
 
     async fn create_module(&self, record: &ModuleRecord) -> anyhow::Result<Self::Module> {
@@ -56,7 +68,7 @@ impl fmt::Debug for WasmAllocator<'_> {
 }
 
 impl<'ctx> WasmAllocator<'ctx> {
-    pub fn new(ctx: StoreContextMut<'ctx, InstanceData>) -> Self {
+    fn new(ctx: StoreContextMut<'ctx, InstanceData>) -> Self {
         Self(ctx)
     }
 }

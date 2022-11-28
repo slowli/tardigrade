@@ -13,7 +13,7 @@ use std::{
 
 use super::{
     api::ModuleExports,
-    module::{DataSection, WasmtimeSpawner},
+    module::{DataSection, WasmtimeDefinition},
 };
 use crate::{
     data::WorkflowData,
@@ -43,6 +43,7 @@ impl From<WorkflowData> for InstanceData {
     }
 }
 
+/// Workflow instance powered by the `wasmtime` crate.
 #[derive(Debug)]
 pub struct WasmtimeInstance {
     store: Store<InstanceData>,
@@ -50,24 +51,24 @@ pub struct WasmtimeInstance {
 }
 
 impl WasmtimeInstance {
-    pub(super) fn new(spawner: &WasmtimeSpawner, data: WorkflowData) -> anyhow::Result<Self> {
+    pub(super) fn new(definition: &WasmtimeDefinition, data: WorkflowData) -> anyhow::Result<Self> {
         let data = InstanceData {
             inner: data,
             exports: None,
         };
 
-        let mut linker = Linker::new(spawner.module.engine());
-        let mut store = Store::new(spawner.module.engine(), data);
-        spawner
+        let mut linker = Linker::new(definition.module.engine());
+        let mut store = Store::new(definition.module.engine(), data);
+        definition
             .extend_linker(&mut store, &mut linker)
             .context("failed extending `Linker` for module")?;
 
         let instance = linker
-            .instantiate(&mut store, &spawner.module)
+            .instantiate(&mut store, &definition.module)
             .context("failed instantiating module")?;
-        let exports = ModuleExports::new(&mut store, &instance, &spawner.workflow_name);
+        let exports = ModuleExports::new(&mut store, &instance, &definition.workflow_name);
         store.data_mut().exports = Some(exports);
-        let data_section = spawner.cache_data_section(&store);
+        let data_section = definition.cache_data_section(&store);
         Ok(Self {
             store,
             data_section,

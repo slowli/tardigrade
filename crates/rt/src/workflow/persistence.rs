@@ -11,7 +11,7 @@ use crate::{
         Channels, ChildWorkflow, ConsumeError, PersistError, PersistedWorkflowData, ReceiverState,
         SenderState, TaskState, TimerState, Wakers,
     },
-    engine::{CreateWorkflow, PersistWorkflow, RunWorkflow, WorkflowSpawner},
+    engine::{DefineWorkflow, PersistWorkflow, RunWorkflow},
     manager::Services,
     receipt::WakeUpCause,
     utils::Message,
@@ -182,18 +182,18 @@ impl PersistedWorkflow {
         self.data.waker_queue.iter().map(Wakers::cause)
     }
 
-    /// Restores a workflow from the persisted state and the `spawner` defining the workflow.
+    /// Restores a workflow from the persisted state and the `definition` of the workflow.
     ///
     /// # Errors
     ///
     /// Returns an error if the workflow definition from `module` and the `persisted` state
     /// do not match (e.g., differ in defined channels).
-    pub(crate) fn restore<S: CreateWorkflow>(
+    pub(crate) fn restore<D: DefineWorkflow>(
         self,
-        spawner: &WorkflowSpawner<S>,
+        definition: &D,
         services: Services,
-    ) -> anyhow::Result<Workflow<S::Spawned>> {
-        let interface = spawner.interface();
+    ) -> anyhow::Result<Workflow<D::Instance>> {
+        let interface = definition.interface();
         let data = self
             .data
             .restore(interface, services)
@@ -201,7 +201,7 @@ impl PersistedWorkflow {
 
         let engine_data =
             serde_json::from_value(self.engine_data).context("failed deserializing engine data")?;
-        let mut workflow = Workflow::new(spawner, data, self.args)?;
+        let mut workflow = Workflow::new(definition, data, self.args)?;
         workflow.inner.restore(engine_data)?;
         Ok(workflow)
     }

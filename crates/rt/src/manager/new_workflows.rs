@@ -7,12 +7,12 @@ use tracing_tunnel::PersistedSpans;
 use std::{borrow::Cow, collections::HashMap, mem, sync::Arc};
 
 use super::{
-    Clock, Services, Shared, StashWorkflow, WorkflowAndChannelIds, WorkflowHandle, WorkflowManager,
-    WorkflowSpawners,
+    Clock, Services, Shared, StashWorkflow, WorkflowAndChannelIds, WorkflowDefinitions,
+    WorkflowHandle, WorkflowManager,
 };
 use crate::{
     data::WorkflowData,
-    engine::{CreateWorkflow, WorkflowEngine},
+    engine::{DefineWorkflow, WorkflowEngine},
     storage::{
         ActiveWorkflowState, ChannelRecord, Storage, StorageTransaction, WorkflowRecord,
         WorkflowWaker,
@@ -82,12 +82,12 @@ struct WorkflowStub {
 
 impl WorkflowStub {
     // **NB.** Should be called only once per instance because `args` are taken out.
-    async fn spawn<S: CreateWorkflow, T: StorageTransaction>(
+    async fn spawn<D: DefineWorkflow, T: StorageTransaction>(
         &mut self,
-        shared: &Shared<S>,
+        shared: &Shared<D>,
         transaction: &mut T,
     ) -> anyhow::Result<(PersistedWorkflow, ChannelIds)> {
-        let spawner = shared.spawners.for_full_id(&self.definition_id).unwrap();
+        let definition = shared.definitions.for_full_id(&self.definition_id).unwrap();
         let services = Services {
             clock: Arc::clone(&shared.clock),
             workflows: None,
@@ -99,8 +99,8 @@ impl WorkflowStub {
         });
         let channel_ids = ChannelIds::new(self.channels.clone(), new_channel_ids).await;
         let args = mem::take(&mut self.args);
-        let data = WorkflowData::new(spawner.interface(), channel_ids.clone(), services);
-        let mut workflow = Workflow::new(spawner, data, Some(args.into()))?;
+        let data = WorkflowData::new(definition.interface(), channel_ids.clone(), services);
+        let mut workflow = Workflow::new(definition, data, Some(args.into()))?;
         let persisted = workflow.persist();
         Ok((persisted, channel_ids))
     }
@@ -113,7 +113,7 @@ pub(super) struct NewWorkflows<S> {
     new_workflows: HashMap<WorkflowId, WorkflowStub>,
 }
 
-impl<S: CreateWorkflow> NewWorkflows<S> {
+impl<S: DefineWorkflow> NewWorkflows<S> {
     pub fn new(executing_workflow_id: Option<WorkflowId>, shared: Shared<S>) -> Self {
         Self {
             executing_workflow_id,
@@ -198,7 +198,7 @@ impl<S: CreateWorkflow> NewWorkflows<S> {
         }
 
         let (module_id, name_in_module) =
-            WorkflowSpawners::<S>::split_full_id(&child_stub.definition_id).unwrap();
+            WorkflowDefinitions::<S>::split_full_id(&child_stub.definition_id).unwrap();
         let state = ActiveWorkflowState {
             persisted,
             tracing_spans: PersistedSpans::default(),
@@ -222,15 +222,15 @@ impl<S: CreateWorkflow> NewWorkflows<S> {
     }
 }
 
-impl<S: CreateWorkflow> ManageInterfaces for NewWorkflows<S> {
+impl<S: DefineWorkflow> ManageInterfaces for NewWorkflows<S> {
     fn interface(&self, id: &str) -> Option<Cow<'_, Interface>> {
         Some(Cow::Borrowed(
-            self.shared.spawners.for_full_id(id)?.interface(),
+            self.shared.definitions.for_full_id(id)?.interface(),
         ))
     }
 }
 
-impl<S: CreateWorkflow> StashWorkflow for NewWorkflows<S> {
+impl<S: DefineWorkflow> StashWorkflow for NewWorkflows<S> {
     #[tracing::instrument(skip(self, args), fields(args.len = args.len()))]
     fn stash_workflow(
         &mut self,
@@ -240,7 +240,7 @@ impl<S: CreateWorkflow> StashWorkflow for NewWorkflows<S> {
         channels: ChannelsConfig<ChannelId>,
     ) {
         debug_assert!(
-            self.shared.spawners.for_full_id(id).is_some(),
+            self.shared.definitions.for_full_id(id).is_some(),
             "workflow with ID `{id}` is not defined"
         );
 
@@ -258,7 +258,7 @@ impl<S: CreateWorkflow> StashWorkflow for NewWorkflows<S> {
 impl<E: WorkflowEngine, C, S> ManageInterfaces for WorkflowManager<E, C, S> {
     fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
         Some(Cow::Borrowed(
-            self.spawners.for_full_id(definition_id)?.interface(),
+            self.definitions.for_full_id(definition_id)?.interface(),
         ))
     }
 }

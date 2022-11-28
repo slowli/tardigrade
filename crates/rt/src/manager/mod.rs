@@ -31,7 +31,7 @@ pub use self::{
 
 use self::persistence::StorageHelper;
 use crate::{
-    engine::{WorkflowEngine, WorkflowModule, WorkflowSpawner},
+    engine::{DefineWorkflow, WorkflowEngine, WorkflowModule},
     storage::{
         ChannelRecord, ModuleRecord, ReadChannels, ReadModules, ReadWorkflows, Storage,
         StorageTransaction, WorkflowState, WriteChannels, WriteModules, WriteWorkflows,
@@ -47,11 +47,11 @@ struct WorkflowAndChannelIds {
 }
 
 #[derive(Debug)]
-struct WorkflowSpawners<S> {
-    inner: HashMap<String, HashMap<String, WorkflowSpawner<S>>>,
+struct WorkflowDefinitions<D> {
+    inner: HashMap<String, HashMap<String, D>>,
 }
 
-impl<S> Default for WorkflowSpawners<S> {
+impl<D> Default for WorkflowDefinitions<D> {
     fn default() -> Self {
         Self {
             inner: HashMap::new(),
@@ -59,8 +59,8 @@ impl<S> Default for WorkflowSpawners<S> {
     }
 }
 
-impl<S> WorkflowSpawners<S> {
-    fn get(&self, module_id: &str, name_in_module: &str) -> &WorkflowSpawner<S> {
+impl<D> WorkflowDefinitions<D> {
+    fn get(&self, module_id: &str, name_in_module: &str) -> &D {
         &self.inner[module_id][name_in_module]
     }
 
@@ -68,22 +68,22 @@ impl<S> WorkflowSpawners<S> {
         full_id.split_once("::")
     }
 
-    fn for_full_id(&self, full_id: &str) -> Option<&WorkflowSpawner<S>> {
+    fn for_full_id(&self, full_id: &str) -> Option<&D> {
         let (module_id, name_in_module) = Self::split_full_id(full_id)?;
         self.inner.get(module_id)?.get(name_in_module)
     }
 
-    fn insert(&mut self, module_id: String, name_in_module: String, spawner: WorkflowSpawner<S>) {
+    fn insert(&mut self, module_id: String, name_in_module: String, definition: D) {
         let module_entry = self.inner.entry(module_id).or_default();
-        module_entry.insert(name_in_module, spawner);
+        module_entry.insert(name_in_module, definition);
     }
 }
 
 /// Part of the manager used during workflow instantiation.
 #[derive(Debug, Clone)]
-struct Shared<S> {
+struct Shared<D> {
     clock: Arc<dyn Clock>,
-    spawners: Arc<WorkflowSpawners<S>>,
+    definitions: Arc<WorkflowDefinitions<D>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -169,7 +169,7 @@ enum ChannelSide {
 pub struct WorkflowManager<E: WorkflowEngine, C, S> {
     pub(crate) clock: Arc<C>,
     pub(crate) storage: S,
-    spawners: Arc<WorkflowSpawners<E::Spawner>>,
+    definitions: Arc<WorkflowDefinitions<E::Definition>>,
     local_spans: Mutex<HashMap<WorkflowId, LocalSpans>>,
 }
 
@@ -187,22 +187,22 @@ impl<E: WorkflowEngine, S: Storage> WorkflowManager<E, (), S> {
 
 impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
     async fn new(engine: E, clock: C, storage: S) -> anyhow::Result<Self> {
-        let spawners = {
+        let definitions = {
             let transaction = storage.readonly_transaction().await;
-            let mut spawners = WorkflowSpawners::default();
+            let mut definitions = WorkflowDefinitions::default();
             let mut module_records = transaction.modules();
             while let Some(record) = module_records.next().await {
                 let module = engine.create_module(&record).await?;
-                for (name, spawner) in module {
-                    spawners.insert(record.id.clone(), name, spawner);
+                for (name, def) in module {
+                    definitions.insert(record.id.clone(), name, def);
                 }
             }
-            spawners
+            definitions
         };
 
         Ok(Self {
             clock: Arc::new(clock),
-            spawners: Arc::new(spawners),
+            definitions: Arc::new(definitions),
             storage,
             local_spans: Mutex::default(),
         })
@@ -218,9 +218,9 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         };
         transaction.insert_module(module_record).await;
 
-        for (name, spawner) in module {
-            let spawners = Arc::get_mut(&mut self.spawners).expect("leaked spawners");
-            spawners.insert(id.to_owned(), name, spawner);
+        for (name, def) in module {
+            let definitions = Arc::get_mut(&mut self.definitions).expect("leaked definitions");
+            definitions.insert(id.to_owned(), name, def);
         }
         transaction.commit().await;
     }
@@ -254,7 +254,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         match record.state {
             WorkflowState::Active(state) => {
                 let interface = self
-                    .spawners
+                    .definitions
                     .get(&record.module_id, &record.name_in_module)
                     .interface();
                 let handle =
@@ -290,10 +290,10 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         self.storage
     }
 
-    fn shared(&self) -> Shared<E::Spawner> {
+    fn shared(&self) -> Shared<E::Definition> {
         Shared {
             clock: Arc::clone(&self.clock) as Arc<dyn Clock>,
-            spawners: Arc::clone(&self.spawners),
+            definitions: Arc::clone(&self.definitions),
         }
     }
 

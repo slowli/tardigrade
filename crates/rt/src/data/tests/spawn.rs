@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use super::*;
-use crate::manager::StashWorkflow;
+use crate::{engine::DefineWorkflow, manager::StashWorkflow};
 use tardigrade::{
     interface::Interface,
     spawn::{ChannelSpawnConfig, HostError, ManageInterfaces},
@@ -85,16 +85,16 @@ impl StashWorkflow for MockWorkflowManager {
 }
 
 fn create_workflow_with_manager(poll_fns: MockAnswers) -> Workflow<MockInstance> {
-    let spawner = MockSpawner::wrapped(poll_fns);
-    let channel_ids = mock_channel_ids(spawner.interface(), &mut 1);
+    let definition = MockDefinition::new(poll_fns);
+    let channel_ids = mock_channel_ids(definition.interface(), &mut 1);
     let services = Services {
         clock: Arc::new(MockScheduler::default()),
         workflows: Some(Box::new(MockWorkflowManager::new())),
         tracer: None,
     };
-    let data = WorkflowData::new(spawner.interface(), channel_ids, services);
+    let data = WorkflowData::new(definition.interface(), channel_ids, services);
     let args = vec![].into();
-    let mut workflow = Workflow::new(&spawner, data, Some(args)).unwrap();
+    let mut workflow = Workflow::new(&definition, data, Some(args)).unwrap();
     workflow.initialize().unwrap();
     workflow
 }
@@ -107,7 +107,7 @@ fn spawn_child_workflow(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     assert_eq!(interface.senders().len(), 1);
     assert!(interface.sender("traces").is_some());
 
-    // Emulate creating a spawner.
+    // Emulate creating a workflow.
     let stub_id = ctx.data_mut().create_workflow_stub(
         "test:latest",
         b"child_input".to_vec(),

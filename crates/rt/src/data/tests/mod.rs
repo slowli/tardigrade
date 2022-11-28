@@ -16,7 +16,9 @@ mod spawn;
 use super::*;
 use crate::{
     backends::MockScheduler,
-    engine::{AsWorkflowData, MockAnswers, MockInstance, MockPollFn, MockSpawner},
+    engine::{
+        AsWorkflowData, DefineWorkflow, MockAnswers, MockDefinition, MockInstance, MockPollFn,
+    },
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, Execution, ExecutionError,
         Receipt, ResourceEventKind, ResourceId,
@@ -131,16 +133,16 @@ fn create_workflow_with_scheduler(
     poll_fns: MockAnswers,
     scheduler: MockScheduler,
 ) -> (Receipt, Workflow<MockInstance>) {
-    let spawner = MockSpawner::wrapped(poll_fns);
-    let channel_ids = mock_channel_ids(spawner.interface(), &mut 1);
+    let definition = MockDefinition::new(poll_fns);
+    let channel_ids = mock_channel_ids(definition.interface(), &mut 1);
     let services = Services {
         clock: Arc::new(scheduler),
         workflows: None,
         tracer: None,
     };
-    let data = WorkflowData::new(spawner.interface(), channel_ids, services);
+    let data = WorkflowData::new(definition.interface(), channel_ids, services);
     let args = vec![].into();
-    let mut workflow = Workflow::new(&spawner, data, Some(args)).unwrap();
+    let mut workflow = Workflow::new(&definition, data, Some(args)).unwrap();
     (workflow.initialize().unwrap(), workflow)
 }
 
@@ -153,13 +155,13 @@ fn restore_workflow(
     persisted: PersistedWorkflow,
     scheduler: MockScheduler,
 ) -> Workflow<MockInstance> {
-    let spawner = MockSpawner::wrapped(poll_fns);
+    let definition = MockDefinition::new(poll_fns);
     let services = Services {
         clock: Arc::new(scheduler),
         workflows: None,
         tracer: None,
     };
-    persisted.restore(&spawner, services).unwrap()
+    persisted.restore(&definition, services).unwrap()
 }
 
 #[test]
@@ -309,16 +311,16 @@ fn assert_inbound_message_receipt(workflow: &Workflow<MockInstance>, receipt: &R
 #[test]
 fn trap_when_starting_workflow() {
     let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
-    let spawner = MockSpawner::wrapped(poll_fns);
-    let channel_ids = mock_channel_ids(spawner.interface(), &mut 1);
+    let definition = MockDefinition::new(poll_fns);
+    let channel_ids = mock_channel_ids(definition.interface(), &mut 1);
     let services = Services {
         clock: Arc::new(MockScheduler::default()),
         workflows: None,
         tracer: None,
     };
-    let data = WorkflowData::new(spawner.interface(), channel_ids, services);
+    let data = WorkflowData::new(definition.interface(), channel_ids, services);
     let args = vec![].into();
-    let mut workflow = Workflow::new(&spawner, data, Some(args)).unwrap();
+    let mut workflow = Workflow::new(&definition, data, Some(args)).unwrap();
     let err = poll_fn_sx
         .send(|_| Err(anyhow!("boom")))
         .scope(|| workflow.initialize())

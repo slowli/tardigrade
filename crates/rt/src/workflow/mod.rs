@@ -11,7 +11,7 @@ pub use self::persistence::PersistedWorkflow;
 
 use crate::{
     data::WorkflowData,
-    engine::{CreateWorkflow, PersistWorkflow, RunWorkflow, WorkflowSpawner},
+    engine::{DefineWorkflow, PersistWorkflow, RunWorkflow},
     manager::Services,
     receipt::{
         Event, ExecutedFunction, Execution, ExecutionError, Receipt, ResourceEventKind, ResourceId,
@@ -42,15 +42,15 @@ pub(crate) struct Workflow<T> {
 }
 
 impl<T: RunWorkflow + PersistWorkflow> Workflow<T> {
-    pub(crate) fn new<S>(
-        spawner: &WorkflowSpawner<S>,
+    pub(crate) fn new<D>(
+        definition: &D,
         data: WorkflowData,
         args: Option<Message>,
     ) -> anyhow::Result<Self>
     where
-        S: CreateWorkflow<Spawned = T>,
+        D: DefineWorkflow<Instance = T>,
     {
-        let inner = spawner
+        let inner = definition
             .create_workflow(data)
             .context("failed creating workflow")?;
         Ok(Self { inner, args })

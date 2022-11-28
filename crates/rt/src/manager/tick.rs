@@ -10,7 +10,7 @@ use super::{
     ErroredWorkflowHandle, Services, WorkflowManager,
 };
 use crate::{
-    engine::{CreateWorkflow, WorkflowEngine, WorkflowSpawner},
+    engine::{DefineWorkflow, WorkflowEngine},
     receipt::{ExecutionError, Receipt},
     storage::{
         ActiveWorkflowState, ErroneousMessageRef, MessageError, ReadChannels, ReadModules,
@@ -114,13 +114,13 @@ impl PendingChannel {
 
 /// Temporary value holding parts necessary to restore a `Workflow`.
 #[derive(Debug)]
-struct WorkflowSeed<'a, S> {
+struct WorkflowSeed<'a, D> {
     clock: Arc<dyn Clock>,
-    spawner: &'a WorkflowSpawner<S>,
+    definition: &'a D,
     persisted: PersistedWorkflow,
 }
 
-impl<'a, S: CreateWorkflow> WorkflowSeed<'a, S> {
+impl<'a, D: DefineWorkflow> WorkflowSeed<'a, D> {
     async fn apply_wakers<T: ReadWorkflows>(
         &mut self,
         transaction: &T,
@@ -195,21 +195,21 @@ impl<'a, S: CreateWorkflow> WorkflowSeed<'a, S> {
 
     fn restore(
         self,
-        workflows: NewWorkflows<S>,
+        workflows: NewWorkflows<D>,
         tracer: TracingEventReceiver,
-    ) -> Workflow<S::Spawned> {
+    ) -> Workflow<D::Instance> {
         let services = Services {
             clock: self.clock,
             workflows: Some(Box::new(workflows)),
             tracer: Some(tracer),
         };
-        self.persisted.restore(self.spawner, services).unwrap()
+        self.persisted.restore(self.definition, services).unwrap()
     }
 
     #[allow(clippy::cast_ptr_alignment)] // FIXME: is this safe?
-    fn extract_services(services: Services) -> (NewWorkflows<S>, TracingEventReceiver) {
+    fn extract_services(services: Services) -> (NewWorkflows<D>, TracingEventReceiver) {
         let workflows = services.workflows.unwrap();
-        let workflows = *workflows.downcast::<NewWorkflows<S>>();
+        let workflows = *workflows.downcast::<NewWorkflows<D>>();
         let receiver = services.tracer.unwrap();
         (workflows, receiver)
     }
@@ -229,10 +229,12 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         &'a self,
         transaction: &S::Transaction<'a>,
         record: WorkflowRecord<ActiveWorkflowState>,
-    ) -> (WorkflowSeed<E::Spawner>, TracingEventReceiver) {
+    ) -> (WorkflowSeed<E::Definition>, TracingEventReceiver) {
         let state = record.state;
-        let spawner = self.spawners.get(&record.module_id, &record.name_in_module);
-        tracing::debug!(?spawner, "using spawner to restore workflow");
+        let definition = self
+            .definitions
+            .get(&record.module_id, &record.name_in_module);
+        tracing::debug!(?definition, "using definition to restore workflow");
 
         let tracing_metadata = transaction
             .module(&record.module_id)
@@ -248,7 +250,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         let tracer = TracingEventReceiver::new(tracing_metadata, state.tracing_spans, local_spans);
         let template = WorkflowSeed {
             clock: Arc::clone(&self.clock) as Arc<dyn Clock>,
-            spawner,
+            definition,
             persisted: state.persisted,
         };
         (template, tracer)
@@ -280,7 +282,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
             let _entered = span.enter();
 
             let (children, tracer) =
-                WorkflowSeed::<E::Spawner>::extract_services(workflow.take_services());
+                WorkflowSeed::<E::Definition>::extract_services(workflow.take_services());
             let messages = workflow.drain_messages();
             let mut persisted = workflow.persist();
             children.commit(transaction, &mut persisted).await;
