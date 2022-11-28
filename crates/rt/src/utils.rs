@@ -45,14 +45,6 @@ impl From<Message> for Vec<u8> {
     }
 }
 
-#[cfg(test)]
-#[allow(clippy::cast_sign_loss)]
-pub(crate) fn decode_string(poll_res: i64) -> (u32, u32) {
-    let ptr = ((poll_res as u64) >> 32) as u32;
-    let len = (poll_res & 0x_ffff_ffff) as u32;
-    (ptr, len)
-}
-
 pub(crate) fn drop_value<T>(poll_result: &Poll<T>) -> Poll<()> {
     match poll_result {
         Poll::Pending => Poll::Pending,

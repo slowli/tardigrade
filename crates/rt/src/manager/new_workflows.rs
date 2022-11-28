@@ -98,7 +98,7 @@ impl WorkflowStub {
         let channel_ids = ChannelIds::new(self.channels.clone(), new_channel_ids).await;
         let args = mem::take(&mut self.args);
         let data = WorkflowData::new(spawner.interface(), channel_ids.clone(), services);
-        let workflow = Workflow::new(spawner, data, Some(args.into()))?;
+        let mut workflow = Workflow::new(spawner, data, Some(args.into()))?;
         let persisted = workflow.persist();
         Ok((persisted, channel_ids))
     }

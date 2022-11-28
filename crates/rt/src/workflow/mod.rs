@@ -240,7 +240,7 @@ impl<T: RunWorkflow + PersistWorkflow> Workflow<T> {
     /// # Panics
     ///
     /// Panics if the workflow is in such a state that it cannot be persisted right now.
-    pub(crate) fn persist(mut self) -> PersistedWorkflow {
-        PersistedWorkflow::new(&mut self).unwrap()
+    pub(crate) fn persist(&mut self) -> PersistedWorkflow {
+        PersistedWorkflow::new(self).unwrap()
     }
 }
