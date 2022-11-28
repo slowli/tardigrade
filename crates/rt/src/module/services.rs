@@ -3,7 +3,13 @@
 use chrono::{DateTime, Utc};
 use tracing_tunnel::TracingEventReceiver;
 
-use std::{fmt, future::Future, pin::Pin, sync::Arc};
+use std::{
+    any::{Any, TypeId},
+    fmt,
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+};
 
 use tardigrade::{
     spawn::{ChannelsConfig, ManageInterfaces},
@@ -51,7 +57,7 @@ pub type TimerFuture = Pin<Box<dyn Future<Output = DateTime<Utc>> + Send>>;
 /// Similar to [`tardigrade::ManageWorkflows`], but mutable and synchronous.
 /// The returned handle is stored in a `Workflow` and, before it's persisted, exchanged for
 /// a `WorkflowId`.
-pub(crate) trait StashWorkflow: Send + Sync + ManageInterfaces {
+pub(crate) trait StashWorkflow: Any + Send + Sync + ManageInterfaces {
     fn stash_workflow(
         &mut self,
         stub_id: WorkflowId,
@@ -59,6 +65,17 @@ pub(crate) trait StashWorkflow: Send + Sync + ManageInterfaces {
         args: Vec<u8>,
         channels: ChannelsConfig<ChannelId>,
     );
+}
+
+impl dyn StashWorkflow {
+    pub(crate) fn downcast<T: StashWorkflow>(self: Box<Self>) -> Box<T> {
+        assert_eq!(self.as_ref().type_id(), TypeId::of::<T>());
+        unsafe {
+            // SAFETY: This duplicates downcasting logic from `Box::<dyn Any>::downcast()`.
+            let leaked = (Box::leak(self) as *mut Self).cast::<T>();
+            Box::from_raw(leaked)
+        }
+    }
 }
 
 /// Dynamically dispatched services available to workflows.

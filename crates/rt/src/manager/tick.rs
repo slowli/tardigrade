@@ -11,7 +11,7 @@ use super::{
 };
 use crate::{
     engine::{CreateWorkflow, WorkflowEngine},
-    module::{Clock, Services, StashWorkflow},
+    module::{Clock, Services},
     receipt::{ExecutionError, Receipt},
     storage::{
         ActiveWorkflowState, ErroneousMessageRef, MessageError, ReadChannels, ReadModules,
@@ -210,12 +210,7 @@ impl<'a, S: CreateWorkflow> WorkflowSeed<'a, S> {
     #[allow(clippy::cast_ptr_alignment)] // FIXME: is this safe?
     fn extract_services(services: Services) -> (NewWorkflows<S>, TracingEventReceiver) {
         let workflows = services.workflows.unwrap();
-        let workflows = unsafe {
-            // SAFETY: we have placed `NewWorkflows<S>` into the `Box` previously
-            // and it is never replaced in the `Workflow` code.
-            let leaked = (Box::leak(workflows) as *mut dyn StashWorkflow).cast::<NewWorkflows<S>>();
-            *Box::from_raw(leaked)
-        };
+        let workflows = *workflows.downcast::<NewWorkflows<S>>();
         let receiver = services.tracer.unwrap();
         (workflows, receiver)
     }
