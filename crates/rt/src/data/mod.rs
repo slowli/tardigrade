@@ -61,10 +61,10 @@ pub(crate) struct PersistedWorkflowData {
 /// Data associated with a workflow instance.
 #[derive(Debug)]
 pub struct WorkflowData {
+    /// Persisted workflow data.
+    pub(crate) persisted: PersistedWorkflowData,
     /// Services available to the workflow.
     services: Option<Services>,
-    /// Persisted workflow data.
-    persisted: PersistedWorkflowData,
     /// Data related to the currently executing WASM call.
     current_execution: Option<CurrentExecution>,
     /// Tasks that should be polled after `current_task`.

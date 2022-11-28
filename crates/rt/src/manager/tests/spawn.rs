@@ -2,19 +2,31 @@
 
 use futures::future;
 use mimicry::AnswersSender;
-use wasmtime::ExternRef;
 
 use super::*;
 use crate::{
-    data::{tests::complete_task_with_error, SpawnFunctions},
+    data::{tests::complete_task_with_error, ReportedErrorKind},
     receipt::{ChannelEventKind, ResourceEvent, ResourceEventKind, ResourceId},
-    storage::{LocalTransaction, Readonly},
-    utils::{copy_string_from_wasm, decode_string},
+    storage::{LocalTransaction, Readonly, WorkflowWaker},
 };
-use tardigrade::{abi::TryFromWasm, interface::ChannelHalf, task::JoinError};
+use tardigrade::{
+    spawn::{ChannelSpawnConfig, ChannelsConfig},
+    task::JoinError,
+};
 
 const CHILD_ID: WorkflowId = 1;
-const ERROR_PTR: u32 = 1_024;
+
+async fn wakers_for_workflow(
+    manager: &LocalManager,
+    workflow_id: WorkflowId,
+) -> Vec<WorkflowWaker> {
+    let transaction = manager.storage.readonly_transaction().await;
+    transaction
+        .as_ref()
+        .wakers_for_workflow(workflow_id)
+        .cloned()
+        .collect()
+}
 
 async fn peek_channel(
     transaction: &Readonly<LocalTransaction<'_>>,
@@ -26,85 +38,45 @@ async fn peek_channel(
     future::try_join_all(messages).await.unwrap()
 }
 
-fn configure_handle(
-    mut ctx: StoreContextMut<'_, WorkflowData>,
-    handles: Option<ExternRef>,
-    channel_kind: ChannelHalf,
-    name: &str,
-) -> anyhow::Result<()> {
-    let (name_ptr, name_len) =
-        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(name.as_bytes())?;
-    SpawnFunctions::set_channel_handle(
-        ctx,
-        handles,
-        channel_kind.into_abi_in_wasm(),
-        name_ptr,
-        name_len,
-        0,
-    )
+fn configure_handles() -> ChannelsConfig<ChannelId> {
+    let mut config = ChannelsConfig::default();
+    config
+        .receivers
+        .insert("orders".to_owned(), ChannelSpawnConfig::New);
+    config
+        .senders
+        .insert("events".to_owned(), ChannelSpawnConfig::New);
+    config
+        .senders
+        .insert("traces".to_owned(), ChannelSpawnConfig::New);
+    config
 }
 
-fn configure_handles(
-    mut ctx: StoreContextMut<'_, WorkflowData>,
-    handles: Option<ExternRef>,
-) -> anyhow::Result<()> {
-    configure_handle(
-        ctx.as_context_mut(),
-        handles.clone(),
-        ChannelHalf::Receiver,
-        "orders",
-    )?;
-    configure_handle(
-        ctx.as_context_mut(),
-        handles.clone(),
-        ChannelHalf::Sender,
-        "events",
-    )?;
-    configure_handle(ctx.as_context_mut(), handles, ChannelHalf::Sender, "traces")?;
-    Ok(())
-}
+fn spawn_child(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
+    let args = b"child_input".to_vec();
+    let stub_id = ctx
+        .data_mut()
+        .create_workflow_stub(DEFINITION_ID, args, &configure_handles())?;
+    let poll_result = ctx
+        .data_mut()
+        .poll_workflow_init(stub_id)?
+        .into_inner(ctx)?;
+    assert!(poll_result.is_pending());
 
-fn spawn_child(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
-    let (id_ptr, id_len) =
-        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(DEFINITION_ID.as_bytes())?;
-    let (args_ptr, args_len) =
-        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"child_input")?;
-    let handles = SpawnFunctions::create_channel_handles();
-    configure_handles(ctx.as_context_mut(), handles.clone())?;
-    let stub = SpawnFunctions::spawn(
-        ctx.as_context_mut(),
-        id_ptr,
-        id_len,
-        args_ptr,
-        args_len,
-        handles,
-    )?;
-    assert!(stub.is_some());
-
-    let workflow =
-        SpawnFunctions::poll_workflow_init(ctx.as_context_mut(), stub, POLL_CX, ERROR_PTR)?;
-    assert!(workflow.is_none());
     Ok(Poll::Pending)
 }
 
-fn poll_child_traces(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
-    let workflow = Some(WorkflowData::child_ref(CHILD_ID));
-
-    // Block on the channel receiver from the child.
-    let (traces_ptr, traces_len) =
-        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"traces")?;
-    let child_traces = WorkflowFunctions::get_receiver(
-        ctx.as_context_mut(),
-        workflow,
-        traces_ptr,
-        traces_len,
-        ERROR_PTR,
-    )?;
-    assert!(child_traces.is_some());
-
-    let poll_result =
-        WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), child_traces, POLL_CX)?;
-    assert_eq!(poll_result, -1); // Poll::Pending
+fn poll_child_traces(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
+    let child_traces_id = ctx
+        .data_mut()
+        .acquire_receiver(Some(CHILD_ID), "traces")
+        .unwrap()
+        .unwrap();
+    let poll_result = ctx
+        .data_mut()
+        .poll_receiver(child_traces_id)
+        .into_inner(ctx)?;
+    assert!(poll_result.is_pending());
 
     Ok(Poll::Pending)
 }
@@ -112,8 +84,7 @@ fn poll_child_traces(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Resu
 #[async_std::test]
 async fn spawning_child_workflow() {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager(()).await;
+    let manager = create_test_manager(poll_fns, ()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
 
@@ -168,11 +139,19 @@ async fn spawning_child_workflow() {
         .await
         .unwrap();
 
-    let receive_child_trace: MockPollFn = |mut ctx| {
-        let child_traces = Some(ctx.data().receiver_ref(Some(CHILD_ID), "traces"));
-        let poll_result =
-            WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), child_traces, POLL_CX)?;
-        assert_ne!(poll_result, -1); // Poll::Ready(Some(_))
+    let receive_child_trace: MockPollFn = |ctx| {
+        let child_channels = ctx
+            .data()
+            .persisted
+            .child_workflow(CHILD_ID)
+            .unwrap()
+            .channels();
+        let child_traces_id = child_channels.receiver_id("traces").unwrap();
+        let poll_result = ctx
+            .data_mut()
+            .poll_receiver(child_traces_id)
+            .into_inner(ctx)?;
+        assert_matches!(poll_result, Poll::Ready(Some(_)));
 
         Ok(Poll::Pending)
     };
@@ -212,8 +191,7 @@ async fn spawning_child_workflow() {
 #[async_std::test]
 async fn sending_message_to_child() {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager(()).await;
+    let manager = create_test_manager(poll_fns, ()).await;
     let workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
 
@@ -223,25 +201,22 @@ async fn sending_message_to_child() {
         .await
         .unwrap();
 
-    let send_message_to_child: MockPollFn = |mut ctx| {
-        let child_orders = Some(ctx.data_mut().sender_ref(Some(CHILD_ID), "orders"));
-        let poll_result = WorkflowFunctions::poll_ready_for_sender(
-            ctx.as_context_mut(),
-            child_orders.clone(),
-            POLL_CX,
-        )?;
-        assert_eq!(poll_result, 0); // Poll::Ready(Ok(())
+    let send_message_to_child: MockPollFn = |ctx| {
+        let child_channels = ctx
+            .data()
+            .persisted
+            .child_workflow(CHILD_ID)
+            .unwrap()
+            .channels();
+        let child_orders_id = child_channels.sender_id("orders").unwrap();
+        let poll_result = ctx
+            .data_mut()
+            .poll_sender(child_orders_id, false)
+            .into_inner(ctx)?;
+        assert_matches!(poll_result, Poll::Ready(Ok(_)));
 
-        let (message_ptr, message_len) =
-            WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"child_order")?;
-        let send_result = WorkflowFunctions::start_send(
-            ctx.as_context_mut(),
-            child_orders,
-            message_ptr,
-            message_len,
-        )?;
-        assert_eq!(send_result, 0); // Ok(())
-
+        ctx.data_mut()
+            .push_outbound_message(child_orders_id, b"child_order".to_vec())?;
         Ok(Poll::Pending)
     };
     poll_fn_sx
@@ -260,11 +235,11 @@ async fn sending_message_to_child() {
         assert_eq!(child_orders[0], b"child_order");
     }
 
-    let init_child: MockPollFn = |mut ctx| {
-        let orders = Some(ctx.data().receiver_ref(None, "orders"));
-        let poll_result =
-            WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
-        assert_eq!(poll_result, -1); // Poll::Pending
+    let init_child: MockPollFn = |ctx| {
+        let channels = ctx.data().persisted.channels();
+        let orders_id = channels.receiver_id("orders").unwrap();
+        let poll_result = ctx.data_mut().poll_receiver(orders_id).into_inner(ctx)?;
+        assert!(poll_result.is_pending());
         Ok(Poll::Pending)
     };
     poll_fn_sx
@@ -273,11 +248,11 @@ async fn sending_message_to_child() {
         .await
         .unwrap();
 
-    let poll_orders_in_child: MockPollFn = |mut ctx| {
-        let orders = Some(ctx.data().receiver_ref(None, "orders"));
-        let poll_result =
-            WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
-        assert_ne!(poll_result, -1); // Poll::Ready(Some(_))
+    let poll_orders_in_child: MockPollFn = |ctx| {
+        let channels = ctx.data().persisted.channels();
+        let orders_id = channels.receiver_id("orders").unwrap();
+        let poll_result = ctx.data_mut().poll_receiver(orders_id).into_inner(ctx)?;
+        assert_matches!(poll_result, Poll::Ready(Some(_)));
         Ok(Poll::Pending)
     };
     poll_fn_sx
@@ -287,26 +262,34 @@ async fn sending_message_to_child() {
         .unwrap();
 }
 
-fn test_child_channels_after_closure(
-    mut ctx: StoreContextMut<WorkflowData>,
-) -> anyhow::Result<Poll<()>> {
-    let child_orders = Some(ctx.data_mut().sender_ref(Some(CHILD_ID), "orders"));
-    let poll_result =
-        WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), child_orders, POLL_CX)?;
-    assert_eq!(poll_result, 2); // Err(Closed)
+fn test_child_channels_after_closure(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
+    let child_channels = ctx
+        .data()
+        .persisted
+        .child_workflow(CHILD_ID)
+        .unwrap()
+        .channels();
+    let child_orders_id = child_channels.sender_id("orders").unwrap();
+    let child_traces_id = child_channels.receiver_id("traces").unwrap();
 
-    let child_traces = Some(ctx.data().receiver_ref(Some(CHILD_ID), "traces"));
-    let poll_result =
-        WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), child_traces, POLL_CX)?;
-    assert_eq!(poll_result, -2); // Poll::Ready(None)
+    let poll_result = ctx
+        .data_mut()
+        .poll_sender(child_orders_id, false)
+        .into_inner(ctx)?;
+    assert_matches!(poll_result, Poll::Ready(Err(SendError::Closed)));
+
+    let poll_result = ctx
+        .data_mut()
+        .poll_receiver(child_traces_id)
+        .into_inner(ctx)?;
+    assert_matches!(poll_result, Poll::Ready(None));
 
     Ok(Poll::Pending)
 }
 
 async fn test_child_workflow_channel_management(complete_child: bool) {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager(()).await;
+    let manager = create_test_manager(poll_fns, ()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
 
@@ -316,12 +299,13 @@ async fn test_child_workflow_channel_management(complete_child: bool) {
         .await
         .unwrap();
 
-    let poll_child_traces_and_completion: MockPollFn = |mut ctx| {
-        let _ = poll_child_traces(ctx.as_context_mut())?;
-        let child = Some(WorkflowData::child_ref(CHILD_ID));
-        let poll_result =
-            SpawnFunctions::poll_workflow_completion(ctx.as_context_mut(), child, POLL_CX)?;
-        assert_eq!(poll_result, -1); // Poll::Pending
+    let poll_child_traces_and_completion: MockPollFn = |ctx| {
+        let _ = poll_child_traces(ctx)?;
+        let poll_result = ctx
+            .data_mut()
+            .poll_workflow_completion(CHILD_ID)
+            .into_inner(ctx)?;
+        assert!(poll_result.is_pending());
 
         Ok(Poll::Pending)
     };
@@ -342,12 +326,13 @@ async fn test_child_workflow_channel_management(complete_child: bool) {
     let poll_child_workflow: MockPollFn = if complete_child {
         |_| Ok(Poll::Ready(()))
     } else {
-        |mut ctx| {
-            let orders = Some(ctx.data().receiver_ref(None, "orders"));
-            WorkflowFunctions::drop_ref(ctx.as_context_mut(), orders)?;
-            let traces = Some(ctx.data_mut().sender_ref(None, "traces"));
-            WorkflowFunctions::drop_ref(ctx.as_context_mut(), traces)?;
+        |ctx| {
+            let channels = ctx.data().persisted.channels();
+            let orders_id = channels.receiver_id("orders").unwrap();
+            let traces_id = channels.sender_id("traces").unwrap();
 
+            let _wakers = ctx.data_mut().drop_receiver(orders_id);
+            let _wakers = ctx.data_mut().drop_sender(traces_id);
             Ok(Poll::Pending)
         }
     };
@@ -374,13 +359,25 @@ async fn test_child_workflow_channel_management(complete_child: bool) {
         assert_eq!(wakers.len(), 1);
     }
 
+    test_child_resources_after_drop(&manager, poll_fn_sx, complete_child).await;
+}
+
+async fn test_child_resources_after_drop(
+    manager: &LocalManager,
+    mut poll_fn_sx: AnswersSender<MockPollFn>,
+    complete_child: bool,
+) {
+    let workflow_id = 0;
+    let mut workflow = manager.workflow(workflow_id).await.unwrap();
+
     let test_child_resources: MockPollFn = if complete_child {
-        |mut ctx| {
-            let _ = test_child_channels_after_closure(ctx.as_context_mut())?;
-            let child = Some(WorkflowData::child_ref(CHILD_ID));
-            let poll_result =
-                SpawnFunctions::poll_workflow_completion(ctx.as_context_mut(), child, POLL_CX)?;
-            assert_eq!(poll_result, -2); // Poll::Ready(Ok(()))
+        |ctx| {
+            let _ = test_child_channels_after_closure(ctx)?;
+            let poll_result = ctx
+                .data_mut()
+                .poll_workflow_completion(CHILD_ID)
+                .into_inner(ctx)?;
+            assert_matches!(poll_result, Poll::Ready(Ok(())));
 
             Ok(Poll::Pending)
         }
@@ -389,12 +386,12 @@ async fn test_child_workflow_channel_management(complete_child: bool) {
     };
     let receipt = poll_fn_sx
         .send(test_child_resources)
-        .async_scope(tick_workflow(&manager, workflow_id))
+        .async_scope(tick_workflow(manager, workflow_id))
         .await
         .unwrap();
 
     workflow.update().await.unwrap();
-    let child_state = workflow.persisted().child_workflow(child_id).unwrap();
+    let child_state = workflow.persisted().child_workflow(CHILD_ID).unwrap();
     if complete_child {
         assert_matches!(child_state.result(), Poll::Ready(Ok(())));
     } else {
@@ -425,67 +422,45 @@ async fn child_workflow_channel_closure() {
 }
 
 fn spawn_child_with_copied_sender(
-    mut ctx: StoreContextMut<'_, WorkflowData>,
+    ctx: &mut MockInstance,
     copy_traces: bool,
 ) -> anyhow::Result<Poll<()>> {
-    let (id_ptr, id_len) =
-        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(DEFINITION_ID.as_bytes())?;
-    let (args_ptr, args_len) =
-        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"child_input")?;
-
-    let handles = SpawnFunctions::create_channel_handles();
-    configure_handles(ctx.as_context_mut(), handles.clone())?;
-    let events = Some(ctx.data_mut().sender_ref(None, "events"));
-    let (name_ptr, name_len) = WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"events")?;
-    SpawnFunctions::copy_sender_handle(
-        ctx.as_context_mut(),
-        handles.clone(),
-        name_ptr,
-        name_len,
-        events.clone(),
-    )?;
+    let events_id = ctx.data().persisted.channels().sender_id("events").unwrap();
+    let mut handles = configure_handles();
+    handles
+        .senders
+        .insert("events".to_owned(), ChannelSpawnConfig::Existing(events_id));
     if copy_traces {
-        let (name_ptr, name_len) =
-            WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"traces")?;
-        SpawnFunctions::copy_sender_handle(
-            ctx.as_context_mut(),
-            handles.clone(),
-            name_ptr,
-            name_len,
-            events,
-        )?;
+        handles
+            .senders
+            .insert("traces".to_owned(), ChannelSpawnConfig::Existing(events_id));
     }
 
-    let stub = SpawnFunctions::spawn(
-        ctx.as_context_mut(),
-        id_ptr,
-        id_len,
-        args_ptr,
-        args_len,
-        handles,
-    )?;
-    assert!(stub.is_some());
-    SpawnFunctions::poll_workflow_init(ctx.as_context_mut(), stub, POLL_CX, ERROR_PTR)?;
+    let args = b"child_input".to_vec();
+    let stub_id = ctx
+        .data_mut()
+        .create_workflow_stub(DEFINITION_ID, args, &handles)?;
+    let poll_result = ctx
+        .data_mut()
+        .poll_workflow_init(stub_id)?
+        .into_inner(ctx)?;
+    assert!(poll_result.is_pending());
 
     Ok(Poll::Pending)
 }
 
-fn poll_child_completion_with_copied_channel(
-    mut ctx: StoreContextMut<'_, WorkflowData>,
-) -> anyhow::Result<Poll<()>> {
-    let workflow = Some(WorkflowData::child_ref(CHILD_ID));
-    let (name_ptr, name_len) = WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"events")?;
-    let child_events = WorkflowFunctions::get_receiver(
-        ctx.as_context_mut(),
-        workflow.clone(),
-        name_ptr,
-        name_len,
-        ERROR_PTR,
-    )?;
-    assert!(child_events.is_none()); // The handle to child events is not captured
-
-    // Block on child completion
-    SpawnFunctions::poll_workflow_completion(ctx.as_context_mut(), workflow, POLL_CX)?;
+fn poll_child_completion_with_copied_channel(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
+    let child_events_id = ctx
+        .data_mut()
+        .acquire_receiver(Some(CHILD_ID), "events")
+        .unwrap();
+    assert!(child_events_id.is_none()); // The handle to child events is not captured
+                                        // Block on child completion
+    let poll_result = ctx
+        .data_mut()
+        .poll_workflow_completion(CHILD_ID)
+        .into_inner(ctx)?;
+    assert!(poll_result.is_pending());
     Ok(Poll::Pending)
 }
 
@@ -507,8 +482,7 @@ async fn init_workflow_with_copied_child_channel(
 #[async_std::test]
 async fn spawning_child_with_copied_sender() {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager(()).await;
+    let manager = create_test_manager(poll_fns, ()).await;
     let workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
     let events_id = workflow.ids().channel_ids.senders["events"];
@@ -524,11 +498,11 @@ async fn spawning_child_with_copied_sender() {
     let child_events_id = child.persisted().channels().sender_id("events").unwrap();
     assert_eq!(child_events_id, events_id);
 
-    let write_event_and_complete_child: MockPollFn = |mut ctx| {
-        let events = Some(ctx.data_mut().sender_ref(None, "events"));
-        let (message_ptr, message_len) =
-            WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"child_event")?;
-        WorkflowFunctions::start_send(ctx.as_context_mut(), events, message_ptr, message_len)?;
+    let write_event_and_complete_child: MockPollFn = |ctx| {
+        let channels = ctx.data().persisted.channels();
+        let events_id = channels.sender_id("events").unwrap();
+        ctx.data_mut()
+            .push_outbound_message(events_id, b"child_event".to_vec())?;
         Ok(Poll::Ready(()))
     };
     poll_fn_sx
@@ -551,8 +525,7 @@ async fn spawning_child_with_copied_sender() {
 
 async fn test_child_with_copied_closed_sender(close_before_spawn: bool) {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager(()).await;
+    let manager = create_test_manager(poll_fns, ()).await;
     let workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
     let events_id = workflow.ids().channel_ids.senders["events"];
@@ -567,14 +540,13 @@ async fn test_child_with_copied_closed_sender(close_before_spawn: bool) {
         manager.close_host_receiver(events_id).await;
     }
 
-    let test_writing_event_in_child: MockPollFn = |mut ctx| {
-        let events = Some(ctx.data_mut().sender_ref(None, "events"));
-        let (message_ptr, message_len) =
-            WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"child_event")?;
-        let send_result =
-            WorkflowFunctions::start_send(ctx.as_context_mut(), events, message_ptr, message_len)?;
-        assert_eq!(send_result, 2); // Err(SendError::Closed)
-
+    let test_writing_event_in_child: MockPollFn = |ctx| {
+        let channels = ctx.data().persisted.channels();
+        let events_id = channels.sender_id("events").unwrap();
+        let send_result = ctx
+            .data_mut()
+            .push_outbound_message(events_id, b"child_event".to_vec());
+        assert_matches!(send_result, Err(SendError::Closed));
         Ok(Poll::Pending)
     };
     poll_fn_sx
@@ -596,8 +568,7 @@ async fn spawning_child_with_copied_then_closed_sender() {
 
 async fn test_child_with_aliased_sender(complete_child: bool) {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager(()).await;
+    let manager = create_test_manager(poll_fns, ()).await;
     let workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
     let events_id = workflow.ids().channel_ids.senders["events"];
@@ -621,30 +592,22 @@ async fn test_child_with_aliased_sender(complete_child: bool) {
     assert_eq!(child_channel_ids.senders["events"], events_id);
     assert_eq!(child_channel_ids.senders["traces"], events_id);
 
-    let write_event_and_drop_events: MockPollFn = |mut ctx| {
-        let events = Some(ctx.data_mut().sender_ref(None, "events"));
-        let (message_ptr, message_len) =
-            WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"child_event")?;
-        WorkflowFunctions::start_send(
-            ctx.as_context_mut(),
-            events.clone(),
-            message_ptr,
-            message_len,
-        )?;
-        WorkflowFunctions::drop_ref(ctx.as_context_mut(), events)?;
+    let write_event_and_drop_events: MockPollFn = |ctx| {
+        let channels = ctx.data().persisted.channels();
+        let events_id = channels.sender_id("events").unwrap();
+        let traces_id = channels.sender_id("traces").unwrap();
 
-        let traces = Some(ctx.data_mut().sender_ref(None, "traces"));
-        let (message_ptr, message_len) =
-            WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"child_trace")?;
-        WorkflowFunctions::start_send(
-            ctx.as_context_mut(),
-            traces.clone(),
-            message_ptr,
-            message_len,
-        )?;
-        let poll_result =
-            WorkflowFunctions::poll_flush_for_sender(ctx.as_context_mut(), traces, POLL_CX)?;
-        assert_eq!(poll_result, -1); // Poll::Pending
+        ctx.data_mut()
+            .push_outbound_message(events_id, b"child_event".to_vec())?;
+        let _wakers = ctx.data_mut().drop_sender(events_id);
+
+        ctx.data_mut()
+            .push_outbound_message(traces_id, b"child_trace".to_vec())?;
+        let poll_result = ctx
+            .data_mut()
+            .poll_sender(traces_id, true)
+            .into_inner(ctx)?;
+        assert!(poll_result.is_pending());
         Ok(Poll::Pending)
     };
     poll_fn_sx
@@ -666,9 +629,10 @@ async fn test_child_with_aliased_sender(complete_child: bool) {
     let guard = if complete_child {
         poll_fn_sx.send(|_| Ok(Poll::Ready(())))
     } else {
-        poll_fn_sx.send(|mut ctx| {
-            let traces = Some(ctx.data_mut().sender_ref(None, "traces"));
-            WorkflowFunctions::drop_ref(ctx, traces)?;
+        poll_fn_sx.send(|ctx| {
+            let channels = ctx.data().persisted.channels();
+            let traces_id = channels.sender_id("traces").unwrap();
+            let _wakers = ctx.data_mut().drop_sender(traces_id);
             Ok(Poll::Pending)
         })
     };
@@ -694,20 +658,19 @@ async fn spawning_and_completing_child_with_aliased_sender() {
     test_child_with_aliased_sender(true).await;
 }
 
-fn poll_child_completion(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
-    let workflow = Some(WorkflowData::child_ref(CHILD_ID));
-    let poll_result =
-        SpawnFunctions::poll_workflow_completion(ctx.as_context_mut(), workflow, POLL_CX)?;
-    assert_eq!(poll_result, -1); // Poll::Pending
-
+fn poll_child_completion(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
+    let poll_result = ctx
+        .data_mut()
+        .poll_workflow_completion(CHILD_ID)
+        .into_inner(ctx)?;
+    assert!(poll_result.is_pending());
     Ok(Poll::Pending)
 }
 
 #[async_std::test]
 async fn completing_child_with_error() {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager(()).await;
+    let manager = create_test_manager(poll_fns, ()).await;
     let workflow_id = create_test_workflow(&manager).await.id();
 
     poll_fn_sx
@@ -727,19 +690,16 @@ async fn completing_child_with_error() {
         Err(JoinError::Err(err)) if err.cause().to_string() == "error message"
     );
 
-    let check_child_completion: MockPollFn = |mut ctx| {
-        let child = Some(WorkflowData::child_ref(CHILD_ID));
-        let poll_result =
-            SpawnFunctions::poll_workflow_completion(ctx.as_context_mut(), child.clone(), POLL_CX)?;
-        assert_eq!(poll_result, -2); // Poll::Ready(Ok(()))
+    let check_child_completion: MockPollFn = |ctx| {
+        let poll_result = ctx
+            .data_mut()
+            .poll_workflow_completion(CHILD_ID)
+            .into_inner(ctx)?;
+        assert_matches!(poll_result, Poll::Ready(Ok(_)));
 
-        let err = SpawnFunctions::completion_error(ctx.as_context_mut(), child)?;
-        assert_ne!(err, 0);
-        let (err_ptr, err_len) = decode_string(err);
-        let memory = ctx.data().exports().memory;
-        let err_json = copy_string_from_wasm(&ctx, &memory, err_ptr, err_len)?;
-        assert!(err_json.starts_with('{') && err_json.ends_with('}'));
-
+        let err = ctx.data().workflow_task_error(CHILD_ID).unwrap();
+        let err_cause = err.cause().to_string();
+        assert_eq!(err_cause, "error message");
         Ok(Poll::Pending)
     };
     let receipt = poll_fn_sx
@@ -757,43 +717,41 @@ async fn completing_child_with_error() {
     assert!(is_child_polled, "{receipt:?}");
 }
 
-fn complete_task_with_panic(
-    mut ctx: StoreContextMut<'_, WorkflowData>,
-) -> anyhow::Result<Poll<()>> {
-    let (message_ptr, message_len) =
-        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"panic message")?;
-    let (filename_ptr, filename_len) =
-        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"/build/src/test.rs")?;
+fn complete_task_with_panic(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
+    let channels = ctx.data().persisted.channels();
+    let events_id = channels.sender_id("events").unwrap();
+    ctx.data_mut()
+        .push_outbound_message(events_id, b"panic message".to_vec())?;
 
-    let events = Some(ctx.data_mut().sender_ref(None, "events"));
-    let send_result =
-        WorkflowFunctions::start_send(ctx.as_context_mut(), events, message_ptr, message_len)?;
-    assert_eq!(send_result, 0); // Ok(())
-
-    WorkflowFunctions::report_panic(
-        ctx,
-        message_ptr,
-        message_len,
-        filename_ptr,
-        filename_len,
-        42, // line
-        1,  // column
-    )?;
+    ctx.data_mut().report_error_or_panic(
+        ReportedErrorKind::Panic,
+        Some("panic message".to_owned()),
+        None,
+        42,
+        1,
+    );
     Err(anyhow!("oops"))
 }
 
-fn check_aborted_child_completion(
-    mut ctx: StoreContextMut<'_, WorkflowData>,
-) -> anyhow::Result<Poll<()>> {
-    let child = Some(WorkflowData::child_ref(CHILD_ID));
-    let poll_result =
-        SpawnFunctions::poll_workflow_completion(ctx.as_context_mut(), child, POLL_CX)?;
-    assert_eq!(poll_result, -3); // Poll::Ready(Err(Aborted))
+fn check_aborted_child_completion(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
+    let poll_result = ctx
+        .data_mut()
+        .poll_workflow_completion(CHILD_ID)
+        .into_inner(ctx)?;
+    assert_matches!(poll_result, Poll::Ready(Err(_)));
 
-    let child_events = Some(ctx.data().receiver_ref(Some(CHILD_ID), "events"));
-    let poll_result =
-        WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), child_events, POLL_CX)?;
-    assert_eq!(poll_result, -2); // Poll::Ready(None)
+    let child_channels = ctx
+        .data()
+        .persisted
+        .child_workflow(CHILD_ID)
+        .unwrap()
+        .channels();
+    let child_events_id = child_channels.receiver_id("events").unwrap();
+    let poll_result = ctx
+        .data_mut()
+        .poll_receiver(child_events_id)
+        .into_inner(ctx)?;
+    assert_matches!(poll_result, Poll::Ready(None));
 
     Ok(Poll::Pending)
 }
@@ -801,8 +759,7 @@ fn check_aborted_child_completion(
 #[async_std::test]
 async fn completing_child_with_panic() {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager(()).await;
+    let manager = create_test_manager(poll_fns, ()).await;
     let workflow_id = create_test_workflow(&manager).await.id();
 
     let tick_result = poll_fn_sx
@@ -849,7 +806,7 @@ async fn completing_child_with_panic() {
 }
 
 async fn assert_child_abort(
-    manager: &WorkflowManager<(), LocalStorage>,
+    manager: &LocalManager,
     poll_fn_sx: &mut AnswersSender<MockPollFn>,
     workflow_id: WorkflowId,
     child_events_id: ChannelId,
@@ -889,8 +846,7 @@ async fn init_workflow_with_child(
 
 async fn test_aborting_child(initialize_child: bool) {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager(()).await;
+    let manager = create_test_manager(poll_fns, ()).await;
     let workflow_id = create_test_workflow(&manager).await.id();
 
     init_workflow_with_child(&manager, workflow_id, &mut poll_fn_sx).await;
@@ -922,8 +878,7 @@ async fn aborting_child_after_initialization() {
 #[async_std::test]
 async fn aborting_parent() {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager(()).await;
+    let manager = create_test_manager(poll_fns, ()).await;
     let workflow_id = create_test_workflow(&manager).await.id();
 
     init_workflow_with_child(&manager, workflow_id, &mut poll_fn_sx).await;
@@ -937,18 +892,17 @@ async fn aborting_parent() {
     let child_orders = manager.channel(child_orders_id).await.unwrap();
     assert!(child_orders.is_closed);
 
-    let check_child_channels: MockPollFn = |mut ctx| {
-        let orders = Some(ctx.data().receiver_ref(None, "orders"));
-        let poll_result =
-            WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
-        assert_eq!(poll_result, -2); // Poll::Ready(None)
+    let check_child_channels: MockPollFn = |ctx| {
+        let channels = ctx.data().persisted.channels();
+        let orders_id = channels.receiver_id("orders").unwrap();
+        let events_id = channels.sender_id("events").unwrap();
 
-        let events = Some(ctx.data_mut().sender_ref(None, "events"));
-        let (message_ptr, message_len) =
-            WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"child event")?;
-        let send_result =
-            WorkflowFunctions::start_send(ctx.as_context_mut(), events, message_ptr, message_len)?;
-        assert_eq!(send_result, 2); // Err(SendError::Closed)
+        let poll_result = ctx.data_mut().poll_receiver(orders_id).into_inner(ctx)?;
+        assert_matches!(poll_result, Poll::Ready(None));
+        let send_result = ctx
+            .data_mut()
+            .push_outbound_message(events_id, b"child event".to_vec());
+        assert_matches!(send_result, Err(SendError::Closed));
 
         Ok(Poll::Ready(()))
     };

@@ -14,8 +14,8 @@ use std::{
     task::{Context, Poll},
 };
 
-//#[cfg(test)]
-//mod tests;
+#[cfg(test)]
+mod tests;
 
 use crate::{
     manager::{self, AsManager, TickResult},

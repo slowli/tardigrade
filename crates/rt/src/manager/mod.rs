@@ -14,8 +14,8 @@ mod persistence;
 mod tick;
 mod traits;
 
-//#[cfg(test)]
-//pub(crate) mod tests;
+#[cfg(test)]
+pub(crate) mod tests;
 
 pub use self::{
     handle::{
