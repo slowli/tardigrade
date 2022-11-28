@@ -9,11 +9,10 @@ use wasmtime::{
 use std::{collections::HashMap, fmt, str, task::Poll};
 
 use super::{
-    functions::{SpawnFunctions, TracingFunctions, WorkflowFunctions},
+    functions::{SpawnFunctions, TracingFunctions, WasmContextPtr, WorkflowFunctions},
     instance::InstanceData,
     module::ExtendLinker,
 };
-use crate::data::WasmContextPtr;
 use tardigrade::{abi::TryFromWasm, interface::Interface, TaskId, TimerId, WakerId};
 
 type Ref = Option<ExternRef>;

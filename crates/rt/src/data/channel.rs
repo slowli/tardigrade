@@ -10,12 +10,11 @@ use std::{
 };
 
 use super::{
-    helpers::{WakeIfPending, WakerPlacement, Wakers, WasmContext},
+    helpers::{WakerPlacement, Wakers, WorkflowPoll},
     PersistedWorkflowData, WorkflowData,
 };
 use crate::{receipt::WakeUpCause, utils::Message, workflow::ChannelIds};
 use tardigrade::{
-    abi::PollMessage,
     channel::SendError,
     interface::{AccessErrorKind, ChannelHalf, Interface},
     spawn::{ChannelSpawnConfig, ChannelsConfig},
@@ -524,8 +523,8 @@ impl WorkflowData {
     }
 
     /// Polls a next message for the specified receiver.
-    #[tracing::instrument(level = "debug", skip(self, cx), fields(ret.len))]
-    pub fn poll_receiver(&mut self, channel_id: ChannelId, cx: &mut WasmContext) -> PollMessage {
+    #[tracing::instrument(level = "debug", skip(self), fields(ret.len))]
+    pub fn poll_receiver(&mut self, channel_id: ChannelId) -> WorkflowPoll<Option<Vec<u8>>> {
         let channels = &mut self.persisted.channels;
         let state = channels.receivers.get_mut(&channel_id).unwrap();
         // ^ `unwrap()` safety is guaranteed by resource handling
@@ -538,17 +537,16 @@ impl WorkflowData {
 
         self.current_execution()
             .push_receiver_event(channel_id, &poll_result);
-        poll_result.wake_if_pending(cx, || WakerPlacement::Receiver(channel_id))
+        WorkflowPoll::new(poll_result, WakerPlacement::Receiver(channel_id))
     }
 
     /// Polls the specified sender for readiness / flush.
-    #[tracing::instrument(level = "debug", skip(self, cx), ret)]
+    #[tracing::instrument(level = "debug", skip(self), ret)]
     pub fn poll_sender(
         &mut self,
         channel_id: ChannelId,
         flush: bool,
-        cx: &mut WasmContext,
-    ) -> Poll<Result<(), SendError>> {
+    ) -> WorkflowPoll<Result<(), SendError>> {
         let channel_state = &self.persisted.channels.senders[&channel_id];
 
         let should_block =
@@ -568,7 +566,7 @@ impl WorkflowData {
 
         self.current_execution()
             .push_sender_poll_event(channel_id, flush, poll_result.clone());
-        poll_result.wake_if_pending(cx, || WakerPlacement::Sender(channel_id))
+        WorkflowPoll::new(poll_result, WakerPlacement::Sender(channel_id))
     }
 
     /// Pushes an outbound message into the specified channel.

@@ -15,14 +15,9 @@ mod time;
 //#[cfg(test)]
 //pub(crate) mod tests;
 
-pub(crate) use self::{
-    channel::ConsumeError,
-    helpers::{Wakers, WasmContextPtr},
-    persistence::PersistError,
-};
+pub(crate) use self::{channel::ConsumeError, helpers::Wakers, persistence::PersistError};
 pub use self::{
     channel::{Channels, ReceiverState, SenderState},
-    helpers::WasmContext,
     spawn::ChildWorkflow,
     task::TaskState,
     time::TimerState,

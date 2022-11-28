@@ -1,6 +1,7 @@
 //! Functionality to manage tasks.
 
 use anyhow::anyhow;
+use futures::future::Aborted;
 use serde::{Deserialize, Serialize};
 
 use std::{
@@ -10,7 +11,7 @@ use std::{
 };
 
 use super::{
-    helpers::{CurrentExecution, WakeIfPending, WakerPlacement, WasmContext},
+    helpers::{CurrentExecution, WakerPlacement, WorkflowPoll},
     PersistedWorkflowData, WorkflowData,
 };
 use crate::{
@@ -18,7 +19,6 @@ use crate::{
     utils,
 };
 use tardigrade::{
-    abi::PollTask,
     task::{JoinError, TaskResult},
     TaskId, WakerId,
 };
@@ -244,8 +244,8 @@ impl WorkflowData {
     }
 
     /// Polls task completion.
-    #[tracing::instrument(level = "debug", skip(self, cx), ret)]
-    pub fn poll_task_completion(&mut self, task_id: TaskId, cx: &mut WasmContext) -> PollTask {
+    #[tracing::instrument(level = "debug", skip(self), ret)]
+    pub fn poll_task_completion(&mut self, task_id: TaskId) -> WorkflowPoll<Result<(), Aborted>> {
         let poll_result = self.persisted.tasks[&task_id]
             .result()
             .map(utils::extract_task_poll_result);
@@ -254,7 +254,7 @@ impl WorkflowData {
             ResourceId::Task(task_id),
             ResourceEventKind::Polled(empty_result),
         );
-        poll_result.wake_if_pending(cx, || WakerPlacement::TaskCompletion(task_id))
+        WorkflowPoll::new(poll_result, WakerPlacement::TaskCompletion(task_id))
     }
 
     /// Schedules wakeup of the specified task.

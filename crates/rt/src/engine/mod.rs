@@ -10,7 +10,7 @@ use std::{fmt, sync::Arc, task::Poll};
 mod wasmtime;
 
 pub use self::wasmtime::{Wasmtime, WasmtimeInstance, WasmtimeModule, WasmtimeSpawner};
-pub use crate::data::{ReportedErrorKind, WasmContext, WorkflowData};
+pub use crate::data::{ReportedErrorKind, WorkflowData};
 
 use crate::{storage::ModuleRecord, WorkflowSpawner};
 use tardigrade::{TaskId, WakerId};
@@ -53,7 +53,7 @@ pub trait RunWorkflow: AsWorkflowData {
 }
 
 pub trait CreateWaker: AsWorkflowData {
-    fn create_waker(&mut self, cx: u32) -> anyhow::Result<WakerId>;
+    fn create_waker(&mut self) -> anyhow::Result<WakerId>;
 }
 
 pub trait PersistWorkflow {

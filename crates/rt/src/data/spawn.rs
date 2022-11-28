@@ -1,6 +1,7 @@
 //! Spawning workflows.
 
 use anyhow::anyhow;
+use futures::future::Aborted;
 use serde::{Deserialize, Serialize};
 
 use std::{
@@ -13,7 +14,7 @@ use std::{
 use crate::{
     data::{
         channel::{ChannelMapping, ChannelStates, Channels},
-        helpers::{WakeIfPending, WakerPlacement, WasmContext},
+        helpers::{WakerPlacement, WorkflowPoll},
         PersistedWorkflowData, WorkflowData,
     },
     receipt::{ResourceEventKind, ResourceId, WakeUpCause},
@@ -21,14 +22,13 @@ use crate::{
     workflow::ChannelIds,
 };
 use tardigrade::{
-    abi::PollTask,
     interface::{ChannelHalf, Interface},
     spawn::{ChannelsConfig, HostError},
     task::{JoinError, TaskError},
     ChannelId, WakerId, WorkflowId,
 };
 
-type PollStub = Poll<Result<WorkflowId, HostError>>;
+type StubResult = Result<WorkflowId, HostError>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ChildWorkflowStub {
@@ -274,12 +274,11 @@ impl WorkflowData {
     }
 
     /// Polls workflow stub initialization.
-    #[tracing::instrument(level = "debug", ret, err, skip(self, cx))]
+    #[tracing::instrument(level = "debug", ret, err, skip(self))]
     pub fn poll_workflow_init(
         &mut self,
         stub_id: WorkflowId,
-        cx: &mut WasmContext,
-    ) -> anyhow::Result<PollStub> {
+    ) -> anyhow::Result<WorkflowPoll<StubResult>> {
         let stubs = &mut self.persisted.child_workflow_stubs.stubs;
         let stub = stubs
             .get(&stub_id)
@@ -301,16 +300,18 @@ impl WorkflowData {
                 ResourceEventKind::Created,
             );
         }
-        Ok(poll_result.wake_if_pending(cx, || WakerPlacement::WorkflowInit(stub_id)))
+        Ok(WorkflowPoll::new(
+            poll_result,
+            WakerPlacement::WorkflowInit(stub_id),
+        ))
     }
 
     /// Polls workflow completion.
-    #[tracing::instrument(level = "debug", ret, skip(self, cx))]
+    #[tracing::instrument(level = "debug", ret, skip(self))]
     pub fn poll_workflow_completion(
         &mut self,
         workflow_id: WorkflowId,
-        cx: &mut WasmContext,
-    ) -> PollTask {
+    ) -> WorkflowPoll<Result<(), Aborted>> {
         let poll_result = self.persisted.child_workflows[&workflow_id]
             .result()
             .map(utils::extract_task_poll_result);
@@ -318,7 +319,7 @@ impl WorkflowData {
             ResourceId::Workflow(workflow_id),
             ResourceEventKind::Polled(utils::drop_value(&poll_result)),
         );
-        poll_result.wake_if_pending(cx, || WakerPlacement::WorkflowCompletion(workflow_id))
+        WorkflowPoll::new(poll_result, WakerPlacement::WorkflowCompletion(workflow_id))
     }
 
     /// Returns task error for the specified child.

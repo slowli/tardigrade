@@ -11,7 +11,7 @@ use std::{
 };
 
 use super::{
-    helpers::{WakeIfPending, WakerPlacement, Wakers, WasmContext},
+    helpers::{WakerPlacement, Wakers, WorkflowPoll},
     PersistedWorkflowData, WorkflowData,
 };
 use crate::receipt::{ResourceEventKind, ResourceId, WakeUpCause};
@@ -182,17 +182,16 @@ impl WorkflowData {
     }
 
     /// Polls the specified timer.
-    #[tracing::instrument(level = "debug", skip(self, cx), ret, err)]
-    pub fn poll_timer(
-        &mut self,
-        timer_id: TimerId,
-        cx: &mut WasmContext,
-    ) -> anyhow::Result<Poll<DateTime<Utc>>> {
+    #[tracing::instrument(level = "debug", skip(self), ret, err)]
+    pub fn poll_timer(&mut self, timer_id: TimerId) -> anyhow::Result<WorkflowPoll<DateTime<Utc>>> {
         let poll_result = self.persisted.timers.poll(timer_id)?;
         self.current_execution().push_resource_event(
             ResourceId::Timer(timer_id),
             ResourceEventKind::Polled(poll_result.map(drop)),
         );
-        Ok(poll_result.wake_if_pending(cx, || WakerPlacement::Timer(timer_id)))
+        Ok(WorkflowPoll::new(
+            poll_result,
+            WakerPlacement::Timer(timer_id),
+        ))
     }
 }

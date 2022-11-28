@@ -14,7 +14,7 @@ use super::{
     WasmAllocator,
 };
 use crate::{
-    data::{ReportedErrorKind, WasmContext, WasmContextPtr, WorkflowData},
+    data::{ReportedErrorKind, WorkflowData},
     engine::{AsWorkflowData, CreateWaker},
 };
 use tardigrade::{
@@ -25,20 +25,33 @@ use tardigrade::{
     TaskId, TimerDefinition, TimerId, WakerId,
 };
 
-impl AsWorkflowData for StoreContextMut<'_, InstanceData> {
-    fn data(&self) -> &WorkflowData {
-        &self.data().inner
-    }
+pub(super) type WasmContextPtr = u32;
 
-    fn data_mut(&mut self) -> &mut WorkflowData {
-        &mut self.data_mut().inner
+struct WasmContext<'a> {
+    context: StoreContextMut<'a, InstanceData>,
+    ptr: WasmContextPtr,
+}
+
+impl<'a> WasmContext<'a> {
+    fn new(context: StoreContextMut<'a, InstanceData>, ptr: WasmContextPtr) -> Self {
+        Self { context, ptr }
     }
 }
 
-impl CreateWaker for StoreContextMut<'_, InstanceData> {
-    fn create_waker(&mut self, cx: u32) -> anyhow::Result<WakerId> {
-        let exports = self.data_mut().exports();
-        exports.create_waker(self.as_context_mut(), cx)
+impl AsWorkflowData for WasmContext<'_> {
+    fn data(&self) -> &WorkflowData {
+        &self.context.data().inner
+    }
+
+    fn data_mut(&mut self) -> &mut WorkflowData {
+        &mut self.context.data_mut().inner
+    }
+}
+
+impl CreateWaker for WasmContext<'_> {
+    fn create_waker(&mut self) -> anyhow::Result<WakerId> {
+        let exports = self.context.data().exports();
+        exports.create_waker(self.context.as_context_mut(), self.ptr)
     }
 }
 
@@ -181,9 +194,9 @@ impl WorkflowFunctions {
     ) -> anyhow::Result<i64> {
         let channel_id = HostResource::from_ref(channel_ref.as_ref())?.as_receiver()?;
 
-        let mut poll_cx = WasmContext::new(poll_cx);
-        let poll_result = ctx.data_mut().inner.poll_receiver(channel_id, &mut poll_cx);
-        poll_cx.save_waker(&mut ctx)?;
+        let poll_result = ctx.data_mut().inner.poll_receiver(channel_id);
+        let mut poll_cx = WasmContext::new(ctx.as_context_mut(), poll_cx);
+        let poll_result = poll_result.into_inner(&mut poll_cx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))
     }
 
@@ -217,13 +230,13 @@ impl WorkflowFunctions {
     pub fn poll_ready_for_sender(
         mut ctx: StoreContextMut<'_, InstanceData>,
         channel_ref: Option<ExternRef>,
-        cx: WasmContextPtr,
+        poll_cx: WasmContextPtr,
     ) -> anyhow::Result<i32> {
         let channel_id = HostResource::from_ref(channel_ref.as_ref())?.as_sender()?;
 
-        let mut cx = WasmContext::new(cx);
-        let poll_result = ctx.data_mut().inner.poll_sender(channel_id, false, &mut cx);
-        cx.save_waker(&mut ctx)?;
+        let poll_result = ctx.data_mut().inner.poll_sender(channel_id, false);
+        let mut poll_cx = WasmContext::new(ctx.as_context_mut(), poll_cx);
+        let poll_result = poll_result.into_inner(&mut poll_cx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))
     }
 
@@ -251,12 +264,9 @@ impl WorkflowFunctions {
     ) -> anyhow::Result<i32> {
         let channel_id = HostResource::from_ref(channel_ref.as_ref())?.as_sender()?;
 
-        let mut poll_cx = WasmContext::new(poll_cx);
-        let poll_result = ctx
-            .data_mut()
-            .inner
-            .poll_sender(channel_id, true, &mut poll_cx);
-        poll_cx.save_waker(&mut ctx)?;
+        let poll_result = ctx.data_mut().inner.poll_sender(channel_id, true);
+        let mut poll_cx = WasmContext::new(ctx.as_context_mut(), poll_cx);
+        let poll_result = poll_result.into_inner(&mut poll_cx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))
     }
 }
@@ -268,12 +278,9 @@ impl WorkflowFunctions {
         task_id: TaskId,
         poll_cx: WasmContextPtr,
     ) -> anyhow::Result<i64> {
-        let mut poll_cx = WasmContext::new(poll_cx);
-        let poll_result = ctx
-            .data_mut()
-            .inner
-            .poll_task_completion(task_id, &mut poll_cx);
-        poll_cx.save_waker(&mut ctx)?;
+        let poll_result = ctx.data_mut().inner.poll_task_completion(task_id);
+        let mut poll_cx = WasmContext::new(ctx.as_context_mut(), poll_cx);
+        let poll_result = poll_result.into_inner(&mut poll_cx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))
     }
 
@@ -359,9 +366,9 @@ impl WorkflowFunctions {
         timer_id: TimerId,
         poll_cx: WasmContextPtr,
     ) -> anyhow::Result<i64> {
-        let mut poll_cx = WasmContext::new(poll_cx);
-        let poll_result = ctx.data_mut().inner.poll_timer(timer_id, &mut poll_cx)?;
-        poll_cx.save_waker(&mut ctx)?;
+        let poll_result = ctx.data_mut().inner.poll_timer(timer_id)?;
+        let mut poll_cx = WasmContext::new(ctx.as_context_mut(), poll_cx);
+        let poll_result = poll_result.into_inner(&mut poll_cx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))
     }
 }
@@ -515,12 +522,9 @@ impl SpawnFunctions {
         let stub_id = HostResource::from_ref(stub.as_ref())?.as_workflow_stub()?;
         tracing::Span::current().record("stub_id", stub_id);
 
-        let mut poll_cx = WasmContext::new(poll_cx);
-        let poll_result = ctx
-            .data_mut()
-            .inner
-            .poll_workflow_init(stub_id, &mut poll_cx)?;
-        poll_cx.save_waker(&mut ctx)?;
+        let poll_result = ctx.data_mut().inner.poll_workflow_init(stub_id)?;
+        let mut poll_cx = WasmContext::new(ctx.as_context_mut(), poll_cx);
+        let poll_result = poll_result.into_inner(&mut poll_cx)?;
 
         let mut workflow_id = None;
         let result = poll_result.map_ok(|id| {
@@ -538,13 +542,10 @@ impl SpawnFunctions {
         poll_cx: WasmContextPtr,
     ) -> anyhow::Result<i64> {
         let workflow_id = HostResource::from_ref(workflow.as_ref())?.as_workflow()?;
-        let mut poll_cx = WasmContext::new(poll_cx);
-        let poll_result = ctx
-            .data_mut()
-            .inner
-            .poll_workflow_completion(workflow_id, &mut poll_cx);
+        let poll_result = ctx.data_mut().inner.poll_workflow_completion(workflow_id);
 
-        poll_cx.save_waker(&mut ctx)?;
+        let mut poll_cx = WasmContext::new(ctx.as_context_mut(), poll_cx);
+        let poll_result = poll_result.into_inner(&mut poll_cx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))
     }
 

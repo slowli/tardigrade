@@ -20,9 +20,6 @@ use tardigrade::{
     ChannelId, TaskId, TimerId, WakerId, WorkflowId,
 };
 
-/// Pointer to the WASM `Context`, i.e., `*mut Context<'_>`.
-pub(crate) type WasmContextPtr = u32;
-
 #[derive(Debug)]
 pub(super) enum WakerPlacement {
     Receiver(ChannelId),
@@ -36,16 +33,20 @@ pub(super) enum WakerPlacement {
 /// Polling context for workflows.
 #[derive(Debug)]
 #[must_use = "Needs to be converted to a waker"]
-pub struct WasmContext {
-    ptr: WasmContextPtr, // FIXME: replace with type param
+pub struct WorkflowPoll<T> {
+    inner: Poll<T>,
     placement: Option<WakerPlacement>,
 }
 
-impl WasmContext {
-    pub(crate) fn new(ptr: WasmContextPtr) -> Self {
+impl<T> WorkflowPoll<T> {
+    pub(super) fn new(inner: Poll<T>, waker_placement: WakerPlacement) -> Self {
         Self {
-            ptr,
-            placement: None,
+            placement: if inner.is_pending() {
+                Some(waker_placement)
+            } else {
+                None
+            },
+            inner,
         }
     }
 
@@ -54,35 +55,12 @@ impl WasmContext {
     /// # Errors
     ///
     /// Propagates errors from [`CreateWaker::create_waker()`].
-    pub fn save_waker<T: CreateWaker>(self, workflow: &mut T) -> anyhow::Result<()> {
+    pub fn into_inner(self, cx: &mut impl CreateWaker) -> anyhow::Result<Poll<T>> {
         if let Some(placement) = &self.placement {
-            let waker_id = workflow.create_waker(self.ptr)?;
-            workflow.data_mut().place_waker(placement, waker_id);
+            let waker_id = cx.create_waker()?;
+            cx.data_mut().place_waker(placement, waker_id);
         }
-        Ok(())
-    }
-}
-
-/// Helper extension trait to deal with wakers more fluently.
-pub(super) trait WakeIfPending {
-    fn wake_if_pending(
-        self,
-        cx: &mut WasmContext,
-        waker_placement: impl FnOnce() -> WakerPlacement,
-    ) -> Self;
-}
-
-impl<T> WakeIfPending for Poll<T> {
-    fn wake_if_pending(
-        self,
-        cx: &mut WasmContext,
-        waker_placement: impl FnOnce() -> WakerPlacement,
-    ) -> Self {
-        if self.is_pending() {
-            debug_assert!(cx.placement.is_none());
-            cx.placement = Some(waker_placement());
-        }
-        self
+        Ok(self.inner)
     }
 }
 
