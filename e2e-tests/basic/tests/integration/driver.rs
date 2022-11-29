@@ -33,7 +33,7 @@ use tardigrade_test_basic::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOr
 
 use super::{create_manager, enable_tracing_assertions, TestResult};
 
-fn spawn_traced_task<T: Send + 'static>(
+pub(crate) fn spawn_traced_task<T: Send + 'static>(
     future: impl Future<Output = T> + Send + 'static,
 ) -> task::JoinHandle<T> {
     task::spawn(future.with_current_subscriber())

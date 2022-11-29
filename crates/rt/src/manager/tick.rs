@@ -206,7 +206,6 @@ impl<'a, D: DefineWorkflow> WorkflowSeed<'a, D> {
         self.persisted.restore(self.definition, services).unwrap()
     }
 
-    #[allow(clippy::cast_ptr_alignment)] // FIXME: is this safe?
     fn extract_services(services: Services) -> (NewWorkflows<D>, TracingEventReceiver) {
         let workflows = services.workflows.unwrap();
         let workflows = *workflows.downcast::<NewWorkflows<D>>();

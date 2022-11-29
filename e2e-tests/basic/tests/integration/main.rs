@@ -18,7 +18,7 @@ use tardigrade_rt::{
     Clock,
 };
 
-mod async_env;
+mod driver;
 mod requests;
 mod spawn;
 mod sync_env;

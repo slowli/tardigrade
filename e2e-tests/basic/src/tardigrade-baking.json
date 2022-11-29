@@ -4,6 +4,9 @@
   "out": {
     "events": {
       "description": "Domain events emitted during pizza order lifecycle"
+    },
+    "duration": {
+      "description": "Baking duration metrics"
     }
   },
   "args": {

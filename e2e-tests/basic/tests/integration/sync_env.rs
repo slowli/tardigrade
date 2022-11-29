@@ -15,9 +15,13 @@ use tardigrade::{
 use tardigrade_rt::{
     engine::{WasmtimeDefinition, WasmtimeInstance, WasmtimeModule, WorkflowEngine},
     manager::{AsManager, MessageReceiver, WorkflowManager},
-    receipt::{ChannelEvent, ChannelEventKind, Event, ExecutedFunction, WakeUpCause},
+    receipt::{
+        ChannelEvent, ChannelEventKind, Event, ExecutedFunction, Receipt, ResourceEvent,
+        ResourceEventKind, ResourceId, WakeUpCause,
+    },
     storage::{LocalStorageSnapshot, ModuleRecord},
     test::MockScheduler,
+    PersistedWorkflow,
 };
 use tardigrade_test_basic::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOrder};
 
@@ -116,7 +120,9 @@ async fn basic_workflow() -> TestResult {
         delivery_distance: 10,
     };
     handle.orders.send(order).await?;
-    manager.tick().await?.drop_handle().into_inner()?; // TODO: assert on receipt
+    let receipt = manager.tick().await?.drop_handle().into_inner()?;
+    workflow.update().await?;
+    assert_send_receipt(&receipt, workflow.persisted());
 
     let event = handle.shared.events.receive_message(0).await?;
     assert_eq!(event.decode()?, DomainEvent::OrderTaken { index: 1, order });
@@ -157,7 +163,8 @@ async fn basic_workflow() -> TestResult {
     scheduler.set_now(new_time);
     manager.set_current_time(new_time).await;
 
-    manager.tick().await?.drop_handle().into_inner()?; // TODO: assert on receipt
+    let receipt = manager.tick().await?.drop_handle().into_inner()?;
+    assert_time_update_receipt(&receipt, workflow.persisted());
     let events = handle.shared.events.receive_message(1).await?;
     assert_eq!(events.decode()?, DomainEvent::Baked { index: 1, order });
 
@@ -175,6 +182,83 @@ async fn basic_workflow() -> TestResult {
         assert!(stats.is_closed);
     }
     Ok(())
+}
+
+fn assert_send_receipt(receipt: &Receipt, persisted: &PersistedWorkflow) {
+    let root_cause = receipt.executions().first().unwrap().cause();
+    assert_matches!(
+        root_cause,
+        Some(WakeUpCause::InboundMessage {
+            message_index: 0,
+            ..
+        })
+    );
+
+    let is_consumed = receipt.events().any(|event| {
+        matches!(
+            event,
+            Event::Channel(ChannelEvent {
+                kind: ChannelEventKind::ReceiverPolled {
+                    result: Poll::Ready(Some(_)),
+                },
+                ..
+            })
+        )
+    });
+    assert!(is_consumed, "{receipt:#?}");
+
+    let events_id = persisted.channels().sender_id("events").unwrap();
+    let is_event_sent = receipt.events().any(|event| {
+        matches!(event,
+            Event::Channel(ChannelEvent {
+                kind: ChannelEventKind::OutboundMessageSent { .. },
+                channel_id,
+                ..
+            }) if *channel_id == events_id
+        )
+    });
+    assert!(is_event_sent, "{receipt:#?}");
+}
+
+fn assert_time_update_receipt(receipt: &Receipt, persisted: &PersistedWorkflow) {
+    let root_cause = receipt.executions().first().unwrap().cause();
+    assert_matches!(root_cause, Some(WakeUpCause::Timer { id: 0 }));
+
+    let is_timer_polled = receipt.events().any(|event| {
+        matches!(
+            event,
+            Event::Resource(ResourceEvent {
+                resource_id: ResourceId::Timer(0),
+                kind: ResourceEventKind::Polled(Poll::Ready(_)),
+                ..
+            })
+        )
+    });
+    assert!(is_timer_polled, "{receipt:#?}");
+
+    let is_timer_dropped = receipt.events().any(|event| {
+        matches!(
+            event,
+            Event::Resource(ResourceEvent {
+                resource_id: ResourceId::Timer(0),
+                kind: ResourceEventKind::Dropped,
+                ..
+            })
+        )
+    });
+    assert!(is_timer_dropped, "{receipt:#?}");
+
+    let events_id = persisted.channels().sender_id("events").unwrap();
+    let is_event_sent = receipt.events().any(|event| {
+        matches!(event,
+            Event::Channel(ChannelEvent {
+                kind: ChannelEventKind::OutboundMessageSent { .. },
+                channel_id,
+                ..
+            }) if *channel_id == events_id
+        )
+    });
+    assert!(is_event_sent, "{receipt:#?}");
 }
 
 #[async_std::test]
@@ -353,7 +437,8 @@ async fn untyped_workflow() -> TestResult {
     handle[ReceiverName("orders")]
         .send(Json::encode_value(order))
         .await?;
-    manager.tick().await?.drop_handle().into_inner()?; // TODO: assert on receipt
+    let receipt = manager.tick().await?.drop_handle().into_inner()?;
+    assert_send_receipt(&receipt, workflow.persisted());
 
     let event = handle[SenderName("events")].receive_message(0).await?;
     let event: DomainEvent = Json::try_decode_bytes(event.decode().unwrap())?;

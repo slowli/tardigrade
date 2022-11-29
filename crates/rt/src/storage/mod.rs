@@ -283,7 +283,6 @@ pub trait WriteWorkflows: ReadWorkflows {
     async fn workflow_for_update(&mut self, id: WorkflowId) -> Option<WorkflowRecord>;
 
     /// Updates the state of a workflow with the specified ID.
-    // TODO: concurrency edit protection (via execution counter?)
     async fn update_workflow(&mut self, id: WorkflowId, state: WorkflowState);
 
     /// Finds an active workflow with wakers and selects it for update.

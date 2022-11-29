@@ -2,15 +2,23 @@
 //! Also, there is no delivery.
 
 use async_trait::async_trait;
-use futures::{StreamExt, TryStreamExt};
+use futures::{SinkExt, StreamExt, TryStreamExt};
+use serde::{Deserialize, Serialize};
 
-use crate::{Args, PizzaDeliveryHandle, PizzaOrder, SharedHandle};
+use crate::{DomainEvent, PizzaDeliveryHandle, PizzaOrder, SharedHandle};
 use tardigrade::{
+    channel::Sender,
     spawn::{ManageWorkflowsExt, Workflows},
     task::{TaskError, TaskResult},
-    workflow::{GetInterface, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
+    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
     Json,
 };
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Args {
+    pub oven_count: usize,
+    pub collect_metrics: bool,
+}
 
 #[derive(Debug, GetInterface, TakeHandle)]
 #[tardigrade(handle = "PizzaDeliveryHandle")]
@@ -35,9 +43,16 @@ impl PizzaDeliveryHandle {
                     let builder =
                         Workflows.new_workflow::<Baking>(DEFINITION_ID, (counter, order))?;
                     builder.handle().events.copy_from(events);
-                    // FIXME: add another sender to close?
-                    let handle = builder.build().await?;
-                    handle.workflow.await.map_err(TaskError::from)
+                    if !args.collect_metrics {
+                        builder.handle().duration.close();
+                    }
+
+                    let mut handle = builder.build().await?;
+                    handle.workflow.await.map_err(TaskError::from)?;
+                    if let Some(metric) = handle.api.duration.next().await {
+                        tracing::info!(duration = metric.duration_millis, "received child metrics");
+                    }
+                    Ok(())
                 }
             })
             .await
@@ -53,8 +68,20 @@ impl SpawnWorkflow for PizzaDeliveryWithSpawning {
 
 tardigrade::workflow_entry!(PizzaDeliveryWithSpawning);
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DurationMetric {
+    index: usize,
+    duration_millis: u64,
+}
+
+#[tardigrade::handle]
+pub struct BakingHandle<Env: WorkflowEnv = Wasm> {
+    pub events: Handle<Sender<DomainEvent, Json>, Env>,
+    pub duration: Handle<Sender<DurationMetric, Json>, Env>,
+}
+
 #[derive(Debug, GetInterface, TakeHandle)]
-#[tardigrade(handle = "SharedHandle", interface = "src/tardigrade-baking.json")]
+#[tardigrade(handle = "BakingHandle", interface = "src/tardigrade-baking.json")]
 pub struct Baking(());
 
 impl WorkflowFn for Baking {
@@ -64,8 +91,19 @@ impl WorkflowFn for Baking {
 
 #[async_trait(?Send)]
 impl SpawnWorkflow for Baking {
-    async fn spawn((idx, order): (usize, PizzaOrder), handle: SharedHandle<Wasm>) -> TaskResult {
-        handle.bake(idx, order).await;
+    async fn spawn((idx, order): (usize, PizzaOrder), mut handle: BakingHandle) -> TaskResult {
+        let start = tardigrade::now();
+        let shared = SharedHandle {
+            events: handle.events,
+        };
+        shared.bake(idx, order).await;
+
+        let metric = DurationMetric {
+            index: idx,
+            duration_millis: (tardigrade::now() - start).num_milliseconds() as u64,
+        };
+        tracing::info!(?metric, "sending baking duration metric");
+        handle.duration.send(metric).await.ok();
         Ok(())
     }
 }

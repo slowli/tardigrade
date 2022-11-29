@@ -291,10 +291,13 @@ impl<'a, W, M: AsManager> WorkflowEnv for WorkflowHandle<'a, W, M> {
         id: &str,
     ) -> Result<Self::Sender<T, C>, AccessError> {
         if let Some(channel_id) = self.ids.channel_ids.senders.get(id).copied() {
+            // The 0th channel is always closed and thus cannot be manipulated.
+            let can_manipulate =
+                channel_id != 0 && self.host_receiver_channels.contains(&channel_id);
             Ok(MessageReceiver {
                 manager: self.manager,
                 channel_id,
-                can_manipulate: self.host_receiver_channels.contains(&channel_id),
+                can_manipulate,
                 _ty: PhantomData,
             })
         } else {

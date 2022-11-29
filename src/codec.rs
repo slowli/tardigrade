@@ -11,7 +11,7 @@ use std::{convert::Infallible, error};
 /// the workflow state in this case.
 ///
 /// [`Receiver`]: crate::channel::Receiver
-pub trait Decode<T> {
+pub trait Decode<T>: 'static + Send + Sync {
     /// Decoding error.
     type Error: error::Error + Send + Sync + 'static;
 
@@ -36,7 +36,7 @@ pub trait Decode<T> {
 /// Encoder of a particular type.
 ///
 /// Unlike [`Decode`]rs, `Encode`rs are assumed to be infallible.
-pub trait Encode<T> {
+pub trait Encode<T>: 'static + Send + Sync {
     /// Encodes `value`.
     fn encode_value(value: T) -> Vec<u8>;
 }
