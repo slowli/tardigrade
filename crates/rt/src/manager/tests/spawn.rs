@@ -72,10 +72,8 @@ fn poll_child_traces(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
         .acquire_receiver(Some(CHILD_ID), "traces")
         .unwrap()
         .unwrap();
-    let poll_result = ctx
-        .data_mut()
-        .poll_receiver(child_traces_id)
-        .into_inner(ctx)?;
+    let mut child_traces = ctx.data_mut().receiver(child_traces_id);
+    let poll_result = child_traces.poll_next().into_inner(ctx)?;
     assert!(poll_result.is_pending());
 
     Ok(Poll::Pending)
@@ -147,10 +145,8 @@ async fn spawning_child_workflow() {
             .unwrap()
             .channels();
         let child_traces_id = child_channels.receiver_id("traces").unwrap();
-        let poll_result = ctx
-            .data_mut()
-            .poll_receiver(child_traces_id)
-            .into_inner(ctx)?;
+        let mut child_traces = ctx.data_mut().receiver(child_traces_id);
+        let poll_result = child_traces.poll_next().into_inner(ctx)?;
         assert_matches!(poll_result, Poll::Ready(Some(_)));
 
         Ok(Poll::Pending)
@@ -202,21 +198,15 @@ async fn sending_message_to_child() {
         .unwrap();
 
     let send_message_to_child: MockPollFn = |ctx| {
-        let child_channels = ctx
-            .data()
-            .persisted
-            .child_workflow(CHILD_ID)
-            .unwrap()
-            .channels();
+        let child = ctx.data().persisted.child_workflow(CHILD_ID);
+        let child_channels = child.unwrap().channels();
         let child_orders_id = child_channels.sender_id("orders").unwrap();
-        let poll_result = ctx
-            .data_mut()
-            .poll_sender(child_orders_id, false)
-            .into_inner(ctx)?;
+        let mut child_orders = ctx.data_mut().sender(child_orders_id);
+        let poll_result = child_orders.poll_ready().into_inner(ctx)?;
         assert_matches!(poll_result, Poll::Ready(Ok(_)));
 
-        ctx.data_mut()
-            .push_outbound_message(child_orders_id, b"child_order".to_vec())?;
+        let mut child_orders = ctx.data_mut().sender(child_orders_id);
+        child_orders.start_send(b"child_order".to_vec())?;
         Ok(Poll::Pending)
     };
     poll_fn_sx
@@ -238,7 +228,8 @@ async fn sending_message_to_child() {
     let init_child: MockPollFn = |ctx| {
         let channels = ctx.data().persisted.channels();
         let orders_id = channels.receiver_id("orders").unwrap();
-        let poll_result = ctx.data_mut().poll_receiver(orders_id).into_inner(ctx)?;
+        let mut orders = ctx.data_mut().receiver(orders_id);
+        let poll_result = orders.poll_next().into_inner(ctx)?;
         assert!(poll_result.is_pending());
         Ok(Poll::Pending)
     };
@@ -251,7 +242,8 @@ async fn sending_message_to_child() {
     let poll_orders_in_child: MockPollFn = |ctx| {
         let channels = ctx.data().persisted.channels();
         let orders_id = channels.receiver_id("orders").unwrap();
-        let poll_result = ctx.data_mut().poll_receiver(orders_id).into_inner(ctx)?;
+        let mut orders = ctx.data_mut().receiver(orders_id);
+        let poll_result = orders.poll_next().into_inner(ctx)?;
         assert_matches!(poll_result, Poll::Ready(Some(_)));
         Ok(Poll::Pending)
     };
@@ -272,16 +264,12 @@ fn test_child_channels_after_closure(ctx: &mut MockInstance) -> anyhow::Result<P
     let child_orders_id = child_channels.sender_id("orders").unwrap();
     let child_traces_id = child_channels.receiver_id("traces").unwrap();
 
-    let poll_result = ctx
-        .data_mut()
-        .poll_sender(child_orders_id, false)
-        .into_inner(ctx)?;
+    let mut child_orders = ctx.data_mut().sender(child_orders_id);
+    let poll_result = child_orders.poll_ready().into_inner(ctx)?;
     assert_matches!(poll_result, Poll::Ready(Err(SendError::Closed)));
 
-    let poll_result = ctx
-        .data_mut()
-        .poll_receiver(child_traces_id)
-        .into_inner(ctx)?;
+    let mut child_traces = ctx.data_mut().receiver(child_traces_id);
+    let poll_result = child_traces.poll_next().into_inner(ctx)?;
     assert_matches!(poll_result, Poll::Ready(None));
 
     Ok(Poll::Pending)
@@ -331,8 +319,8 @@ async fn test_child_workflow_channel_management(complete_child: bool) {
             let orders_id = channels.receiver_id("orders").unwrap();
             let traces_id = channels.sender_id("traces").unwrap();
 
-            let _wakers = ctx.data_mut().drop_receiver(orders_id);
-            let _wakers = ctx.data_mut().drop_sender(traces_id);
+            let _wakers = ctx.data_mut().receiver(orders_id).drop();
+            let _wakers = ctx.data_mut().sender(traces_id).drop();
             Ok(Poll::Pending)
         }
     };
@@ -501,8 +489,8 @@ async fn spawning_child_with_copied_sender() {
     let write_event_and_complete_child: MockPollFn = |ctx| {
         let channels = ctx.data().persisted.channels();
         let events_id = channels.sender_id("events").unwrap();
-        ctx.data_mut()
-            .push_outbound_message(events_id, b"child_event".to_vec())?;
+        let mut events = ctx.data_mut().sender(events_id);
+        events.start_send(b"child_event".to_vec())?;
         Ok(Poll::Ready(()))
     };
     poll_fn_sx
@@ -543,9 +531,8 @@ async fn test_child_with_copied_closed_sender(close_before_spawn: bool) {
     let test_writing_event_in_child: MockPollFn = |ctx| {
         let channels = ctx.data().persisted.channels();
         let events_id = channels.sender_id("events").unwrap();
-        let send_result = ctx
-            .data_mut()
-            .push_outbound_message(events_id, b"child_event".to_vec());
+        let mut events = ctx.data_mut().sender(events_id);
+        let send_result = events.start_send(b"child_event".to_vec());
         assert_matches!(send_result, Err(SendError::Closed));
         Ok(Poll::Pending)
     };
@@ -597,16 +584,13 @@ async fn test_child_with_aliased_sender(complete_child: bool) {
         let events_id = channels.sender_id("events").unwrap();
         let traces_id = channels.sender_id("traces").unwrap();
 
-        ctx.data_mut()
-            .push_outbound_message(events_id, b"child_event".to_vec())?;
-        let _wakers = ctx.data_mut().drop_sender(events_id);
+        let mut events = ctx.data_mut().sender(events_id);
+        events.start_send(b"child_event".to_vec())?;
+        let _wakers = events.drop();
 
-        ctx.data_mut()
-            .push_outbound_message(traces_id, b"child_trace".to_vec())?;
-        let poll_result = ctx
-            .data_mut()
-            .poll_sender(traces_id, true)
-            .into_inner(ctx)?;
+        let mut traces = ctx.data_mut().sender(traces_id);
+        traces.start_send(b"child_trace".to_vec())?;
+        let poll_result = traces.poll_flush().into_inner(ctx)?;
         assert!(poll_result.is_pending());
         Ok(Poll::Pending)
     };
@@ -632,7 +616,7 @@ async fn test_child_with_aliased_sender(complete_child: bool) {
         poll_fn_sx.send(|ctx| {
             let channels = ctx.data().persisted.channels();
             let traces_id = channels.sender_id("traces").unwrap();
-            let _wakers = ctx.data_mut().drop_sender(traces_id);
+            let _wakers = ctx.data_mut().sender(traces_id).drop();
             Ok(Poll::Pending)
         })
     };
@@ -720,8 +704,8 @@ async fn completing_child_with_error() {
 fn complete_task_with_panic(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     let channels = ctx.data().persisted.channels();
     let events_id = channels.sender_id("events").unwrap();
-    ctx.data_mut()
-        .push_outbound_message(events_id, b"panic message".to_vec())?;
+    let mut events = ctx.data_mut().sender(events_id);
+    events.start_send(b"panic message".to_vec())?;
 
     ctx.data_mut().report_error_or_panic(
         ReportedErrorKind::Panic,
@@ -747,10 +731,8 @@ fn check_aborted_child_completion(ctx: &mut MockInstance) -> anyhow::Result<Poll
         .unwrap()
         .channels();
     let child_events_id = child_channels.receiver_id("events").unwrap();
-    let poll_result = ctx
-        .data_mut()
-        .poll_receiver(child_events_id)
-        .into_inner(ctx)?;
+    let mut child_events = ctx.data_mut().receiver(child_events_id);
+    let poll_result = child_events.poll_next().into_inner(ctx)?;
     assert_matches!(poll_result, Poll::Ready(None));
 
     Ok(Poll::Pending)
@@ -897,11 +879,11 @@ async fn aborting_parent() {
         let orders_id = channels.receiver_id("orders").unwrap();
         let events_id = channels.sender_id("events").unwrap();
 
-        let poll_result = ctx.data_mut().poll_receiver(orders_id).into_inner(ctx)?;
+        let mut orders = ctx.data_mut().receiver(orders_id);
+        let poll_result = orders.poll_next().into_inner(ctx)?;
         assert_matches!(poll_result, Poll::Ready(None));
-        let send_result = ctx
-            .data_mut()
-            .push_outbound_message(events_id, b"child event".to_vec());
+        let mut events = ctx.data_mut().sender(events_id);
+        let send_result = events.start_send(b"child event".to_vec());
         assert_matches!(send_result, Err(SendError::Closed));
 
         Ok(Poll::Ready(()))

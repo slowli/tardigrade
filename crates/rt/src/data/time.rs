@@ -1,12 +1,11 @@
 //! Time utilities.
 
-use anyhow::anyhow;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use std::{
     collections::{HashMap, HashSet},
-    mem,
+    fmt, mem,
     task::Poll,
 };
 
@@ -98,12 +97,9 @@ impl Timers {
         self.timers.remove(&timer_id);
     }
 
-    fn poll(&mut self, id: TimerId) -> anyhow::Result<Poll<DateTime<Utc>>> {
-        let timer_state = self
-            .timers
-            .get_mut(&id)
-            .ok_or_else(|| anyhow!("Timeout with ID {id} is not registered"))?;
-        Ok(timer_state.poll())
+    fn poll(&mut self, id: TimerId) -> Poll<DateTime<Utc>> {
+        let timer_state = self.timers.get_mut(&id).unwrap();
+        timer_state.poll()
     }
 
     pub(super) fn place_waker(&mut self, id: TimerId, waker: WakerId) {
@@ -153,6 +149,49 @@ impl PersistedWorkflowData {
     }
 }
 
+/// Handle allowing to manipulate a workflow timer.
+pub struct TimerActions<'a> {
+    data: &'a mut WorkflowData,
+    id: TimerId,
+}
+
+impl fmt::Debug for TimerActions<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TimerActions")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl TimerActions<'_> {
+    /// Drops this timer. Returns IDs of the wakers that were created polling the timer
+    /// and should be dropped.
+    #[tracing::instrument(level = "debug")]
+    #[must_use = "Returned wakers must be dropped"]
+    pub fn drop(self) -> HashSet<WakerId> {
+        let timers = &mut self.data.persisted.timers;
+        let state = timers.timers.get_mut(&self.id).unwrap();
+        let wakers = mem::take(&mut state.wakes_on_completion);
+
+        self.data
+            .current_execution()
+            .push_resource_event(ResourceId::Timer(self.id), ResourceEventKind::Dropped);
+        wakers
+    }
+
+    /// Polls this timer.
+    #[tracing::instrument(level = "debug", ret)]
+    pub fn poll(&mut self) -> WorkflowPoll<DateTime<Utc>> {
+        let poll_result = self.data.persisted.timers.poll(self.id);
+        self.data.current_execution().push_resource_event(
+            ResourceId::Timer(self.id),
+            ResourceEventKind::Polled(poll_result.map(drop)),
+        );
+        WorkflowPoll::new(poll_result, WakerPlacement::Timer(self.id))
+    }
+}
+
 impl WorkflowData {
     /// Returns the current timestamp.
     #[tracing::instrument(level = "debug", skip(self), ret)]
@@ -169,29 +208,16 @@ impl WorkflowData {
         timer_id
     }
 
-    /// Drops the specified timer.
-    #[tracing::instrument(level = "debug", skip(self), err)]
-    pub fn drop_timer(&mut self, timer_id: TimerId) -> anyhow::Result<()> {
-        if self.persisted.timers.get(timer_id).is_none() {
-            let err = anyhow!("Timer ID {timer_id} is not defined");
-            return Err(err);
-        }
-        self.current_execution()
-            .push_resource_event(ResourceId::Timer(timer_id), ResourceEventKind::Dropped);
-        Ok(())
-    }
-
-    /// Polls the specified timer.
-    #[tracing::instrument(level = "debug", skip(self), ret, err)]
-    pub fn poll_timer(&mut self, timer_id: TimerId) -> anyhow::Result<WorkflowPoll<DateTime<Utc>>> {
-        let poll_result = self.persisted.timers.poll(timer_id)?;
-        self.current_execution().push_resource_event(
-            ResourceId::Timer(timer_id),
-            ResourceEventKind::Polled(poll_result.map(drop)),
+    /// Returns an action handle for the timer with the specified ID.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the timer with `id` does not exist in the workflow.
+    pub fn timer(&mut self, id: TimerId) -> TimerActions<'_> {
+        assert!(
+            self.persisted.timers.timers.contains_key(&id),
+            "timer not found"
         );
-        Ok(WorkflowPoll::new(
-            poll_result,
-            WakerPlacement::Timer(timer_id),
-        ))
+        TimerActions { data: self, id }
     }
 }

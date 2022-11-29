@@ -62,7 +62,8 @@ fn initialize_task(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
         .unwrap()
         .unwrap();
     // ...then polling this channel
-    let poll_res = ctx.data_mut().poll_receiver(orders_id).into_inner(ctx)?;
+    let mut orders = ctx.data_mut().receiver(orders_id);
+    let poll_res = orders.poll_next().into_inner(ctx)?;
     assert_matches!(poll_res, Poll::Pending);
 
     Ok(Poll::Pending)
@@ -71,12 +72,12 @@ fn initialize_task(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
 fn emit_event_and_flush(ctx: &mut MockInstance) -> anyhow::Result<()> {
     let data = ctx.data_mut();
     let events_id = data.persisted.channels().sender_id("events").unwrap();
-    let poll_res = data.poll_sender(events_id, false).into_inner(ctx)?;
+    let poll_res = data.sender(events_id).poll_ready().into_inner(ctx)?;
     assert_matches!(poll_res, Poll::Ready(Ok(_)));
 
     let data = ctx.data_mut();
-    data.push_outbound_message(events_id, b"event #1".to_vec())?;
-    let poll_res = data.poll_sender(events_id, true).into_inner(ctx)?;
+    data.sender(events_id).start_send(b"event #1".to_vec())?;
+    let poll_res = data.sender(events_id).poll_flush().into_inner(ctx)?;
     assert_matches!(poll_res, Poll::Pending);
     Ok(())
 }
@@ -88,30 +89,25 @@ fn consume_message(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     let traces_id = channels.sender_id("traces").unwrap();
 
     // Poll the channel again, since we yielded on this previously
-    let poll_res = ctx.data_mut().poll_receiver(orders_id).into_inner(ctx)?;
-    assert_eq!(extract_message(poll_res), b"order #1");
+    let mut orders = ctx.data_mut().receiver(orders_id);
+    let poll_result = orders.poll_next().into_inner(ctx)?;
+    assert_eq!(extract_message(poll_result), b"order #1");
 
     // Emit a trace (shouldn't block the task).
-    let poll_res = ctx
-        .data_mut()
-        .poll_sender(traces_id, false)
-        .into_inner(ctx)?;
+    let mut traces = ctx.data_mut().sender(traces_id);
+    let poll_res = traces.poll_ready().into_inner(ctx)?;
     assert_matches!(poll_res, Poll::Ready(Ok(_)));
-    ctx.data_mut()
-        .push_outbound_message(traces_id, b"trace #1".to_vec())?;
+    let mut traces = ctx.data_mut().sender(traces_id);
+    traces.start_send(b"trace #1".to_vec())?;
     emit_event_and_flush(ctx)?;
 
     // Check that sending events is no longer possible.
-    let poll_res = ctx
-        .data_mut()
-        .poll_sender(events_id, false)
-        .into_inner(ctx)?;
+    let mut events = ctx.data_mut().sender(events_id);
+    let poll_res = events.poll_ready().into_inner(ctx)?;
     assert_matches!(poll_res, Poll::Pending);
     // Check that sending traces is still possible
-    let poll_res = ctx
-        .data_mut()
-        .poll_sender(traces_id, false)
-        .into_inner(ctx)?;
+    let mut traces = ctx.data_mut().sender(traces_id);
+    let poll_res = traces.poll_ready().into_inner(ctx)?;
     assert_matches!(poll_res, Poll::Ready(Ok(_)));
 
     Ok(Poll::Pending)
@@ -333,7 +329,7 @@ fn trap_when_starting_workflow() {
 fn initialize_and_spawn_task(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     let _ = initialize_task(ctx)?;
     ctx.data_mut().spawn_task(1, "new task".to_owned())?;
-    let poll_res = ctx.data_mut().poll_task_completion(1).into_inner(ctx)?;
+    let poll_res = ctx.data_mut().task(1).poll_completion().into_inner(ctx)?;
     assert_matches!(poll_res, Poll::Pending);
 
     Ok(Poll::Pending)
@@ -371,7 +367,7 @@ fn spawning_and_cancelling_task() {
     assert_matches!(new_task.result(), Poll::Pending);
 
     let abort_task_and_complete: MockPollFn = |ctx| {
-        ctx.data_mut().schedule_task_abortion(1)?;
+        ctx.data_mut().task(1).schedule_abortion();
         Ok(Poll::Ready(()))
     };
     let receipt = poll_fn_sx
@@ -483,7 +479,7 @@ fn rolling_back_task_abort() {
         .scope(|| create_workflow(poll_fns));
 
     let abort_task_and_trap: MockPollFn = |ctx| {
-        ctx.data_mut().schedule_task_abortion(1)?;
+        ctx.data_mut().task(1).schedule_abortion();
         Err(anyhow!("boom"))
     };
     // Push the message in order to tick the main task.
@@ -510,13 +506,12 @@ fn rolling_back_emitting_messages_on_trap() {
 
     let emit_message_and_trap: MockPollFn = |ctx| {
         let traces_id = ctx.data().persisted.channels().sender_id("traces").unwrap();
-        let poll_res = ctx
-            .data_mut()
-            .poll_sender(traces_id, false)
-            .into_inner(ctx)?;
+        let mut traces = ctx.data_mut().sender(traces_id);
+        let poll_res = traces.poll_ready().into_inner(ctx)?;
         assert_matches!(poll_res, Poll::Ready(Ok(_)));
         ctx.data_mut()
-            .push_outbound_message(traces_id, b"trace #1".to_vec())?;
+            .sender(traces_id)
+            .start_send(b"trace #1".to_vec())?;
 
         Err(anyhow!("boom"))
     };
@@ -562,27 +557,27 @@ fn timers_basics() {
         });
         assert_eq!(timer_id, 0);
         // ^ implementation detail, but it's used in code later
-        let result = ctx.data_mut().poll_timer(timer_id)?.into_inner(ctx)?;
+        let result = ctx.data_mut().timer(timer_id).poll().into_inner(ctx)?;
         assert_eq!(extract_timestamp(result), ts);
 
         let timer_id = ctx.data_mut().create_timer(TimerDefinition {
             expires_at: ts + chrono::Duration::milliseconds(100),
         });
         assert_eq!(timer_id, 1);
-        let result = ctx.data_mut().poll_timer(timer_id)?.into_inner(ctx)?;
+        let result = ctx.data_mut().timer(timer_id).poll().into_inner(ctx)?;
         assert!(result.is_pending());
 
         Ok(Poll::Pending)
     };
     let poll_timers_and_drop: MockPollFn = |ctx| {
-        let result = ctx.data_mut().poll_timer(0)?.into_inner(ctx)?;
+        let result = ctx.data_mut().timer(0).poll().into_inner(ctx)?;
         assert!(result.is_ready());
-        ctx.data_mut().drop_timer(0)?;
+        let _wakers = ctx.data_mut().timer(0).drop();
 
-        let result = ctx.data_mut().poll_timer(1)?.into_inner(ctx)?;
+        let result = ctx.data_mut().timer(1).poll().into_inner(ctx)?;
         let ts = ctx.data().current_timestamp();
         assert_eq!(extract_timestamp(result), ts);
-        ctx.data_mut().drop_timer(1)?;
+        let _wakers = ctx.data_mut().timer(1).drop();
 
         Ok(Poll::Pending)
     };
@@ -616,13 +611,9 @@ fn timers_basics() {
 fn dropping_receiver_in_workflow() {
     let drop_channel: MockPollFn = |ctx| {
         let _ = initialize_task(ctx)?;
-        let orders_id = ctx
-            .data()
-            .persisted
-            .channels()
-            .receiver_id("orders")
-            .unwrap();
-        let _wakers = ctx.data_mut().drop_receiver(orders_id);
+        let channels = ctx.data().persisted.channels();
+        let orders_id = channels.receiver_id("orders").unwrap();
+        let _wakers = ctx.data_mut().receiver(orders_id).drop();
         Ok(Poll::Pending)
     };
 
@@ -711,7 +702,7 @@ fn completing_main_task_with_compound_error() {
 #[test]
 fn completing_subtask_with_error() {
     let check_subtask_completion: MockPollFn = |ctx| {
-        let poll_res = ctx.data_mut().poll_task_completion(1).into_inner(ctx)?;
+        let poll_res = ctx.data_mut().task(1).poll_completion().into_inner(ctx)?;
         assert_matches!(poll_res, Poll::Ready(Ok(_)));
         Ok(Poll::Pending)
     };

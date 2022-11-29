@@ -101,12 +101,12 @@ fn initialize_task(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     let orders_id = channels.receiver_id("orders").unwrap();
     let traces_id = channels.sender_id("traces").unwrap();
 
-    let poll_result = ctx.data_mut().poll_receiver(orders_id).into_inner(ctx)?;
+    let mut orders = ctx.data_mut().receiver(orders_id);
+    let poll_result = orders.poll_next().into_inner(ctx)?;
     assert!(poll_result.is_pending());
 
-    let _ = ctx
-        .data_mut()
-        .push_outbound_message(traces_id, b"trace #1".to_vec());
+    let mut traces = ctx.data_mut().sender(traces_id);
+    let _ = traces.start_send(b"trace #1".to_vec());
     // ^ Intentionally ignore send result
 
     Ok(Poll::Pending)
@@ -165,13 +165,12 @@ async fn initializing_workflow_with_closed_channels() {
         let orders_id = channels.receiver_id("orders").unwrap();
         let traces_id = channels.sender_id("traces").unwrap();
 
-        let poll_result = ctx
-            .data_mut()
-            .poll_sender(traces_id, false)
-            .into_inner(ctx)?;
+        let mut traces = ctx.data_mut().sender(traces_id);
+        let poll_result = traces.poll_ready().into_inner(ctx)?;
         assert_matches!(poll_result, Poll::Ready(Err(SendError::Closed)));
 
-        let poll_result = ctx.data_mut().poll_receiver(orders_id).into_inner(ctx)?;
+        let mut orders = ctx.data_mut().receiver(orders_id);
+        let poll_result = orders.poll_next().into_inner(ctx)?;
         assert_matches!(poll_result, Poll::Ready(None));
 
         Ok(Poll::Pending)
@@ -215,12 +214,10 @@ async fn closing_workflow_channels() {
     let block_on_flush: MockPollFn = |ctx| {
         let channels = ctx.data().persisted.channels();
         let events_id = channels.sender_id("events").unwrap();
-        ctx.data_mut()
-            .push_outbound_message(events_id, b"event #1".to_vec())?;
-        let poll_result = ctx
-            .data_mut()
-            .poll_sender(events_id, true)
-            .into_inner(ctx)?;
+        let mut events = ctx.data_mut().sender(events_id);
+
+        events.start_send(b"event #1".to_vec())?;
+        let poll_result = events.poll_flush().into_inner(ctx)?;
         assert!(poll_result.is_pending());
         Ok(Poll::Pending)
     };
@@ -231,19 +228,15 @@ async fn closing_workflow_channels() {
         let orders_id = channels.receiver_id("orders").unwrap();
         let events_id = channels.sender_id("events").unwrap();
 
-        let poll_result = ctx
-            .data_mut()
-            .poll_sender(events_id, true)
-            .into_inner(ctx)?;
+        let mut events = ctx.data_mut().sender(events_id);
+        let poll_result = events.poll_flush().into_inner(ctx)?;
         assert_matches!(poll_result, Poll::Ready(Ok(_)));
 
-        let poll_result = ctx
-            .data_mut()
-            .poll_sender(events_id, false)
-            .into_inner(ctx)?;
+        let mut events = ctx.data_mut().sender(events_id);
+        let poll_result = events.poll_ready().into_inner(ctx)?;
         assert_matches!(poll_result, Poll::Ready(Err(SendError::Closed)));
 
-        let _wakers = ctx.data_mut().drop_receiver(orders_id);
+        let _wakers = ctx.data_mut().receiver(orders_id).drop();
         Ok(Poll::Pending)
     };
 
@@ -298,10 +291,12 @@ async fn test_closing_receiver_from_host_side(with_message: bool) {
     let poll_receiver: MockPollFn = |ctx| {
         let channels = ctx.data().persisted.channels();
         let orders_id = channels.receiver_id("orders").unwrap();
-        let poll_result = ctx.data_mut().poll_receiver(orders_id).into_inner(ctx)?;
+        let mut orders = ctx.data_mut().receiver(orders_id);
+        let poll_result = orders.poll_next().into_inner(ctx)?;
         assert_matches!(poll_result, Poll::Ready(Some(_)));
 
-        let poll_result = ctx.data_mut().poll_receiver(orders_id).into_inner(ctx)?;
+        let mut orders = ctx.data_mut().receiver(orders_id);
+        let poll_result = orders.poll_next().into_inner(ctx)?;
         assert!(poll_result.is_pending());
         // ^ we don't dispatch the closure signal immediately
         Ok(Poll::Pending)
@@ -309,7 +304,8 @@ async fn test_closing_receiver_from_host_side(with_message: bool) {
     let test_closed_channel: MockPollFn = |ctx| {
         let channels = ctx.data().persisted.channels();
         let orders_id = channels.receiver_id("orders").unwrap();
-        let poll_result = ctx.data_mut().poll_receiver(orders_id).into_inner(ctx)?;
+        let mut orders = ctx.data_mut().receiver(orders_id);
+        let poll_result = orders.poll_next().into_inner(ctx)?;
         assert_matches!(poll_result, Poll::Ready(None));
         Ok(Poll::Pending)
     };
@@ -419,7 +415,8 @@ async fn error_initializing_workflow() {
 fn poll_receiver(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     let channels = ctx.data().persisted.channels();
     let orders_id = channels.receiver_id("orders").unwrap();
-    let poll_result = ctx.data_mut().poll_receiver(orders_id).into_inner(ctx)?;
+    let mut orders = ctx.data_mut().receiver(orders_id);
+    let poll_result = orders.poll_next().into_inner(ctx)?;
     assert!(poll_result.is_pending());
 
     Ok(Poll::Pending)
@@ -428,7 +425,8 @@ fn poll_receiver(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
 fn consume_message(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     let channels = ctx.data().persisted.channels();
     let orders_id = channels.receiver_id("orders").unwrap();
-    let poll_result = ctx.data_mut().poll_receiver(orders_id).into_inner(ctx)?;
+    let mut orders = ctx.data_mut().receiver(orders_id);
+    let poll_result = orders.poll_next().into_inner(ctx)?;
     assert_matches!(poll_result, Poll::Ready(Some(_)));
 
     Ok(Poll::Pending)
@@ -489,7 +487,8 @@ async fn error_processing_inbound_message_in_workflow() {
     let error_after_consuming_message: MockPollFn = |ctx| {
         let channels = ctx.data().persisted.channels();
         let orders_id = channels.receiver_id("orders").unwrap();
-        let poll_result = ctx.data_mut().poll_receiver(orders_id).into_inner(ctx)?;
+        let mut orders = ctx.data_mut().receiver(orders_id);
+        let poll_result = orders.poll_next().into_inner(ctx)?;
         assert_matches!(poll_result, Poll::Ready(Some(_)));
 
         Err(anyhow!("oops"))

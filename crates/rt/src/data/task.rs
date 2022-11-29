@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    mem,
+    fmt, mem,
     task::Poll,
 };
 
@@ -166,6 +166,59 @@ impl PersistedWorkflowData {
     }
 }
 
+/// Handle allowing to manipulate a workflow task.
+pub struct TaskActions<'a> {
+    data: &'a mut WorkflowData,
+    id: TaskId,
+}
+
+impl fmt::Debug for TaskActions<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TaskActions")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl TaskActions<'_> {
+    /// Polls this task for completion.
+    #[tracing::instrument(level = "debug", ret)]
+    pub fn poll_completion(&mut self) -> WorkflowPoll<Result<(), Aborted>> {
+        let task_state = &self.data.persisted.tasks[&self.id];
+        let poll_result = task_state.result().map(utils::extract_task_poll_result);
+        let empty_result = utils::drop_value(&poll_result);
+        self.data.current_execution().push_resource_event(
+            ResourceId::Task(self.id),
+            ResourceEventKind::Polled(empty_result),
+        );
+        WorkflowPoll::new(poll_result, WakerPlacement::TaskCompletion(self.id))
+    }
+
+    /// Schedules wakeup of this task.
+    #[tracing::instrument(level = "debug")]
+    pub fn schedule_wakeup(&mut self) {
+        if let Some(current_task) = &mut self.data.current_execution {
+            current_task.register_task_wakeup(self.id);
+        } else {
+            let cause = self
+                .data
+                .current_wakeup_cause
+                .as_ref()
+                .expect("cannot determine wakeup cause");
+            self.data.task_queue.insert_task(self.id, cause);
+        }
+    }
+
+    /// Schedules this task to be aborted.
+    #[tracing::instrument(level = "debug")]
+    pub fn schedule_abortion(&mut self) {
+        self.data
+            .current_execution()
+            .push_resource_event(ResourceId::Task(self.id), ResourceEventKind::Dropped);
+    }
+}
+
 impl WorkflowData {
     pub(crate) fn result(&self) -> Poll<Result<(), &JoinError>> {
         self.persisted.result()
@@ -230,6 +283,16 @@ impl WorkflowData {
         Ok(())
     }
 
+    /// Returns an action handle for the task with the specified ID.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the task with `id` does not exist in the workflow.
+    pub fn task(&mut self, id: TaskId) -> TaskActions<'_> {
+        assert!(self.persisted.tasks.contains_key(&id), "task not found");
+        TaskActions { data: self, id }
+    }
+
     pub(crate) fn spawn_main_task(&mut self, task_id: TaskId) {
         // Patch task ID mentions in other tasks (if any). This may be necessary
         // if any initialization code is executed before the main task is created.
@@ -241,52 +304,6 @@ impl WorkflowData {
         let task_state = TaskState::new("_main".to_owned(), None);
         self.persisted.tasks.insert(task_id, task_state);
         self.task_queue.insert_task(task_id, &WakeUpCause::Spawned);
-    }
-
-    /// Polls task completion.
-    #[tracing::instrument(level = "debug", skip(self), ret)]
-    pub fn poll_task_completion(&mut self, task_id: TaskId) -> WorkflowPoll<Result<(), Aborted>> {
-        let poll_result = self.persisted.tasks[&task_id]
-            .result()
-            .map(utils::extract_task_poll_result);
-        let empty_result = utils::drop_value(&poll_result);
-        self.current_execution().push_resource_event(
-            ResourceId::Task(task_id),
-            ResourceEventKind::Polled(empty_result),
-        );
-        WorkflowPoll::new(poll_result, WakerPlacement::TaskCompletion(task_id))
-    }
-
-    /// Schedules wakeup of the specified task.
-    #[tracing::instrument(level = "debug", skip(self))]
-    pub fn schedule_task_wakeup(&mut self, task_id: TaskId) -> anyhow::Result<()> {
-        if !self.persisted.tasks.contains_key(&task_id) {
-            let err = anyhow!("unknown task ID {task_id} scheduled for wakeup");
-            return Err(err);
-        }
-
-        if let Some(current_task) = &mut self.current_execution {
-            current_task.register_task_wakeup(task_id);
-        } else {
-            let cause = self
-                .current_wakeup_cause
-                .as_ref()
-                .expect("cannot determine wakeup cause");
-            self.task_queue.insert_task(task_id, cause);
-        }
-        Ok(())
-    }
-
-    /// Schedules a task to be aborted.
-    #[tracing::instrument(level = "debug", skip(self), err)]
-    pub fn schedule_task_abortion(&mut self, task_id: TaskId) -> anyhow::Result<()> {
-        if !self.persisted.tasks.contains_key(&task_id) {
-            let err = anyhow!("unknown task {task_id} scheduled for abortion");
-            return Err(err);
-        }
-        self.current_execution()
-            .push_resource_event(ResourceId::Task(task_id), ResourceEventKind::Dropped);
-        Ok(())
     }
 
     pub(crate) fn take_next_task(&mut self) -> Option<(TaskId, WakeUpCause)> {

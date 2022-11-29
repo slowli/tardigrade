@@ -17,7 +17,8 @@ use tardigrade::interface::{ReceiverName, SenderName};
 fn poll_orders(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     let channels = ctx.data().persisted.channels();
     let orders_id = channels.receiver_id("orders").unwrap();
-    let poll_result = ctx.data_mut().poll_receiver(orders_id).into_inner(ctx)?;
+    let mut orders = ctx.data_mut().receiver(orders_id);
+    let poll_result = orders.poll_next().into_inner(ctx)?;
     assert!(poll_result.is_pending());
 
     Ok(Poll::Pending)
@@ -28,10 +29,11 @@ fn handle_order(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     let orders_id = channels.receiver_id("orders").unwrap();
     let events_id = channels.sender_id("events").unwrap();
 
-    let poll_result = ctx.data_mut().poll_receiver(orders_id).into_inner(ctx)?;
+    let mut orders = ctx.data_mut().receiver(orders_id);
+    let poll_result = orders.poll_next().into_inner(ctx)?;
     assert_matches!(poll_result, Poll::Ready(Some(_)));
-    ctx.data_mut()
-        .push_outbound_message(events_id, b"event #1".to_vec())?;
+    let mut events = ctx.data_mut().sender(events_id);
+    events.start_send(b"event #1".to_vec())?;
 
     Ok(Poll::Ready(()))
 }
@@ -66,10 +68,12 @@ async fn test_driver_with_multiple_messages(start_after_tick: bool) {
         let orders_id = channels.receiver_id("orders").unwrap();
         let events_id = channels.sender_id("events").unwrap();
 
-        let poll_result = ctx.data_mut().poll_receiver(orders_id).into_inner(ctx)?;
+        let mut orders = ctx.data_mut().receiver(orders_id);
+        let poll_result = orders.poll_next().into_inner(ctx)?;
         assert!(poll_result.is_pending());
         ctx.data_mut()
-            .push_outbound_message(events_id, b"event #0".to_vec())?;
+            .sender(events_id)
+            .start_send(b"event #0".to_vec())?;
 
         Ok(Poll::Pending)
     };

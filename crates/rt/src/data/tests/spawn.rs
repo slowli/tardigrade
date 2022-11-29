@@ -137,7 +137,8 @@ fn get_child_workflow_channel(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>
         .unwrap();
 
     // ...then polling this channel
-    let poll_res = ctx.data_mut().poll_receiver(traces_id).into_inner(ctx)?;
+    let mut traces = ctx.data_mut().receiver(traces_id);
+    let poll_res = traces.poll_next().into_inner(ctx)?;
     assert!(poll_res.is_pending()); // Poll::Pending
 
     Ok(Poll::Pending)
@@ -263,22 +264,18 @@ fn consume_message_from_child(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>
     let traces_id = child_channels.receiver_id("traces").unwrap();
     let commands_id = child_channels.sender_id("commands").unwrap();
 
-    let poll_res = ctx.data_mut().poll_receiver(traces_id).into_inner(ctx)?;
+    let mut traces = ctx.data_mut().receiver(traces_id);
+    let poll_res = traces.poll_next().into_inner(ctx)?;
     assert_eq!(extract_message(poll_res), b"trace #1");
 
     // Emit a command to the child workflow.
-    let poll_res = ctx
-        .data_mut()
-        .poll_sender(commands_id, false)
-        .into_inner(ctx)?;
+    let mut commands = ctx.data_mut().sender(commands_id);
+    let poll_res = commands.poll_ready().into_inner(ctx)?;
     assert_matches!(poll_res, Poll::Ready(Ok(_)));
-    ctx.data_mut()
-        .push_outbound_message(commands_id, b"command #1".to_vec())?;
 
-    let poll_res = ctx
-        .data_mut()
-        .poll_sender(commands_id, true)
-        .into_inner(ctx)?;
+    let mut commands = ctx.data_mut().sender(commands_id);
+    commands.start_send(b"command #1".to_vec())?;
+    let poll_res = commands.poll_flush().into_inner(ctx)?;
     assert!(poll_res.is_pending());
 
     Ok(Poll::Pending)

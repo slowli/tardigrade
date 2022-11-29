@@ -17,11 +17,11 @@ pub(crate) mod tests;
 
 pub(crate) use self::{channel::ConsumeError, helpers::Wakers, persistence::PersistError};
 pub use self::{
-    channel::{Channels, ReceiverState, SenderState},
+    channel::{Channels, ReceiverActions, ReceiverState, SenderActions, SenderState},
     helpers::WorkflowPoll,
     spawn::ChildWorkflow,
-    task::TaskState,
-    time::TimerState,
+    task::{TaskActions, TaskState},
+    time::{TimerActions, TimerState},
 };
 
 use self::{

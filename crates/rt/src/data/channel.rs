@@ -468,48 +468,154 @@ impl PersistedWorkflowData {
     }
 }
 
-impl WorkflowData {
-    /// Drops the specified receiver.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the receiver with the specified channel ID is not present in the workflow.
+/// Handle allowing to manipulate a workflow channel receiver.
+pub struct ReceiverActions<'a> {
+    data: &'a mut WorkflowData,
+    id: ChannelId,
+}
+
+impl fmt::Debug for ReceiverActions<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ReceiverActions")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ReceiverActions<'_> {
+    /// Drops this receiver. Returns IDs of the wakers that were created polling the receiver
+    /// and should be dropped.
+    #[tracing::instrument(level = "debug")]
     #[must_use = "Returned wakers must be dropped"]
-    pub fn drop_receiver(&mut self, channel_id: ChannelId) -> HashSet<WakerId> {
-        let channel_state = self
-            .persisted
-            .channels
-            .receivers
-            .get_mut(&channel_id)
-            .unwrap();
+    #[allow(clippy::missing_panics_doc)] // false positive
+    pub fn drop(self) -> HashSet<WakerId> {
+        let channels = &mut self.data.persisted.channels;
+        let channel_state = channels.receivers.get_mut(&self.id).unwrap();
         let wakers = mem::take(&mut channel_state.wakes_on_next_element);
         if !channel_state.is_closed {
             channel_state.is_closed = true;
-            self.current_execution()
-                .push_channel_closure(ChannelHalf::Receiver, channel_id);
+            self.data
+                .current_execution()
+                .push_channel_closure(ChannelHalf::Receiver, self.id);
         }
         wakers
     }
 
-    /// Drops the specified sender.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a sender with the specified channel ID is not present in the workflow.
+    /// Polls for the next message for this receiver.
+    #[tracing::instrument(level = "debug")]
+    pub fn poll_next(&mut self) -> WorkflowPoll<Option<Vec<u8>>> {
+        let channels = &mut self.data.persisted.channels;
+        let state = channels.receivers.get_mut(&self.id).unwrap();
+        // ^ `unwrap()` safety is guaranteed by resource handling
+
+        let poll_result = state.poll_next();
+        if let Poll::Ready(maybe_message) = &poll_result {
+            let message_len = maybe_message.as_ref().map(Vec::len);
+            tracing::debug!(ret.len = message_len);
+        }
+
+        self.data
+            .current_execution()
+            .push_receiver_event(self.id, &poll_result);
+        WorkflowPoll::new(poll_result, WakerPlacement::Receiver(self.id))
+    }
+}
+
+/// Handle allowing to manipulate a workflow channel sender.
+pub struct SenderActions<'a> {
+    data: &'a mut WorkflowData,
+    id: ChannelId,
+}
+
+impl fmt::Debug for SenderActions<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SenderActions")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SenderActions<'_> {
+    /// Drops the specified sender. Returns IDs of the wakers that were created polling the receiver
+    /// and should be dropped.
+    #[tracing::instrument(level = "debug")]
     #[must_use = "Returned wakers must be dropped"]
-    pub fn drop_sender(&mut self, channel_id: ChannelId) -> HashSet<WakerId> {
-        let channels = &mut self.persisted.channels;
-        let state = channels.senders.get_mut(&channel_id).unwrap();
+    #[allow(clippy::missing_panics_doc)] // false positive
+    pub fn drop(self) -> HashSet<WakerId> {
+        let channels = &mut self.data.persisted.channels;
+        let state = channels.senders.get_mut(&self.id).unwrap();
         state.ref_count -= 1;
 
         if state.ref_count == 0 {
             let wakers = mem::take(&mut state.wakes_on_flush);
-            self.current_execution()
-                .push_channel_closure(ChannelHalf::Sender, channel_id);
+            self.data
+                .current_execution()
+                .push_channel_closure(ChannelHalf::Sender, self.id);
             wakers
         } else {
             HashSet::new()
         }
+    }
+
+    /// Polls the specified sender for readiness.
+    #[tracing::instrument(level = "debug", ret)]
+    pub fn poll_ready(&mut self) -> WorkflowPoll<Result<(), SendError>> {
+        self.data.poll_sender(self.id, false)
+    }
+
+    /// Polls the specified sender for flush.
+    #[tracing::instrument(level = "debug", ret)]
+    pub fn poll_flush(&mut self) -> WorkflowPoll<Result<(), SendError>> {
+        self.data.poll_sender(self.id, true)
+    }
+
+    /// Pushes an outbound message into the specified channel.
+    #[tracing::instrument(level = "debug", skip(message), fields(message.len = message.len()))]
+    pub fn start_send(&mut self, message: Vec<u8>) -> Result<(), SendError> {
+        let channels = &mut self.data.persisted.channels;
+        let channel_state = channels.senders.get_mut(&self.id).unwrap();
+        if channel_state.is_closed {
+            return Err(SendError::Closed);
+        } else if !channel_state.is_ready() {
+            return Err(SendError::Full);
+        }
+
+        let message_len = message.len();
+        channel_state.messages.push(message.into());
+        self.data
+            .current_execution()
+            .push_outbound_message_event(self.id, message_len);
+        Ok(())
+    }
+}
+
+impl WorkflowData {
+    /// Returns an action handle for the receiver with the specified ID.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the receiver with `id` does not exist in the workflow.
+    pub fn receiver(&mut self, id: ChannelId) -> ReceiverActions<'_> {
+        assert!(
+            self.persisted.channels.receivers.contains_key(&id),
+            "receiver not found"
+        );
+        ReceiverActions { data: self, id }
+    }
+
+    /// Returns an action handle for the sender with the specified ID.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the sender with `id` does not exist in the workflow.
+    pub fn sender(&mut self, id: ChannelId) -> SenderActions<'_> {
+        assert!(
+            self.persisted.channels.senders.contains_key(&id),
+            "sender not found"
+        );
+        SenderActions { data: self, id }
     }
 
     pub(crate) fn take_pending_inbound_message(&mut self, channel_id: ChannelId) -> bool {
@@ -522,27 +628,7 @@ impl WorkflowData {
         has_message
     }
 
-    /// Polls a next message for the specified receiver.
-    #[tracing::instrument(level = "debug", skip(self), fields(ret.len))]
-    pub fn poll_receiver(&mut self, channel_id: ChannelId) -> WorkflowPoll<Option<Vec<u8>>> {
-        let channels = &mut self.persisted.channels;
-        let state = channels.receivers.get_mut(&channel_id).unwrap();
-        // ^ `unwrap()` safety is guaranteed by resource handling
-
-        let poll_result = state.poll_next();
-        if let Poll::Ready(maybe_message) = &poll_result {
-            let message_len = maybe_message.as_ref().map(Vec::len);
-            tracing::Span::current().record("ret.len", message_len);
-        }
-
-        self.current_execution()
-            .push_receiver_event(channel_id, &poll_result);
-        WorkflowPoll::new(poll_result, WakerPlacement::Receiver(channel_id))
-    }
-
-    /// Polls the specified sender for readiness / flush.
-    #[tracing::instrument(level = "debug", skip(self), ret)]
-    pub fn poll_sender(
+    fn poll_sender(
         &mut self,
         channel_id: ChannelId,
         flush: bool,
@@ -567,32 +653,6 @@ impl WorkflowData {
         self.current_execution()
             .push_sender_poll_event(channel_id, flush, poll_result.clone());
         WorkflowPoll::new(poll_result, WakerPlacement::Sender(channel_id))
-    }
-
-    /// Pushes an outbound message into the specified channel.
-    #[tracing::instrument(level = "debug", skip(self, message), fields(message.len = message.len()))]
-    pub fn push_outbound_message(
-        &mut self,
-        channel_id: ChannelId,
-        message: Vec<u8>,
-    ) -> Result<(), SendError> {
-        let channel_state = self
-            .persisted
-            .channels
-            .senders
-            .get_mut(&channel_id)
-            .unwrap();
-        if channel_state.is_closed {
-            return Err(SendError::Closed);
-        } else if !channel_state.is_ready() {
-            return Err(SendError::Full);
-        }
-
-        let message_len = message.len();
-        channel_state.messages.push(message.into());
-        self.current_execution()
-            .push_outbound_message_event(channel_id, message_len);
-        Ok(())
     }
 
     pub(crate) fn drain_messages(&mut self) -> HashMap<ChannelId, Vec<Message>> {

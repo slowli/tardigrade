@@ -177,7 +177,7 @@ impl RunWorkflow for MockInstance {
 
     fn wake_waker(&mut self, waker_id: WakerId) -> anyhow::Result<()> {
         let owning_task_id = self.wakers.remove(&waker_id).unwrap();
-        self.inner.schedule_task_wakeup(owning_task_id)?;
+        self.inner.task(owning_task_id).schedule_wakeup();
         Ok(())
     }
 }
