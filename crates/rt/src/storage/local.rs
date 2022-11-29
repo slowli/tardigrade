@@ -142,12 +142,16 @@ impl LocalStorageSnapshot<'_> {
 /// ```
 /// # use async_std::fs;
 /// # use std::str;
-/// # use tardigrade_rt::{manager::WorkflowManager, storage::{LocalStorage, LocalStorageSnapshot}};
+/// # use tardigrade_rt::{
+/// #     engine::Wasmtime, manager::WorkflowManager, storage::{LocalStorage, LocalStorageSnapshot},
+/// # };
+/// #
 /// # async fn test_wrapper() -> anyhow::Result<()> {
+/// let engine = Wasmtime::default();
 /// let mut storage = LocalStorage::default();
 /// // Remove messages consumed by workflows.
 /// storage.truncate_workflow_messages();
-/// let manager = WorkflowManager::builder(storage).build().await?;
+/// let manager = WorkflowManager::builder(engine, storage).build().await?;
 /// // Do something with the manager...
 ///
 /// let mut storage = manager.into_storage();

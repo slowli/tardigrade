@@ -6,21 +6,25 @@
 //! can be performed using low-level, synchronous [`WorkflowHandle`], or by driving the manager
 //! with the [`Driver`].
 //!
-//! # Instantiating workflows
+//! # Components
 //!
-//! 1. [`WorkflowEngine`] encapsulates the [`wasmtime`] engine to validate, compile and run
-//!   WASM modules. It should be instantiated once at the beginning of the program lifecycle.
-//! 2. [`WorkflowModule`] represents a deployment artifact represented by a WASM module
-//!   with a particular interface (e.g., a custom section declaring one or more workflow
-//!   interfaces). It can be instantiated from the module binary using a `WorkflowEngine`.
-//! 3. [`WorkflowSpawner`] allows to spawn workflows using a particular workflow definition
-//!   from the module. A spawner can be obtained from [`WorkflowModule`].
-//! 4. [`WorkflowManager`] contains workflow instances together with communication channels.
+//! The crate defines two major abstractions necessary to run workflows:
 //!
-//! [`wasmtime`]: https://docs.rs/wasmtime/latest/wasmtime/
-//! [`WorkflowManager`]: crate::manager::WorkflowManager
-//! [`WorkflowHandle`]: crate::manager::WorkflowHandle
-//! [`Driver`]: crate::driver::Driver
+//! - [**Engine**](engine) that provides a way to define, instantiate, run and snapshot workflows
+//! - [**Storage**](storage) that provides a mechanism to durably persist the state of
+//!   workflows and channels connecting them and the external world
+//!
+//! For each of abstractions, there is a default implementation available: the [`wasmtime`]-powered
+//! [engine](engine::Wasmtime) and the in-memory, in-process [storage](storage::LocalStorage)
+//! (it still provides a way to [(de)serialize] a storage snapshot, so it's not *completely* useless).
+//!
+//! See the linked module docs for more details on abstractions.
+//!
+//! [`WorkflowManager`]: manager::WorkflowManager
+//! [`WorkflowHandle`]: manager::WorkflowHandle
+//! [`Driver`]: driver::Driver
+//! [`wasmtime`]: https://docs.rs/wasmtime/
+//! [(de)serialize]: https://docs.rs/serde/
 //!
 //! # Crate features
 //!
@@ -46,25 +50,23 @@
 //!
 //! ```
 //! use tardigrade_rt::{
-//!     manager::{WorkflowHandle, WorkflowManager},
-//!     storage::LocalStorage,
-//!     WasmtimeEngine, WorkflowModule,
+//!     engine::Wasmtime, manager::WorkflowManager, storage::LocalStorage,
 //! };
 //! use tardigrade::spawn::ManageWorkflowsExt;
 //!
 //! # async fn test_wrapper() -> anyhow::Result<()> {
 //! let module_bytes: Vec<u8> = // e.g., take from a file
 //! #   vec![];
-//! let engine = WasmtimeEngine::default();
-//! let module = WorkflowModule::new(&engine, module_bytes)?;
+//! let engine = Wasmtime::default();
+//! let module = engine.create_module(module_bytes)?;
 //! // It is possible to inspect module definitions:
 //! for (workflow_name, interface) in module.interfaces() {
-//!     println!("{}: {:?}", workflow_name, interface);
+//!     println!("{workflow_name}: {interface:?}");
 //! }
 //!
 //! // Let's instantiate a manager and add the module to it.
 //! let storage = LocalStorage::default();
-//! let mut manager = WorkflowManager::builder(storage)
+//! let mut manager = WorkflowManager::builder(engine, storage)
 //!     .build()
 //!     .await?;
 //! manager.insert_module("test", module).await;
@@ -93,12 +95,15 @@
 //!
 //! ```
 //! # use tardigrade::WorkflowId;
-//! # use tardigrade_rt::{manager::WorkflowManager, storage::LocalStorage, PersistedWorkflow};
+//! # use tardigrade_rt::{
+//! #     engine::Wasmtime, manager::WorkflowManager, storage::LocalStorage, PersistedWorkflow,
+//! # };
+//! #
 //! # async fn test_wrapper(
-//! #     manager: WorkflowManager<(), LocalStorage>,
+//! #     manager: WorkflowManager<Wasmtime, (), LocalStorage>,
 //! #     workflow_id: WorkflowId,
 //! # ) -> anyhow::Result<()> {
-//! let manager: WorkflowManager<(), LocalStorage> = // ...
+//! let manager: WorkflowManager<Wasmtime, (), LocalStorage> = // ...
 //! #   manager;
 //! let workflow = manager.workflow(workflow_id).await.unwrap();
 //! let persisted: &PersistedWorkflow = workflow.persisted();

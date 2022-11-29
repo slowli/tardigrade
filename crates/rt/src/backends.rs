@@ -26,14 +26,14 @@ mod mock {
     /// # use futures::TryStreamExt;
     /// # use tardigrade::{interface::SenderName, spawn::ManageWorkflowsExt};
     /// # use tardigrade_rt::{
-    /// #     driver::Driver, manager::{WorkflowHandle, WorkflowManager}, storage::LocalStorage,
-    /// #     test::MockScheduler, WorkflowModule,
+    /// #     driver::Driver, engine::{Wasmtime, WasmtimeModule},
+    /// #     manager::{WorkflowHandle, WorkflowManager}, storage::LocalStorage, test::MockScheduler,
     /// # };
-    /// # async fn test_wrapper(module: WorkflowModule) -> anyhow::Result<()> {
+    /// # async fn test_wrapper(module: WasmtimeModule) -> anyhow::Result<()> {
     /// let scheduler = MockScheduler::default();
     /// // Set the mocked wall clock for the workflow manager.
     /// let storage = LocalStorage::default();
-    /// let mut manager = WorkflowManager::builder(storage)
+    /// let mut manager = WorkflowManager::builder(Wasmtime::default(), storage)
     ///     .with_clock(scheduler.clone())
     ///     .build()
     ///     .await?;

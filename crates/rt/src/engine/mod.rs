@@ -1,4 +1,17 @@
 //! Workflow engine abstraction.
+//!
+//! # Overview
+//!
+//! A [`WorkflowEngine`] is responsible for:
+//!
+//! - Transforming a WASM [**module**](WorkflowModule) into one or more named
+//!   workflow [**definitions**](DefineWorkflow)
+//! - Instantiating zero or more workflow **instances** from a definition.
+//! - [Running](RunWorkflow) and [persisting](PersistWorkflow) workflow instances
+//!
+//! The crate provides a default engine implementation powered by the [`wasmtime`] crate.
+//!
+//! [`wasmtime`]: https://docs.rs/wasmtime/
 
 use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Serialize};
@@ -68,7 +81,13 @@ pub trait AsWorkflowData {
     fn data_mut(&mut self) -> &mut WorkflowData;
 }
 
-/// Workflow execution logic.
+/// Workflow instance execution logic.
+///
+/// A workflow instance [wraps](AsWorkflowData) [`WorkflowData`] and can use its methods
+/// to manipulate the workflow in response to calls in the workflow logic (e.g., polling
+/// a next item for a channel receiver). Thus, `WorkflowData` methods conceptually map to
+/// WASM module imports. Conversely, methods in the `RunWorkflow` trait conceptually map
+/// to WASM module exports.
 pub trait RunWorkflow: AsWorkflowData {
     /// Creates the main workflow task and returns its ID.
     ///

@@ -99,14 +99,14 @@ pub enum Termination {
 /// use tardigrade::interface::{ReceiverName, SenderName};
 /// # use tardigrade::WorkflowId;
 /// use tardigrade_rt::{driver::Driver, manager::WorkflowManager, AsyncIoScheduler};
-/// # use tardigrade_rt::storage::LocalStorage;
-///
+/// # use tardigrade_rt::{engine::Wasmtime, storage::LocalStorage};
+/// #
 /// # async fn test_wrapper(
-/// #     manager: WorkflowManager<AsyncIoScheduler, LocalStorage>,
+/// #     manager: WorkflowManager<Wasmtime, AsyncIoScheduler, LocalStorage>,
 /// #     workflow_id: WorkflowId,
 /// # ) -> anyhow::Result<()> {
 /// // Assume we have a dynamically typed workflow:
-/// let mut manager: WorkflowManager<AsyncIoScheduler, _> = // ...
+/// let mut manager: WorkflowManager<_, AsyncIoScheduler, _> = // ...
 /// #   manager;
 /// let mut workflow = manager.workflow(workflow_id).await.unwrap();
 ///

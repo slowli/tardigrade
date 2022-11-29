@@ -226,8 +226,9 @@ impl<W: TakeHandle<Self, Id = ()>, M: AsManager> WorkflowHandle<'_, W, M> {
     }
 }
 
-/// Handle for an workflow channel [`Receiver`] that allows sending messages
-/// via the channel.
+/// Handle for a workflow channel [`Receiver`] that allows sending messages via the channel.
+///
+/// [`Receiver`]: tardigrade::channel::Receiver
 #[derive(Debug)]
 pub struct MessageSender<'a, T, C, M> {
     manager: &'a M,
@@ -308,8 +309,9 @@ impl<'a, W, M: AsManager> DescribeEnv for WorkflowHandle<'a, W, M> {
     }
 }
 
-/// Handle for an workflow channel [`Sender`] that allows taking messages
-/// from the channel.
+/// Handle for an workflow channel [`Sender`] that allows taking messages from the channel.
+///
+/// [`Sender`]: tardigrade::channel::Sender
 #[derive(Debug)]
 pub struct MessageReceiver<'a, T, C, M> {
     manager: &'a M,
@@ -452,13 +454,15 @@ impl<T, C: Decode<T>> ReceivedMessage<T, C> {
 /// # Examples
 ///
 /// ```
-/// # use tardigrade_rt::{manager::WorkflowManager, storage::LocalStorage};
+/// # use tardigrade_rt::{engine::Wasmtime, manager::WorkflowManager, storage::LocalStorage};
 /// # use tardigrade::WorkflowId;
 /// #
 /// # fn is_bogus(bytes: &[u8]) -> bool { bytes.is_empty() }
 /// #
-/// # async fn test_wrapper(manager: WorkflowManager<(), LocalStorage>) -> anyhow::Result<()> {
-/// let manager: WorkflowManager<_, _> = // ...
+/// # async fn test_wrapper(
+/// #     manager: WorkflowManager<Wasmtime, (), LocalStorage>,
+/// # ) -> anyhow::Result<()> {
+/// let manager: WorkflowManager<_, _, _> = // ...
 /// #   manager;
 /// let workflow_id: WorkflowId = // ...
 /// #   0;

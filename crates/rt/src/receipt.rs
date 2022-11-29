@@ -2,11 +2,11 @@
 //!
 //! The root type is [`Receipt`] that records zero or more [`Execution`]s. Each `Execution`
 //! records [`Event`]s that have occurred when executing a specific [function](ExecutedFunction)
-//! from the WASM definition of the [`WorkflowModule`]. `Event`s can relate either to a message
+//! from a certain [workflow definition]. `Event`s can relate either to a message
 //! channel connected to the workflow ([`ChannelEvent`]), or to a resource managed by the runtime
 //! ([`ResourceEvent`]), such as a task or a timer.
 //!
-//! [`WorkflowModule`]: crate::WorkflowModule
+//! [workflow definition]: crate::engine::DefineWorkflow
 
 use serde::{Deserialize, Serialize};
 
@@ -323,7 +323,7 @@ impl Receipt {
 
 /// Error occurring during workflow execution.
 ///
-/// An error is caused by the executed WASM code [`Trap`]ping, which can be caused by a panic
+/// An error is caused by the executed WASM code trapping, which can be caused by a panic
 /// in the workflow logic, or misuse of Tardigrade runtime APIs. (The latter should not happen
 /// if properly using the Tardigrade client library.)
 #[derive(Debug, Clone, Serialize, Deserialize)]

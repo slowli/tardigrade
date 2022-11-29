@@ -591,7 +591,33 @@ impl SenderActions<'_> {
     }
 }
 
+/// Channel-related functionality.
 impl WorkflowData {
+    /// Acquires a receiver with the specified "coordinates" (an optional ID of the child
+    /// workflow holding the corresponding sender, and the name of the receiver
+    /// in the workflow interface).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the receiver is already acquired, or if it's not present
+    /// at the specified coordinates. If the specified receiver is present in the workflow interface
+    /// but cannot be captured (because during the child creation the corresponding sender was copied),
+    /// this method returns `Ok(None)`.
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub fn acquire_receiver(
+        &mut self,
+        child_id: Option<WorkflowId>,
+        name: &str,
+    ) -> Result<Option<ChannelId>, AccessErrorKind> {
+        let mapping = self.persisted.channel_mapping(child_id);
+
+        let mapping = mapping
+            .receivers
+            .get_mut(name)
+            .ok_or(AccessErrorKind::Unknown)?;
+        Ok(mapping.acquire().ok())
+    }
+
     /// Returns an action handle for the receiver with the specified ID.
     ///
     /// # Panics
@@ -603,6 +629,31 @@ impl WorkflowData {
             "receiver not found"
         );
         ReceiverActions { data: self, id }
+    }
+
+    /// Acquires a sender with the specified "coordinates" (an optional ID of the child
+    /// workflow holding the corresponding receiver, and the name of the sender
+    /// in the workflow interface).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the sender is already acquired, or if it's not present
+    /// at the specified coordinates. If the specified sender is present in the workflow interface
+    /// but cannot be captured (because during the child creation the corresponding receiver
+    /// was moved), this method returns `Ok(None)`.
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub fn acquire_sender(
+        &mut self,
+        child_id: Option<WorkflowId>,
+        name: &str,
+    ) -> Result<Option<ChannelId>, AccessErrorKind> {
+        let mapping = self.persisted.channel_mapping(child_id);
+
+        let mapping = mapping
+            .senders
+            .get_mut(name)
+            .ok_or(AccessErrorKind::Unknown)?;
+        Ok(mapping.acquire().ok())
     }
 
     /// Returns an action handle for the sender with the specified ID.
@@ -657,37 +708,5 @@ impl WorkflowData {
 
     pub(crate) fn drain_messages(&mut self) -> HashMap<ChannelId, Vec<Message>> {
         self.persisted.drain_messages()
-    }
-
-    /// Acquires a receiver resource.
-    #[tracing::instrument(level = "debug", skip(self))]
-    pub fn acquire_receiver(
-        &mut self,
-        child_id: Option<WorkflowId>,
-        name: &str,
-    ) -> Result<Option<ChannelId>, AccessErrorKind> {
-        let mapping = self.persisted.channel_mapping(child_id);
-
-        let mapping = mapping
-            .receivers
-            .get_mut(name)
-            .ok_or(AccessErrorKind::Unknown)?;
-        Ok(mapping.acquire().ok())
-    }
-
-    /// Acquires a sender resource.
-    #[tracing::instrument(level = "debug", skip(self))]
-    pub fn acquire_sender(
-        &mut self,
-        child_id: Option<WorkflowId>,
-        name: &str,
-    ) -> Result<Option<ChannelId>, AccessErrorKind> {
-        let mapping = self.persisted.channel_mapping(child_id);
-
-        let mapping = mapping
-            .senders
-            .get_mut(name)
-            .ok_or(AccessErrorKind::Unknown)?;
-        Ok(mapping.acquire().ok())
     }
 }

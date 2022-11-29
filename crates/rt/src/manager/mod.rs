@@ -128,18 +128,20 @@ enum ChannelSide {
 ///
 /// ```
 /// # use tardigrade_rt::{
+/// #     engine::{Wasmtime, WasmtimeModule},
 /// #     manager::{WorkflowHandle, WorkflowManager},
-/// #     storage::LocalStorage, AsyncIoScheduler, WorkflowModule,
+/// #     storage::LocalStorage, AsyncIoScheduler,
 /// # };
-/// # async fn test_wrapper(module: WorkflowModule) -> anyhow::Result<()> {
+/// #
+/// # async fn test_wrapper(module: WasmtimeModule) -> anyhow::Result<()> {
 /// // A manager is instantiated using the builder pattern:
 /// let storage = LocalStorage::default();
-/// let mut manager = WorkflowManager::builder(storage)
+/// let mut manager = WorkflowManager::builder(Wasmtime::default(), storage)
 ///     .with_clock(AsyncIoScheduler)
 ///     .build()
 ///     .await?;
 /// // After this, modules may be added:
-/// let module: WorkflowModule = // ...
+/// let module: WasmtimeModule = // ...
 /// #   module;
 /// manager.insert_module("test", module).await;
 ///
@@ -415,7 +417,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManagerBuilder<E, C, S> {
     ///
     /// # Errors
     ///
-    /// Returns an error if [module instantiation](CreateModule) fails.
+    /// Returns an error if [module instantiation](WorkflowEngine::create_module()) fails.
     pub async fn build(self) -> anyhow::Result<WorkflowManager<E, C, S>> {
         WorkflowManager::new(self.engine, self.clock, self.storage).await
     }

@@ -104,7 +104,9 @@ pub trait StorageTransaction:
     async fn commit(self);
 }
 
-/// Allows reading stored information about [`WorkflowModule`](crate::WorkflowModule)s.
+/// Allows reading stored information about [`WorkflowModule`]s.
+///
+/// [`WorkflowModule`]: crate::engine::WorkflowModule
 #[async_trait]
 pub trait ReadModules {
     /// Retrieves a module with the specified ID.
@@ -114,7 +116,9 @@ pub trait ReadModules {
     fn modules(&self) -> BoxStream<'_, ModuleRecord>;
 }
 
-/// Allows modifying stored information about [`WorkflowModule`](crate::WorkflowModule)s.
+/// Allows modifying stored information about [`WorkflowModule`]s.
+///
+/// [`WorkflowModule`]: crate::engine::WorkflowModule
 #[async_trait]
 pub trait WriteModules: ReadModules {
     /// Inserts the module into the storage.
@@ -127,7 +131,9 @@ pub trait WriteModules: ReadModules {
     async fn update_tracing_metadata(&mut self, module_id: &str, metadata: PersistedMetadata);
 }
 
-/// Storage record for a [`WorkflowModule`](crate::WorkflowModule).
+/// Storage record for a [`WorkflowModule`].
+///
+/// [`WorkflowModule`]: crate::engine::WorkflowModule
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ModuleRecord {
     /// ID of the module. This should be the primary key of the module.

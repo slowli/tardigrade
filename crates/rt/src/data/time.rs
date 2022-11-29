@@ -192,6 +192,7 @@ impl TimerActions<'_> {
     }
 }
 
+/// Time-related functionality.
 impl WorkflowData {
     /// Returns the current timestamp.
     #[tracing::instrument(level = "debug", skip(self), ret)]

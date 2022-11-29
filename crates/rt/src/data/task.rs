@@ -219,6 +219,7 @@ impl TaskActions<'_> {
     }
 }
 
+/// Task-related functionality.
 impl WorkflowData {
     pub(crate) fn result(&self) -> Poll<Result<(), &JoinError>> {
         self.persisted.result()
