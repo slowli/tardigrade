@@ -19,7 +19,7 @@ pub(crate) use self::{channel::ConsumeError, helpers::Wakers, persistence::Persi
 pub use self::{
     channel::{Channels, ReceiverActions, ReceiverState, SenderActions, SenderState},
     helpers::WorkflowPoll,
-    spawn::ChildWorkflow,
+    spawn::{ChildActions, ChildStubActions, ChildWorkflow},
     task::{TaskActions, TaskState},
     time::{TimerActions, TimerState},
 };

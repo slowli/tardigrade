@@ -28,8 +28,8 @@ pub use self::mock::{
 };
 pub use self::wasmtime::{Wasmtime, WasmtimeDefinition, WasmtimeInstance, WasmtimeModule};
 pub use crate::data::{
-    ReceiverActions, ReportedErrorKind, SenderActions, TaskActions, TimerActions, WorkflowData,
-    WorkflowPoll,
+    ChildActions, ChildStubActions, ReceiverActions, ReportedErrorKind, SenderActions, TaskActions,
+    TimerActions, WorkflowData, WorkflowPoll,
 };
 
 use crate::storage::ModuleRecord;

@@ -1,13 +1,12 @@
 //! Spawning workflows.
 
 use anyhow::anyhow;
-use futures::future::Aborted;
 use serde::{Deserialize, Serialize};
 
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
-    mem,
+    fmt, mem,
     task::Poll,
 };
 
@@ -24,7 +23,7 @@ use crate::{
 use tardigrade::{
     interface::{ChannelHalf, Interface},
     spawn::{ChannelsConfig, HostError},
-    task::{JoinError, TaskError},
+    task::JoinError,
     ChannelId, WakerId, WorkflowId,
 };
 
@@ -134,6 +133,10 @@ impl<'a> ChildWorkflow<'a> {
 }
 
 impl PersistedWorkflowData {
+    pub fn contains_child_stub(&self, id: WorkflowId) -> bool {
+        self.child_workflow_stubs.stubs.contains_key(&id)
+    }
+
     pub fn child_workflows(&self) -> impl Iterator<Item = (WorkflowId, ChildWorkflow<'_>)> + '_ {
         self.child_workflows.iter().map(|(id, state)| {
             let child = ChildWorkflow::new(state, &self.channels);
@@ -182,7 +185,117 @@ impl PersistedWorkflowData {
     }
 }
 
+/// Handle allowing to manipulate a child stub.
+pub struct ChildStubActions<'a> {
+    data: &'a mut WorkflowData,
+    id: WorkflowId,
+}
+
+impl fmt::Debug for ChildStubActions<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ChildStubActions")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ChildStubActions<'_> {
+    /// Polls this stub for initialization.
+    #[tracing::instrument(level = "debug", ret)]
+    pub fn poll_init(&mut self) -> WorkflowPoll<StubResult> {
+        let stubs = &mut self.data.persisted.child_workflow_stubs.stubs;
+        let stub = &stubs[&self.id];
+        let poll_result = stub.result.clone();
+        if poll_result.is_ready() {
+            // We don't want to create aliased workflow resources; thus, we prevent repeated
+            // stub polling after completion.
+            stubs.remove(&self.id);
+        }
+
+        self.data.current_execution().push_resource_event(
+            ResourceId::WorkflowStub(self.id),
+            ResourceEventKind::Polled(utils::drop_value(&poll_result)),
+        );
+        if let Poll::Ready(Ok(workflow_id)) = &poll_result {
+            self.data.current_execution().push_resource_event(
+                ResourceId::Workflow(*workflow_id),
+                ResourceEventKind::Created,
+            );
+        }
+        WorkflowPoll::new(poll_result, WakerPlacement::WorkflowInit(self.id))
+    }
+
+    /// Drops this stub. Returns IDs of the wakers that were created polling the stub
+    /// and should be dropped.
+    #[must_use = "Returned wakers must be dropped"]
+    #[tracing::instrument(level = "debug")]
+    pub fn drop(self) -> HashSet<WakerId> {
+        self.data.current_execution().push_resource_event(
+            ResourceId::WorkflowStub(self.id),
+            ResourceEventKind::Dropped,
+        );
+        let stubs = &mut self.data.persisted.child_workflow_stubs.stubs;
+        stubs
+            .get_mut(&self.id)
+            .map_or_else(HashSet::default, |stub| mem::take(&mut stub.wakes_on_init))
+    }
+}
+
+/// Handle allowing to manipulate an (initialized) child workflow.
+pub struct ChildActions<'a> {
+    data: &'a mut WorkflowData,
+    id: WorkflowId,
+}
+
+impl fmt::Debug for ChildActions<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ChildActions")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ChildActions<'_> {
+    /// Polls this child for completion.
+    #[tracing::instrument(level = "debug", ret)]
+    pub fn poll_completion(&mut self) -> WorkflowPoll<Result<(), JoinError>> {
+        let poll_result = self.data.persisted.child_workflows[&self.id]
+            .result()
+            .map_err(utils::clone_join_error);
+        self.data.current_execution().push_resource_event(
+            ResourceId::Workflow(self.id),
+            ResourceEventKind::Polled(utils::drop_value(&poll_result)),
+        );
+        WorkflowPoll::new(poll_result, WakerPlacement::WorkflowCompletion(self.id))
+    }
+
+    /// Drops this child. Returns IDs of the wakers that were created polling the child
+    /// and should be dropped.
+    #[must_use = "Returned wakers must be dropped"]
+    #[tracing::instrument(level = "debug")]
+    pub fn drop(self) -> HashSet<WakerId> {
+        self.data
+            .current_execution()
+            .push_resource_event(ResourceId::Workflow(self.id), ResourceEventKind::Dropped);
+        let children = &mut self.data.persisted.child_workflows;
+        let state = children.get_mut(&self.id).unwrap();
+        mem::take(&mut state.wakes_on_completion)
+    }
+}
+
+/// Spawning-related functionality.
 impl WorkflowData {
+    /// Returns the interface matching the specified definition ID.
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub fn workflow_interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
+        let workflows = self.services().workflows.as_deref();
+        let interface = workflows.and_then(|workflows| workflows.interface(definition_id));
+        tracing::debug!(ret.is_some = interface.is_some());
+        interface
+    }
+
     fn validate_handles(
         &self,
         definition_id: &str,
@@ -249,6 +362,11 @@ impl WorkflowData {
     }
 
     /// Creates a workflow stub with the specified parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provided `channels` config is not valid (e.g., doesn't contain
+    /// precisely the same channels as specified in the spawned workflow interface).
     #[tracing::instrument(skip(args), ret, err, fields(args.len = args.len()))]
     pub fn create_workflow_stub(
         &mut self,
@@ -273,104 +391,30 @@ impl WorkflowData {
         Ok(stub_id)
     }
 
-    /// Polls workflow stub initialization.
-    #[tracing::instrument(level = "debug", ret, err, skip(self))]
-    pub fn poll_workflow_init(
-        &mut self,
-        stub_id: WorkflowId,
-    ) -> anyhow::Result<WorkflowPoll<StubResult>> {
-        let stubs = &mut self.persisted.child_workflow_stubs.stubs;
-        let stub = stubs
-            .get(&stub_id)
-            .ok_or_else(|| anyhow!("stub {stub_id} polled after completion"))?;
-        let poll_result = stub.result.clone();
-        if poll_result.is_ready() {
-            // We don't want to create aliased workflow resources; thus, we prevent repeated
-            // stub polling after completion.
-            stubs.remove(&stub_id);
-        }
-
-        self.current_execution().push_resource_event(
-            ResourceId::WorkflowStub(stub_id),
-            ResourceEventKind::Polled(utils::drop_value(&poll_result)),
-        );
-        if let Poll::Ready(Ok(workflow_id)) = &poll_result {
-            self.current_execution().push_resource_event(
-                ResourceId::Workflow(*workflow_id),
-                ResourceEventKind::Created,
-            );
-        }
-        Ok(WorkflowPoll::new(
-            poll_result,
-            WakerPlacement::WorkflowInit(stub_id),
-        ))
-    }
-
-    /// Polls workflow completion.
-    #[tracing::instrument(level = "debug", ret, skip(self))]
-    pub fn poll_workflow_completion(
-        &mut self,
-        workflow_id: WorkflowId,
-    ) -> WorkflowPoll<Result<(), Aborted>> {
-        let poll_result = self.persisted.child_workflows[&workflow_id]
-            .result()
-            .map(utils::extract_task_poll_result);
-        self.current_execution().push_resource_event(
-            ResourceId::Workflow(workflow_id),
-            ResourceEventKind::Polled(utils::drop_value(&poll_result)),
-        );
-        WorkflowPoll::new(poll_result, WakerPlacement::WorkflowCompletion(workflow_id))
-    }
-
-    /// Returns task error for the specified child.
-    pub fn workflow_task_error(&self, child_id: WorkflowId) -> Option<&TaskError> {
-        let result = &self.persisted.child_workflows[&child_id].completion_result;
-        if let Poll::Ready(Err(JoinError::Err(err))) = result {
-            Some(err)
-        } else {
-            None
-        }
-    }
-
-    /// Drops the specified child workflow stub.
-    #[must_use = "Returned wakers must be dropped"]
-    pub fn drop_child_stub(&mut self, stub_id: WorkflowId) -> HashSet<WakerId> {
-        self.current_execution().push_resource_event(
-            ResourceId::WorkflowStub(stub_id),
-            ResourceEventKind::Dropped,
-        );
-        let stubs = &mut self.persisted.child_workflow_stubs.stubs;
-        stubs
-            .get_mut(&stub_id)
-            .map_or_else(HashSet::default, |stub| mem::take(&mut stub.wakes_on_init))
-    }
-
-    /// Handles dropping the child workflow handle from the workflow side. Returns wakers
-    /// that should be dropped.
+    /// Returns an action handle for the child stub with the specified ID.
     ///
     /// # Panics
     ///
-    /// Panics if the child workflow with the specified ID is not defined.
-    #[must_use = "Returned wakers must be dropped"]
-    pub fn drop_child(&mut self, workflow_id: WorkflowId) -> HashSet<WakerId> {
-        self.current_execution().push_resource_event(
-            ResourceId::Workflow(workflow_id),
-            ResourceEventKind::Dropped,
+    /// Panics if the stub with `id` does not exist in the workflow. This includes the case
+    /// when the stub was initialized.
+    pub fn child_stub(&mut self, id: WorkflowId) -> ChildStubActions<'_> {
+        assert!(
+            self.persisted.child_workflow_stubs.stubs.contains_key(&id),
+            "stub not found"
         );
-        let state = self
-            .persisted
-            .child_workflows
-            .get_mut(&workflow_id)
-            .unwrap();
-        mem::take(&mut state.wakes_on_completion)
+        ChildStubActions { data: self, id }
     }
 
-    /// Returns the interface matching the specified definition ID.
-    #[tracing::instrument(level = "debug", skip(self))]
-    pub fn workflow_interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
-        let workflows = self.services().workflows.as_deref();
-        let interface = workflows.and_then(|workflows| workflows.interface(definition_id));
-        tracing::debug!(ret.is_some = interface.is_some());
-        interface
+    /// Returns an action handle for the child workflow with the specified ID.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the child with `id` does not exist in the workflow.
+    pub fn child(&mut self, id: WorkflowId) -> ChildActions<'_> {
+        assert!(
+            self.persisted.child_workflows.contains_key(&id),
+            "child not found"
+        );
+        ChildActions { data: self, id }
     }
 }

@@ -57,10 +57,8 @@ fn spawn_child(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     let stub_id = ctx
         .data_mut()
         .create_workflow_stub(DEFINITION_ID, args, &configure_handles())?;
-    let poll_result = ctx
-        .data_mut()
-        .poll_workflow_init(stub_id)?
-        .into_inner(ctx)?;
+    let mut stub = ctx.data_mut().child_stub(stub_id);
+    let poll_result = stub.poll_init().into_inner(ctx)?;
     assert!(poll_result.is_pending());
 
     Ok(Poll::Pending)
@@ -289,10 +287,8 @@ async fn test_child_workflow_channel_management(complete_child: bool) {
 
     let poll_child_traces_and_completion: MockPollFn = |ctx| {
         let _ = poll_child_traces(ctx)?;
-        let poll_result = ctx
-            .data_mut()
-            .poll_workflow_completion(CHILD_ID)
-            .into_inner(ctx)?;
+        let mut child = ctx.data_mut().child(CHILD_ID);
+        let poll_result = child.poll_completion().into_inner(ctx)?;
         assert!(poll_result.is_pending());
 
         Ok(Poll::Pending)
@@ -361,10 +357,8 @@ async fn test_child_resources_after_drop(
     let test_child_resources: MockPollFn = if complete_child {
         |ctx| {
             let _ = test_child_channels_after_closure(ctx)?;
-            let poll_result = ctx
-                .data_mut()
-                .poll_workflow_completion(CHILD_ID)
-                .into_inner(ctx)?;
+            let mut child = ctx.data_mut().child(CHILD_ID);
+            let poll_result = child.poll_completion().into_inner(ctx)?;
             assert_matches!(poll_result, Poll::Ready(Ok(())));
 
             Ok(Poll::Pending)
@@ -428,10 +422,8 @@ fn spawn_child_with_copied_sender(
     let stub_id = ctx
         .data_mut()
         .create_workflow_stub(DEFINITION_ID, args, &handles)?;
-    let poll_result = ctx
-        .data_mut()
-        .poll_workflow_init(stub_id)?
-        .into_inner(ctx)?;
+    let mut stub = ctx.data_mut().child_stub(stub_id);
+    let poll_result = stub.poll_init().into_inner(ctx)?;
     assert!(poll_result.is_pending());
 
     Ok(Poll::Pending)
@@ -443,11 +435,8 @@ fn poll_child_completion_with_copied_channel(ctx: &mut MockInstance) -> anyhow::
         .acquire_receiver(Some(CHILD_ID), "events")
         .unwrap();
     assert!(child_events_id.is_none()); // The handle to child events is not captured
-                                        // Block on child completion
-    let poll_result = ctx
-        .data_mut()
-        .poll_workflow_completion(CHILD_ID)
-        .into_inner(ctx)?;
+    let mut child = ctx.data_mut().child(CHILD_ID);
+    let poll_result = child.poll_completion().into_inner(ctx)?;
     assert!(poll_result.is_pending());
     Ok(Poll::Pending)
 }
@@ -643,10 +632,8 @@ async fn spawning_and_completing_child_with_aliased_sender() {
 }
 
 fn poll_child_completion(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
-    let poll_result = ctx
-        .data_mut()
-        .poll_workflow_completion(CHILD_ID)
-        .into_inner(ctx)?;
+    let mut child = ctx.data_mut().child(CHILD_ID);
+    let poll_result = child.poll_completion().into_inner(ctx)?;
     assert!(poll_result.is_pending());
     Ok(Poll::Pending)
 }
@@ -675,13 +662,12 @@ async fn completing_child_with_error() {
     );
 
     let check_child_completion: MockPollFn = |ctx| {
-        let poll_result = ctx
-            .data_mut()
-            .poll_workflow_completion(CHILD_ID)
-            .into_inner(ctx)?;
-        assert_matches!(poll_result, Poll::Ready(Ok(_)));
-
-        let err = ctx.data().workflow_task_error(CHILD_ID).unwrap();
+        let mut child = ctx.data_mut().child(CHILD_ID);
+        let poll_result = child.poll_completion().into_inner(ctx)?;
+        let err = match poll_result {
+            Poll::Ready(Err(JoinError::Err(err))) => err,
+            other => panic!("unexpected poll result: {other:?}"),
+        };
         let err_cause = err.cause().to_string();
         assert_eq!(err_cause, "error message");
         Ok(Poll::Pending)
@@ -718,18 +704,12 @@ fn complete_task_with_panic(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> 
 }
 
 fn check_aborted_child_completion(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
-    let poll_result = ctx
-        .data_mut()
-        .poll_workflow_completion(CHILD_ID)
-        .into_inner(ctx)?;
+    let mut child = ctx.data_mut().child(CHILD_ID);
+    let poll_result = child.poll_completion().into_inner(ctx)?;
     assert_matches!(poll_result, Poll::Ready(Err(_)));
 
-    let child_channels = ctx
-        .data()
-        .persisted
-        .child_workflow(CHILD_ID)
-        .unwrap()
-        .channels();
+    let child = ctx.data().persisted.child_workflow(CHILD_ID);
+    let child_channels = child.unwrap().channels();
     let child_events_id = child_channels.receiver_id("events").unwrap();
     let mut child_events = ctx.data_mut().receiver(child_events_id);
     let poll_result = child_events.poll_next().into_inner(ctx)?;

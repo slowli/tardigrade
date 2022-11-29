@@ -16,12 +16,13 @@ use super::{
 use crate::{
     data::{ReportedErrorKind, WorkflowData},
     engine::{AsWorkflowData, CreateWaker},
+    utils,
 };
 use tardigrade::{
     abi::{IntoWasm, TryFromWasm},
     interface::{AccessErrorKind, ChannelHalf},
     spawn::{ChannelSpawnConfig, HostError},
-    task::TaskError,
+    task::{JoinError, TaskError},
     TaskId, TimerDefinition, TimerId, WakerId,
 };
 
@@ -70,8 +71,14 @@ impl WorkflowFunctions {
         let waker_ids = match dropped {
             HostResource::Receiver(channel_id) => data.receiver(*channel_id).drop(),
             HostResource::Sender(channel_id) => data.sender(*channel_id).drop(),
-            HostResource::WorkflowStub(stub_id) => data.drop_child_stub(*stub_id),
-            HostResource::Workflow(workflow_id) => data.drop_child(*workflow_id),
+            HostResource::WorkflowStub(stub_id) => {
+                if data.persisted.contains_child_stub(*stub_id) {
+                    data.child_stub(*stub_id).drop()
+                } else {
+                    HashSet::new()
+                }
+            }
+            HostResource::Workflow(workflow_id) => data.child(*workflow_id).drop(),
             HostResource::ChannelHandles(_) => HashSet::new(),
         };
 
@@ -548,6 +555,7 @@ impl SpawnFunctions {
         Ok(Some(HostResource::WorkflowStub(stub_id).into_ref()))
     }
 
+    #[tracing::instrument(level = "debug", skip_all, err, fields(stub_id))]
     pub fn poll_workflow_init(
         mut ctx: StoreContextMut<'_, InstanceData>,
         stub: Option<ExternRef>,
@@ -557,7 +565,7 @@ impl SpawnFunctions {
         let stub_id = HostResource::from_ref(stub.as_ref())?.as_workflow_stub()?;
         tracing::Span::current().record("stub_id", stub_id);
 
-        let poll_result = ctx.data_mut().inner.poll_workflow_init(stub_id)?;
+        let poll_result = ctx.data_mut().inner.child_stub(stub_id).poll_init();
         let mut poll_cx = WasmContext::new(ctx.as_context_mut(), poll_cx);
         let poll_result = poll_result.into_inner(&mut poll_cx)?;
 
@@ -573,32 +581,33 @@ impl SpawnFunctions {
 
     pub fn poll_workflow_completion(
         mut ctx: StoreContextMut<'_, InstanceData>,
-        workflow: Option<ExternRef>,
+        child: Option<ExternRef>,
         poll_cx: WasmContextPtr,
     ) -> anyhow::Result<i64> {
-        let workflow_id = HostResource::from_ref(workflow.as_ref())?.as_workflow()?;
-        let poll_result = ctx.data_mut().inner.poll_workflow_completion(workflow_id);
+        let child_id = HostResource::from_ref(child.as_ref())?.as_workflow()?;
+        let poll_result = ctx.data_mut().inner.child(child_id).poll_completion();
 
         let mut poll_cx = WasmContext::new(ctx.as_context_mut(), poll_cx);
         let poll_result = poll_result.into_inner(&mut poll_cx)?;
+        let poll_result = poll_result.map(utils::extract_task_poll_result);
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))
     }
 
-    #[tracing::instrument(level = "debug", skip_all, err, fields(workflow_id, err))]
+    #[tracing::instrument(level = "debug", skip_all, err, fields(child_id))]
     pub fn completion_error(
         ctx: StoreContextMut<'_, InstanceData>,
         workflow: Option<ExternRef>,
     ) -> anyhow::Result<i64> {
-        let workflow_id = HostResource::from_ref(workflow.as_ref())?.as_workflow()?;
-        let maybe_err = ctx
-            .data()
-            .inner
-            .workflow_task_error(workflow_id)
-            .map(TaskError::clone_boxed);
+        let child_id = HostResource::from_ref(workflow.as_ref())?.as_workflow()?;
+        tracing::Span::current().record("child_id", child_id);
 
-        tracing::Span::current()
-            .record("workflow_id", workflow_id)
-            .record("err", maybe_err.as_ref().map(field::debug));
+        let persisted = &ctx.data().inner.persisted;
+        let poll_result = persisted.child_workflow(child_id).unwrap().result();
+        let maybe_err = match poll_result {
+            Poll::Ready(Err(JoinError::Err(err))) => Some(err),
+            _ => None,
+        };
+        let maybe_err = maybe_err.map(TaskError::clone_boxed);
 
         Ok(maybe_err
             .map(|err| err.into_wasm(&mut WasmAllocator::new(ctx)))

@@ -118,8 +118,6 @@
 //! # }
 //! ```
 
-#![allow(missing_docs)] // FIXME
-
 // Documentation settings.
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![doc(html_root_url = "https://docs.rs/tardigrade-rt/0.1.0")]

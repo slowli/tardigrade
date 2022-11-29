@@ -113,17 +113,15 @@ fn spawn_child_workflow(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
         b"child_input".to_vec(),
         &configure_handles(),
     )?;
-    let poll_result = ctx
-        .data_mut()
-        .poll_workflow_init(stub_id)?
-        .into_inner(ctx)?;
+    let mut stub = ctx.data_mut().child_stub(stub_id);
+    let poll_result = stub.poll_init().into_inner(ctx)?;
     assert!(poll_result.is_pending());
 
     Ok(Poll::Pending)
 }
 
 fn get_child_workflow_channel(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
-    let child_id = ctx.data_mut().poll_workflow_init(0)?.into_inner(ctx)?;
+    let child_id = ctx.data_mut().child_stub(0).poll_init().into_inner(ctx)?;
     let child_id = match child_id {
         Poll::Ready(Ok(id)) => id,
         other => panic!("unexpected poll result: {other:?}"),
@@ -239,7 +237,7 @@ fn spawning_child_workflow_with_host_error() {
         Ok(Poll::Pending)
     };
     let poll_child_stub: MockPollFn = |ctx| {
-        let poll_res = ctx.data_mut().poll_workflow_init(0)?.into_inner(ctx)?;
+        let poll_res = ctx.data_mut().child_stub(0).poll_init().into_inner(ctx)?;
         let err = match poll_res {
             Poll::Ready(Err(err)) => err,
             other => panic!("unexpected poll result: {other:?}"),

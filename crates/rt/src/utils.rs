@@ -5,6 +5,7 @@ use ouroboros::self_referencing;
 use serde::{Deserialize, Serialize};
 
 use std::{
+    borrow::Borrow,
     fmt,
     marker::PhantomData,
     pin::Pin,
@@ -69,8 +70,11 @@ pub(crate) fn clone_completion_result(
     }
 }
 
-pub(crate) fn extract_task_poll_result(result: Result<(), &JoinError>) -> Result<(), Aborted> {
-    result.or_else(|err| match err {
+pub(crate) fn extract_task_poll_result<E>(result: Result<(), E>) -> Result<(), Aborted>
+where
+    E: Borrow<JoinError>,
+{
+    result.or_else(|err| match err.borrow() {
         JoinError::Err(_) => Ok(()),
         JoinError::Aborted => Err(Aborted),
     })
