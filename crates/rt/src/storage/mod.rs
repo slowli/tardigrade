@@ -39,7 +39,7 @@ use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 use tracing_tunnel::{PersistedMetadata, PersistedSpans};
 
-use std::{collections::HashSet, error, fmt, sync::Arc};
+use std::{collections::HashSet, error, fmt, ops, sync::Arc};
 
 mod local;
 
@@ -56,17 +56,17 @@ use tardigrade::{task::JoinError, ChannelId, WakerId, WorkflowId};
 ///
 /// A storage is required to instantiate a [`WorkflowManager`](crate::manager::WorkflowManager).
 #[async_trait]
-pub trait Storage<'a>: 'static + Send + Sync {
+pub trait Storage: 'static + Send + Sync {
     /// Read/write transaction for the storage. See [`StorageTransaction`] for required
     /// transaction semantics.
-    type Transaction: 'a + StorageTransaction;
+    type Transaction<'a>: 'a + StorageTransaction;
     /// Readonly transaction for the storage.
-    type ReadonlyTransaction: 'a + ReadonlyStorageTransaction;
+    type ReadonlyTransaction<'a>: 'a + ReadonlyStorageTransaction;
 
     /// Creates a new read/write transaction.
-    async fn transaction(&'a self) -> Self::Transaction;
+    async fn transaction(&self) -> Self::Transaction<'_>;
     /// Creates a new readonly transaction.
-    async fn readonly_transaction(&'a self) -> Self::ReadonlyTransaction;
+    async fn readonly_transaction(&self) -> Self::ReadonlyTransaction<'_>;
 }
 
 /// [`Storage`] transaction with readonly access to the storage.
@@ -104,7 +104,9 @@ pub trait StorageTransaction:
     async fn commit(self);
 }
 
-/// Allows reading stored information about [`WorkflowModule`](crate::WorkflowModule)s.
+/// Allows reading stored information about [`WorkflowModule`]s.
+///
+/// [`WorkflowModule`]: crate::engine::WorkflowModule
 #[async_trait]
 pub trait ReadModules {
     /// Retrieves a module with the specified ID.
@@ -114,7 +116,9 @@ pub trait ReadModules {
     fn modules(&self) -> BoxStream<'_, ModuleRecord>;
 }
 
-/// Allows modifying stored information about [`WorkflowModule`](crate::WorkflowModule)s.
+/// Allows modifying stored information about [`WorkflowModule`]s.
+///
+/// [`WorkflowModule`]: crate::engine::WorkflowModule
 #[async_trait]
 pub trait WriteModules: ReadModules {
     /// Inserts the module into the storage.
@@ -127,7 +131,9 @@ pub trait WriteModules: ReadModules {
     async fn update_tracing_metadata(&mut self, module_id: &str, metadata: PersistedMetadata);
 }
 
-/// Storage record for a [`WorkflowModule`](crate::WorkflowModule).
+/// Storage record for a [`WorkflowModule`].
+///
+/// [`WorkflowModule`]: crate::engine::WorkflowModule
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ModuleRecord {
     /// ID of the module. This should be the primary key of the module.
@@ -156,13 +162,19 @@ pub trait ReadChannels {
     /// Retrieves information about the channel with the specified ID.
     async fn channel(&self, id: ChannelId) -> Option<ChannelRecord>;
 
-    /// Receives a message with the specified 0-based index from the specified channel.
+    /// Gets a message with the specified 0-based index from the specified channel.
     ///
     /// # Errors
     ///
     /// Returns an error if the message cannot be retrieved.
-    // TODO: add retrieving messages by an index range?
     async fn channel_message(&self, id: ChannelId, index: usize) -> Result<Vec<u8>, MessageError>;
+
+    /// Gets messages with indices in the specified range from the specified channel.
+    fn channel_messages(
+        &self,
+        id: ChannelId,
+        indices: ops::RangeInclusive<usize>,
+    ) -> BoxStream<'_, (usize, Vec<u8>)>;
 }
 
 /// Allows modifying stored information about channels.
@@ -228,15 +240,24 @@ impl error::Error for MessageError {}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelRecord {
     /// ID of the receiver workflow, or `None` if the receiver is external.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver_workflow_id: Option<WorkflowId>,
     /// IDs of sender workflows.
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     pub sender_workflow_ids: HashSet<WorkflowId>,
     /// `true` if the channel has an external sender.
+    #[serde(default, skip_serializing_if = "is_false")]
     pub has_external_sender: bool,
     /// `true` if the channel is closed (i.e., no more messages can be written to it).
+    #[serde(default, skip_serializing_if = "is_false")]
     pub is_closed: bool,
     /// Number of messages written to the channel.
     pub received_messages: usize,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // required by serde
+fn is_false(&flag: &bool) -> bool {
+    !flag
 }
 
 /// Allows reading information about workflows.
@@ -262,7 +283,6 @@ pub trait WriteWorkflows: ReadWorkflows {
     async fn workflow_for_update(&mut self, id: WorkflowId) -> Option<WorkflowRecord>;
 
     /// Updates the state of a workflow with the specified ID.
-    // TODO: concurrency edit protection (via execution counter?)
     async fn update_workflow(&mut self, id: WorkflowId, state: WorkflowState);
 
     /// Finds an active workflow with wakers and selects it for update.
@@ -532,6 +552,14 @@ impl<T: ReadonlyStorageTransaction> ReadChannels for Readonly<T> {
 
     async fn channel_message(&self, id: ChannelId, index: usize) -> Result<Vec<u8>, MessageError> {
         self.0.channel_message(id, index).await
+    }
+
+    fn channel_messages(
+        &self,
+        id: ChannelId,
+        indices: ops::RangeInclusive<usize>,
+    ) -> BoxStream<'_, (usize, Vec<u8>)> {
+        self.0.channel_messages(id, indices)
     }
 }
 

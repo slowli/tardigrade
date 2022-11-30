@@ -3,7 +3,6 @@
 use anyhow::anyhow;
 use assert_matches::assert_matches;
 use mimicry::Answers;
-use wasmtime::{AsContextMut, StoreContextMut};
 
 use std::{collections::HashSet, task::Poll};
 
@@ -11,35 +10,40 @@ mod spawn;
 
 use super::*;
 use crate::{
-    data::{WasmContextPtr, WorkflowData, WorkflowFunctions},
-    module::{ExportsMock, MockPollFn},
+    engine::{AsWorkflowData, MockAnswers, MockEngine, MockInstance, MockPollFn},
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, ExecutionError, Receipt,
         WakeUpCause,
     },
-    storage::{LocalStorage, WorkflowWaker},
-    utils::WasmAllocator,
-    WorkflowEngine, WorkflowModule,
+    storage::LocalStorage,
 };
 use tardigrade::{
-    abi::AllocateBytes,
     interface::{ReceiverName, SenderName},
     spawn::ManageWorkflowsExt,
 };
 
-const POLL_CX: WasmContextPtr = 123;
 const DEFINITION_ID: &str = "test@latest::TestWorkflow";
 
-type LocalManager<C = ()> = WorkflowManager<C, LocalStorage>;
+type LocalManager<C = ()> = WorkflowManager<MockEngine, C, LocalStorage>;
 
-pub(crate) async fn create_test_manager<C: Clock>(clock: C) -> LocalManager<C> {
-    let mut manager = WorkflowManager::builder(LocalStorage::default())
+pub(crate) async fn create_test_manager<C: Clock>(
+    poll_fns: MockAnswers,
+    clock: C,
+) -> LocalManager<C> {
+    let engine = MockEngine::new(poll_fns);
+    let module_record = ModuleRecord {
+        id: "test@latest".to_owned(),
+        bytes: Arc::new([]),
+        tracing_metadata: PersistedMetadata::default(),
+    };
+    let module = engine.create_module(&module_record).await.unwrap();
+
+    let mut manager = WorkflowManager::builder(engine, LocalStorage::default())
         .with_clock(clock)
         .build()
         .await
         .unwrap();
-    let module =
-        WorkflowModule::new(&WorkflowEngine::default(), ExportsMock::MOCK_MODULE_BYTES).unwrap();
+
     manager.insert_module("test@latest", module).await;
     manager
 }
@@ -92,29 +96,18 @@ async fn feed_message(
     result
 }
 
-async fn wakers_for_workflow(
-    manager: &LocalManager,
-    workflow_id: WorkflowId,
-) -> Vec<WorkflowWaker> {
-    let transaction = manager.storage.readonly_transaction().await;
-    transaction
-        .as_ref()
-        .wakers_for_workflow(workflow_id)
-        .cloned()
-        .collect()
-}
+fn initialize_task(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
+    let channels = ctx.data().persisted.channels();
+    let orders_id = channels.receiver_id("orders").unwrap();
+    let traces_id = channels.sender_id("traces").unwrap();
 
-fn initialize_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
-    let orders = Some(ctx.data().receiver_ref(None, "orders"));
-    let poll_result =
-        WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
-    assert_eq!(poll_result, -1); // Pending
+    let mut orders = ctx.data_mut().receiver(orders_id);
+    let poll_result = orders.poll_next().into_inner(ctx)?;
+    assert!(poll_result.is_pending());
 
-    let traces = Some(ctx.data_mut().sender_ref(None, "traces"));
-    let (trace_ptr, trace_len) =
-        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"trace #1")?;
-    WorkflowFunctions::start_send(ctx.as_context_mut(), traces, trace_ptr, trace_len)?;
-    // ignore send result
+    let mut traces = ctx.data_mut().sender(traces_id);
+    let _ = traces.start_send(b"trace #1".to_vec());
+    // ^ Intentionally ignore send result
 
     Ok(Poll::Pending)
 }
@@ -122,8 +115,7 @@ fn initialize_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result
 #[async_std::test]
 async fn instantiating_workflow() {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager(()).await;
+    let manager = create_test_manager(poll_fns, ()).await;
     let workflow = create_test_workflow(&manager).await;
 
     let storage = manager.storage.readonly_transaction().await;
@@ -152,10 +144,7 @@ async fn instantiating_workflow() {
         .await;
 }
 
-async fn test_initializing_workflow(
-    manager: &WorkflowManager<(), LocalStorage>,
-    ids: &WorkflowAndChannelIds,
-) {
+async fn test_initializing_workflow(manager: &LocalManager<()>, ids: &WorkflowAndChannelIds) {
     let receipt = manager.tick().await.unwrap().into_inner().unwrap();
     assert_eq!(receipt.executions().len(), 2);
     let main_execution = &receipt.executions()[0];
@@ -171,23 +160,24 @@ async fn test_initializing_workflow(
 
 #[async_std::test]
 async fn initializing_workflow_with_closed_channels() {
-    let test_channels: MockPollFn = |mut ctx| {
-        let traces = Some(ctx.data_mut().sender_ref(None, "traces"));
-        let poll_result =
-            WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), traces, POLL_CX)?;
-        assert_eq!(poll_result, 2); // Err(Closed)
+    let test_channels: MockPollFn = |ctx| {
+        let channels = ctx.data().persisted.channels();
+        let orders_id = channels.receiver_id("orders").unwrap();
+        let traces_id = channels.sender_id("traces").unwrap();
 
-        let orders = Some(ctx.data().receiver_ref(None, "orders"));
-        let poll_result =
-            WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
-        assert_eq!(poll_result, -2); // Ready(None)
+        let mut traces = ctx.data_mut().sender(traces_id);
+        let poll_result = traces.poll_ready().into_inner(ctx)?;
+        assert_matches!(poll_result, Poll::Ready(Err(SendError::Closed)));
+
+        let mut orders = ctx.data_mut().receiver(orders_id);
+        let poll_result = orders.poll_next().into_inner(ctx)?;
+        assert_matches!(poll_result, Poll::Ready(None));
 
         Ok(Poll::Pending)
     };
 
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager(()).await;
+    let manager = create_test_manager(poll_fns, ()).await;
     let builder = manager
         .new_workflow::<()>(DEFINITION_ID, b"test_input".to_vec())
         .unwrap();
@@ -221,38 +211,37 @@ async fn initializing_workflow_with_closed_channels() {
 
 #[async_std::test]
 async fn closing_workflow_channels() {
-    let block_on_flush: MockPollFn = |mut ctx| {
-        let events = Some(ctx.data_mut().sender_ref(None, "events"));
-        let (ptr, len) = WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"event #1")?;
-        WorkflowFunctions::start_send(ctx.as_context_mut(), events.clone(), ptr, len)?;
-        let poll_result =
-            WorkflowFunctions::poll_flush_for_sender(ctx.as_context_mut(), events, POLL_CX)?;
-        assert_eq!(poll_result, -1); // Pending
+    let block_on_flush: MockPollFn = |ctx| {
+        let channels = ctx.data().persisted.channels();
+        let events_id = channels.sender_id("events").unwrap();
+        let mut events = ctx.data_mut().sender(events_id);
+
+        events.start_send(b"event #1".to_vec())?;
+        let poll_result = events.poll_flush().into_inner(ctx)?;
+        assert!(poll_result.is_pending());
         Ok(Poll::Pending)
     };
-    let drop_receiver: MockPollFn = |mut ctx| {
+    let drop_receiver: MockPollFn = |ctx| {
         // Check that the channel sender is closed. Note that flushing the channel
         // must succeed (messages are flushed before the closure).
-        let events = Some(ctx.data_mut().sender_ref(None, "events"));
-        let poll_result = WorkflowFunctions::poll_flush_for_sender(
-            ctx.as_context_mut(),
-            events.clone(),
-            POLL_CX,
-        )?;
-        assert_eq!(poll_result, 0); // Ok(())
+        let channels = ctx.data().persisted.channels();
+        let orders_id = channels.receiver_id("orders").unwrap();
+        let events_id = channels.sender_id("events").unwrap();
 
-        let poll_result =
-            WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), events, POLL_CX)?;
-        assert_eq!(poll_result, 2); // Err(Closed)
+        let mut events = ctx.data_mut().sender(events_id);
+        let poll_result = events.poll_flush().into_inner(ctx)?;
+        assert_matches!(poll_result, Poll::Ready(Ok(_)));
 
-        let orders = Some(ctx.data().receiver_ref(None, "orders"));
-        WorkflowFunctions::drop_ref(ctx.as_context_mut(), orders)?;
+        let mut events = ctx.data_mut().sender(events_id);
+        let poll_result = events.poll_ready().into_inner(ctx)?;
+        assert_matches!(poll_result, Poll::Ready(Err(SendError::Closed)));
+
+        let _wakers = ctx.data_mut().receiver(orders_id).drop();
         Ok(Poll::Pending)
     };
 
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager(()).await;
+    let manager = create_test_manager(poll_fns, ()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
     let events_id = workflow.ids().channel_ids.senders["events"];
@@ -299,32 +288,30 @@ fn extract_channel_events(
 }
 
 async fn test_closing_receiver_from_host_side(with_message: bool) {
-    let poll_receiver: MockPollFn = |mut ctx| {
-        let orders = Some(ctx.data().receiver_ref(None, "orders"));
-        let poll_result = WorkflowFunctions::poll_next_for_receiver(
-            ctx.as_context_mut(),
-            orders.clone(),
-            POLL_CX,
-        )?;
-        assert_ne!(poll_result, -1); // Poll::Ready(Some(_))
+    let poll_receiver: MockPollFn = |ctx| {
+        let channels = ctx.data().persisted.channels();
+        let orders_id = channels.receiver_id("orders").unwrap();
+        let mut orders = ctx.data_mut().receiver(orders_id);
+        let poll_result = orders.poll_next().into_inner(ctx)?;
+        assert_matches!(poll_result, Poll::Ready(Some(_)));
 
-        let poll_result = WorkflowFunctions::poll_next_for_receiver(ctx, orders, POLL_CX)?;
-        assert_eq!(poll_result, -1);
-        // ^ Poll::Pending; we don't dispatch the closure signal immediately
-
+        let mut orders = ctx.data_mut().receiver(orders_id);
+        let poll_result = orders.poll_next().into_inner(ctx)?;
+        assert!(poll_result.is_pending());
+        // ^ we don't dispatch the closure signal immediately
         Ok(Poll::Pending)
     };
     let test_closed_channel: MockPollFn = |ctx| {
-        let orders = Some(ctx.data().receiver_ref(None, "orders"));
-        let poll_result = WorkflowFunctions::poll_next_for_receiver(ctx, orders, POLL_CX)?;
-        assert_eq!(poll_result, -2); // Poll::Ready(None)
-
+        let channels = ctx.data().persisted.channels();
+        let orders_id = channels.receiver_id("orders").unwrap();
+        let mut orders = ctx.data_mut().receiver(orders_id);
+        let poll_result = orders.poll_next().into_inner(ctx)?;
+        assert_matches!(poll_result, Poll::Ready(None));
         Ok(Poll::Pending)
     };
 
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager(()).await;
+    let manager = create_test_manager(poll_fns, ()).await;
     let workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
     let orders_id = workflow.ids().channel_ids.receivers["orders"];
@@ -389,8 +376,7 @@ async fn closing_receiver_with_message_from_host_side() {
 #[async_std::test]
 async fn error_initializing_workflow() {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager(()).await;
+    let manager = create_test_manager(poll_fns, ()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
 
@@ -426,20 +412,22 @@ async fn error_initializing_workflow() {
     assert!(!receipt.executions().is_empty());
 }
 
-fn poll_receiver(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
-    let orders = Some(ctx.data().receiver_ref(None, "orders"));
-    let poll_result =
-        WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
-    assert_eq!(poll_result, -1); // Poll::Pending
+fn poll_receiver(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
+    let channels = ctx.data().persisted.channels();
+    let orders_id = channels.receiver_id("orders").unwrap();
+    let mut orders = ctx.data_mut().receiver(orders_id);
+    let poll_result = orders.poll_next().into_inner(ctx)?;
+    assert!(poll_result.is_pending());
 
     Ok(Poll::Pending)
 }
 
-fn consume_message(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
-    let orders = Some(ctx.data().receiver_ref(None, "orders"));
-    let poll_result =
-        WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
-    assert_ne!(poll_result, -1); // Poll::Ready
+fn consume_message(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
+    let channels = ctx.data().persisted.channels();
+    let orders_id = channels.receiver_id("orders").unwrap();
+    let mut orders = ctx.data_mut().receiver(orders_id);
+    let poll_result = orders.poll_next().into_inner(ctx)?;
+    assert_matches!(poll_result, Poll::Ready(Some(_)));
 
     Ok(Poll::Pending)
 }
@@ -447,8 +435,7 @@ fn consume_message(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result
 #[async_std::test]
 async fn sending_message_to_workflow() {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager(()).await;
+    let manager = create_test_manager(poll_fns, ()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
     let orders_id = workflow.ids().channel_ids.receivers["orders"];
@@ -497,18 +484,18 @@ async fn sending_message_to_workflow() {
 
 #[async_std::test]
 async fn error_processing_inbound_message_in_workflow() {
-    let error_after_consuming_message: MockPollFn = |mut ctx| {
-        let orders = Some(ctx.data().receiver_ref(None, "orders"));
-        let poll_result =
-            WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
-        assert_ne!(poll_result, -1); // Ready(Some(_))
+    let error_after_consuming_message: MockPollFn = |ctx| {
+        let channels = ctx.data().persisted.channels();
+        let orders_id = channels.receiver_id("orders").unwrap();
+        let mut orders = ctx.data_mut().receiver(orders_id);
+        let poll_result = orders.poll_next().into_inner(ctx)?;
+        assert_matches!(poll_result, Poll::Ready(Some(_)));
 
         Err(anyhow!("oops"))
     };
 
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager(()).await;
+    let manager = create_test_manager(poll_fns, ()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
     let orders_id = workflow.ids().channel_ids.receivers["orders"];
@@ -564,8 +551,7 @@ async fn error_processing_inbound_message_in_workflow() {
 #[async_std::test]
 async fn workflow_not_consuming_inbound_message() {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-    let manager = create_test_manager(()).await;
+    let manager = create_test_manager(poll_fns, ()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
     let orders_id = workflow.ids().channel_ids.receivers["orders"];

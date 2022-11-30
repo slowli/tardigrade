@@ -2,6 +2,27 @@
 
 *(Read [readme](README.md) first for a high-level intro.)*
 
+## Key abstractions
+
+There are two major abstractions involved in workflow management:
+
+- **Engine:** how to instantiate and run workflows
+- **Storage:** how to persist workflows
+
+Both of this are abstracted (to a reasonable degree) in the runtime crate;
+see its `engine` and `storage` modules respectively.
+
+Conceptually, the engine uses *message passing* as the foundational
+architecture pattern (in particular defining what workflow interfaces look like
+and how workflows can interact with the external world), and *WASM* modules / instances
+as the implementation tool.
+
+The storage conceptually contains a relational model for workflows and communication channels
+that should be reasonably easy to map to relational DBs (e.g., Postgres).
+Note that while channel messages can be *eventually* sent to a message broker such as Apache Kafka,
+initially they must be stored in the same DB as workflow data to achieve transactional workflow updates.
+(I.e., the transaction outbox pattern.)
+
 ## Workflow modules
 
 Sandboxing workflows as WASM modules brings multiple benefits:

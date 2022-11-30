@@ -1,8 +1,9 @@
 //! Handles for workflows in a `WorkflowManager` and their components (e.g., channels).
 
-use futures::future;
+use futures::{future, FutureExt, Stream, StreamExt};
 
-use std::{collections::HashSet, error, fmt, marker::PhantomData};
+use std::borrow::Cow;
+use std::{collections::HashSet, error, fmt, marker::PhantomData, ops};
 
 use crate::{
     manager::{AsManager, WorkflowAndChannelIds},
@@ -12,14 +13,15 @@ use crate::{
         MessageError, ReadChannels, ReadWorkflows, Storage, StorageTransaction, WorkflowState,
         WriteChannels,
     },
+    utils::RefStream,
     workflow::ChannelIds,
     PersistedWorkflow,
 };
 use tardigrade::{
-    channel::{Receiver, SendError, Sender},
+    channel::SendError,
     interface::{AccessError, AccessErrorKind, Interface, ReceiverName, SenderName},
     task::JoinError,
-    workflow::{GetInterface, TakeHandle, UntypedHandle},
+    workflow::{DescribeEnv, GetInterface, Handle, TakeHandle, WorkflowEnv},
     ChannelId, Decode, Encode, Raw, WorkflowId,
 };
 
@@ -219,19 +221,19 @@ impl<W: TakeHandle<Self, Id = ()>, M: AsManager> WorkflowHandle<'_, W, M> {
 
     /// Returns a handle for the workflow that allows interacting with its channels.
     #[allow(clippy::missing_panics_doc)] // false positive
-    pub fn handle(&mut self) -> <W as TakeHandle<Self>>::Handle {
+    pub fn handle(&mut self) -> Handle<W, Self> {
         W::take_handle(self, &()).unwrap()
     }
 }
 
-/// Handle for an workflow channel [`Receiver`] that allows sending messages
-/// via the channel.
+/// Handle for a workflow channel [`Receiver`] that allows sending messages via the channel.
+///
+/// [`Receiver`]: tardigrade::channel::Receiver
 #[derive(Debug)]
 pub struct MessageSender<'a, T, C, M> {
     manager: &'a M,
     channel_id: ChannelId,
-    pub(crate) codec: C,
-    _item: PhantomData<fn(T)>,
+    _ty: PhantomData<(fn(T), C)>,
 }
 
 impl<T, C: Encode<T>, M: AsManager> MessageSender<'_, T, C, M> {
@@ -253,7 +255,7 @@ impl<T, C: Encode<T>, M: AsManager> MessageSender<'_, T, C, M> {
     ///
     /// Returns an error if the channel is full or closed.
     pub async fn send(&mut self, message: T) -> Result<(), SendError> {
-        let raw_message = self.codec.encode_value(message);
+        let raw_message = C::encode_value(message);
         let manager = self.manager.as_manager();
         manager.send_message(self.channel_id, raw_message).await
     }
@@ -265,40 +267,60 @@ impl<T, C: Encode<T>, M: AsManager> MessageSender<'_, T, C, M> {
     }
 }
 
-impl<'a, T, C, W, M> TakeHandle<WorkflowHandle<'a, W, M>> for Receiver<T, C>
-where
-    C: Encode<T> + Default,
-    M: AsManager,
-{
-    type Id = str;
-    type Handle = MessageSender<'a, T, C, M>;
+impl<'a, W, M: AsManager> WorkflowEnv for WorkflowHandle<'a, W, M> {
+    type Receiver<T, C: Encode<T> + Decode<T>> = MessageSender<'a, T, C, M>;
+    type Sender<T, C: Encode<T> + Decode<T>> = MessageReceiver<'a, T, C, M>;
 
-    fn take_handle(
-        env: &mut WorkflowHandle<'a, W, M>,
+    fn take_receiver<T, C: Encode<T> + Decode<T>>(
+        &mut self,
         id: &str,
-    ) -> Result<Self::Handle, AccessError> {
-        if let Some(channel_id) = env.ids.channel_ids.receivers.get(id).copied() {
+    ) -> Result<Self::Receiver<T, C>, AccessError> {
+        if let Some(channel_id) = self.ids.channel_ids.receivers.get(id).copied() {
             Ok(MessageSender {
-                manager: env.manager,
+                manager: self.manager,
                 channel_id,
-                codec: C::default(),
-                _item: PhantomData,
+                _ty: PhantomData,
             })
         } else {
             Err(AccessErrorKind::Unknown.with_location(ReceiverName(id)))
         }
     }
+
+    fn take_sender<T, C: Encode<T> + Decode<T>>(
+        &mut self,
+        id: &str,
+    ) -> Result<Self::Sender<T, C>, AccessError> {
+        if let Some(channel_id) = self.ids.channel_ids.senders.get(id).copied() {
+            // The 0th channel is always closed and thus cannot be manipulated.
+            let can_manipulate =
+                channel_id != 0 && self.host_receiver_channels.contains(&channel_id);
+            Ok(MessageReceiver {
+                manager: self.manager,
+                channel_id,
+                can_manipulate,
+                _ty: PhantomData,
+            })
+        } else {
+            Err(AccessErrorKind::Unknown.with_location(SenderName(id)))
+        }
+    }
 }
 
-/// Handle for an workflow channel [`Sender`] that allows taking messages
-/// from the channel.
+impl<'a, W, M: AsManager> DescribeEnv for WorkflowHandle<'a, W, M> {
+    fn interface(&self) -> Cow<'_, Interface> {
+        Cow::Borrowed(self.interface)
+    }
+}
+
+/// Handle for an workflow channel [`Sender`] that allows taking messages from the channel.
+///
+/// [`Sender`]: tardigrade::channel::Sender
 #[derive(Debug)]
 pub struct MessageReceiver<'a, T, C, M> {
     manager: &'a M,
     channel_id: ChannelId,
     can_manipulate: bool,
-    pub(crate) codec: C,
-    _item: PhantomData<fn() -> T>,
+    _ty: PhantomData<(C, fn() -> T)>,
 }
 
 impl<T, C: Decode<T> + Default, M: AsManager> MessageReceiver<'_, T, C, M> {
@@ -336,9 +358,44 @@ impl<T, C: Decode<T> + Default, M: AsManager> MessageReceiver<'_, T, C, M> {
         Ok(ReceivedMessage {
             index,
             raw_message,
-            codec: C::default(),
-            _item: PhantomData,
+            _ty: PhantomData,
         })
+    }
+
+    /// Receives the messages with the specified indices.
+    ///
+    /// Since the messages can be truncated or not exist, it is not guaranteed that
+    /// the range of indices for returned messages is precisely the requested one. It *is*
+    /// guaranteed that indices of returned messages are sequential and are in the requested
+    /// range.
+    pub fn receive_messages(
+        &self,
+        indices: impl ops::RangeBounds<usize>,
+    ) -> impl Stream<Item = ReceivedMessage<T, C>> + '_ {
+        let start_idx = match indices.start_bound() {
+            ops::Bound::Unbounded => 0,
+            ops::Bound::Included(i) => *i,
+            ops::Bound::Excluded(i) => *i + 1,
+        };
+        let end_idx = match indices.end_bound() {
+            ops::Bound::Unbounded => usize::MAX,
+            ops::Bound::Included(i) => *i,
+            ops::Bound::Excluded(i) => i.saturating_sub(1),
+        };
+        let indices = start_idx..=end_idx;
+
+        let manager = self.manager.as_manager();
+        let messages_future = async {
+            let tx = manager.storage.readonly_transaction().await;
+            RefStream::from_source(tx, |tx| tx.channel_messages(self.channel_id, indices))
+        };
+        messages_future
+            .flatten_stream()
+            .map(|(index, raw_message)| ReceivedMessage {
+                index,
+                raw_message,
+                _ty: PhantomData,
+            })
     }
 
     /// Truncates this channel so that its minimum message index is no less than `min_index`.
@@ -369,8 +426,7 @@ impl<T, C: Decode<T> + Default, M: AsManager> MessageReceiver<'_, T, C, M> {
 pub struct ReceivedMessage<T, C> {
     index: usize,
     raw_message: Vec<u8>,
-    codec: C,
-    _item: PhantomData<fn() -> T>,
+    _ty: PhantomData<(C, fn() -> T)>,
 }
 
 impl<T, C: Decode<T>> ReceivedMessage<T, C> {
@@ -384,58 +440,8 @@ impl<T, C: Decode<T>> ReceivedMessage<T, C> {
     /// # Errors
     ///
     /// Returns a decoding error, if any.
-    pub fn decode(mut self) -> Result<T, C::Error> {
-        self.codec.try_decode_bytes(self.raw_message.clone())
-    }
-}
-
-impl<'a, T, C, W, M> TakeHandle<WorkflowHandle<'a, W, M>> for Sender<T, C>
-where
-    C: Decode<T> + Default,
-    M: AsManager,
-{
-    type Id = str;
-    type Handle = MessageReceiver<'a, T, C, M>;
-
-    fn take_handle(
-        env: &mut WorkflowHandle<'a, W, M>,
-        id: &str,
-    ) -> Result<Self::Handle, AccessError> {
-        if let Some(channel_id) = env.ids.channel_ids.senders.get(id).copied() {
-            Ok(MessageReceiver {
-                manager: env.manager,
-                channel_id,
-                can_manipulate: env.host_receiver_channels.contains(&channel_id),
-                codec: C::default(),
-                _item: PhantomData,
-            })
-        } else {
-            Err(AccessErrorKind::Unknown.with_location(SenderName(id)))
-        }
-    }
-}
-
-impl<M: AsManager> TakeHandle<WorkflowHandle<'_, (), M>> for Interface {
-    type Id = ();
-    type Handle = Self;
-
-    fn take_handle(
-        env: &mut WorkflowHandle<'_, (), M>,
-        _id: &Self::Id,
-    ) -> Result<Self::Handle, AccessError> {
-        Ok(env.interface.clone())
-    }
-}
-
-impl<'a, M: AsManager> TakeHandle<WorkflowHandle<'a, (), M>> for () {
-    type Id = ();
-    type Handle = UntypedHandle<WorkflowHandle<'a, (), M>>;
-
-    fn take_handle(
-        env: &mut WorkflowHandle<'a, (), M>,
-        _id: &Self::Id,
-    ) -> Result<Self::Handle, AccessError> {
-        UntypedHandle::take_handle(env, &())
+    pub fn decode(self) -> Result<T, C::Error> {
+        C::try_decode_bytes(self.raw_message)
     }
 }
 
@@ -451,13 +457,15 @@ impl<'a, M: AsManager> TakeHandle<WorkflowHandle<'a, (), M>> for () {
 /// # Examples
 ///
 /// ```
-/// # use tardigrade_rt::{manager::WorkflowManager, storage::LocalStorage};
+/// # use tardigrade_rt::{engine::Wasmtime, manager::WorkflowManager, storage::LocalStorage};
 /// # use tardigrade::WorkflowId;
 /// #
 /// # fn is_bogus(bytes: &[u8]) -> bool { bytes.is_empty() }
 /// #
-/// # async fn test_wrapper(manager: WorkflowManager<(), LocalStorage>) -> anyhow::Result<()> {
-/// let manager: WorkflowManager<_, _> = // ...
+/// # async fn test_wrapper(
+/// #     manager: WorkflowManager<Wasmtime, (), LocalStorage>,
+/// # ) -> anyhow::Result<()> {
+/// let manager: WorkflowManager<_, _, _> = // ...
 /// #   manager;
 /// let workflow_id: WorkflowId = // ...
 /// #   0;
@@ -587,8 +595,7 @@ impl<M: AsManager> ErroneousMessage<'_, M> {
         Ok(ReceivedMessage {
             index: self.message_ref.index,
             raw_message,
-            codec: Raw,
-            _item: PhantomData,
+            _ty: PhantomData,
         })
     }
 

@@ -14,11 +14,11 @@ use tardigrade_rt::{
     AsyncIoScheduler,
 };
 use tardigrade_test_basic::{
-    spawn::{Baking, PizzaDeliveryWithSpawning},
-    Args, DomainEvent, PizzaKind, PizzaOrder,
+    spawn::{Args, Baking, PizzaDeliveryWithSpawning},
+    DomainEvent, PizzaKind, PizzaOrder,
 };
 
-use crate::{create_manager, TestResult};
+use crate::{create_manager, driver::spawn_traced_task, enable_tracing_assertions, TestResult};
 
 const PARENT_DEF: &str = "test::PizzaDeliveryWithSpawning";
 
@@ -26,11 +26,12 @@ const PARENT_DEF: &str = "test::PizzaDeliveryWithSpawning";
 async fn spawning_child_workflows() -> TestResult {
     const READY: Poll<()> = Poll::Ready(());
 
+    let (_guard, tracing_storage) = enable_tracing_assertions();
     let mut manager = create_manager(AsyncIoScheduler).await?;
 
     let inputs = Args {
         oven_count: 2,
-        deliverer_count: 1,
+        collect_metrics: true,
     };
     let mut workflow = manager
         .new_workflow::<PizzaDeliveryWithSpawning>(PARENT_DEF, inputs)?
@@ -42,7 +43,7 @@ async fn spawning_child_workflows() -> TestResult {
     let results = driver.tick_results();
     let mut orders_sx = handle.orders.into_sink(&mut driver);
     let events_rx = handle.shared.events.into_stream(&mut driver);
-    let join_handle = task::spawn(async move { driver.drive(&mut manager).await });
+    let join_handle = spawn_traced_task(async move { driver.drive(&mut manager).await });
 
     let orders = [
         PizzaOrder {
@@ -79,6 +80,24 @@ async fn spawning_child_workflows() -> TestResult {
         .map(|result| result.into_inner().unwrap())
         .collect();
 
+    // Check metrics collected from child workflows.
+    {
+        let storage = tracing_storage.lock();
+        let durations = storage.all_events().filter_map(|event| {
+            if event.message() == Some("received child metrics") {
+                event["duration"].as_uint()
+            } else {
+                None
+            }
+        });
+        let durations: Vec<_> = durations.collect();
+        assert_eq!(durations.len(), orders.len());
+        assert!(
+            durations.iter().copied().all(|dur| dur < 1_000),
+            "{durations:?}"
+        );
+    }
+
     // Check that child-related events are complete.
     let workflow_events_by_kind = receipts.iter().flat_map(Receipt::events).fold(
         HashMap::<_, usize>::new(),
@@ -112,7 +131,7 @@ async fn accessing_handles_in_child_workflows() -> TestResult {
 
     let inputs = Args {
         oven_count: 2,
-        deliverer_count: 1,
+        collect_metrics: false,
     };
     let mut workflow = manager
         .new_workflow::<PizzaDeliveryWithSpawning>(PARENT_DEF, inputs)?
@@ -153,7 +172,7 @@ async fn accessing_handles_in_child_workflows() -> TestResult {
         child_ids.extend(new_child_ids);
     }
     // At this point, 2 child workflows should be spawned and initialized, and both blocked
-    // on timer.
+    // on a timer.
     assert_eq!(child_ids.len(), 2);
 
     let mut driver = Driver::new();
@@ -161,11 +180,16 @@ async fn accessing_handles_in_child_workflows() -> TestResult {
     for &child_id in &child_ids {
         let child = manager.workflow(child_id).await.unwrap();
         let child_handle = child.downcast::<Baking>()?.handle();
+
         assert!(child_handle.events.can_manipulate());
         assert_eq!(child_handle.events.channel_id(), parent_events_id);
         let event = child_handle.events.receive_message(0).await?;
         assert_matches!(event.decode()?, DomainEvent::OrderTaken { .. });
         child_events_rxs.push(child_handle.events.into_stream(&mut driver));
+
+        assert!(!child_handle.duration.can_manipulate());
+        assert!(child_handle.duration.channel_info().await.is_closed);
+        assert_eq!(child_handle.duration.channel_id(), 0);
     }
 
     // Complete baking tasks.

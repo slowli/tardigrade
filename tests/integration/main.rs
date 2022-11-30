@@ -12,13 +12,14 @@ mod timers;
 use tardigrade::{
     channel::{Receiver, Sender},
     task::TaskResult,
-    test::Runtime,
-    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
+    test::TestInstance,
+    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
     Json,
 };
 
 #[tardigrade::handle]
-struct TestHandle<Env> {
+#[derive(Debug)]
+struct TestHandle<Env: WorkflowEnv> {
     commands: Handle<Receiver<i32, Json>, Env>,
     events: Handle<Sender<i32, Json>, Env>,
 }
@@ -43,7 +44,7 @@ impl SpawnWorkflow for TestedWorkflow {
 
 #[test]
 fn dropping_inbound_channel_handle_in_test_code() {
-    Runtime::default().test::<TestedWorkflow, _, _>((), |mut api| async {
+    TestInstance::<TestedWorkflow>::new(()).run(|mut api| async {
         let mut items = stream::iter([Ok(23), Ok(42)]);
         api.commands.send_all(&mut items).await.unwrap();
         drop(api.commands);
@@ -54,7 +55,7 @@ fn dropping_inbound_channel_handle_in_test_code() {
 
 #[test]
 fn dropping_outbound_channel_handle_in_test_code() {
-    Runtime::default().test::<TestedWorkflow, _, _>((), |mut api| async move {
+    TestInstance::<TestedWorkflow>::new(()).run(|mut api| async move {
         api.commands.send(23).await.unwrap();
         let echo = api.events.next().await.unwrap();
         assert_eq!(echo, 23);

@@ -9,13 +9,13 @@ use crate::{DomainEvent, PizzaOrder, SharedHandle};
 use tardigrade::{
     channel::{Receiver, Requests, Sender, WithId},
     task::TaskResult,
-    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
+    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
     Json,
 };
 
 #[tardigrade::handle]
 #[derive(Debug)]
-pub struct WorkflowHandle<Env> {
+pub struct WorkflowHandle<Env: WorkflowEnv> {
     pub orders: Handle<Receiver<PizzaOrder, Json>, Env>,
     #[tardigrade(flatten)]
     pub shared: Handle<SharedHandle<Wasm>, Env>,

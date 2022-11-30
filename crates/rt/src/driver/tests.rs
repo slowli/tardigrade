@@ -5,54 +5,44 @@ use futures::{
     future::{self, Either},
     SinkExt, TryStreamExt,
 };
-use mimicry::Answers;
-use wasmtime::{AsContextMut, StoreContextMut};
 
 use super::*;
 use crate::{
-    data::{WasmContextPtr, WorkflowData, WorkflowFunctions},
+    backends::MockScheduler,
+    engine::{AsWorkflowData, MockAnswers, MockInstance, MockPollFn},
     manager::tests::{create_test_manager, create_test_workflow, is_consumption},
-    mock_scheduler::MockScheduler,
-    module::{ExportsMock, MockPollFn},
-    utils::WasmAllocator,
 };
-use tardigrade::{
-    abi::AllocateBytes,
-    interface::{ReceiverName, SenderName},
-};
+use tardigrade::interface::{ReceiverName, SenderName};
 
-const POLL_CX: WasmContextPtr = 123;
-
-fn poll_orders(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
-    let orders = Some(ctx.data().receiver_ref(None, "orders"));
-    let poll_result =
-        WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
-    assert_eq!(poll_result, -1); // Pending
+fn poll_orders(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
+    let channels = ctx.data().persisted.channels();
+    let orders_id = channels.receiver_id("orders").unwrap();
+    let mut orders = ctx.data_mut().receiver(orders_id);
+    let poll_result = orders.poll_next().into_inner(ctx)?;
+    assert!(poll_result.is_pending());
 
     Ok(Poll::Pending)
 }
 
-fn handle_order(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
-    let orders = Some(ctx.data().receiver_ref(None, "orders"));
-    let poll_result =
-        WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
-    assert_ne!(poll_result, -1);
-    assert_ne!(poll_result, -2); // Ready(Some(_))
+fn handle_order(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
+    let channels = ctx.data().persisted.channels();
+    let orders_id = channels.receiver_id("orders").unwrap();
+    let events_id = channels.sender_id("events").unwrap();
 
-    let events = Some(ctx.data_mut().sender_ref(None, "events"));
-    let (event_ptr, event_len) =
-        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"event #1")?;
-    WorkflowFunctions::start_send(ctx.as_context_mut(), events, event_ptr, event_len)?;
+    let mut orders = ctx.data_mut().receiver(orders_id);
+    let poll_result = orders.poll_next().into_inner(ctx)?;
+    assert_matches!(poll_result, Poll::Ready(Some(_)));
+    let mut events = ctx.data_mut().sender(events_id);
+    events.start_send(b"event #1".to_vec())?;
 
     Ok(Poll::Ready(()))
 }
 
 #[async_std::test]
 async fn completing_workflow_via_driver() {
-    let poll_fns = Answers::from_values([poll_orders, handle_order]);
-    let _guard = ExportsMock::prepare(poll_fns);
+    let poll_fns = MockAnswers::from_values([poll_orders, handle_order]);
 
-    let mut manager = create_test_manager(MockScheduler::default()).await;
+    let mut manager = create_test_manager(poll_fns, MockScheduler::default()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let mut handle = workflow.handle();
     let mut driver = Driver::new();
@@ -73,23 +63,23 @@ async fn completing_workflow_via_driver() {
 }
 
 async fn test_driver_with_multiple_messages(start_after_tick: bool) {
-    let poll_orders_and_send_event: MockPollFn = |mut ctx| {
-        let orders = Some(ctx.data().receiver_ref(None, "orders"));
-        let poll_result =
-            WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
-        assert_eq!(poll_result, -1); // Pending
+    let poll_orders_and_send_event: MockPollFn = |ctx| {
+        let channels = ctx.data().persisted.channels();
+        let orders_id = channels.receiver_id("orders").unwrap();
+        let events_id = channels.sender_id("events").unwrap();
 
-        let events = Some(ctx.data_mut().sender_ref(None, "events"));
-        let (event_ptr, event_len) =
-            WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"event #0")?;
-        WorkflowFunctions::start_send(ctx.as_context_mut(), events, event_ptr, event_len)?;
+        let mut orders = ctx.data_mut().receiver(orders_id);
+        let poll_result = orders.poll_next().into_inner(ctx)?;
+        assert!(poll_result.is_pending());
+        ctx.data_mut()
+            .sender(events_id)
+            .start_send(b"event #0".to_vec())?;
 
         Ok(Poll::Pending)
     };
-    let poll_fns = Answers::from_values([poll_orders_and_send_event, handle_order]);
-    let _guard = ExportsMock::prepare(poll_fns);
+    let poll_fns = MockAnswers::from_values([poll_orders_and_send_event, handle_order]);
 
-    let mut manager = create_test_manager(MockScheduler::default()).await;
+    let mut manager = create_test_manager(poll_fns, MockScheduler::default()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let mut handle = workflow.handle();
     let events_rx = handle.remove(SenderName("events")).unwrap();
@@ -133,14 +123,14 @@ async fn starting_driver_after_manual_tick() {
 
 #[async_std::test]
 async fn selecting_from_driver_and_other_future() {
-    let handle_order_and_poll_order: MockPollFn = |mut ctx| {
-        let _ = handle_order(ctx.as_context_mut())?;
+    let handle_order_and_poll_order: MockPollFn = |ctx| {
+        let _ = handle_order(ctx)?;
         poll_orders(ctx)
     };
-    let poll_fns = Answers::from_values([poll_orders, handle_order_and_poll_order, handle_order]);
-    let _guard = ExportsMock::prepare(poll_fns);
+    let poll_fns =
+        MockAnswers::from_values([poll_orders, handle_order_and_poll_order, handle_order]);
 
-    let mut manager = create_test_manager(MockScheduler::default()).await;
+    let mut manager = create_test_manager(poll_fns, MockScheduler::default()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
     let mut handle = workflow.handle();

@@ -32,6 +32,7 @@ use tardigrade::{ChannelId, WakerId, WorkflowId};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LocalChannel {
+    #[serde(flatten)]
     record: ChannelRecord,
     messages: VecDeque<Message>,
 }
@@ -141,12 +142,16 @@ impl LocalStorageSnapshot<'_> {
 /// ```
 /// # use async_std::fs;
 /// # use std::str;
-/// # use tardigrade_rt::{manager::WorkflowManager, storage::{LocalStorage, LocalStorageSnapshot}};
+/// # use tardigrade_rt::{
+/// #     engine::Wasmtime, manager::WorkflowManager, storage::{LocalStorage, LocalStorageSnapshot},
+/// # };
+/// #
 /// # async fn test_wrapper() -> anyhow::Result<()> {
+/// let engine = Wasmtime::default();
 /// let mut storage = LocalStorage::default();
 /// // Remove messages consumed by workflows.
 /// storage.truncate_workflow_messages();
-/// let manager = WorkflowManager::builder(storage).build().await?;
+/// let manager = WorkflowManager::builder(engine, storage).build().await?;
 /// // Do something with the manager...
 ///
 /// let mut storage = manager.into_storage();
@@ -331,12 +336,36 @@ impl ReadChannels for LocalTransaction<'_> {
             .map(|message| message.clone().into())
             .ok_or(MessageError::NonExistingIndex { is_closed })
     }
+
+    fn channel_messages(
+        &self,
+        id: ChannelId,
+        indices: ops::RangeInclusive<usize>,
+    ) -> BoxStream<'_, (usize, Vec<u8>)> {
+        let Some(channel) = self.inner.channels.get(&id) else {
+            return stream::empty().boxed();
+        };
+        let Some(max_idx) = channel.messages.len().checked_sub(1) else {
+            // If the channel has no messages stored, it can only return an empty stream.
+            return stream::empty().boxed();
+        };
+
+        let first_idx = channel.record.received_messages - channel.messages.len();
+        let start_idx = indices.start().saturating_sub(first_idx);
+        if start_idx > max_idx {
+            return stream::empty().boxed();
+        }
+        let end_idx = indices.end().saturating_sub(first_idx).min(max_idx);
+        let indexed_messages = (start_idx..=end_idx)
+            .map(move |i| (first_idx + i, channel.messages[i].as_ref().to_vec()));
+        stream::iter(indexed_messages).boxed()
+    }
 }
 
 #[async_trait]
 impl WriteChannels for LocalTransaction<'_> {
     async fn allocate_channel_id(&mut self) -> ChannelId {
-        ChannelId::from(self.next_channel_id.fetch_add(1, Ordering::SeqCst))
+        self.next_channel_id.fetch_add(1, Ordering::SeqCst)
     }
 
     async fn get_or_insert_channel(
@@ -536,11 +565,11 @@ impl StorageTransaction for LocalTransaction<'_> {
 }
 
 #[async_trait]
-impl<'a> Storage<'a> for LocalStorage {
-    type Transaction = LocalTransaction<'a>;
-    type ReadonlyTransaction = Readonly<LocalTransaction<'a>>;
+impl Storage for LocalStorage {
+    type Transaction<'a> = LocalTransaction<'a>;
+    type ReadonlyTransaction<'a> = Readonly<LocalTransaction<'a>>;
 
-    async fn transaction(&'a self) -> Self::Transaction {
+    async fn transaction(&self) -> Self::Transaction<'_> {
         let target = self.inner.lock().await;
         LocalTransaction {
             inner: target.clone(),
@@ -552,7 +581,7 @@ impl<'a> Storage<'a> for LocalStorage {
         }
     }
 
-    async fn readonly_transaction(&'a self) -> Self::ReadonlyTransaction {
+    async fn readonly_transaction(&self) -> Self::ReadonlyTransaction<'_> {
         Readonly::from(self.transaction().await)
     }
 }
@@ -563,6 +592,16 @@ mod tests {
 
     use super::*;
 
+    fn create_channel_record() -> ChannelRecord {
+        ChannelRecord {
+            receiver_workflow_id: Some(1),
+            sender_workflow_ids: HashSet::new(),
+            has_external_sender: true,
+            is_closed: false,
+            received_messages: 0,
+        }
+    }
+
     #[async_std::test]
     async fn truncating_channel() {
         let storage = LocalStorage::default();
@@ -571,13 +610,7 @@ mod tests {
         let err = transaction.channel_message(1, 0).await.unwrap_err();
         assert_matches!(err, MessageError::UnknownChannelId);
 
-        let channel_state = ChannelRecord {
-            receiver_workflow_id: Some(1),
-            sender_workflow_ids: HashSet::new(),
-            has_external_sender: true,
-            is_closed: false,
-            received_messages: 0,
-        };
+        let channel_state = create_channel_record();
         transaction.get_or_insert_channel(1, channel_state).await;
 
         transaction.push_messages(1, vec![b"test".to_vec()]).await;
@@ -597,5 +630,72 @@ mod tests {
         assert_eq!(message, b"other");
         let err = transaction.channel_message(1, 0).await.unwrap_err();
         assert_matches!(err, MessageError::Truncated);
+    }
+
+    #[async_std::test]
+    async fn message_ranges() {
+        let storage = LocalStorage::default();
+        let mut transaction = storage.transaction().await;
+
+        let channel_state = create_channel_record();
+        transaction.get_or_insert_channel(1, channel_state).await;
+
+        let messages: Vec<_> = transaction
+            .channel_messages(1, 0..=usize::MAX)
+            .collect()
+            .await;
+        assert_messages(&messages, &[]);
+        let messages: Vec<_> = transaction.channel_messages(1, 1..=2).collect().await;
+        assert_messages(&messages, &[]);
+
+        let first_message: &[u8] = b"test";
+        transaction
+            .push_messages(1, vec![first_message.to_vec()])
+            .await;
+
+        let messages: Vec<_> = transaction
+            .channel_messages(1, 0..=usize::MAX)
+            .collect()
+            .await;
+        assert_messages(&messages, &[(0, first_message)]);
+        let messages: Vec<_> = transaction.channel_messages(1, 0..=10).collect().await;
+        assert_messages(&messages, &[(0, first_message)]);
+        let messages: Vec<_> = transaction.channel_messages(1, 0..=0).collect().await;
+        assert_messages(&messages, &[(0, first_message)]);
+
+        let second_message: &[u8] = b"other";
+        transaction
+            .push_messages(1, vec![second_message.to_vec()])
+            .await;
+
+        for full_range in [0..=usize::MAX, 0..=2, 0..=1] {
+            let messages: Vec<_> = transaction.channel_messages(1, full_range).collect().await;
+            assert_messages(&messages, &[(0, first_message), (1, second_message)]);
+        }
+        let messages: Vec<_> = transaction.channel_messages(1, 0..=0).collect().await;
+        assert_messages(&messages, &[(0, first_message)]);
+        for end_range in [1..=usize::MAX, 1..=2, 1..=1] {
+            let messages: Vec<_> = transaction.channel_messages(1, end_range).collect().await;
+            assert_messages(&messages, &[(1, second_message)]);
+        }
+        let messages: Vec<_> = transaction.channel_messages(1, 2..=2).collect().await;
+        assert_messages(&messages, &[]);
+
+        transaction.truncate_channel(1, 1).await;
+
+        for full_range in [0..=usize::MAX, 0..=2, 0..=1, 1..=usize::MAX, 1..=2, 1..=1] {
+            let messages: Vec<_> = transaction.channel_messages(1, full_range).collect().await;
+            assert_messages(&messages, &[(1, second_message)]);
+        }
+        let messages: Vec<_> = transaction.channel_messages(1, 2..=2).collect().await;
+        assert_messages(&messages, &[]);
+    }
+
+    fn assert_messages(actual: &[(usize, Vec<u8>)], expected: &[(usize, &[u8])]) {
+        assert_eq!(actual.len(), expected.len(), "{actual:?} != {expected:?}");
+        for (actual_msg, expected_msg) in actual.iter().zip(expected) {
+            assert_eq!(actual_msg.0, expected_msg.0);
+            assert_eq!(actual_msg.1, expected_msg.1);
+        }
     }
 }

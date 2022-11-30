@@ -24,8 +24,8 @@ use std::{
 
 use crate::{
     codec::{Decode, Encode, Raw},
-    interface::{AccessError, InterfaceBuilder, ReceiverSpec, SenderSpec},
-    workflow::{TakeHandle, Wasm},
+    interface::AccessError,
+    workflow::{TakeHandle, WithHandle, WorkflowEnv},
 };
 
 mod broadcast;
@@ -51,8 +51,7 @@ pin_project! {
     pub struct Receiver<T, C> {
         #[pin]
         raw: imp::MpscReceiver,
-        codec: C,
-        _item: PhantomData<T>,
+        _ty: PhantomData<(T, C)>,
     }
 }
 
@@ -64,17 +63,27 @@ impl<T, C: fmt::Debug> fmt::Debug for Receiver<T, C> {
         formatter
             .debug_struct("Receiver")
             .field("raw", &self.raw)
-            .field("codec", &self.codec)
             .finish()
     }
 }
 
 impl<T, C: Decode<T>> Receiver<T, C> {
-    pub(crate) fn new(raw: imp::MpscReceiver, codec: C) -> Self {
+    pub(crate) fn new(raw: imp::MpscReceiver) -> Self {
         Self {
             raw,
-            codec,
-            _item: PhantomData,
+            _ty: PhantomData,
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn from_env(name: &str) -> Result<Self, AccessError> {
+        imp::MpscReceiver::from_env(name).map(Self::new)
+    }
+
+    pub(crate) fn from_raw(raw: RawReceiver) -> Self {
+        Self {
+            raw: raw.raw,
+            _ty: PhantomData,
         }
     }
 }
@@ -82,14 +91,7 @@ impl<T, C: Decode<T>> Receiver<T, C> {
 impl RawReceiver {
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn from_resource(resource: externref::Resource<imp::MpscReceiver>) -> Self {
-        Self::new(resource.into(), Raw)
-    }
-
-    pub(crate) fn with_codec<T, C>(self, codec: C) -> Receiver<T, C>
-    where
-        C: Decode<T>,
-    {
-        Receiver::new(self.raw, codec)
+        Self::new(resource.into())
     }
 }
 
@@ -98,11 +100,10 @@ impl<T, C: Decode<T>> Stream for Receiver<T, C> {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let projection = self.project();
-        let codec = projection.codec;
         projection
             .raw
             .poll_next(cx)
-            .map(|maybe_item| maybe_item.map(|item| codec.decode_bytes(item)))
+            .map(|maybe_item| maybe_item.map(|item| C::decode_bytes(item)))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -110,39 +111,20 @@ impl<T, C: Decode<T>> Stream for Receiver<T, C> {
     }
 }
 
-impl<T, C> TakeHandle<Wasm> for Receiver<T, C>
-where
-    C: Decode<T> + Default,
-{
-    type Id = str;
-    type Handle = Self;
-
-    #[cfg(target_arch = "wasm32")]
-    fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, AccessError> {
-        imp::MpscReceiver::take_handle(env, id).map(|raw| Self::new(raw, C::default()))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, AccessError> {
-        use crate::interface::{AccessErrorKind, ReceiverName};
-
-        let raw = env
-            .take_receiver(id)
-            .ok_or_else(|| AccessErrorKind::Unknown.with_location(ReceiverName(id)))?;
-        Ok(raw.with_codec(C::default()))
-    }
-}
-
-impl<T, C> TakeHandle<InterfaceBuilder> for Receiver<T, C>
+impl<T, C> WithHandle for Receiver<T, C>
 where
     C: Encode<T> + Decode<T>,
 {
     type Id = str;
-    type Handle = ();
+    type Handle<Env: WorkflowEnv> = Env::Receiver<T, C>;
+}
 
-    fn take_handle(env: &mut InterfaceBuilder, id: &Self::Id) -> Result<(), AccessError> {
-        env.insert_receiver(id, ReceiverSpec::default());
-        Ok(())
+impl<T, C, Env: WorkflowEnv> TakeHandle<Env> for Receiver<T, C>
+where
+    C: Encode<T> + Decode<T>,
+{
+    fn take_handle(env: &mut Env, id: &Self::Id) -> Result<Self::Handle<Env>, AccessError> {
+        env.take_receiver(id)
     }
 }
 
@@ -159,48 +141,55 @@ pin_project! {
     pub struct Sender<T, C> {
         #[pin]
         raw: imp::MpscSender,
-        codec: C,
-        _item: PhantomData<T>,
+        _ty: PhantomData<(T, C)>,
     }
 }
 
 /// [`Sender`] of raw byte messages.
 pub type RawSender = Sender<Vec<u8>, Raw>;
 
-impl<T, C: fmt::Debug> fmt::Debug for Sender<T, C> {
+impl<T, C> fmt::Debug for Sender<T, C> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Sender")
             .field("raw", &self.raw)
-            .field("codec", &self.codec)
             .finish()
     }
 }
 
-impl<T, C: Encode<T> + Clone> Clone for Sender<T, C> {
+impl<T, C: Encode<T>> Clone for Sender<T, C> {
     fn clone(&self) -> Self {
         Self {
             raw: self.raw.clone(),
-            codec: self.codec.clone(),
-            _item: PhantomData,
+            _ty: PhantomData,
         }
     }
 }
 
 impl<T, C: Encode<T>> Sender<T, C> {
-    pub(crate) fn new(raw: imp::MpscSender, codec: C) -> Self {
+    pub(crate) fn new(raw: imp::MpscSender) -> Self {
         Self {
             raw,
-            codec,
-            _item: PhantomData,
+            _ty: PhantomData,
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn from_env(name: &str) -> Result<Self, AccessError> {
+        imp::MpscSender::from_env(name).map(Self::new)
+    }
+
+    pub(crate) fn from_raw(raw: RawSender) -> Self {
+        Self {
+            raw: raw.raw,
+            _ty: PhantomData,
         }
     }
 
     pub(crate) fn into_raw(self) -> RawSender {
         RawSender {
             raw: self.raw,
-            codec: Raw,
-            _item: PhantomData,
+            _ty: PhantomData,
         }
     }
 }
@@ -208,42 +197,29 @@ impl<T, C: Encode<T>> Sender<T, C> {
 impl RawSender {
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn from_resource(resource: externref::Resource<imp::MpscSender>) -> Self {
-        Self::new(resource.into(), Raw)
+        Self::new(resource.into())
     }
 
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn as_resource(&self) -> &externref::Resource<imp::MpscSender> {
         self.raw.as_resource()
     }
-
-    pub(crate) fn with_codec<T, C>(self, codec: C) -> Sender<T, C>
-    where
-        C: Encode<T>,
-    {
-        Sender::new(self.raw, codec)
-    }
 }
 
-impl<T, C> TakeHandle<Wasm> for Sender<T, C>
+impl<T, C> WithHandle for Sender<T, C>
 where
-    C: Encode<T> + Default,
+    C: Encode<T> + Decode<T>,
 {
     type Id = str;
-    type Handle = Self;
+    type Handle<Env: WorkflowEnv> = Env::Sender<T, C>;
+}
 
-    #[cfg(target_arch = "wasm32")]
-    fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, AccessError> {
-        imp::MpscSender::take_handle(env, id).map(|raw| Self::new(raw, C::default()))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn take_handle(env: &mut Wasm, id: &str) -> Result<Self::Handle, AccessError> {
-        use crate::interface::{AccessErrorKind, SenderName};
-
-        let raw = env
-            .take_sender(id)
-            .ok_or_else(|| AccessErrorKind::Unknown.with_location(SenderName(id)))?;
-        Ok(raw.with_codec(C::default()))
+impl<T, C, Env: WorkflowEnv> TakeHandle<Env> for Sender<T, C>
+where
+    C: Encode<T> + Decode<T>,
+{
+    fn take_handle(env: &mut Env, id: &Self::Id) -> Result<Self::Handle<Env>, AccessError> {
+        env.take_sender(id)
     }
 }
 
@@ -256,7 +232,7 @@ impl<T, C: Encode<T>> Sink<T> for Sender<T, C> {
 
     fn start_send(self: Pin<&mut Self>, item: T) -> Result<(), Self::Error> {
         let projection = self.project();
-        let bytes = projection.codec.encode_value(item);
+        let bytes = C::encode_value(item);
         projection.raw.start_send(&bytes)
     }
 
@@ -266,18 +242,5 @@ impl<T, C: Encode<T>> Sink<T> for Sender<T, C> {
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.project().raw.poll_close(cx)
-    }
-}
-
-impl<T, C> TakeHandle<InterfaceBuilder> for Sender<T, C>
-where
-    C: Encode<T> + Decode<T>,
-{
-    type Id = str;
-    type Handle = ();
-
-    fn take_handle(env: &mut InterfaceBuilder, id: &Self::Id) -> Result<(), AccessError> {
-        env.insert_sender(id, SenderSpec::default());
-        Ok(())
     }
 }

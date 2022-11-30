@@ -1,25 +1,20 @@
 //! Time utilities.
 
-use anyhow::anyhow;
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use wasmtime::StoreContextMut;
 
 use std::{
     collections::{HashMap, HashSet},
-    mem,
+    fmt, mem,
     task::Poll,
 };
 
 use super::{
-    helpers::{WakeIfPending, WakerPlacement, Wakers, WasmContext, WasmContextPtr},
-    PersistedWorkflowData, WorkflowData, WorkflowFunctions,
+    helpers::{WakerPlacement, Wakers, WorkflowPoll},
+    PersistedWorkflowData, WorkflowData,
 };
-use crate::{
-    receipt::{ResourceEventKind, ResourceId, WakeUpCause},
-    utils::WasmAllocator,
-};
-use tardigrade::{abi::IntoWasm, TimerDefinition, TimerId, WakerId};
+use crate::receipt::{ResourceEventKind, ResourceId, WakeUpCause};
+use tardigrade::{TimerDefinition, TimerId, WakerId};
 
 /// State of a workflow timer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,12 +97,9 @@ impl Timers {
         self.timers.remove(&timer_id);
     }
 
-    fn poll(&mut self, id: TimerId) -> anyhow::Result<Poll<DateTime<Utc>>> {
-        let timer_state = self
-            .timers
-            .get_mut(&id)
-            .ok_or_else(|| anyhow!("Timeout with ID {id} is not registered"))?;
-        Ok(timer_state.poll())
+    fn poll(&mut self, id: TimerId) -> Poll<DateTime<Utc>> {
+        let timer_state = self.timers.get_mut(&id).unwrap();
+        timer_state.poll()
     }
 
     pub(super) fn place_waker(&mut self, id: TimerId, waker: WakerId) {
@@ -157,82 +149,76 @@ impl PersistedWorkflowData {
     }
 }
 
-impl WorkflowData<'_> {
-    fn timer_definition(timestamp_millis: i64) -> anyhow::Result<TimerDefinition> {
-        let expires_at = Utc
-            .timestamp_millis_opt(timestamp_millis)
-            .single()
-            .ok_or_else(|| anyhow!("timestamp overflow"))?;
-        Ok(TimerDefinition { expires_at })
+/// Handle allowing to manipulate a workflow timer.
+pub struct TimerActions<'a> {
+    data: &'a mut WorkflowData,
+    id: TimerId,
+}
+
+impl fmt::Debug for TimerActions<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TimerActions")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl TimerActions<'_> {
+    /// Drops this timer. Returns IDs of the wakers that were created polling the timer
+    /// and should be dropped.
+    #[tracing::instrument(level = "debug")]
+    #[must_use = "Returned wakers must be dropped"]
+    pub fn drop(self) -> HashSet<WakerId> {
+        let timers = &mut self.data.persisted.timers;
+        let state = timers.timers.get_mut(&self.id).unwrap();
+        let wakers = mem::take(&mut state.wakes_on_completion);
+
+        self.data
+            .current_execution()
+            .push_resource_event(ResourceId::Timer(self.id), ResourceEventKind::Dropped);
+        wakers
     }
 
-    fn create_timer(&mut self, definition: TimerDefinition) -> TimerId {
+    /// Polls this timer.
+    #[tracing::instrument(level = "debug", ret)]
+    pub fn poll(&mut self) -> WorkflowPoll<DateTime<Utc>> {
+        let poll_result = self.data.persisted.timers.poll(self.id);
+        self.data.current_execution().push_resource_event(
+            ResourceId::Timer(self.id),
+            ResourceEventKind::Polled(poll_result.map(drop)),
+        );
+        WorkflowPoll::new(poll_result, WakerPlacement::Timer(self.id))
+    }
+}
+
+/// Time-related functionality.
+impl WorkflowData {
+    /// Returns the current timestamp.
+    #[tracing::instrument(level = "debug", skip(self), ret)]
+    pub fn current_timestamp(&self) -> DateTime<Utc> {
+        self.services().clock.now()
+    }
+
+    /// Creates a new timer.
+    #[tracing::instrument(level = "debug", skip(self), ret)]
+    pub fn create_timer(&mut self, definition: TimerDefinition) -> TimerId {
         let timer_id = self.persisted.timers.insert(definition);
         self.current_execution()
             .push_resource_event(ResourceId::Timer(timer_id), ResourceEventKind::Created);
         timer_id
     }
 
-    fn drop_timer(&mut self, timer_id: TimerId) -> anyhow::Result<()> {
-        if self.persisted.timers.get(timer_id).is_none() {
-            let err = anyhow!("Timer ID {timer_id} is not defined");
-            return Err(err);
-        }
-        self.current_execution()
-            .push_resource_event(ResourceId::Timer(timer_id), ResourceEventKind::Dropped);
-        Ok(())
-    }
-
-    fn poll_timer(
-        &mut self,
-        timer_id: TimerId,
-        cx: &mut WasmContext,
-    ) -> anyhow::Result<Poll<DateTime<Utc>>> {
-        let poll_result = self.persisted.timers.poll(timer_id)?;
-        self.current_execution().push_resource_event(
-            ResourceId::Timer(timer_id),
-            ResourceEventKind::Polled(poll_result.map(drop)),
+    /// Returns an action handle for the timer with the specified ID.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the timer with `id` does not exist in the workflow.
+    pub fn timer(&mut self, id: TimerId) -> TimerActions<'_> {
+        assert!(
+            self.persisted.timers.timers.contains_key(&id),
+            "timer not found"
         );
-        Ok(poll_result.wake_if_pending(cx, || WakerPlacement::Timer(timer_id)))
-    }
-}
-
-/// Timer-related functions exported to WASM.
-impl WorkflowFunctions {
-    #[tracing::instrument(level = "debug", skip_all, ret)]
-    #[allow(clippy::needless_pass_by_value)] // for uniformity with other functions
-    pub fn current_timestamp(ctx: StoreContextMut<'_, WorkflowData>) -> i64 {
-        ctx.data().services.clock.now().timestamp_millis()
-    }
-
-    #[tracing::instrument(level = "debug", skip(ctx), ret)]
-    pub fn create_timer(
-        mut ctx: StoreContextMut<'_, WorkflowData>,
-        timestamp_millis: i64,
-    ) -> anyhow::Result<TimerId> {
-        let definition = WorkflowData::timer_definition(timestamp_millis)?;
-        Ok(ctx.data_mut().create_timer(definition))
-    }
-
-    #[tracing::instrument(level = "debug", skip(ctx), err)]
-    pub fn drop_timer(
-        mut ctx: StoreContextMut<'_, WorkflowData>,
-        timer_id: TimerId,
-    ) -> anyhow::Result<()> {
-        ctx.data_mut().drop_timer(timer_id)
-    }
-
-    #[tracing::instrument(level = "debug", skip(ctx, poll_cx), err)]
-    pub fn poll_timer(
-        mut ctx: StoreContextMut<'_, WorkflowData>,
-        timer_id: TimerId,
-        poll_cx: WasmContextPtr,
-    ) -> anyhow::Result<i64> {
-        let mut poll_cx = WasmContext::new(poll_cx);
-        let poll_result = ctx.data_mut().poll_timer(timer_id, &mut poll_cx)?;
-        tracing::debug!(result = ?poll_result);
-
-        poll_cx.save_waker(&mut ctx)?;
-        poll_result.into_wasm(&mut WasmAllocator::new(ctx))
+        TimerActions { data: self, id }
     }
 }

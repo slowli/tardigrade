@@ -2,12 +2,12 @@
 
 use anyhow::anyhow;
 use assert_matches::assert_matches;
+use chrono::{DateTime, Utc};
 use futures::{future, stream, FutureExt};
-use mimicry::Answers;
-use wasmtime::StoreContextMut;
 
 use std::{
     collections::{HashMap, HashSet},
+    sync::Arc,
     task::Poll,
 };
 
@@ -15,24 +15,37 @@ mod spawn;
 
 use super::*;
 use crate::{
-    mock_scheduler::MockScheduler,
-    module::{ExportsMock, MockPollFn, WorkflowEngine, WorkflowModule},
+    backends::MockScheduler,
+    engine::{
+        AsWorkflowData, DefineWorkflow, MockAnswers, MockDefinition, MockInstance, MockPollFn,
+    },
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, Execution, ExecutionError,
         Receipt, ResourceEventKind, ResourceId,
     },
-    utils::{copy_string_from_wasm, decode_string, WasmAllocator},
     workflow::{PersistedWorkflow, Workflow},
 };
 use tardigrade::{
-    abi::AllocateBytes, interface::Interface, spawn::ChannelsConfig, task::JoinError, ChannelId,
+    abi::PollMessage, interface::Interface, spawn::ChannelsConfig, task::JoinError, ChannelId,
+    TimerDefinition,
 };
 
-const POLL_CX: WasmContextPtr = 1_234;
-const ERROR_PTR: u32 = 1_024; // enough to not intersect with "real" memory
+fn extract_message(poll_res: PollMessage) -> Vec<u8> {
+    match poll_res {
+        Poll::Ready(Some(message)) => message,
+        other => panic!("unexpected poll result: {other:?}"),
+    }
+}
 
-fn answer_main_task(mut poll_fns: Answers<MockPollFn>) -> Answers<MockPollFn, TaskId> {
-    Answers::from_fn(move |&task_id| {
+fn extract_timestamp(poll_res: Poll<DateTime<Utc>>) -> DateTime<Utc> {
+    match poll_res {
+        Poll::Ready(ts) => ts,
+        Poll::Pending => panic!("unexpected poll result: Pending"),
+    }
+}
+
+fn answer_main_task(mut poll_fns: mimicry::Answers<MockPollFn>) -> MockAnswers {
+    MockAnswers::from_fn(move |&task_id| {
         if task_id == 0 {
             poll_fns.next_for(())
         } else {
@@ -41,66 +54,61 @@ fn answer_main_task(mut poll_fns: Answers<MockPollFn>) -> Answers<MockPollFn, Ta
     })
 }
 
-fn initialize_task(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
+fn initialize_task(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     // Emulate basic task startup: getting the channel receiver
-    let (ptr, len) = WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"orders")?;
-    let orders = WorkflowFunctions::get_receiver(ctx.as_context_mut(), None, ptr, len, ERROR_PTR)?;
-
+    let orders_id = ctx
+        .data_mut()
+        .acquire_receiver(None, "orders")
+        .unwrap()
+        .unwrap();
     // ...then polling this channel
-    let poll_res =
-        WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
-    assert_eq!(poll_res, -1); // Poll::Pending
+    let mut orders = ctx.data_mut().receiver(orders_id);
+    let poll_res = orders.poll_next().into_inner(ctx)?;
+    assert_matches!(poll_res, Poll::Pending);
 
     Ok(Poll::Pending)
 }
 
-fn emit_event_and_flush(ctx: &mut StoreContextMut<'_, WorkflowData>) -> anyhow::Result<()> {
-    let events = Some(ctx.data_mut().sender_ref(None, "events"));
+fn emit_event_and_flush(ctx: &mut MockInstance) -> anyhow::Result<()> {
+    let data = ctx.data_mut();
+    let events_id = data.persisted.channels().sender_id("events").unwrap();
+    let poll_res = data.sender(events_id).poll_ready().into_inner(ctx)?;
+    assert_matches!(poll_res, Poll::Ready(Ok(_)));
 
-    let poll_res =
-        WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), events.clone(), POLL_CX)?;
-    assert_eq!(poll_res, 0); // Poll::Ready
-
-    let (event_ptr, event_len) =
-        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"event #1")?;
-    WorkflowFunctions::start_send(ctx.as_context_mut(), events.clone(), event_ptr, event_len)?;
-
-    let poll_res = WorkflowFunctions::poll_flush_for_sender(ctx.as_context_mut(), events, POLL_CX)?;
-    assert_eq!(poll_res, -1); // Poll::Pending
+    let data = ctx.data_mut();
+    data.sender(events_id).start_send(b"event #1".to_vec())?;
+    let poll_res = data.sender(events_id).poll_flush().into_inner(ctx)?;
+    assert_matches!(poll_res, Poll::Pending);
     Ok(())
 }
 
-fn consume_message(mut ctx: StoreContextMut<'_, WorkflowData>) -> anyhow::Result<Poll<()>> {
-    let orders = Some(ctx.data().receiver_ref(None, "orders"));
-    let events = Some(ctx.data_mut().sender_ref(None, "events"));
-    let traces = Some(ctx.data_mut().sender_ref(None, "traces"));
+fn consume_message(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
+    let channels = ctx.data().persisted.channels();
+    let orders_id = channels.receiver_id("orders").unwrap();
+    let events_id = channels.sender_id("events").unwrap();
+    let traces_id = channels.sender_id("traces").unwrap();
 
     // Poll the channel again, since we yielded on this previously
-    let poll_res =
-        WorkflowFunctions::poll_next_for_receiver(ctx.as_context_mut(), orders, POLL_CX)?;
-
-    let (msg_ptr, msg_len) = decode_string(poll_res);
-    let memory = ctx.data().exports().memory;
-    let message = copy_string_from_wasm(&ctx, &memory, msg_ptr, msg_len)?;
-    assert_eq!(message, "order #1");
+    let mut orders = ctx.data_mut().receiver(orders_id);
+    let poll_result = orders.poll_next().into_inner(ctx)?;
+    assert_eq!(extract_message(poll_result), b"order #1");
 
     // Emit a trace (shouldn't block the task).
-    let poll_res =
-        WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), traces.clone(), POLL_CX)?;
-    assert_eq!(poll_res, 0); // Poll::Ready
+    let mut traces = ctx.data_mut().sender(traces_id);
+    let poll_res = traces.poll_ready().into_inner(ctx)?;
+    assert_matches!(poll_res, Poll::Ready(Ok(_)));
+    let mut traces = ctx.data_mut().sender(traces_id);
+    traces.start_send(b"trace #1".to_vec())?;
+    emit_event_and_flush(ctx)?;
 
-    let (trace_ptr, trace_len) =
-        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"trace #1")?;
-    WorkflowFunctions::start_send(ctx.as_context_mut(), traces.clone(), trace_ptr, trace_len)?;
-
-    emit_event_and_flush(&mut ctx)?;
     // Check that sending events is no longer possible.
-    let poll_res = WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), events, POLL_CX)?;
-    assert_eq!(poll_res, -1); // Poll::Pending
-
+    let mut events = ctx.data_mut().sender(events_id);
+    let poll_res = events.poll_ready().into_inner(ctx)?;
+    assert_matches!(poll_res, Poll::Pending);
     // Check that sending traces is still possible
-    let poll_res = WorkflowFunctions::poll_ready_for_sender(ctx.as_context_mut(), traces, POLL_CX)?;
-    assert_eq!(poll_res, 0); // Poll::Ready
+    let mut traces = ctx.data_mut().sender(traces_id);
+    let poll_res = traces.poll_ready().into_inner(ctx)?;
+    assert_matches!(poll_res, Poll::Ready(Ok(_)));
 
     Ok(Poll::Pending)
 }
@@ -117,43 +125,47 @@ fn mock_channel_ids(interface: &Interface, next_channel_id: &mut ChannelId) -> C
         .unwrap()
 }
 
-fn create_workflow(services: Services<'_>) -> (Receipt, Workflow<'_>) {
-    let engine = WorkflowEngine::default();
-    let spawner = WorkflowModule::new(&engine, ExportsMock::MOCK_MODULE_BYTES)
-        .unwrap()
-        .for_untyped_workflow("TestWorkflow")
-        .unwrap();
-
-    let channel_ids = mock_channel_ids(spawner.interface(), &mut 1);
-    let mut workflow = spawner
-        .spawn(b"test_input".to_vec(), channel_ids, services)
-        .unwrap();
+fn create_workflow_with_scheduler(
+    poll_fns: MockAnswers,
+    scheduler: MockScheduler,
+) -> (Receipt, Workflow<MockInstance>) {
+    let definition = MockDefinition::new(poll_fns);
+    let channel_ids = mock_channel_ids(definition.interface(), &mut 1);
+    let services = Services {
+        clock: Arc::new(scheduler),
+        workflows: None,
+        tracer: None,
+    };
+    let data = WorkflowData::new(definition.interface(), channel_ids, services);
+    let args = vec![].into();
+    let mut workflow = Workflow::new(&definition, data, Some(args)).unwrap();
     (workflow.initialize().unwrap(), workflow)
 }
 
-fn restore_workflow(persisted: PersistedWorkflow, services: Services<'_>) -> Workflow<'_> {
-    let engine = WorkflowEngine::default();
-    let spawner = WorkflowModule::new(&engine, ExportsMock::MOCK_MODULE_BYTES)
-        .unwrap()
-        .for_untyped_workflow("TestWorkflow")
-        .unwrap();
-    persisted.restore(&spawner, services).unwrap()
+fn create_workflow(poll_fns: MockAnswers) -> (Receipt, Workflow<MockInstance>) {
+    create_workflow_with_scheduler(poll_fns, MockScheduler::default())
+}
+
+fn restore_workflow(
+    poll_fns: MockAnswers,
+    persisted: PersistedWorkflow,
+    scheduler: MockScheduler,
+) -> Workflow<MockInstance> {
+    let definition = MockDefinition::new(poll_fns);
+    let services = Services {
+        clock: Arc::new(scheduler),
+        workflows: None,
+        tracer: None,
+    };
+    persisted.restore(&definition, services).unwrap()
 }
 
 #[test]
 fn starting_workflow() {
-    let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let exports_guard = ExportsMock::prepare(poll_fns);
-    let clock = MockScheduler::default();
-    let (receipt, workflow) = poll_fn_sx.send(initialize_task).scope(|| {
-        create_workflow(Services {
-            clock: &clock,
-            workflows: None,
-            tracer: None,
-        })
-    });
-    let exports_mock = exports_guard.into_inner();
-    assert!(exports_mock.exports_created);
+    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
+    let (receipt, mut workflow) = poll_fn_sx
+        .send(initialize_task)
+        .scope(|| create_workflow(poll_fns));
 
     assert_eq!(receipt.executions().len(), 2);
     let execution = &receipt.executions()[1];
@@ -179,7 +191,7 @@ fn starting_workflow() {
     workflow.persist();
 }
 
-fn push_message_and_tick(workflow: &mut Workflow<'_>) -> Result<Receipt, ExecutionError> {
+fn push_message_and_tick(workflow: &mut Workflow<MockInstance>) -> Result<Receipt, ExecutionError> {
     let mapping = workflow.data().persisted.channels();
     let orders_id = mapping.receiver_id("orders").unwrap();
     workflow
@@ -192,27 +204,15 @@ fn push_message_and_tick(workflow: &mut Workflow<'_>) -> Result<Receipt, Executi
 
 #[test]
 fn receiving_inbound_message() {
-    let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let exports_guard = ExportsMock::prepare(poll_fns);
-    let clock = MockScheduler::default();
-    let (_, mut workflow) = poll_fn_sx.send(initialize_task).scope(|| {
-        create_workflow(Services {
-            clock: &clock,
-            workflows: None,
-            tracer: None,
-        })
-    });
+    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
+    let (_, mut workflow) = poll_fn_sx
+        .send(initialize_task)
+        .scope(|| create_workflow(poll_fns));
 
     let receipt = poll_fn_sx
         .send(consume_message)
         .scope(|| push_message_and_tick(&mut workflow))
         .unwrap();
-
-    let exports = exports_guard.into_inner();
-    assert_eq!(exports.next_waker, 3); // 1 waker for first execution and 2 for the second one
-    assert_eq!(exports.consumed_wakers.len(), 1);
-    assert!(exports.consumed_wakers.contains(&0));
-
     assert_inbound_message_receipt(&workflow, &receipt);
 
     let messages = workflow.data_mut().drain_messages();
@@ -236,7 +236,7 @@ fn receiving_inbound_message() {
     }
 }
 
-fn assert_inbound_message_receipt(workflow: &Workflow<'_>, receipt: &Receipt) {
+fn assert_inbound_message_receipt(workflow: &Workflow<MockInstance>, receipt: &Receipt) {
     let mapping = workflow.data().persisted.channels();
     let orders_id = mapping.receiver_id("orders").unwrap();
     let events_id = mapping.sender_id("events").unwrap();
@@ -306,21 +306,17 @@ fn assert_inbound_message_receipt(workflow: &Workflow<'_>, receipt: &Receipt) {
 
 #[test]
 fn trap_when_starting_workflow() {
-    let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-
-    let engine = WorkflowEngine::default();
-    let module = WorkflowModule::new(&engine, ExportsMock::MOCK_MODULE_BYTES).unwrap();
-    let spawner = module.for_untyped_workflow("TestWorkflow").unwrap();
-    let channel_ids = mock_channel_ids(spawner.interface(), &mut 1);
+    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
+    let definition = MockDefinition::new(poll_fns);
+    let channel_ids = mock_channel_ids(definition.interface(), &mut 1);
     let services = Services {
-        clock: &MockScheduler::default(),
+        clock: Arc::new(MockScheduler::default()),
         workflows: None,
         tracer: None,
     };
-    let mut workflow = spawner
-        .spawn(b"test_input".to_vec(), channel_ids, services)
-        .unwrap();
+    let data = WorkflowData::new(definition.interface(), channel_ids, services);
+    let args = vec![].into();
+    let mut workflow = Workflow::new(&definition, data, Some(args)).unwrap();
     let err = poll_fn_sx
         .send(|_| Err(anyhow!("boom")))
         .scope(|| workflow.initialize())
@@ -330,32 +326,22 @@ fn trap_when_starting_workflow() {
     assert!(err.contains("failed while polling task 0"), "{}", err);
 }
 
-fn initialize_and_spawn_task(
-    mut ctx: StoreContextMut<'_, WorkflowData>,
-) -> anyhow::Result<Poll<()>> {
-    let _ = initialize_task(ctx.as_context_mut())?;
+fn initialize_and_spawn_task(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
+    let _ = initialize_task(ctx)?;
+    ctx.data_mut().spawn_task(1, "new task".to_owned())?;
+    let poll_res = ctx.data_mut().task(1).poll_completion().into_inner(ctx)?;
+    assert_matches!(poll_res, Poll::Pending);
 
-    let (name_ptr, name_len) =
-        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"new task")?;
-    WorkflowFunctions::spawn_task(ctx.as_context_mut(), name_ptr, name_len, 1)?;
-
-    let poll_res = WorkflowFunctions::poll_task_completion(ctx.as_context_mut(), 1, POLL_CX)?;
-    assert_eq!(poll_res, -1); // Poll::Pending
     Ok(Poll::Pending)
 }
 
 #[test]
 fn spawning_and_cancelling_task() {
-    let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let mock_guard = ExportsMock::prepare(answer_main_task(poll_fns));
-    let clock = MockScheduler::default();
-    let (receipt, mut workflow) = poll_fn_sx.send(initialize_and_spawn_task).scope(|| {
-        create_workflow(Services {
-            clock: &clock,
-            workflows: None,
-            tracer: None,
-        })
-    });
+    let (poll_fns, mut poll_fn_sx) = mimicry::Answers::channel();
+    let poll_fns = answer_main_task(poll_fns);
+    let (receipt, mut workflow) = poll_fn_sx
+        .send(initialize_and_spawn_task)
+        .scope(|| create_workflow(poll_fns));
 
     assert_eq!(receipt.executions().len(), 3);
     let task_spawned = receipt.executions()[1].events.iter().any(|event| {
@@ -380,8 +366,8 @@ fn spawning_and_cancelling_task() {
     assert_eq!(new_task.spawned_by(), Some(0));
     assert_matches!(new_task.result(), Poll::Pending);
 
-    let abort_task_and_complete: MockPollFn = |mut ctx| {
-        WorkflowFunctions::schedule_task_abortion(ctx.as_context_mut(), 1)?;
+    let abort_task_and_complete: MockPollFn = |ctx| {
+        ctx.data_mut().task(1).schedule_abortion();
         Ok(Poll::Ready(()))
     };
     let receipt = poll_fn_sx
@@ -419,7 +405,6 @@ fn spawning_and_cancelling_task() {
         .persisted
         .tasks()
         .all(|(_, state)| state.result().is_ready()));
-    assert!(mock_guard.into_inner().dropped_tasks.contains(&1));
 }
 
 #[test]
@@ -428,16 +413,10 @@ fn workflow_terminates_after_main_task_completion() {
         let _ = initialize_and_spawn_task(ctx)?;
         Ok(Poll::Ready(()))
     };
-    let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-    let clock = MockScheduler::default();
-    let (receipt, workflow) = poll_fn_sx.send(spawn_task_and_complete).scope(|| {
-        create_workflow(Services {
-            clock: &clock,
-            workflows: None,
-            tracer: None,
-        })
-    });
+    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
+    let (receipt, mut workflow) = poll_fn_sx
+        .send(spawn_task_and_complete)
+        .scope(|| create_workflow(poll_fns));
 
     let mut executions = receipt.executions().iter().rev();
     let last_execution = executions
@@ -459,21 +438,13 @@ fn workflow_terminates_after_main_task_completion() {
 
 #[test]
 fn rolling_back_task_spawning() {
-    let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-    let clock = MockScheduler::default();
-    let (_, mut workflow) = poll_fn_sx.send(initialize_task).scope(|| {
-        create_workflow(Services {
-            clock: &clock,
-            workflows: None,
-            tracer: None,
-        })
-    });
+    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
+    let (_, mut workflow) = poll_fn_sx
+        .send(initialize_task)
+        .scope(|| create_workflow(poll_fns));
 
-    let spawn_task_and_trap: MockPollFn = |mut ctx| {
-        let (name_ptr, name_len) =
-            WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"new task")?;
-        WorkflowFunctions::spawn_task(ctx.as_context_mut(), name_ptr, name_len, 1)?;
+    let spawn_task_and_trap: MockPollFn = |ctx| {
+        ctx.data_mut().spawn_task(1, "new task".to_owned())?;
         Err(anyhow!("boom"))
     };
     let err = poll_fn_sx
@@ -501,23 +472,17 @@ fn rolling_back_task_spawning() {
 
 #[test]
 fn rolling_back_task_abort() {
-    let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let mock_guard = ExportsMock::prepare(answer_main_task(poll_fns));
-    let clock = MockScheduler::default();
+    let (poll_fns, mut poll_fn_sx) = mimicry::Answers::channel();
+    let poll_fns = answer_main_task(poll_fns);
+    let (_, mut workflow) = poll_fn_sx
+        .send(initialize_and_spawn_task)
+        .scope(|| create_workflow(poll_fns));
 
-    let (_, mut workflow) = poll_fn_sx.send(initialize_and_spawn_task).scope(|| {
-        create_workflow(Services {
-            clock: &clock,
-            workflows: None,
-            tracer: None,
-        })
-    });
-
-    // Push the message in order to tick the main task.
-    let abort_task_and_trap: MockPollFn = |mut ctx| {
-        WorkflowFunctions::schedule_task_abortion(ctx.as_context_mut(), 1)?;
+    let abort_task_and_trap: MockPollFn = |ctx| {
+        ctx.data_mut().task(1).schedule_abortion();
         Err(anyhow!("boom"))
     };
+    // Push the message in order to tick the main task.
     let err = poll_fn_sx
         .send(abort_task_and_trap)
         .scope(|| push_message_and_tick(&mut workflow))
@@ -530,34 +495,23 @@ fn rolling_back_task_abort() {
         workflow.data().persisted.task(1).unwrap().result(),
         Poll::Pending
     );
-    assert!(mock_guard.into_inner().dropped_tasks.is_empty());
 }
 
 #[test]
 fn rolling_back_emitting_messages_on_trap() {
-    let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-    let clock = MockScheduler::default();
-    let (_, mut workflow) = poll_fn_sx.send(initialize_task).scope(|| {
-        create_workflow(Services {
-            clock: &clock,
-            workflows: None,
-            tracer: None,
-        })
-    });
+    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
+    let (_, mut workflow) = poll_fn_sx
+        .send(initialize_task)
+        .scope(|| create_workflow(poll_fns));
 
-    let emit_message_and_trap: MockPollFn = |mut ctx| {
-        let traces = Some(ctx.data_mut().sender_ref(None, "traces"));
-        let poll_res = WorkflowFunctions::poll_ready_for_sender(
-            ctx.as_context_mut(),
-            traces.clone(),
-            POLL_CX,
-        )?;
-        assert_eq!(poll_res, 0); // Poll::Ready
-
-        let (trace_ptr, trace_len) =
-            WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"trace #1")?;
-        WorkflowFunctions::start_send(ctx.as_context_mut(), traces, trace_ptr, trace_len)?;
+    let emit_message_and_trap: MockPollFn = |ctx| {
+        let traces_id = ctx.data().persisted.channels().sender_id("traces").unwrap();
+        let mut traces = ctx.data_mut().sender(traces_id);
+        let poll_res = traces.poll_ready().into_inner(ctx)?;
+        assert_matches!(poll_res, Poll::Ready(Ok(_)));
+        ctx.data_mut()
+            .sender(traces_id)
+            .start_send(b"trace #1".to_vec())?;
 
         Err(anyhow!("boom"))
     };
@@ -572,20 +526,14 @@ fn rolling_back_emitting_messages_on_trap() {
 
 #[test]
 fn rolling_back_placing_waker_on_trap() {
-    let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-    let clock = MockScheduler::default();
-    let (_, mut workflow) = poll_fn_sx.send(initialize_task).scope(|| {
-        create_workflow(Services {
-            clock: &clock,
-            workflows: None,
-            tracer: None,
-        })
-    });
+    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
+    let (_, mut workflow) = poll_fn_sx
+        .send(initialize_task)
+        .scope(|| create_workflow(poll_fns));
 
     // Push the message in order to tick the main task.
-    let flush_event_and_trap: MockPollFn = |mut ctx| {
-        emit_event_and_flush(&mut ctx)?;
+    let flush_event_and_trap: MockPollFn = |ctx| {
+        emit_event_and_flush(ctx)?;
         Err(anyhow!("boom"))
     };
     poll_fn_sx
@@ -602,44 +550,43 @@ fn rolling_back_placing_waker_on_trap() {
 
 #[test]
 fn timers_basics() {
-    let create_timers: MockPollFn = |mut ctx| {
-        let ts = WorkflowFunctions::current_timestamp(ctx.as_context_mut());
-        let timer_id = WorkflowFunctions::create_timer(ctx.as_context_mut(), ts - 100)?;
+    let create_timers: MockPollFn = |ctx| {
+        let ts = ctx.data().current_timestamp();
+        let timer_id = ctx.data_mut().create_timer(TimerDefinition {
+            expires_at: ts - chrono::Duration::milliseconds(100),
+        });
         assert_eq!(timer_id, 0);
         // ^ implementation detail, but it's used in code later
-        let result = WorkflowFunctions::poll_timer(ctx.as_context_mut(), timer_id, POLL_CX)?;
-        assert_eq!(result, ts);
+        let result = ctx.data_mut().timer(timer_id).poll().into_inner(ctx)?;
+        assert_eq!(extract_timestamp(result), ts);
 
-        let timer_id = WorkflowFunctions::create_timer(ctx.as_context_mut(), ts + 100)?;
+        let timer_id = ctx.data_mut().create_timer(TimerDefinition {
+            expires_at: ts + chrono::Duration::milliseconds(100),
+        });
         assert_eq!(timer_id, 1);
-        let result = WorkflowFunctions::poll_timer(ctx.as_context_mut(), timer_id, POLL_CX)?;
-        assert_eq!(result, -1); // Poll::Pending
+        let result = ctx.data_mut().timer(timer_id).poll().into_inner(ctx)?;
+        assert!(result.is_pending());
 
         Ok(Poll::Pending)
     };
-    let poll_timers_and_drop: MockPollFn = |mut ctx| {
-        let result = WorkflowFunctions::poll_timer(ctx.as_context_mut(), 0, POLL_CX)?;
-        assert_ne!(result, -1);
-        WorkflowFunctions::drop_timer(ctx.as_context_mut(), 0)?;
+    let poll_timers_and_drop: MockPollFn = |ctx| {
+        let result = ctx.data_mut().timer(0).poll().into_inner(ctx)?;
+        assert!(result.is_ready());
+        let _wakers = ctx.data_mut().timer(0).drop();
 
-        let result = WorkflowFunctions::poll_timer(ctx.as_context_mut(), 1, POLL_CX)?;
-        let ts = WorkflowFunctions::current_timestamp(ctx.as_context_mut());
-        assert_eq!(result, ts);
-        WorkflowFunctions::drop_timer(ctx.as_context_mut(), 1)?;
+        let result = ctx.data_mut().timer(1).poll().into_inner(ctx)?;
+        let ts = ctx.data().current_timestamp();
+        assert_eq!(extract_timestamp(result), ts);
+        let _wakers = ctx.data_mut().timer(1).drop();
 
         Ok(Poll::Pending)
     };
 
-    let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
+    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
     let scheduler = MockScheduler::default();
-    let (_, workflow) = poll_fn_sx.send(create_timers).scope(|| {
-        create_workflow(Services {
-            clock: &scheduler,
-            workflows: None,
-            tracer: None,
-        })
-    });
+    let (_, mut workflow) = poll_fn_sx
+        .send(create_timers)
+        .scope(|| create_workflow_with_scheduler(poll_fns, scheduler.clone()));
 
     let timers: HashMap<_, _> = workflow.data().persisted.timers.iter().collect();
     assert_eq!(timers.len(), 2, "{:?}", timers);
@@ -649,87 +596,55 @@ fn timers_basics() {
     scheduler.set_now(scheduler.now() + chrono::Duration::seconds(1));
     let mut persisted = workflow.persist();
     persisted.set_current_time(scheduler.now());
-    let mut workflow = restore_workflow(
-        persisted,
-        Services {
-            clock: &scheduler,
-            workflows: None,
-            tracer: None,
-        },
-    );
+    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
+    let mut workflow = restore_workflow(poll_fns, persisted, scheduler);
     poll_fn_sx
         .send(poll_timers_and_drop)
         .scope(|| workflow.tick())
         .unwrap();
 
     let timers: HashMap<_, _> = workflow.data().persisted.timers.iter().collect();
-    assert!(timers.is_empty(), "{:?}", timers); // timers are cleared on drop
+    assert!(timers.is_empty(), "{timers:?}"); // timers are cleared on drop
 }
 
 #[test]
 fn dropping_receiver_in_workflow() {
-    let drop_channel: MockPollFn = |mut ctx| {
-        let _ = initialize_task(ctx.as_context_mut())?;
-        let orders = ctx.data().receiver_ref(None, "orders");
-        WorkflowFunctions::drop_ref(ctx, Some(orders))?;
+    let drop_channel: MockPollFn = |ctx| {
+        let _ = initialize_task(ctx)?;
+        let channels = ctx.data().persisted.channels();
+        let orders_id = channels.receiver_id("orders").unwrap();
+        let _wakers = ctx.data_mut().receiver(orders_id).drop();
         Ok(Poll::Pending)
     };
 
-    let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let guard = ExportsMock::prepare(poll_fns);
-    let clock = MockScheduler::default();
-    poll_fn_sx.send(drop_channel).scope(|| {
-        create_workflow(Services {
-            clock: &clock,
-            workflows: None,
-            tracer: None,
-        })
-    });
-
-    let mock = guard.into_inner();
-    assert_eq!(mock.consumed_wakers.len(), 1, "{:?}", mock.consumed_wakers);
+    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
+    poll_fn_sx
+        .send(drop_channel)
+        .scope(|| create_workflow(poll_fns));
 }
 
-fn report_task_error(
-    mut ctx: StoreContextMut<'_, WorkflowData>,
-    line: u32,
-    column: u32,
-    message: &str,
-) -> anyhow::Result<()> {
-    let (message_ptr, message_len) =
-        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(message.as_bytes())?;
-    let (filename_ptr, filename_len) =
-        WasmAllocator::new(ctx.as_context_mut()).copy_to_wasm(b"/build/src/test.rs")?;
-    WorkflowFunctions::report_task_error(
-        ctx,
-        message_ptr,
-        message_len,
-        filename_ptr,
-        filename_len,
+fn report_task_error(data: &mut WorkflowData, line: u32, column: u32, message: &str) {
+    data.report_error_or_panic(
+        ReportedErrorKind::TaskError,
+        Some(message.to_owned()),
+        Some("/build/src/test.rs".to_owned()),
         line,
         column,
-    )
+    );
 }
 
-pub(crate) fn complete_task_with_error(
-    ctx: StoreContextMut<'_, WorkflowData>,
-) -> anyhow::Result<Poll<()>> {
-    report_task_error(ctx, 42, 1, "error message")?;
+#[allow(clippy::unnecessary_wraps)] // convenient to use as a mock poll fn
+pub(crate) fn complete_task_with_error(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
+    report_task_error(ctx.data_mut(), 42, 1, "error message");
     Ok(Poll::Ready(()))
 }
 
 #[test]
 fn completing_main_task_with_error() {
-    let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-    let clock = MockScheduler::default();
-    let (receipt, workflow) = poll_fn_sx.send(complete_task_with_error).scope(|| {
-        create_workflow(Services {
-            clock: &clock,
-            workflows: None,
-            tracer: None,
-        })
-    });
+    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
+    let (receipt, workflow) = poll_fn_sx
+        .send(complete_task_with_error)
+        .scope(|| create_workflow(poll_fns));
 
     let task_result = receipt
         .executions()
@@ -768,24 +683,16 @@ fn assert_task_error(task_state: &TaskState, has_context: bool) {
 
 #[test]
 fn completing_main_task_with_compound_error() {
-    let complete_task_with_compound_error: MockPollFn = |mut ctx| {
-        report_task_error(ctx.as_context_mut(), 42, 1, "error message")?;
-        report_task_error(ctx, 10, 4, "context message")?;
+    let complete_task_with_compound_error: MockPollFn = |ctx| {
+        report_task_error(ctx.data_mut(), 42, 1, "error message");
+        report_task_error(ctx.data_mut(), 10, 4, "context message");
         Ok(Poll::Ready(()))
     };
 
-    let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let _guard = ExportsMock::prepare(poll_fns);
-    let clock = MockScheduler::default();
+    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
     let (_, workflow) = poll_fn_sx
         .send(complete_task_with_compound_error)
-        .scope(|| {
-            create_workflow(Services {
-                clock: &clock,
-                workflows: None,
-                tracer: None,
-            })
-        });
+        .scope(|| create_workflow(poll_fns));
 
     let tasks = &workflow.data().persisted.tasks;
     assert_eq!(tasks.len(), 1);
@@ -794,28 +701,21 @@ fn completing_main_task_with_compound_error() {
 
 #[test]
 fn completing_subtask_with_error() {
-    let check_subtask_completion: MockPollFn = |mut ctx| {
-        let poll_res = WorkflowFunctions::poll_task_completion(ctx.as_context_mut(), 1, POLL_CX)?;
-        assert_eq!(poll_res, -2); // Poll::Ready(Ok(()))
+    let check_subtask_completion: MockPollFn = |ctx| {
+        let poll_res = ctx.data_mut().task(1).poll_completion().into_inner(ctx)?;
+        assert_matches!(poll_res, Poll::Ready(Ok(_)));
         Ok(Poll::Pending)
     };
-    let mut main_task_polls = Answers::from_values([
+    let mut main_task_polls = mimicry::Answers::from_values([
         initialize_and_spawn_task as MockPollFn,
         check_subtask_completion,
     ]);
-    let poll_fns = Answers::from_fn(move |&task_id| match task_id {
+    let poll_fns = MockAnswers::from_fn(move |&task_id| match task_id {
         0 => main_task_polls.next_for(()),
         1 => complete_task_with_error,
         _ => unreachable!(),
     });
-
-    let _guard = ExportsMock::prepare(poll_fns);
-    let clock = MockScheduler::default();
-    let (receipt, workflow) = create_workflow(Services {
-        clock: &clock,
-        workflows: None,
-        tracer: None,
-    });
+    let (receipt, workflow) = create_workflow(poll_fns);
 
     let mut executions_by_task = HashMap::<_, usize>::new();
     for execution in receipt.executions() {

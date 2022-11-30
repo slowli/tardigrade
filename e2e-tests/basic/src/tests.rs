@@ -13,7 +13,7 @@ use tracing_subscriber::{
 use super::*;
 use tardigrade::{
     spawn::RemoteWorkflow,
-    test::{Runtime, Timers},
+    test::{TestInstance, Timers},
     workflow::Handle,
 };
 
@@ -91,9 +91,8 @@ fn workflow_basics() {
         oven_count: 1,
         deliverer_count: 1,
     };
-    Runtime::default().test::<PizzaDelivery, _, _>(inputs, |handle| {
-        test_workflow_basics(handle, tracing_storage)
-    });
+    TestInstance::<PizzaDelivery>::new(inputs)
+        .run(|handle| test_workflow_basics(handle, tracing_storage));
 }
 
 async fn test_concurrency_in_workflow(mut api: Handle<PizzaDelivery, RemoteWorkflow>) {
@@ -158,5 +157,5 @@ fn concurrency_in_workflow() {
         oven_count: 2,
         deliverer_count: 1,
     };
-    Runtime::default().test::<PizzaDelivery, _, _>(inputs, test_concurrency_in_workflow);
+    TestInstance::<PizzaDelivery>::new(inputs).run(test_concurrency_in_workflow);
 }

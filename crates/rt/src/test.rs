@@ -2,21 +2,21 @@
 //!
 //! # Examples
 //!
-//! Typically, it is useful to cache a [`WorkflowModule`](crate::WorkflowModule)
+//! Typically, it is useful to cache a [`WorkflowModule`](crate::engine::WorkflowModule)
 //! among multiple tests. This can be performed as follows:
 //!
 //! ```no_run
 //! use once_cell::sync::Lazy;
-//! use tardigrade_rt::{test::*, WorkflowEngine, WorkflowModule};
+//! use tardigrade_rt::{test::*, engine::{Wasmtime, WasmtimeModule}};
 //!
-//! static MODULE: Lazy<WorkflowModule> = Lazy::new(|| {
+//! static MODULE: Lazy<WasmtimeModule> = Lazy::new(|| {
 //!     let module_bytes = ModuleCompiler::new(env!("CARGO_PKG_NAME"))
 //!         .set_current_dir(env!("CARGO_MANIFEST_DIR"))
 //!         .set_profile("wasm")
 //!         .set_wasm_opt(WasmOpt::default())
 //!         .compile();
-//!     let engine = WorkflowEngine::default();
-//!     WorkflowModule::new(&engine, module_bytes).unwrap()
+//!     let engine = Wasmtime::default();
+//!     engine.create_module(module_bytes).unwrap()
 //! });
 //! // The module can then be used in tests
 //! ```
@@ -29,7 +29,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-pub use crate::mock_scheduler::MockScheduler;
+pub use crate::backends::MockScheduler;
 
 /// Options for the `wasm-opt` optimizer.
 ///

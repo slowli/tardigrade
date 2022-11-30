@@ -1,9 +1,6 @@
 //! Functionality to manage channel state.
 
-use anyhow::{anyhow, Context};
 use serde::{Deserialize, Serialize};
-use tracing::field;
-use wasmtime::{AsContextMut, ExternRef, StoreContextMut};
 
 use std::{
     cmp,
@@ -13,16 +10,11 @@ use std::{
 };
 
 use super::{
-    helpers::{HostResource, WakeIfPending, WakerPlacement, Wakers, WasmContext, WasmContextPtr},
-    PersistedWorkflowData, WorkflowData, WorkflowFunctions,
+    helpers::{WakerPlacement, Wakers, WorkflowPoll},
+    PersistedWorkflowData, WorkflowData,
 };
-use crate::{
-    receipt::WakeUpCause,
-    utils::{self, Message, WasmAllocator},
-    workflow::ChannelIds,
-};
+use crate::{receipt::WakeUpCause, utils::Message, workflow::ChannelIds};
 use tardigrade::{
-    abi::{IntoWasm, PollMessage},
     channel::SendError,
     interface::{AccessErrorKind, ChannelHalf, Interface},
     spawn::{ChannelSpawnConfig, ChannelsConfig},
@@ -405,6 +397,18 @@ impl PersistedWorkflowData {
         Channels::new(&self.channels, &self.channels.mapping)
     }
 
+    fn channel_mapping(&mut self, child_id: Option<WorkflowId>) -> &mut ChannelMapping {
+        if let Some(child_id) = child_id {
+            let workflow = self
+                .child_workflows
+                .get_mut(&child_id)
+                .unwrap_or_else(|| panic!("unknown child workflow ID {child_id}"));
+            &mut workflow.channels
+        } else {
+            &mut self.channels.mapping
+        }
+    }
+
     pub(crate) fn receiver(&self, channel_id: ChannelId) -> Option<&ReceiverState> {
         self.channels.receivers.get(&channel_id)
     }
@@ -464,36 +468,205 @@ impl PersistedWorkflowData {
     }
 }
 
-impl WorkflowData<'_> {
-    pub(super) fn handle_receiver_drop(&mut self, channel_id: ChannelId) -> HashSet<WakerId> {
-        let channel_state = self
-            .persisted
-            .channels
-            .receivers
-            .get_mut(&channel_id)
-            .unwrap();
+/// Handle allowing to manipulate a workflow channel receiver.
+pub struct ReceiverActions<'a> {
+    data: &'a mut WorkflowData,
+    id: ChannelId,
+}
+
+impl fmt::Debug for ReceiverActions<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ReceiverActions")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ReceiverActions<'_> {
+    /// Drops this receiver. Returns IDs of the wakers that were created polling the receiver
+    /// and should be dropped.
+    #[tracing::instrument(level = "debug")]
+    #[must_use = "Returned wakers must be dropped"]
+    #[allow(clippy::missing_panics_doc)] // false positive
+    pub fn drop(self) -> HashSet<WakerId> {
+        let channels = &mut self.data.persisted.channels;
+        let channel_state = channels.receivers.get_mut(&self.id).unwrap();
         let wakers = mem::take(&mut channel_state.wakes_on_next_element);
         if !channel_state.is_closed {
             channel_state.is_closed = true;
-            self.current_execution()
-                .push_channel_closure(ChannelHalf::Receiver, channel_id);
+            self.data
+                .current_execution()
+                .push_channel_closure(ChannelHalf::Receiver, self.id);
         }
         wakers
     }
 
-    pub(super) fn handle_sender_drop(&mut self, channel_id: ChannelId) -> HashSet<WakerId> {
-        let channels = &mut self.persisted.channels;
-        let state = channels.senders.get_mut(&channel_id).unwrap();
+    /// Polls for the next message for this receiver.
+    #[tracing::instrument(level = "debug")]
+    pub fn poll_next(&mut self) -> WorkflowPoll<Option<Vec<u8>>> {
+        let channels = &mut self.data.persisted.channels;
+        let state = channels.receivers.get_mut(&self.id).unwrap();
+        // ^ `unwrap()` safety is guaranteed by resource handling
+
+        let poll_result = state.poll_next();
+        if let Poll::Ready(maybe_message) = &poll_result {
+            let message_len = maybe_message.as_ref().map(Vec::len);
+            tracing::debug!(ret.len = message_len);
+        }
+
+        self.data
+            .current_execution()
+            .push_receiver_event(self.id, &poll_result);
+        WorkflowPoll::new(poll_result, WakerPlacement::Receiver(self.id))
+    }
+}
+
+/// Handle allowing to manipulate a workflow channel sender.
+pub struct SenderActions<'a> {
+    data: &'a mut WorkflowData,
+    id: ChannelId,
+}
+
+impl fmt::Debug for SenderActions<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SenderActions")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SenderActions<'_> {
+    /// Drops the specified sender. Returns IDs of the wakers that were created polling the receiver
+    /// and should be dropped.
+    #[tracing::instrument(level = "debug")]
+    #[must_use = "Returned wakers must be dropped"]
+    #[allow(clippy::missing_panics_doc)] // false positive
+    pub fn drop(self) -> HashSet<WakerId> {
+        let channels = &mut self.data.persisted.channels;
+        let state = channels.senders.get_mut(&self.id).unwrap();
         state.ref_count -= 1;
 
         if state.ref_count == 0 {
             let wakers = mem::take(&mut state.wakes_on_flush);
-            self.current_execution()
-                .push_channel_closure(ChannelHalf::Sender, channel_id);
+            self.data
+                .current_execution()
+                .push_channel_closure(ChannelHalf::Sender, self.id);
             wakers
         } else {
             HashSet::new()
         }
+    }
+
+    /// Polls the specified sender for readiness.
+    #[tracing::instrument(level = "debug", ret)]
+    pub fn poll_ready(&mut self) -> WorkflowPoll<Result<(), SendError>> {
+        self.data.poll_sender(self.id, false)
+    }
+
+    /// Polls the specified sender for flush.
+    #[tracing::instrument(level = "debug", ret)]
+    pub fn poll_flush(&mut self) -> WorkflowPoll<Result<(), SendError>> {
+        self.data.poll_sender(self.id, true)
+    }
+
+    /// Pushes an outbound message into the specified channel.
+    #[tracing::instrument(level = "debug", skip(message), fields(message.len = message.len()))]
+    pub fn start_send(&mut self, message: Vec<u8>) -> Result<(), SendError> {
+        let channels = &mut self.data.persisted.channels;
+        let channel_state = channels.senders.get_mut(&self.id).unwrap();
+        if channel_state.is_closed {
+            return Err(SendError::Closed);
+        } else if !channel_state.is_ready() {
+            return Err(SendError::Full);
+        }
+
+        let message_len = message.len();
+        channel_state.messages.push(message.into());
+        self.data
+            .current_execution()
+            .push_outbound_message_event(self.id, message_len);
+        Ok(())
+    }
+}
+
+/// Channel-related functionality.
+impl WorkflowData {
+    /// Acquires a receiver with the specified "coordinates" (an optional ID of the child
+    /// workflow holding the corresponding sender, and the name of the receiver
+    /// in the workflow interface).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the receiver is already acquired, or if it's not present
+    /// at the specified coordinates. If the specified receiver is present in the workflow interface
+    /// but cannot be captured (because during the child creation the corresponding sender was copied),
+    /// this method returns `Ok(None)`.
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub fn acquire_receiver(
+        &mut self,
+        child_id: Option<WorkflowId>,
+        name: &str,
+    ) -> Result<Option<ChannelId>, AccessErrorKind> {
+        let mapping = self.persisted.channel_mapping(child_id);
+
+        let mapping = mapping
+            .receivers
+            .get_mut(name)
+            .ok_or(AccessErrorKind::Unknown)?;
+        Ok(mapping.acquire().ok())
+    }
+
+    /// Returns an action handle for the receiver with the specified ID.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the receiver with `id` does not exist in the workflow.
+    pub fn receiver(&mut self, id: ChannelId) -> ReceiverActions<'_> {
+        assert!(
+            self.persisted.channels.receivers.contains_key(&id),
+            "receiver not found"
+        );
+        ReceiverActions { data: self, id }
+    }
+
+    /// Acquires a sender with the specified "coordinates" (an optional ID of the child
+    /// workflow holding the corresponding receiver, and the name of the sender
+    /// in the workflow interface).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the sender is already acquired, or if it's not present
+    /// at the specified coordinates. If the specified sender is present in the workflow interface
+    /// but cannot be captured (because during the child creation the corresponding receiver
+    /// was moved), this method returns `Ok(None)`.
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub fn acquire_sender(
+        &mut self,
+        child_id: Option<WorkflowId>,
+        name: &str,
+    ) -> Result<Option<ChannelId>, AccessErrorKind> {
+        let mapping = self.persisted.channel_mapping(child_id);
+
+        let mapping = mapping
+            .senders
+            .get_mut(name)
+            .ok_or(AccessErrorKind::Unknown)?;
+        Ok(mapping.acquire().ok())
+    }
+
+    /// Returns an action handle for the sender with the specified ID.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the sender with `id` does not exist in the workflow.
+    pub fn sender(&mut self, id: ChannelId) -> SenderActions<'_> {
+        assert!(
+            self.persisted.channels.senders.contains_key(&id),
+            "sender not found"
+        );
+        SenderActions { data: self, id }
     }
 
     pub(crate) fn take_pending_inbound_message(&mut self, channel_id: ChannelId) -> bool {
@@ -506,23 +679,11 @@ impl WorkflowData<'_> {
         has_message
     }
 
-    fn poll_receiver(&mut self, channel_id: ChannelId, cx: &mut WasmContext) -> PollMessage {
-        let channels = &mut self.persisted.channels;
-        let state = channels.receivers.get_mut(&channel_id).unwrap();
-        // ^ `unwrap()` safety is guaranteed by resource handling
-
-        let poll_result = state.poll_next();
-        self.current_execution()
-            .push_receiver_event(channel_id, &poll_result);
-        poll_result.wake_if_pending(cx, || WakerPlacement::Receiver(channel_id))
-    }
-
     fn poll_sender(
         &mut self,
         channel_id: ChannelId,
         flush: bool,
-        cx: &mut WasmContext,
-    ) -> Poll<Result<(), SendError>> {
+    ) -> WorkflowPoll<Result<(), SendError>> {
         let channel_state = &self.persisted.channels.senders[&channel_id];
 
         let should_block =
@@ -542,218 +703,10 @@ impl WorkflowData<'_> {
 
         self.current_execution()
             .push_sender_poll_event(channel_id, flush, poll_result.clone());
-        poll_result.wake_if_pending(cx, || WakerPlacement::Sender(channel_id))
-    }
-
-    fn push_outbound_message(
-        &mut self,
-        channel_id: ChannelId,
-        message: Vec<u8>,
-    ) -> Result<(), SendError> {
-        let channel_state = self
-            .persisted
-            .channels
-            .senders
-            .get_mut(&channel_id)
-            .unwrap();
-        if channel_state.is_closed {
-            return Err(SendError::Closed);
-        } else if !channel_state.is_ready() {
-            return Err(SendError::Full);
-        }
-
-        let message_len = message.len();
-        channel_state.messages.push(message.into());
-        self.current_execution()
-            .push_outbound_message_event(channel_id, message_len);
-        Ok(())
+        WorkflowPoll::new(poll_result, WakerPlacement::Sender(channel_id))
     }
 
     pub(crate) fn drain_messages(&mut self) -> HashMap<ChannelId, Vec<Message>> {
         self.persisted.drain_messages()
-    }
-}
-
-/// Channel-related functions exported to WASM.
-#[allow(clippy::needless_pass_by_value)] // required for WASM function wrappers
-impl WorkflowFunctions {
-    fn write_access_result(
-        ctx: &mut StoreContextMut<'_, WorkflowData>,
-        result: Result<(), AccessErrorKind>,
-        error_ptr: u32,
-    ) -> anyhow::Result<()> {
-        let memory = ctx.data().exports().memory;
-        let result_abi = result.into_wasm(&mut WasmAllocator::new(ctx.as_context_mut()))?;
-        memory
-            .write(ctx, error_ptr as usize, &result_abi.to_le_bytes())
-            .context("cannot write to WASM memory")
-    }
-
-    #[tracing::instrument(level = "debug", skip_all, err, fields(workflow_id, channel_name))]
-    pub fn get_receiver(
-        mut ctx: StoreContextMut<'_, WorkflowData>,
-        child: Option<ExternRef>,
-        channel_name_ptr: u32,
-        channel_name_len: u32,
-        error_ptr: u32,
-    ) -> anyhow::Result<Option<ExternRef>> {
-        let memory = ctx.data().exports().memory;
-        let channel_name =
-            utils::copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
-        let child_id = if let Some(child) = &child {
-            Some(HostResource::from_ref(Some(child))?.as_workflow()?)
-        } else {
-            None
-        };
-
-        tracing::Span::current()
-            .record("workflow_id", child_id)
-            .record("channel_name", &channel_name);
-        let data = &mut ctx.data_mut().persisted;
-        let mapping = Self::channel_mapping(data, child_id)?;
-
-        let mapping = mapping
-            .receivers
-            .get_mut(&channel_name)
-            .ok_or(AccessErrorKind::Unknown);
-        let result = mapping.map(|mapping_state| mapping_state.acquire().ok());
-        utils::debug_result(&result);
-
-        let mut channel_ref = None;
-        let result = result.map(|acquire_result| {
-            channel_ref = acquire_result.map(|id| HostResource::Receiver(id).into_ref());
-        });
-        Self::write_access_result(&mut ctx, result, error_ptr)?;
-        Ok(channel_ref)
-    }
-
-    fn channel_mapping(
-        data: &mut PersistedWorkflowData,
-        child_id: Option<WorkflowId>,
-    ) -> anyhow::Result<&mut ChannelMapping> {
-        if let Some(child_id) = child_id {
-            let workflow = data
-                .child_workflows
-                .get_mut(&child_id)
-                .ok_or_else(|| anyhow!("unknown child workflow ID {child_id}"))?;
-            Ok(&mut workflow.channels)
-        } else {
-            Ok(&mut data.channels.mapping)
-        }
-    }
-
-    #[tracing::instrument(level = "debug", skip_all, err, fields(channel, message.len))]
-    pub fn poll_next_for_receiver(
-        mut ctx: StoreContextMut<'_, WorkflowData>,
-        channel_ref: Option<ExternRef>,
-        poll_cx: WasmContextPtr,
-    ) -> anyhow::Result<i64> {
-        let channel_id = HostResource::from_ref(channel_ref.as_ref())?.as_receiver()?;
-        tracing::Span::current().record("channel", field::debug(channel_ref));
-
-        let mut poll_cx = WasmContext::new(poll_cx);
-        let poll_result = ctx.data_mut().poll_receiver(channel_id, &mut poll_cx);
-        tracing::debug!(result = ?utils::drop_value(&poll_result));
-
-        if let Poll::Ready(maybe_message) = &poll_result {
-            let message_len = maybe_message.as_ref().map(Vec::len);
-            tracing::Span::current().record("message.len", message_len);
-        }
-        poll_cx.save_waker(&mut ctx)?;
-        poll_result.into_wasm(&mut WasmAllocator::new(ctx))
-    }
-
-    #[tracing::instrument(level = "debug", skip_all, err, fields(workflow_id, channel_name))]
-    pub fn get_sender(
-        mut ctx: StoreContextMut<'_, WorkflowData>,
-        child: Option<ExternRef>,
-        channel_name_ptr: u32,
-        channel_name_len: u32,
-        error_ptr: u32,
-    ) -> anyhow::Result<Option<ExternRef>> {
-        let memory = ctx.data().exports().memory;
-        let channel_name =
-            utils::copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
-        let child_id = if let Some(child) = &child {
-            Some(HostResource::from_ref(Some(child))?.as_workflow()?)
-        } else {
-            None
-        };
-
-        tracing::Span::current()
-            .record("workflow_id", child_id)
-            .record("channel_name", &channel_name);
-        let data = &mut ctx.data_mut().persisted;
-        let mapping = Self::channel_mapping(data, child_id)?;
-
-        let mapping = mapping
-            .senders
-            .get_mut(&channel_name)
-            .ok_or(AccessErrorKind::Unknown);
-        let result = mapping.map(|mapping_state| mapping_state.acquire().ok());
-        utils::debug_result(&result);
-
-        let mut channel_ref = None;
-        let result = result.map(|acquire_result| {
-            channel_ref = acquire_result.map(|id| HostResource::Sender(id).into_ref());
-        });
-        Self::write_access_result(&mut ctx, result, error_ptr)?;
-        Ok(channel_ref)
-    }
-
-    #[tracing::instrument(level = "debug", skip_all, err, fields(channel))]
-    pub fn poll_ready_for_sender(
-        mut ctx: StoreContextMut<'_, WorkflowData>,
-        channel_ref: Option<ExternRef>,
-        cx: WasmContextPtr,
-    ) -> anyhow::Result<i32> {
-        let channel_id = HostResource::from_ref(channel_ref.as_ref())?.as_sender()?;
-        tracing::Span::current().record("channel", field::debug(channel_ref));
-
-        let mut cx = WasmContext::new(cx);
-        let poll_result = ctx.data_mut().poll_sender(channel_id, false, &mut cx);
-        tracing::debug!(result = ?poll_result);
-
-        cx.save_waker(&mut ctx)?;
-        poll_result.into_wasm(&mut WasmAllocator::new(ctx))
-    }
-
-    #[tracing::instrument(
-        level = "debug",
-        skip_all,
-        err,
-        fields(channel, message.len = message_len)
-    )]
-    pub fn start_send(
-        mut ctx: StoreContextMut<'_, WorkflowData>,
-        channel_ref: Option<ExternRef>,
-        message_ptr: u32,
-        message_len: u32,
-    ) -> anyhow::Result<i32> {
-        let channel_id = HostResource::from_ref(channel_ref.as_ref())?.as_sender()?;
-        tracing::Span::current().record("channel", field::debug(channel_id));
-
-        let memory = ctx.data().exports().memory;
-        let message = utils::copy_bytes_from_wasm(&ctx, &memory, message_ptr, message_len)?;
-        let result = ctx.data_mut().push_outbound_message(channel_id, message);
-        utils::debug_result(&result);
-        result.into_wasm(&mut WasmAllocator::new(ctx))
-    }
-
-    #[tracing::instrument(level = "debug", skip_all, err, fields(channel))]
-    pub fn poll_flush_for_sender(
-        mut ctx: StoreContextMut<'_, WorkflowData>,
-        channel_ref: Option<ExternRef>,
-        poll_cx: WasmContextPtr,
-    ) -> anyhow::Result<i32> {
-        let channel_id = HostResource::from_ref(channel_ref.as_ref())?.as_sender()?;
-        tracing::Span::current().record("channel", field::debug(channel_id));
-
-        let mut poll_cx = WasmContext::new(poll_cx);
-        let poll_result = ctx.data_mut().poll_sender(channel_id, true, &mut poll_cx);
-        tracing::debug!(result = ?poll_result);
-
-        poll_cx.save_waker(&mut ctx)?;
-        poll_result.into_wasm(&mut WasmAllocator::new(ctx))
     }
 }

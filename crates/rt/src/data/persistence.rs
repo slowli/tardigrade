@@ -2,20 +2,17 @@
 
 use anyhow::anyhow;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use wasmtime::{Store, Val};
 
 use std::{collections::HashMap, error, fmt};
 
 use super::{
     channel::{ChannelStates, ReceiverState, SenderState},
-    helpers::HostResource,
     spawn::ChildWorkflowStubs,
     task::TaskQueue,
     time::Timers,
     PersistedWorkflowData, WorkflowData,
 };
-use crate::{module::Services, workflow::ChannelIds};
+use crate::{manager::Services, workflow::ChannelIds};
 use tardigrade::{
     interface::{ChannelHalf, Interface},
     ChannelId,
@@ -106,16 +103,15 @@ impl PersistedWorkflowData {
         }
     }
 
-    pub fn restore<'a>(
+    pub fn restore(
         self,
         interface: &Interface,
-        services: Services<'a>,
-    ) -> anyhow::Result<WorkflowData<'a>> {
+        services: Services,
+    ) -> anyhow::Result<WorkflowData> {
         self.channels.check_on_restore(interface)?;
         Ok(WorkflowData {
-            exports: None,
             persisted: self,
-            services,
+            services: Some(services),
             current_execution: None,
             task_queue: TaskQueue::default(),
             current_wakeup_cause: None,
@@ -123,7 +119,7 @@ impl PersistedWorkflowData {
     }
 }
 
-impl WorkflowData<'_> {
+impl WorkflowData {
     pub(crate) fn check_persistence(&self) -> Result<(), PersistError> {
         // Check that we're not losing info.
         if self.current_execution.is_some() || !self.task_queue.is_empty() {
@@ -150,51 +146,7 @@ impl WorkflowData<'_> {
     }
 
     // Must be preceded with `Self::check_persistence()`.
-    pub(crate) fn persist(self) -> PersistedWorkflowData {
-        self.persisted
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(transparent)]
-pub(crate) struct Refs {
-    inner: HashMap<u32, HostResource>,
-}
-
-impl Refs {
-    pub fn new(store: &mut Store<WorkflowData>) -> Self {
-        let ref_table = store.data().exports().ref_table;
-        let ref_count = ref_table.size(&mut *store);
-        let refs = (0..ref_count).filter_map(|idx| {
-            let val = ref_table.get(&mut *store, idx).unwrap();
-            // ^ `unwrap()` is safe: we know that the index is in bounds
-            val.externref().and_then(|reference| {
-                HostResource::from_ref(reference.as_ref())
-                    .ok()
-                    .cloned()
-                    .map(|res| (idx, res))
-            })
-        });
-
-        Self {
-            inner: refs.collect(),
-        }
-    }
-
-    pub fn restore(self, store: &mut Store<WorkflowData>) -> anyhow::Result<()> {
-        let ref_table = store.data().exports().ref_table;
-        let expected_size = self.inner.keys().copied().max().map_or(0, |idx| idx + 1);
-        let current_size = ref_table.size(&mut *store);
-        if current_size < expected_size {
-            ref_table.grow(
-                &mut *store,
-                expected_size - current_size,
-                Val::ExternRef(None),
-            )?;
-        }
-        for (idx, resource) in self.inner {
-            ref_table.set(&mut *store, idx, resource.into_ref().into())?;
-        }
-        Ok(())
+    pub(crate) fn persist(&self) -> PersistedWorkflowData {
+        self.persisted.clone()
     }
 }

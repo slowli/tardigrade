@@ -66,7 +66,7 @@ fn test_workflow_termination(args: Args) {
     let mut runtime = Runtime::default();
     runtime
         .workflow_registry_mut()
-        .insert::<WorkflowWithSubtask, _>("test");
+        .insert::<WorkflowWithSubtask>("test");
     runtime.run(async {
         let builder = Workflows
             .new_workflow::<WorkflowWithSubtask>("test", args)
@@ -121,7 +121,7 @@ fn workflow_failure_in_main_task() {
     let mut runtime = Runtime::default();
     runtime
         .workflow_registry_mut()
-        .insert::<WorkflowWithSubtask, _>("test");
+        .insert::<WorkflowWithSubtask>("test");
     runtime.run(async {
         let builder = Workflows
             .new_workflow::<WorkflowWithSubtask>("test", Args::default())

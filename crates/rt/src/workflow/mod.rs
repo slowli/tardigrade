@@ -2,9 +2,8 @@
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use wasmtime::{AsContextMut, Linker, Store};
 
-use std::{collections::HashMap, mem, sync::Arc};
+use std::{collections::HashMap, mem};
 
 mod persistence;
 
@@ -12,7 +11,8 @@ pub use self::persistence::PersistedWorkflow;
 
 use crate::{
     data::WorkflowData,
-    module::{DataSection, ModuleExports, Services, WorkflowSpawner},
+    engine::{DefineWorkflow, PersistWorkflow, RunWorkflow},
+    manager::Services,
     receipt::{
         Event, ExecutedFunction, Execution, ExecutionError, Receipt, ResourceEventKind, ResourceId,
         WakeUpCause,
@@ -34,70 +34,44 @@ pub(crate) struct ChannelIds {
     pub senders: HashMap<String, ChannelId>,
 }
 
-impl WorkflowSpawner<()> {
-    pub(crate) fn spawn<'a>(
-        &self,
-        raw_args: Vec<u8>,
-        channel_ids: ChannelIds,
-        services: Services<'a>,
-    ) -> anyhow::Result<Workflow<'a>> {
-        let state = WorkflowData::new(self.interface(), channel_ids, services);
-        Workflow::from_state(self, state, Some(raw_args.into()))
-    }
-}
-
 /// Workflow instance.
 #[derive(Debug)]
-pub(crate) struct Workflow<'a> {
-    store: Store<WorkflowData<'a>>,
-    data_section: Option<Arc<DataSection>>,
-    raw_args: Option<Message>,
+pub(crate) struct Workflow<T> {
+    inner: T,
+    args: Option<Message>,
 }
 
-impl<'a> Workflow<'a> {
-    fn from_state(
-        spawner: &WorkflowSpawner<()>,
-        state: WorkflowData<'a>,
-        raw_args: Option<Message>,
-    ) -> anyhow::Result<Self> {
-        let mut linker = Linker::new(spawner.module.engine());
-        let mut store = Store::new(spawner.module.engine(), state);
-        spawner
-            .extend_linker(&mut store, &mut linker)
-            .context("failed extending `Linker` for module")?;
-
-        let instance = linker
-            .instantiate(&mut store, &spawner.module)
-            .context("failed instantiating module")?;
-        let exports = ModuleExports::new(&mut store, &instance, spawner.workflow_name());
-        store.data_mut().set_exports(exports);
-        let data_section = spawner.cache_data_section(&store);
-        Ok(Self {
-            store,
-            data_section,
-            raw_args,
-        })
+impl<T: RunWorkflow + PersistWorkflow> Workflow<T> {
+    pub(crate) fn new<D>(
+        definition: &D,
+        data: WorkflowData,
+        args: Option<Message>,
+    ) -> anyhow::Result<Self>
+    where
+        D: DefineWorkflow<Instance = T>,
+    {
+        let inner = definition
+            .create_workflow(data)
+            .context("failed creating workflow")?;
+        Ok(Self { inner, args })
     }
 
     #[cfg(test)]
-    pub(crate) fn data(&self) -> &WorkflowData<'a> {
-        self.store.data()
+    pub(crate) fn data(&self) -> &WorkflowData {
+        self.inner.data()
     }
 
     #[cfg(test)]
-    pub(crate) fn data_mut(&mut self) -> &mut WorkflowData<'a> {
-        self.store.data_mut()
+    pub(crate) fn data_mut(&mut self) -> &mut WorkflowData {
+        self.inner.data_mut()
     }
 
     pub(crate) fn is_initialized(&self) -> bool {
-        self.raw_args.is_none()
+        self.args.is_none()
     }
 
     pub(crate) fn initialize(&mut self) -> Result<Receipt, ExecutionError> {
-        let raw_args = self
-            .raw_args
-            .take()
-            .expect("workflow is already initialized");
+        let raw_args = self.args.take().expect("workflow is already initialized");
         let mut spawn_receipt = self.spawn_main_task(raw_args.as_ref())?;
         let tick_receipt = self.tick()?;
         spawn_receipt.extend(tick_receipt);
@@ -105,13 +79,12 @@ impl<'a> Workflow<'a> {
     }
 
     fn spawn_main_task(&mut self, raw_data: &[u8]) -> Result<Receipt, ExecutionError> {
-        let function = ExecutedFunction::Entry;
         let mut receipt = Receipt::default();
         let task_id = self
-            .execute(function, Some(raw_data), &mut receipt)?
+            .execute(ExecutedFunction::Entry, Some(raw_data), &mut receipt)?
             .main_task_id
             .expect("main task ID not set");
-        self.store.data_mut().spawn_main_task(task_id);
+        self.inner.data_mut().spawn_main_task(task_id);
         Ok(receipt)
     }
 
@@ -123,11 +96,10 @@ impl<'a> Workflow<'a> {
         let mut output = ExecutionOutput::default();
         match function {
             ExecutedFunction::Task { task_id, .. } => {
-                let exports = self.store.data().exports();
-                let exec_result = exports.poll_task(self.store.as_context_mut(), *task_id);
+                let exec_result = self.inner.poll_task(*task_id);
                 exec_result.map(|poll| {
                     if poll.is_ready() {
-                        output.task_result = Some(self.store.data_mut().complete_current_task());
+                        output.task_result = Some(self.inner.data_mut().complete_current_task());
                     }
                 })?;
             }
@@ -136,16 +108,13 @@ impl<'a> Workflow<'a> {
                 waker_id,
                 wake_up_cause,
             } => {
-                WorkflowData::wake(&mut self.store, *waker_id, wake_up_cause.clone())?;
+                WorkflowData::wake(&mut self.inner, *waker_id, wake_up_cause.clone())?;
             }
             ExecutedFunction::TaskDrop { task_id } => {
-                let exports = self.store.data().exports();
-                exports.drop_task(self.store.as_context_mut(), *task_id)?;
+                self.inner.drop_task(*task_id)?;
             }
             ExecutedFunction::Entry => {
-                let exports = self.store.data().exports();
-                output.main_task_id =
-                    Some(exports.create_main_task(self.store.as_context_mut(), data.unwrap())?);
+                output.main_task_id = Some(self.inner.create_main_task(data.unwrap())?);
             }
         }
         Ok(output)
@@ -157,11 +126,11 @@ impl<'a> Workflow<'a> {
         data: Option<&[u8]>,
         receipt: &mut Receipt,
     ) -> Result<ExecutionOutput, ExecutionError> {
-        self.store.data_mut().set_current_execution(&function);
+        self.inner.data_mut().set_current_execution(&function);
 
         let mut output = self.do_execute(&function, data);
         let (events, panic_info) = self
-            .store
+            .inner
             .data_mut()
             .remove_current_execution(output.is_err());
         let dropped_tasks = Self::dropped_tasks(&events);
@@ -214,7 +183,7 @@ impl<'a> Workflow<'a> {
     }
 
     fn wake_tasks(&mut self, receipt: &mut Receipt) -> Result<(), ExecutionError> {
-        let wakers = self.store.data_mut().take_wakers();
+        let wakers = self.inner.data_mut().take_wakers();
         for (waker_id, wake_up_cause) in wakers {
             let function = ExecutedFunction::Waker {
                 waker_id,
@@ -238,11 +207,11 @@ impl<'a> Workflow<'a> {
     fn do_tick(&mut self, receipt: &mut Receipt) -> Result<(), ExecutionError> {
         self.wake_tasks(receipt)?;
 
-        while let Some((task_id, wake_up_cause)) = self.store.data_mut().take_next_task() {
+        while let Some((task_id, wake_up_cause)) = self.inner.data_mut().take_next_task() {
             self.poll_task(task_id, wake_up_cause, receipt)?;
-            if self.store.data().result().is_ready() {
+            if self.inner.data_mut().result().is_ready() {
                 tracing::debug!("workflow is completed; clearing task queue");
-                self.store.data_mut().clear_task_queue();
+                self.inner.data_mut().clear_task_queue();
                 break;
             }
 
@@ -252,14 +221,18 @@ impl<'a> Workflow<'a> {
     }
 
     pub(crate) fn take_pending_inbound_message(&mut self, channel_id: ChannelId) -> bool {
-        self.store
+        self.inner
             .data_mut()
             .take_pending_inbound_message(channel_id)
     }
 
+    pub(crate) fn take_services(&mut self) -> Services {
+        self.inner.data_mut().take_services()
+    }
+
     #[tracing::instrument(level = "debug", skip(self), ret)]
     pub(crate) fn drain_messages(&mut self) -> HashMap<ChannelId, Vec<Message>> {
-        self.store.data_mut().drain_messages()
+        self.inner.data_mut().drain_messages()
     }
 
     /// Persists this workflow.
@@ -267,22 +240,7 @@ impl<'a> Workflow<'a> {
     /// # Panics
     ///
     /// Panics if the workflow is in such a state that it cannot be persisted right now.
-    pub(crate) fn persist(self) -> PersistedWorkflow {
+    pub(crate) fn persist(&mut self) -> PersistedWorkflow {
         PersistedWorkflow::new(self).unwrap()
-    }
-
-    fn copy_memory(&mut self, offset: usize, memory_contents: &[u8]) -> anyhow::Result<()> {
-        const WASM_PAGE_SIZE: u64 = 65_536;
-
-        let memory = self.store.data().exports().memory;
-        let delta_bytes =
-            (memory_contents.len() + offset).saturating_sub(memory.data_size(&mut self.store));
-        let delta_pages = ((delta_bytes as u64) + WASM_PAGE_SIZE - 1) / WASM_PAGE_SIZE;
-
-        if delta_pages > 0 {
-            memory.grow(&mut self.store, delta_pages)?;
-        }
-        memory.write(&mut self.store, offset, memory_contents)?;
-        Ok(())
     }
 }

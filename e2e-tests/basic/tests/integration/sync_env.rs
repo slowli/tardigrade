@@ -2,6 +2,7 @@
 
 use assert_matches::assert_matches;
 use async_trait::async_trait;
+use futures::{StreamExt, TryStreamExt};
 
 use std::{collections::HashSet, task::Poll};
 
@@ -12,11 +13,15 @@ use tardigrade::{
     Decode, Encode, Json,
 };
 use tardigrade_rt::{
-    manager::{AsManager, CreateModule, MessageReceiver, WorkflowManager},
-    receipt::{ChannelEvent, ChannelEventKind, Event, ExecutedFunction, WakeUpCause},
-    storage::{LocalStorageSnapshot, MessageError, ModuleRecord},
+    engine::{WasmtimeDefinition, WasmtimeInstance, WasmtimeModule, WorkflowEngine},
+    manager::{AsManager, MessageReceiver, WorkflowManager},
+    receipt::{
+        ChannelEvent, ChannelEventKind, Event, ExecutedFunction, Receipt, ResourceEvent,
+        ResourceEventKind, ResourceId, WakeUpCause,
+    },
+    storage::{LocalStorageSnapshot, ModuleRecord},
     test::MockScheduler,
-    WorkflowModule,
+    PersistedWorkflow,
 };
 use tardigrade_test_basic::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOrder};
 
@@ -43,20 +48,15 @@ where
     }
 
     async fn drain(&mut self) -> TestResult<Vec<T>> {
-        let mut messages = vec![];
-        loop {
-            match self.receiver.receive_message(self.cursor).await {
-                Ok(message) => {
-                    messages.push(message.decode()?);
-                    self.cursor += 1;
-                }
-                Err(MessageError::NonExistingIndex { .. }) => {
-                    self.receiver.truncate(self.cursor).await;
-                    break Ok(messages);
-                }
-                Err(err) => break Err(err.into()),
-            }
-        }
+        self.receiver
+            .receive_messages(self.cursor..)
+            .map(|message| {
+                assert_eq!(message.index(), self.cursor);
+                self.cursor += 1;
+                message.decode().map_err(Into::into)
+            })
+            .try_collect()
+            .await
     }
 }
 
@@ -120,7 +120,9 @@ async fn basic_workflow() -> TestResult {
         delivery_distance: 10,
     };
     handle.orders.send(order).await?;
-    manager.tick().await?.drop_handle().into_inner()?; // TODO: assert on receipt
+    let receipt = manager.tick().await?.drop_handle().into_inner()?;
+    workflow.update().await?;
+    assert_send_receipt(&receipt, workflow.persisted());
 
     let event = handle.shared.events.receive_message(0).await?;
     assert_eq!(event.decode()?, DomainEvent::OrderTaken { index: 1, order });
@@ -161,7 +163,8 @@ async fn basic_workflow() -> TestResult {
     scheduler.set_now(new_time);
     manager.set_current_time(new_time).await;
 
-    manager.tick().await?.drop_handle().into_inner()?; // TODO: assert on receipt
+    let receipt = manager.tick().await?.drop_handle().into_inner()?;
+    assert_time_update_receipt(&receipt, workflow.persisted());
     let events = handle.shared.events.receive_message(1).await?;
     assert_eq!(events.decode()?, DomainEvent::Baked { index: 1, order });
 
@@ -179,6 +182,83 @@ async fn basic_workflow() -> TestResult {
         assert!(stats.is_closed);
     }
     Ok(())
+}
+
+fn assert_send_receipt(receipt: &Receipt, persisted: &PersistedWorkflow) {
+    let root_cause = receipt.executions().first().unwrap().cause();
+    assert_matches!(
+        root_cause,
+        Some(WakeUpCause::InboundMessage {
+            message_index: 0,
+            ..
+        })
+    );
+
+    let is_consumed = receipt.events().any(|event| {
+        matches!(
+            event,
+            Event::Channel(ChannelEvent {
+                kind: ChannelEventKind::ReceiverPolled {
+                    result: Poll::Ready(Some(_)),
+                },
+                ..
+            })
+        )
+    });
+    assert!(is_consumed, "{receipt:#?}");
+
+    let events_id = persisted.channels().sender_id("events").unwrap();
+    let is_event_sent = receipt.events().any(|event| {
+        matches!(event,
+            Event::Channel(ChannelEvent {
+                kind: ChannelEventKind::OutboundMessageSent { .. },
+                channel_id,
+                ..
+            }) if *channel_id == events_id
+        )
+    });
+    assert!(is_event_sent, "{receipt:#?}");
+}
+
+fn assert_time_update_receipt(receipt: &Receipt, persisted: &PersistedWorkflow) {
+    let root_cause = receipt.executions().first().unwrap().cause();
+    assert_matches!(root_cause, Some(WakeUpCause::Timer { id: 0 }));
+
+    let is_timer_polled = receipt.events().any(|event| {
+        matches!(
+            event,
+            Event::Resource(ResourceEvent {
+                resource_id: ResourceId::Timer(0),
+                kind: ResourceEventKind::Polled(Poll::Ready(_)),
+                ..
+            })
+        )
+    });
+    assert!(is_timer_polled, "{receipt:#?}");
+
+    let is_timer_dropped = receipt.events().any(|event| {
+        matches!(
+            event,
+            Event::Resource(ResourceEvent {
+                resource_id: ResourceId::Timer(0),
+                kind: ResourceEventKind::Dropped,
+                ..
+            })
+        )
+    });
+    assert!(is_timer_dropped, "{receipt:#?}");
+
+    let events_id = persisted.channels().sender_id("events").unwrap();
+    let is_event_sent = receipt.events().any(|event| {
+        matches!(event,
+            Event::Channel(ChannelEvent {
+                kind: ChannelEventKind::OutboundMessageSent { .. },
+                channel_id,
+                ..
+            }) if *channel_id == events_id
+        )
+    });
+    assert!(is_event_sent, "{receipt:#?}");
 }
 
 #[async_std::test]
@@ -235,13 +315,17 @@ async fn workflow_with_concurrency() -> TestResult {
     Ok(())
 }
 
-/// Workflow module creator that reuses the statically allocated module.
+/// Workflow engine that reuses the statically allocated module.
 #[derive(Debug)]
-struct DummyModuleCreator;
+struct SingleModuleEngine;
 
 #[async_trait]
-impl CreateModule for DummyModuleCreator {
-    async fn create_module(&self, module: &ModuleRecord) -> anyhow::Result<WorkflowModule> {
+impl WorkflowEngine for SingleModuleEngine {
+    type Instance = WasmtimeInstance;
+    type Definition = WasmtimeDefinition;
+    type Module = WasmtimeModule;
+
+    async fn create_module(&self, module: &ModuleRecord) -> anyhow::Result<Self::Module> {
         assert_eq!(module.id, "test");
         Ok(create_module().await)
     }
@@ -284,13 +368,12 @@ async fn persisting_workflow() -> TestResult {
         module.set_bytes(vec![]);
     }
     let persisted_json = serde_json::to_string(&snapshot)?;
-    assert!(persisted_json.len() < 5_000, "{persisted_json}");
+    assert!(persisted_json.len() < 6_000, "{persisted_json}");
     let snapshot: LocalStorageSnapshot<'_> = serde_json::from_str(&persisted_json)?;
     storage = snapshot.into();
 
-    let manager = WorkflowManager::builder(storage)
+    let manager = WorkflowManager::builder(SingleModuleEngine, storage)
         .with_clock(clock.clone())
-        .with_module_creator(DummyModuleCreator)
         .build()
         .await?;
 
@@ -335,7 +418,7 @@ async fn persisting_workflow() -> TestResult {
 async fn untyped_workflow() -> TestResult {
     let manager = create_manager(()).await?;
 
-    let data = Json.encode_value(Args {
+    let data = Json::encode_value(Args {
         oven_count: 1,
         deliverer_count: 1,
     });
@@ -352,12 +435,13 @@ async fn untyped_workflow() -> TestResult {
         delivery_distance: 10,
     };
     handle[ReceiverName("orders")]
-        .send(Json.encode_value(order))
+        .send(Json::encode_value(order))
         .await?;
-    manager.tick().await?.drop_handle().into_inner()?; // TODO: assert on receipt
+    let receipt = manager.tick().await?.drop_handle().into_inner()?;
+    assert_send_receipt(&receipt, workflow.persisted());
 
     let event = handle[SenderName("events")].receive_message(0).await?;
-    let event: DomainEvent = Json.try_decode_bytes(event.decode().unwrap())?;
+    let event: DomainEvent = Json::try_decode_bytes(event.decode().unwrap())?;
     assert_eq!(event, DomainEvent::OrderTaken { index: 1, order });
 
     let chan = handle[ReceiverName("orders")].channel_info().await;
@@ -374,7 +458,7 @@ async fn workflow_recovery_after_trap() -> TestResult {
 
     let manager = create_manager(()).await?;
 
-    let data = Json.encode_value(Args {
+    let data = Json::encode_value(Args {
         oven_count: SAMPLES,
         deliverer_count: 1,
     });
@@ -394,7 +478,7 @@ async fn workflow_recovery_after_trap() -> TestResult {
         if i % 2 == 0 {
             b"invalid".to_vec()
         } else {
-            Json.encode_value(order)
+            Json::encode_value(order)
         }
     });
 
@@ -446,7 +530,7 @@ async fn workflow_recovery_after_trap() -> TestResult {
             result.unwrap();
             let mut events = events_drain.drain().await?;
             assert_eq!(events.len(), 1);
-            let event: DomainEvent = Json.try_decode_bytes(events.pop().unwrap())?;
+            let event: DomainEvent = Json::try_decode_bytes(events.pop().unwrap())?;
             let expected_idx = (i + 1) / 2;
             assert_matches!(
                 event,

@@ -1,4 +1,4 @@
-//! [`Driver`] for a [`WorkflowManager`](crate::manager::WorkflowManager) that drives
+//! [`Driver`] for a [`WorkflowManager`](manager::WorkflowManager) that drives
 //! workflows contained in the manager to completion.
 //!
 //! See `Driver` docs for examples of usage.
@@ -63,7 +63,7 @@ impl SenderWithCursor {
 
 /// Terminal status of a [`WorkflowManager`].
 ///
-/// [`WorkflowManager`]: crate::manager::WorkflowManager
+/// [`WorkflowManager`]: manager::WorkflowManager
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Termination {
@@ -76,7 +76,7 @@ pub enum Termination {
 
 /// Environment for driving workflow execution in a [`WorkflowManager`].
 ///
-/// [`WorkflowManager`]: crate::manager::WorkflowManager
+/// [`WorkflowManager`]: manager::WorkflowManager
 ///
 /// # Error handling
 ///
@@ -89,7 +89,7 @@ pub enum Termination {
 /// Whether this makes sense, depends on a use case; e.g., it seems reasonable to roll back
 /// deserialization errors for dynamically typed workflows.
 ///
-/// [errored state]: crate::manager::WorkflowManager#workflow-lifecycle
+/// [errored state]: manager::WorkflowManager#workflow-lifecycle
 ///
 /// # Examples
 ///
@@ -99,14 +99,14 @@ pub enum Termination {
 /// use tardigrade::interface::{ReceiverName, SenderName};
 /// # use tardigrade::WorkflowId;
 /// use tardigrade_rt::{driver::Driver, manager::WorkflowManager, AsyncIoScheduler};
-/// # use tardigrade_rt::storage::LocalStorage;
-///
+/// # use tardigrade_rt::{engine::Wasmtime, storage::LocalStorage};
+/// #
 /// # async fn test_wrapper(
-/// #     manager: WorkflowManager<AsyncIoScheduler, LocalStorage>,
+/// #     manager: WorkflowManager<Wasmtime, AsyncIoScheduler, LocalStorage>,
 /// #     workflow_id: WorkflowId,
 /// # ) -> anyhow::Result<()> {
 /// // Assume we have a dynamically typed workflow:
-/// let mut manager: WorkflowManager<AsyncIoScheduler, _> = // ...
+/// let mut manager: WorkflowManager<_, AsyncIoScheduler, _> = // ...
 /// #   manager;
 /// let mut workflow = manager.workflow(workflow_id).await.unwrap();
 ///
@@ -167,7 +167,7 @@ impl Driver {
     /// Note that it is possible to cancel this future (e.g., by [`select`]ing between it
     /// and a cancellation signal) and continue working with the provided workflow manager.
     ///
-    /// [`WorkflowManager`]: crate::manager::WorkflowManager
+    /// [`WorkflowManager`]: manager::WorkflowManager
     /// [`select`]: futures::select
     pub async fn drive<M>(mut self, manager: &mut M) -> Termination
     where
@@ -328,8 +328,7 @@ pin_project! {
     pub struct MessageSender<T, C> {
         #[pin]
         raw_sender: mpsc::Sender<Vec<u8>>,
-        codec: C,
-        _item: PhantomData<fn(T)>,
+        _ty: PhantomData<(C, fn(T))>,
     }
 }
 
@@ -337,8 +336,7 @@ impl<T, C: Clone> Clone for MessageSender<T, C> {
     fn clone(&self) -> Self {
         Self {
             raw_sender: self.raw_sender.clone(),
-            codec: self.codec.clone(),
-            _item: PhantomData,
+            _ty: PhantomData,
         }
     }
 }
@@ -350,8 +348,7 @@ impl<T, C: Encode<T>, M: AsManager> manager::MessageSender<'_, T, C, M> {
         driver.receivers.insert(self.channel_id(), rx);
         MessageSender {
             raw_sender: sx,
-            codec: self.codec,
-            _item: PhantomData,
+            _ty: PhantomData,
         }
     }
 }
@@ -365,7 +362,7 @@ impl<T, C: Encode<T>> Sink<T> for MessageSender<T, C> {
 
     fn start_send(self: Pin<&mut Self>, item: T) -> Result<(), Self::Error> {
         let projection = self.project();
-        let item = projection.codec.encode_value(item);
+        let item = C::encode_value(item);
         projection.raw_sender.start_send(item)
     }
 
@@ -392,8 +389,7 @@ pin_project! {
     pub struct MessageReceiver<T, C> {
         #[pin]
         raw_receiver: mpsc::UnboundedReceiver<Vec<u8>>,
-        codec: C,
-        _item: PhantomData<fn() -> T>,
+        _ty: PhantomData<(C, fn() -> T)>,
     }
 }
 
@@ -408,8 +404,7 @@ impl<T, C: Decode<T> + Default, M: AsManager> manager::MessageReceiver<'_, T, C,
         driver.senders.insert(self.channel_id(), state);
         MessageReceiver {
             raw_receiver: rx,
-            codec: self.codec,
-            _item: PhantomData,
+            _ty: PhantomData,
         }
     }
 }
@@ -422,7 +417,7 @@ impl<T, C: Decode<T>> Stream for MessageReceiver<T, C> {
         match projection.raw_receiver.poll_next(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(None) => Poll::Ready(None),
-            Poll::Ready(Some(bytes)) => Poll::Ready(Some(projection.codec.try_decode_bytes(bytes))),
+            Poll::Ready(Some(bytes)) => Poll::Ready(Some(C::try_decode_bytes(bytes))),
         }
     }
 }

@@ -1,13 +1,12 @@
 //! Various helpers for workflow state.
 
-use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
-use wasmtime::{AsContextMut, ExternRef, Store, StoreContextMut};
 
 use std::{collections::HashSet, mem, task::Poll};
 
 use crate::{
-    data::{spawn::SharedChannelHandles, PersistedWorkflowData, WorkflowData},
+    data::{PersistedWorkflowData, WorkflowData},
+    engine::{CreateWaker, RunWorkflow},
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, PanicInfo, ResourceEvent,
         ResourceEventKind, ResourceId, WakeUpCause,
@@ -21,87 +20,6 @@ use tardigrade::{
     ChannelId, TaskId, TimerId, WakerId, WorkflowId,
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum HostResource {
-    Receiver(ChannelId),
-    Sender(ChannelId),
-    #[serde(skip)] // FIXME: why is this allowed?
-    ChannelHandles(SharedChannelHandles),
-    Workflow(WorkflowId),
-    WorkflowStub(WorkflowId),
-}
-
-impl HostResource {
-    pub fn from_ref(reference: Option<&ExternRef>) -> anyhow::Result<&Self> {
-        let reference = reference.ok_or_else(|| anyhow!("null reference provided to runtime"))?;
-        reference
-            .data()
-            .downcast_ref::<Self>()
-            .ok_or_else(|| anyhow!("reference of unexpected type"))
-    }
-
-    pub fn into_ref(self) -> ExternRef {
-        ExternRef::new(self)
-    }
-
-    pub fn as_receiver(&self) -> anyhow::Result<ChannelId> {
-        if let Self::Receiver(channel_id) = self {
-            Ok(*channel_id)
-        } else {
-            let err = anyhow!("unexpected reference type: expected inbound channel, got {self:?}");
-            Err(err)
-        }
-    }
-
-    pub fn as_sender(&self) -> anyhow::Result<ChannelId> {
-        if let Self::Sender(channel_id) = self {
-            Ok(*channel_id)
-        } else {
-            let err = anyhow!("unexpected reference type: expected outbound channel, got {self:?}");
-            Err(err)
-        }
-    }
-
-    pub fn as_channel_handles(&self) -> anyhow::Result<&SharedChannelHandles> {
-        if let Self::ChannelHandles(handles) = self {
-            Ok(handles)
-        } else {
-            let err =
-                anyhow!("unexpected reference type: expected workflow spawn config, got {self:?}");
-            Err(err)
-        }
-    }
-
-    pub fn as_workflow(&self) -> anyhow::Result<WorkflowId> {
-        if let Self::Workflow(id) = self {
-            Ok(*id)
-        } else {
-            let err = anyhow!("unexpected reference type: expected workflow handle, got {self:?}");
-            Err(err)
-        }
-    }
-
-    pub fn as_workflow_stub(&self) -> anyhow::Result<WorkflowId> {
-        if let Self::WorkflowStub(id) = self {
-            Ok(*id)
-        } else {
-            let err =
-                anyhow!("unexpected reference type: expected workflow stub handle, got {self:?}");
-            Err(err)
-        }
-    }
-}
-
-impl From<SharedChannelHandles> for HostResource {
-    fn from(handles: SharedChannelHandles) -> Self {
-        Self::ChannelHandles(handles)
-    }
-}
-
-/// Pointer to the WASM `Context`, i.e., `*mut Context<'_>`.
-pub(crate) type WasmContextPtr = u32;
-
 #[derive(Debug)]
 pub(super) enum WakerPlacement {
     Receiver(ChannelId),
@@ -112,53 +30,37 @@ pub(super) enum WakerPlacement {
     WorkflowCompletion(WorkflowId),
 }
 
+/// Polling context for workflows.
 #[derive(Debug)]
 #[must_use = "Needs to be converted to a waker"]
-pub(super) struct WasmContext {
-    ptr: WasmContextPtr,
+pub struct WorkflowPoll<T> {
+    inner: Poll<T>,
     placement: Option<WakerPlacement>,
 }
 
-impl WasmContext {
-    pub fn new(ptr: WasmContextPtr) -> Self {
+impl<T> WorkflowPoll<T> {
+    pub(super) fn new(inner: Poll<T>, waker_placement: WakerPlacement) -> Self {
         Self {
-            ptr,
-            placement: None,
+            placement: if inner.is_pending() {
+                Some(waker_placement)
+            } else {
+                None
+            },
+            inner,
         }
     }
 
-    pub fn save_waker(self, ctx: &mut StoreContextMut<'_, WorkflowData>) -> anyhow::Result<()> {
+    /// Saves the waker potentially contained in this context.
+    ///
+    /// # Errors
+    ///
+    /// Propagates errors from [`CreateWaker::create_waker()`].
+    pub fn into_inner(self, cx: &mut impl CreateWaker) -> anyhow::Result<Poll<T>> {
         if let Some(placement) = &self.placement {
-            let waker_id = ctx
-                .data()
-                .exports()
-                .create_waker(ctx.as_context_mut(), self.ptr)?;
-            ctx.data_mut().place_waker(placement, waker_id);
+            let waker_id = cx.create_waker()?;
+            cx.data_mut().place_waker(placement, waker_id);
         }
-        Ok(())
-    }
-}
-
-/// Helper extension trait to deal with wakers more fluently.
-pub(super) trait WakeIfPending {
-    fn wake_if_pending(
-        self,
-        cx: &mut WasmContext,
-        waker_placement: impl FnOnce() -> WakerPlacement,
-    ) -> Self;
-}
-
-impl<T> WakeIfPending for Poll<T> {
-    fn wake_if_pending(
-        self,
-        cx: &mut WasmContext,
-        waker_placement: impl FnOnce() -> WakerPlacement,
-    ) -> Self {
-        if self.is_pending() {
-            debug_assert!(cx.placement.is_none());
-            cx.placement = Some(waker_placement());
-        }
-        self
+        Ok(self.inner)
     }
 }
 
@@ -385,7 +287,7 @@ impl CurrentExecution {
 }
 
 /// Waker-related `State` functionality.
-impl WorkflowData<'_> {
+impl WorkflowData {
     #[tracing::instrument(level = "debug")]
     fn place_waker(&mut self, placement: &WakerPlacement, waker: WakerId) {
         if let Some(execution) = &mut self.current_execution {
@@ -440,16 +342,13 @@ impl WorkflowData<'_> {
         wakers.into_iter().flat_map(Wakers::into_iter)
     }
 
-    pub(crate) fn wake(
-        store: &mut Store<Self>,
+    pub(crate) fn wake<T: RunWorkflow>(
+        store: &mut T,
         waker_id: WakerId,
         cause: WakeUpCause,
     ) -> anyhow::Result<()> {
         store.data_mut().current_wakeup_cause = Some(cause);
-        let result = store
-            .data()
-            .exports()
-            .wake_waker(store.as_context_mut(), waker_id);
+        let result = store.wake_waker(waker_id);
         store.data_mut().current_wakeup_cause = None;
         result
     }
