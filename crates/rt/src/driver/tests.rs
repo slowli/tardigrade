@@ -12,7 +12,7 @@ use crate::{
     engine::{AsWorkflowData, MockAnswers, MockInstance, MockPollFn},
     manager::tests::{create_test_manager, create_test_workflow, is_consumption},
 };
-use tardigrade::interface::{ReceiverName, SenderName};
+use tardigrade::interface::{ReceiverAt, SenderAt};
 
 fn poll_orders(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     let channels = ctx.data().persisted.channels();
@@ -46,10 +46,11 @@ async fn completing_workflow_via_driver() {
     let mut workflow = create_test_workflow(&manager).await;
     let mut handle = workflow.handle();
     let mut driver = Driver::new();
-    let orders_sx = handle.remove(ReceiverName("orders")).unwrap();
+    let orders_sx = handle.remove(ReceiverAt("orders")).unwrap();
     let mut orders_sx = orders_sx.into_sink(&mut driver);
-    let events_rx = handle.remove(SenderName("events")).unwrap();
+    let events_rx = handle.remove(SenderAt("events")).unwrap();
     let events_rx = events_rx.into_stream(&mut driver);
+    drop(handle);
 
     let input_actions = async move {
         orders_sx.send(b"order".to_vec()).await.unwrap();
@@ -82,8 +83,9 @@ async fn test_driver_with_multiple_messages(start_after_tick: bool) {
     let mut manager = create_test_manager(poll_fns, MockScheduler::default()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let mut handle = workflow.handle();
-    let events_rx = handle.remove(SenderName("events")).unwrap();
-    let orders_sx = handle.remove(ReceiverName("orders")).unwrap();
+    let events_rx = handle.remove(SenderAt("events")).unwrap();
+    let orders_sx = handle.remove(ReceiverAt("orders")).unwrap();
+    drop(handle);
 
     if start_after_tick {
         manager.tick().await.unwrap().into_inner().unwrap();
@@ -136,11 +138,12 @@ async fn selecting_from_driver_and_other_future() {
     let mut handle = workflow.handle();
     let mut driver = Driver::new();
     let mut tick_results = driver.tick_results();
-    let orders_sx = handle.remove(ReceiverName("orders")).unwrap();
+    let orders_sx = handle.remove(ReceiverAt("orders")).unwrap();
     let orders_id = orders_sx.channel_id();
     let mut orders_sx = orders_sx.into_sink(&mut driver);
-    let events_rx = handle.remove(SenderName("events")).unwrap();
+    let events_rx = handle.remove(SenderAt("events")).unwrap();
     let events_rx = events_rx.into_stream(&mut driver);
+    drop(handle);
 
     let input_actions = orders_sx.send(b"order".to_vec()).map(Result::unwrap);
     let until_consumed_order = async move {
@@ -177,7 +180,7 @@ async fn selecting_from_driver_and_other_future() {
     // The `manager` can be used again.
     let mut workflow = manager.workflow(workflow_id).await.unwrap();
     let mut handle = workflow.handle();
-    handle[ReceiverName("orders")]
+    handle[ReceiverAt("orders")]
         .send(b"order #2".to_vec())
         .await
         .unwrap();

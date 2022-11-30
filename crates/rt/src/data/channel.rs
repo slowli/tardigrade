@@ -16,7 +16,7 @@ use super::{
 use crate::{receipt::WakeUpCause, utils::Message, workflow::ChannelIds};
 use tardigrade::{
     channel::SendError,
-    interface::{AccessErrorKind, ChannelHalf, Interface},
+    interface::{AccessErrorKind, ChannelHalf, HandleMap, HandlePath, HandlePathBuf, Interface},
     spawn::{ChannelSpawnConfig, ChannelsConfig},
     ChannelId, WakerId, WorkflowId,
 };
@@ -72,8 +72,8 @@ impl ChannelMappingState {
 /// Mapping of channels (from names to IDs) for a workflow.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(super) struct ChannelMapping {
-    receivers: HashMap<String, ChannelMappingState>,
-    senders: HashMap<String, ChannelMappingState>,
+    receivers: HandleMap<ChannelMappingState>,
+    senders: HandleMap<ChannelMappingState>,
 }
 
 impl ChannelMapping {
@@ -81,34 +81,34 @@ impl ChannelMapping {
         let receivers = ids
             .receivers
             .into_iter()
-            .map(|(name, id)| (name, ChannelMappingState::new(id)))
+            .map(|(path, id)| (path, ChannelMappingState::new(id)))
             .collect();
         let senders = ids
             .senders
             .into_iter()
-            .map(|(name, id)| (name, ChannelMappingState::new(id)))
+            .map(|(path, id)| (path, ChannelMappingState::new(id)))
             .collect();
         Self { receivers, senders }
     }
 
-    pub fn receiver_names(&self) -> impl Iterator<Item = &str> + '_ {
-        self.receivers.keys().map(String::as_str)
+    pub fn receiver_paths(&self) -> impl Iterator<Item = &HandlePathBuf> + '_ {
+        self.receivers.keys()
     }
 
-    pub fn sender_names(&self) -> impl Iterator<Item = &str> + '_ {
-        self.senders.keys().map(String::as_str)
+    pub fn sender_paths(&self) -> impl Iterator<Item = &HandlePathBuf> + '_ {
+        self.senders.keys()
     }
 
     pub fn acquire_non_captured_channels(&mut self, config: &ChannelsConfig<ChannelId>) {
-        for (name, channel_config) in &config.receivers {
+        for (path, channel_config) in &config.receivers {
             if matches!(channel_config, ChannelSpawnConfig::Existing(_)) {
-                let state = self.senders.get_mut(name).unwrap();
+                let state = self.senders.get_mut(path).unwrap();
                 state.is_acquired = true;
             }
         }
-        for (name, channel_config) in &config.senders {
+        for (path, channel_config) in &config.senders {
             if matches!(channel_config, ChannelSpawnConfig::Existing(_)) {
-                let state = self.receivers.get_mut(name).unwrap();
+                let state = self.receivers.get_mut(path).unwrap();
                 state.is_acquired = true;
             }
         }
@@ -242,8 +242,8 @@ pub(super) struct ChannelStates {
 impl ChannelStates {
     pub fn new(channel_ids: ChannelIds, interface: &Interface) -> Self {
         let mut this = Self::default();
-        this.insert_channels(&channel_ids, |name| {
-            interface.sender(name).unwrap().capacity
+        this.insert_channels(&channel_ids, |path| {
+            interface.sender(path).unwrap().capacity
         });
         this.mapping = ChannelMapping::new(channel_ids);
         this
@@ -251,7 +251,7 @@ impl ChannelStates {
 
     pub fn insert_channels<F>(&mut self, channel_ids: &ChannelIds, sender_cap_fn: F)
     where
-        F: Fn(&str) -> Option<usize>,
+        F: Fn(&HandlePathBuf) -> Option<usize>,
     {
         for &id in channel_ids.receivers.values() {
             self.receivers.entry(id).or_insert_with(ReceiverState::new);
@@ -282,41 +282,44 @@ impl<'a> Channels<'a> {
 
     /// Returns the channel ID of the receiver with the specified name, or `None` if the receiver
     /// is not present.
-    pub fn receiver_id(&self, name: &str) -> Option<ChannelId> {
-        self.mapping.receivers.get(name).map(|state| state.id)
+    pub fn receiver_id<'p, P: Into<HandlePath<'p>>>(&self, path: P) -> Option<ChannelId> {
+        self.mapping
+            .receivers
+            .get(&path.into())
+            .map(|state| state.id)
     }
 
     /// Returns information about the receiver with the specified name.
-    pub fn receiver(&self, name: &str) -> Option<&'a ReceiverState> {
-        let channel_id = self.mapping.receivers.get(name)?.id;
+    pub fn receiver<'p, P: Into<HandlePath<'p>>>(&self, path: P) -> Option<&'a ReceiverState> {
+        let channel_id = self.mapping.receivers.get(&path.into())?.id;
         self.states.receivers.get(&channel_id)
     }
 
     /// Iterates over all receivers.
-    pub fn receivers(&self) -> impl Iterator<Item = (&'a str, &'a ReceiverState)> + '_ {
+    pub fn receivers(&self) -> impl Iterator<Item = (HandlePath<'a>, &'a ReceiverState)> + '_ {
         self.mapping.receivers.iter().filter_map(|(name, state)| {
             let state = self.states.receivers.get(&state.id)?;
-            Some((name.as_str(), state))
+            Some((name.as_ref(), state))
         })
     }
 
     /// Returns the channel ID of the sender with the specified name, or `None` if the sender
     /// is not present.
-    pub fn sender_id(&self, name: &str) -> Option<ChannelId> {
-        self.mapping.senders.get(name).map(|state| state.id)
+    pub fn sender_id<'p, P: Into<HandlePath<'p>>>(&self, path: P) -> Option<ChannelId> {
+        self.mapping.senders.get(&path.into()).map(|state| state.id)
     }
 
     /// Returns information about the sender with the specified name.
-    pub fn sender(&self, name: &str) -> Option<&'a SenderState> {
-        let channel_id = self.mapping.senders.get(name)?.id;
+    pub fn sender<'p, P: Into<HandlePath<'p>>>(&self, path: P) -> Option<&'a SenderState> {
+        let channel_id = self.mapping.senders.get(&path.into())?.id;
         self.states.senders.get(&channel_id)
     }
 
     /// Iterates over all senders.
-    pub fn senders(&self) -> impl Iterator<Item = (&'a str, &'a SenderState)> + '_ {
+    pub fn senders(&self) -> impl Iterator<Item = (HandlePath<'a>, &'a SenderState)> + '_ {
         self.mapping.senders.iter().filter_map(|(name, state)| {
             let state = self.states.senders.get(&state.id)?;
-            Some((name.as_str(), state))
+            Some((name.as_ref(), state))
         })
     }
 
@@ -607,13 +610,13 @@ impl WorkflowData {
     pub fn acquire_receiver(
         &mut self,
         child_id: Option<WorkflowId>,
-        name: &str,
+        path: HandlePath<'_>,
     ) -> Result<Option<ChannelId>, AccessErrorKind> {
         let mapping = self.persisted.channel_mapping(child_id);
 
         let mapping = mapping
             .receivers
-            .get_mut(name)
+            .get_mut(&path)
             .ok_or(AccessErrorKind::Unknown)?;
         Ok(mapping.acquire().ok())
     }
@@ -645,13 +648,13 @@ impl WorkflowData {
     pub fn acquire_sender(
         &mut self,
         child_id: Option<WorkflowId>,
-        name: &str,
+        path: HandlePath<'_>,
     ) -> Result<Option<ChannelId>, AccessErrorKind> {
         let mapping = self.persisted.channel_mapping(child_id);
 
         let mapping = mapping
             .senders
-            .get_mut(name)
+            .get_mut(&path)
             .ok_or(AccessErrorKind::Unknown)?;
         Ok(mapping.acquire().ok())
     }

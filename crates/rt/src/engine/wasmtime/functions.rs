@@ -20,7 +20,7 @@ use crate::{
 };
 use tardigrade::{
     abi::{IntoWasm, TryFromWasm},
-    interface::{AccessErrorKind, ChannelHalf},
+    interface::{AccessErrorKind, ChannelHalf, HandlePathBuf},
     spawn::{ChannelSpawnConfig, HostError},
     task::{JoinError, TaskError},
     TaskId, TimerDefinition, TimerId, WakerId,
@@ -168,13 +168,13 @@ impl WorkflowFunctions {
     pub fn get_receiver(
         mut ctx: StoreContextMut<'_, InstanceData>,
         child: Option<ExternRef>,
-        channel_name_ptr: u32,
-        channel_name_len: u32,
+        path_ptr: u32,
+        path_len: u32,
         error_ptr: u32,
     ) -> anyhow::Result<Option<ExternRef>> {
         let memory = ctx.data().exports().memory;
-        let channel_name =
-            copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
+        let path = copy_string_from_wasm(&ctx, &memory, path_ptr, path_len)?;
+        let path: HandlePathBuf = path.parse()?;
         let child_id = if let Some(child) = &child {
             Some(HostResource::from_ref(Some(child))?.as_workflow()?)
         } else {
@@ -184,7 +184,7 @@ impl WorkflowFunctions {
         let result = ctx
             .data_mut()
             .inner
-            .acquire_receiver(child_id, &channel_name);
+            .acquire_receiver(child_id, path.as_ref());
 
         let mut channel_ref = None;
         let result = result.map(|acquire_result| {
@@ -212,20 +212,20 @@ impl WorkflowFunctions {
     pub fn get_sender(
         mut ctx: StoreContextMut<'_, InstanceData>,
         child: Option<ExternRef>,
-        channel_name_ptr: u32,
-        channel_name_len: u32,
+        path_ptr: u32,
+        path_len: u32,
         error_ptr: u32,
     ) -> anyhow::Result<Option<ExternRef>> {
         let memory = ctx.data().exports().memory;
-        let channel_name =
-            copy_string_from_wasm(&ctx, &memory, channel_name_ptr, channel_name_len)?;
+        let path = copy_string_from_wasm(&ctx, &memory, path_ptr, path_len)?;
+        let path: HandlePathBuf = path.parse()?;
         let child_id = if let Some(child) = &child {
             Some(HostResource::from_ref(Some(child))?.as_workflow()?)
         } else {
             None
         };
 
-        let result = ctx.data_mut().inner.acquire_sender(child_id, &channel_name);
+        let result = ctx.data_mut().inner.acquire_sender(child_id, path.as_ref());
 
         let mut channel_ref = None;
         let result = result.map(|acquire_result| {
@@ -476,8 +476,8 @@ impl SpawnFunctions {
         ctx: StoreContextMut<'_, InstanceData>,
         handles: Option<ExternRef>,
         channel_kind: i32,
-        name_ptr: u32,
-        name_len: u32,
+        path_ptr: u32,
+        path_len: u32,
         is_closed: i32,
     ) -> anyhow::Result<()> {
         let channel_kind =
@@ -488,21 +488,22 @@ impl SpawnFunctions {
             _ => return Err(anyhow!("invalid `is_closed` value; expected 0 or 1")),
         };
         let memory = ctx.data().exports().memory;
-        let name = copy_string_from_wasm(&ctx, &memory, name_ptr, name_len)?;
+        let path = copy_string_from_wasm(&ctx, &memory, path_ptr, path_len)?;
+        let path: HandlePathBuf = path.parse()?;
 
         tracing::Span::current()
             .record("channel_kind", field::debug(channel_kind))
-            .record("name", &name)
+            .record("path", field::debug(&path))
             .record("config", field::debug(&channel_config));
 
         let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
         let mut handles = handles.inner.lock().unwrap();
         match channel_kind {
             ChannelHalf::Receiver => {
-                handles.receivers.insert(name, channel_config);
+                handles.receivers.insert(path, channel_config);
             }
             ChannelHalf::Sender => {
-                handles.senders.insert(name, channel_config);
+                handles.senders.insert(path, channel_config);
             }
         }
         tracing::debug!(?handles, "inserted channel handle");
@@ -513,23 +514,24 @@ impl SpawnFunctions {
     pub fn copy_sender_handle(
         ctx: StoreContextMut<'_, InstanceData>,
         handles: Option<ExternRef>,
-        name_ptr: u32,
-        name_len: u32,
+        path_ptr: u32,
+        path_len: u32,
         sender: Option<ExternRef>,
     ) -> anyhow::Result<()> {
         let channel_id = HostResource::from_ref(sender.as_ref())?.as_sender()?;
         let memory = ctx.data().exports().memory;
-        let name = copy_string_from_wasm(&ctx, &memory, name_ptr, name_len)?;
+        let path = copy_string_from_wasm(&ctx, &memory, path_ptr, path_len)?;
+        let path: HandlePathBuf = path.parse()?;
 
         tracing::Span::current()
-            .record("name", &name)
+            .record("path", field::debug(&path))
             .record("sender", channel_id);
 
         let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
         let mut handles = handles.inner.lock().unwrap();
         handles
             .senders
-            .insert(name, ChannelSpawnConfig::Existing(channel_id));
+            .insert(path, ChannelSpawnConfig::Existing(channel_id));
         tracing::debug!(?handles, "inserted channel handle");
         Ok(())
     }

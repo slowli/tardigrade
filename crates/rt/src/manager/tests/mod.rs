@@ -18,7 +18,7 @@ use crate::{
     storage::LocalStorage,
 };
 use tardigrade::{
-    interface::{ReceiverName, SenderName},
+    interface::{ReceiverAt, SenderAt},
     spawn::ManageWorkflowsExt,
 };
 
@@ -181,8 +181,8 @@ async fn initializing_workflow_with_closed_channels() {
     let builder = manager
         .new_workflow::<()>(DEFINITION_ID, b"test_input".to_vec())
         .unwrap();
-    builder.handle()[ReceiverName("orders")].close();
-    builder.handle()[SenderName("traces")].close();
+    builder.handle()[ReceiverAt("orders")].close();
+    builder.handle()[SenderAt("traces")].close();
     let workflow = builder.build().await.unwrap();
     let workflow_id = workflow.id();
 
@@ -196,13 +196,13 @@ async fn initializing_workflow_with_closed_channels() {
         .unwrap();
 
     let mut handle = manager.workflow(workflow_id).await.unwrap().handle();
-    let channel_info = handle[ReceiverName("orders")].channel_info().await;
+    let channel_info = handle[ReceiverAt("orders")].channel_info().await;
     assert!(channel_info.is_closed);
     assert_eq!(channel_info.received_messages, 0);
-    let channel_info = handle[SenderName("traces")].channel_info().await;
+    let channel_info = handle[SenderAt("traces")].channel_info().await;
     assert!(channel_info.is_closed);
 
-    let err = handle[ReceiverName("orders")]
+    let err = handle[ReceiverAt("orders")]
         .send(b"test".to_vec())
         .await
         .unwrap_err();

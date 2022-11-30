@@ -58,7 +58,7 @@ fn initialize_task(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     // Emulate basic task startup: getting the channel receiver
     let orders_id = ctx
         .data_mut()
-        .acquire_receiver(None, "orders")
+        .acquire_receiver(None, "orders".into())
         .unwrap()
         .unwrap();
     // ...then polling this channel

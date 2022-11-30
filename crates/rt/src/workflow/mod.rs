@@ -19,7 +19,7 @@ use crate::{
     },
     utils::Message,
 };
-use tardigrade::{task::TaskResult, ChannelId, TaskId};
+use tardigrade::{interface::HandleMap, task::TaskResult, ChannelId, TaskId};
 
 #[derive(Debug, Default)]
 struct ExecutionOutput {
@@ -30,8 +30,8 @@ struct ExecutionOutput {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[allow(clippy::unsafe_derive_deserialize)] // false positive
 pub(crate) struct ChannelIds {
-    pub receivers: HashMap<String, ChannelId>,
-    pub senders: HashMap<String, ChannelId>,
+    pub receivers: HandleMap<ChannelId>,
+    pub senders: HandleMap<ChannelId>,
 }
 
 /// Workflow instance.

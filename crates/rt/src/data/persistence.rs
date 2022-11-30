@@ -14,7 +14,7 @@ use super::{
 };
 use crate::{manager::Services, workflow::ChannelIds};
 use tardigrade::{
-    interface::{ChannelHalf, Interface},
+    interface::{ChannelHalf, HandlePathBuf, Interface},
     ChannelId,
 };
 
@@ -54,12 +54,11 @@ impl fmt::Display for PersistError {
 impl error::Error for PersistError {}
 
 impl ReceiverState {
-    fn check_on_restore(interface: &Interface, channel_name: &str) -> anyhow::Result<()> {
-        interface.receiver(channel_name).ok_or_else(|| {
+    fn check_on_restore(interface: &Interface, path: &HandlePathBuf) -> anyhow::Result<()> {
+        interface.receiver(path).ok_or_else(|| {
             anyhow!(
-                "receiver `{}` is present in persisted state, but not \
-                 in workflow interface",
-                channel_name
+                "receiver `{path}` is present in persisted state, but not \
+                 in workflow interface"
             )
         })?;
         Ok(())
@@ -67,12 +66,11 @@ impl ReceiverState {
 }
 
 impl SenderState {
-    fn check_on_restore(interface: &Interface, channel_name: &str) -> anyhow::Result<()> {
-        interface.sender(channel_name).ok_or_else(|| {
+    fn check_on_restore(interface: &Interface, path: &HandlePathBuf) -> anyhow::Result<()> {
+        interface.sender(path).ok_or_else(|| {
             anyhow!(
-                "sender `{}` is present in persisted state, but not \
-                 in workflow interface",
-                channel_name
+                "sender `{path}` is present in persisted state, but not \
+                 in workflow interface"
             )
         })?;
         Ok(())
@@ -81,11 +79,11 @@ impl SenderState {
 
 impl ChannelStates {
     fn check_on_restore(&self, interface: &Interface) -> anyhow::Result<()> {
-        for name in self.mapping.receiver_names() {
-            ReceiverState::check_on_restore(interface, name)?;
+        for path in self.mapping.receiver_paths() {
+            ReceiverState::check_on_restore(interface, path)?;
         }
-        for name in self.mapping.sender_names() {
-            SenderState::check_on_restore(interface, name)?;
+        for path in self.mapping.sender_paths() {
+            SenderState::check_on_restore(interface, path)?;
         }
         Ok(())
     }

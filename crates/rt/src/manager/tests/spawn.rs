@@ -42,13 +42,13 @@ fn configure_handles() -> ChannelsConfig<ChannelId> {
     let mut config = ChannelsConfig::default();
     config
         .receivers
-        .insert("orders".to_owned(), ChannelSpawnConfig::New);
+        .insert("orders".into(), ChannelSpawnConfig::New);
     config
         .senders
-        .insert("events".to_owned(), ChannelSpawnConfig::New);
+        .insert("events".into(), ChannelSpawnConfig::New);
     config
         .senders
-        .insert("traces".to_owned(), ChannelSpawnConfig::New);
+        .insert("traces".into(), ChannelSpawnConfig::New);
     config
 }
 
@@ -67,7 +67,7 @@ fn spawn_child(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
 fn poll_child_traces(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     let child_traces_id = ctx
         .data_mut()
-        .acquire_receiver(Some(CHILD_ID), "traces")
+        .acquire_receiver(Some(CHILD_ID), "traces".into())
         .unwrap()
         .unwrap();
     let mut child_traces = ctx.data_mut().receiver(child_traces_id);
@@ -165,12 +165,12 @@ async fn spawning_child_workflow() {
 
     // Check channel handles for child workflow
     let mut handle = manager.workflow(child_id).await.unwrap().handle();
-    let mut child_orders = handle.remove(ReceiverName("orders")).unwrap();
+    let mut child_orders = handle.remove(ReceiverAt("orders")).unwrap();
     let child_orders_id = child_orders.channel_id();
     child_orders.send(b"test".to_vec()).await.unwrap();
     child_orders.close().await; // no-op: a channel sender is not owned by the host
 
-    let child_events = handle.remove(SenderName("events")).unwrap();
+    let child_events = handle.remove(SenderAt("events")).unwrap();
     let child_events_id = child_events.channel_id();
     assert!(!child_events.can_manipulate());
     child_events.close().await; // no-op: the channel receiver is not owned by the host
@@ -411,11 +411,11 @@ fn spawn_child_with_copied_sender(
     let mut handles = configure_handles();
     handles
         .senders
-        .insert("events".to_owned(), ChannelSpawnConfig::Existing(events_id));
+        .insert("events".into(), ChannelSpawnConfig::Existing(events_id));
     if copy_traces {
         handles
             .senders
-            .insert("traces".to_owned(), ChannelSpawnConfig::Existing(events_id));
+            .insert("traces".into(), ChannelSpawnConfig::Existing(events_id));
     }
 
     let args = b"child_input".to_vec();
@@ -432,7 +432,7 @@ fn spawn_child_with_copied_sender(
 fn poll_child_completion_with_copied_channel(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     let child_events_id = ctx
         .data_mut()
-        .acquire_receiver(Some(CHILD_ID), "events")
+        .acquire_receiver(Some(CHILD_ID), "events".into())
         .unwrap();
     assert!(child_events_id.is_none()); // The handle to child events is not captured
     let mut child = ctx.data_mut().child(CHILD_ID);

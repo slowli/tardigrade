@@ -304,15 +304,15 @@ impl WorkflowData {
         let workflows = self.services().workflows.as_deref();
         let interface = workflows.and_then(|workflows| workflows.interface(definition_id));
         if let Some(interface) = interface {
-            for (name, _) in interface.receivers() {
-                if !channels.receivers.contains_key(name) {
-                    let err = anyhow!("missing handle for channel receiver `{name}`");
+            for (path, _) in interface.receivers() {
+                if !channels.receivers.contains_key(&path) {
+                    let err = anyhow!("missing handle for channel receiver `{path}`");
                     return Err(err);
                 }
             }
-            for (name, _) in interface.senders() {
-                if !channels.senders.contains_key(name) {
-                    let err = anyhow!("missing handle for channel sender `{name}`");
+            for (path, _) in interface.senders() {
+                if !channels.senders.contains_key(&path) {
+                    let err = anyhow!("missing handle for channel sender `{path}`");
                     return Err(err);
                 }
             }
@@ -341,17 +341,17 @@ impl WorkflowData {
         let (closure_in, closure_out);
         let (handle_keys, channel_filter) = match channel_kind {
             ChannelHalf::Receiver => {
-                closure_in = |name| interface.receiver(name).is_none();
+                closure_in = |path| interface.receiver(path).is_none();
                 (channels.receivers.keys(), &closure_in as &dyn Fn(_) -> _)
             }
             ChannelHalf::Sender => {
-                closure_out = |name| interface.sender(name).is_none();
+                closure_out = |path| interface.sender(path).is_none();
                 (channels.senders.keys(), &closure_out as &dyn Fn(_) -> _)
             }
         };
 
         let mut extra_handles = handle_keys
-            .filter(|name| channel_filter(name.as_str()))
+            .filter(|path| channel_filter(path.as_ref()))
             .fold(String::new(), |mut acc, name| {
                 write!(acc, "`{}`, ", name).unwrap();
                 acc

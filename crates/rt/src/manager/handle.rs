@@ -19,7 +19,7 @@ use crate::{
 };
 use tardigrade::{
     channel::SendError,
-    interface::{AccessError, AccessErrorKind, Interface, ReceiverName, SenderName},
+    interface::{AccessError, AccessErrorKind, HandlePath, Interface, ReceiverAt, SenderAt},
     task::JoinError,
     workflow::{DescribeEnv, GetInterface, Handle, TakeHandle, WorkflowEnv},
     ChannelId, Decode, Encode, Raw, WorkflowId,
@@ -57,7 +57,7 @@ impl error::Error for ConcurrencyError {}
 /// # Examples
 ///
 /// ```
-/// use tardigrade::interface::{ReceiverName, SenderName};
+/// use tardigrade::interface::{ReceiverAt, SenderAt};
 /// use tardigrade_rt::manager::WorkflowHandle;
 /// # use tardigrade_rt::manager::AsManager;
 ///
@@ -72,10 +72,10 @@ impl error::Error for ConcurrencyError {}
 ///
 /// // Let's send a message via a channel.
 /// let message = b"hello".to_vec();
-/// handle[ReceiverName("commands")].send(message).await?;
+/// handle[ReceiverAt("commands")].send(message).await?;
 ///
 /// // Let's then take outbound messages from a certain channel:
-/// let message = handle[SenderName("events")]
+/// let message = handle[SenderAt("events")]
 ///     .receive_message(0)
 ///     .await?;
 /// let message: Vec<u8> = message.decode()?;
@@ -173,7 +173,7 @@ impl<'a, M: AsManager> WorkflowHandle<'a, (), M> {
     }
 }
 
-impl<W: TakeHandle<Self, Id = ()>, M: AsManager> WorkflowHandle<'_, W, M> {
+impl<W: TakeHandle<Self>, M: AsManager> WorkflowHandle<'_, W, M> {
     /// Returns the ID of this workflow.
     pub fn id(&self) -> WorkflowId {
         self.ids.workflow_id
@@ -222,7 +222,7 @@ impl<W: TakeHandle<Self, Id = ()>, M: AsManager> WorkflowHandle<'_, W, M> {
     /// Returns a handle for the workflow that allows interacting with its channels.
     #[allow(clippy::missing_panics_doc)] // false positive
     pub fn handle(&mut self) -> Handle<W, Self> {
-        W::take_handle(self, &()).unwrap()
+        W::take_handle(self, HandlePath::EMPTY).unwrap()
     }
 }
 
@@ -273,24 +273,24 @@ impl<'a, W, M: AsManager> WorkflowEnv for WorkflowHandle<'a, W, M> {
 
     fn take_receiver<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: &str,
+        id: HandlePath<'_>,
     ) -> Result<Self::Receiver<T, C>, AccessError> {
-        if let Some(channel_id) = self.ids.channel_ids.receivers.get(id).copied() {
+        if let Some(channel_id) = self.ids.channel_ids.receivers.get(&id).copied() {
             Ok(MessageSender {
                 manager: self.manager,
                 channel_id,
                 _ty: PhantomData,
             })
         } else {
-            Err(AccessErrorKind::Unknown.with_location(ReceiverName(id)))
+            Err(AccessErrorKind::Unknown.with_location(ReceiverAt(id)))
         }
     }
 
     fn take_sender<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: &str,
+        id: HandlePath<'_>,
     ) -> Result<Self::Sender<T, C>, AccessError> {
-        if let Some(channel_id) = self.ids.channel_ids.senders.get(id).copied() {
+        if let Some(channel_id) = self.ids.channel_ids.senders.get(&id).copied() {
             // The 0th channel is always closed and thus cannot be manipulated.
             let can_manipulate =
                 channel_id != 0 && self.host_receiver_channels.contains(&channel_id);
@@ -301,7 +301,7 @@ impl<'a, W, M: AsManager> WorkflowEnv for WorkflowHandle<'a, W, M> {
                 _ty: PhantomData,
             })
         } else {
-            Err(AccessErrorKind::Unknown.with_location(SenderName(id)))
+            Err(AccessErrorKind::Unknown.with_location(SenderAt(id)))
         }
     }
 }

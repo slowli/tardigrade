@@ -20,7 +20,7 @@ use crate::{
     workflow::{ChannelIds, PersistedWorkflow, Workflow},
 };
 use tardigrade::{
-    interface::Interface,
+    interface::{HandleMap, Interface},
     spawn::{
         ChannelSpawnConfig, ChannelsConfig, HostError, ManageInterfaces, ManageWorkflows,
         SpecifyWorkflowChannels,
@@ -57,10 +57,10 @@ impl ChannelIds {
     }
 
     async fn map_channels(
-        config: HashMap<String, ChannelSpawnConfig<ChannelId>>,
+        config: HandleMap<ChannelSpawnConfig<ChannelId>>,
         mut new_channel_ids: impl Stream<Item = ChannelId> + Unpin,
-    ) -> HashMap<String, ChannelId> {
-        let mut channel_ids = HashMap::with_capacity(config.len());
+    ) -> HandleMap<ChannelId> {
+        let mut channel_ids = HandleMap::with_capacity(config.len());
         for (name, spec) in config {
             let channel_id = match spec {
                 ChannelSpawnConfig::New => new_channel_ids.next().await.unwrap(),
@@ -174,15 +174,15 @@ impl<S: DefineWorkflow> NewWorkflows<S> {
         let child_id = transaction.allocate_workflow_id().await;
 
         tracing::debug!(?channel_ids, "handling channels for new workflow");
-        for (name, &channel_id) in &channel_ids.receivers {
+        for (path, &channel_id) in &channel_ids.receivers {
             let state = ChannelRecord::new(executed_workflow_id, Some(child_id));
             let state = transaction.get_or_insert_channel(channel_id, state).await;
             if state.is_closed {
                 persisted.close_receiver(channel_id);
             }
-            tracing::debug!(name, channel_id, ?state, "prepared channel receiver");
+            tracing::debug!(?path, channel_id, ?state, "prepared channel receiver");
         }
-        for (name, &channel_id) in &channel_ids.senders {
+        for (path, &channel_id) in &channel_ids.senders {
             let state = ChannelRecord::new(Some(child_id), executed_workflow_id);
             let state = transaction.get_or_insert_channel(channel_id, state).await;
             if state.is_closed {
@@ -194,7 +194,7 @@ impl<S: DefineWorkflow> NewWorkflows<S> {
                     })
                     .await;
             }
-            tracing::debug!(name, channel_id, ?state, "prepared channel sender");
+            tracing::debug!(?path, channel_id, ?state, "prepared channel sender");
         }
 
         let (module_id, name_in_module) =

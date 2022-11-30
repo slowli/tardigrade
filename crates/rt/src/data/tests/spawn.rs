@@ -130,7 +130,7 @@ fn get_child_workflow_channel(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>
     // Emulate getting a receiver for the workflow.
     let traces_id = ctx
         .data_mut()
-        .acquire_receiver(Some(child_id), "traces")
+        .acquire_receiver(Some(child_id), "traces".into())
         .unwrap()
         .unwrap();
 
@@ -146,10 +146,10 @@ fn configure_handles() -> ChannelsConfig<ChannelId> {
     let mut config = ChannelsConfig::default();
     config
         .receivers
-        .insert("commands".to_owned(), ChannelSpawnConfig::New);
+        .insert("commands".into(), ChannelSpawnConfig::New);
     config
         .senders
-        .insert("traces".to_owned(), ChannelSpawnConfig::New);
+        .insert("traces".into(), ChannelSpawnConfig::New);
     config
 }
 
@@ -207,9 +207,7 @@ fn spawning_child_workflow_with_extra_channel() {
         let id = "test:latest";
         let args = b"child_input".to_vec();
         let mut handles = configure_handles();
-        handles
-            .receivers
-            .insert(id.to_owned(), ChannelSpawnConfig::New);
+        handles.receivers.insert(id.into(), ChannelSpawnConfig::New);
 
         let err = ctx
             .data_mut()
