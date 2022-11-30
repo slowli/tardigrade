@@ -35,10 +35,10 @@ impl TargetField {
 
     fn init_by_take_handle(&self, field_index: usize) -> impl ToTokens {
         let unwrapped_ty = &self.wrapper.as_ref().unwrap().inner_types[0];
-        let id = self.id();
+        let path = self.path();
         let tr = quote!(tardigrade::workflow::TakeHandle<Env>);
         let field = self.ident(field_index);
-        quote!(#field: <#unwrapped_ty as #tr>::take_handle(&mut *env, #id)?)
+        quote!(#field: <#unwrapped_ty as #tr>::take_handle(&mut *env, #path)?)
     }
 }
 
@@ -105,7 +105,6 @@ impl Handle {
         let tr = quote!(tardigrade::workflow::WithHandle);
         let with_handle_impl = quote! {
             impl #tr for #handle <#wasm> #where_clause {
-                type Id = ();
                 type Handle<#env: #env_tr> = #handle <#env>;
             }
         };
@@ -123,7 +122,7 @@ impl Handle {
             impl<#env: #env_tr> #tr <#env> for #handle <#wasm> #where_clause {
                 fn take_handle(
                     env: &mut #env,
-                    _id: &(),
+                    path: tardigrade::interface::HandlePath<'_>,
                 ) -> core::result::Result<Self::Handle<#env>, tardigrade::interface::AccessError> {
                     core::result::Result::Ok(#handle #handle_fields)
                 }
@@ -183,7 +182,6 @@ fn derive_take_handle(input: &DeriveInput) -> darling::Result<impl ToTokens> {
     let env_tr = quote!(tardigrade::workflow::WorkflowEnv);
     let with_handle_impl = quote! {
         impl #impl_generics #tr for #target #ty_generics #where_clause {
-            type Id = ();
             type Handle<Env: #env_tr> = #handle <Env>;
         }
     };
@@ -200,9 +198,9 @@ fn derive_take_handle(input: &DeriveInput) -> darling::Result<impl ToTokens> {
         impl #impl_generics #tr<Env> for #target #ty_generics #where_clause {
             fn take_handle(
                 env: &mut Env,
-                _id: &(),
+                path: tardigrade::interface::HandlePath<'_>,
             ) -> core::result::Result<Self::Handle<Env>, tardigrade::interface::AccessError> {
-                <#handle <#wasm> as #tr<Env>>::take_handle(env, &())
+                <#handle <#wasm> as #tr<Env>>::take_handle(env, path)
             }
         }
     };

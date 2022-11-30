@@ -24,7 +24,7 @@ use std::{
 
 use crate::{
     codec::{Decode, Encode, Raw},
-    interface::AccessError,
+    interface::{AccessError, HandlePath},
     workflow::{TakeHandle, WithHandle, WorkflowEnv},
     ChannelId,
 };
@@ -120,7 +120,6 @@ impl<T, C> WithHandle for Receiver<T, C>
 where
     C: Encode<T> + Decode<T>,
 {
-    type Id = str;
     type Handle<Env: WorkflowEnv> = Env::Receiver<T, C>;
 }
 
@@ -128,7 +127,7 @@ impl<T, C, Env: WorkflowEnv> TakeHandle<Env> for Receiver<T, C>
 where
     C: Encode<T> + Decode<T>,
 {
-    fn take_handle(env: &mut Env, id: &Self::Id) -> Result<Self::Handle<Env>, AccessError> {
+    fn take_handle(env: &mut Env, id: HandlePath<'_>) -> Result<Self::Handle<Env>, AccessError> {
         env.take_receiver(id)
     }
 }
@@ -215,7 +214,6 @@ impl<T, C> WithHandle for Sender<T, C>
 where
     C: Encode<T> + Decode<T>,
 {
-    type Id = str;
     type Handle<Env: WorkflowEnv> = Env::Sender<T, C>;
 }
 
@@ -223,7 +221,7 @@ impl<T, C, Env: WorkflowEnv> TakeHandle<Env> for Sender<T, C>
 where
     C: Encode<T> + Decode<T>,
 {
-    fn take_handle(env: &mut Env, id: &Self::Id) -> Result<Self::Handle<Env>, AccessError> {
+    fn take_handle(env: &mut Env, id: HandlePath<'_>) -> Result<Self::Handle<Env>, AccessError> {
         env.take_sender(id)
     }
 }

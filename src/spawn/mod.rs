@@ -68,7 +68,6 @@ use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
     cell::RefCell,
-    collections::HashMap,
     fmt,
     future::Future,
     marker::PhantomData,
@@ -81,7 +80,10 @@ pub use crate::error::HostError;
 
 use crate::{
     channel::{RawReceiver, RawSender, Receiver, SendError, Sender},
-    interface::{AccessError, AccessErrorKind, ChannelHalf, Interface, ReceiverName, SenderName},
+    interface::{
+        AccessError, AccessErrorKind, ChannelHalf, HandleMap, HandlePath, HandlePathBuf, Interface,
+        ReceiverName, SenderName,
+    },
     task::JoinError,
     workflow::{
         DescribeEnv, GetInterface, Handle, TakeHandle, WithHandle, WorkflowEnv, WorkflowFn,
@@ -132,16 +134,16 @@ impl<T> ChannelSpawnConfig<T> {
 #[allow(clippy::unsafe_derive_deserialize)] // unsafe methods do not concern type data
 pub struct ChannelsConfig<In, Out = In> {
     /// Configurations of channel receivers.
-    pub receivers: HashMap<String, ChannelSpawnConfig<In>>,
+    pub receivers: HandleMap<ChannelSpawnConfig<In>>,
     /// Configurations of channel senders.
-    pub senders: HashMap<String, ChannelSpawnConfig<Out>>,
+    pub senders: HandleMap<ChannelSpawnConfig<Out>>,
 }
 
 impl<In, Out> Default for ChannelsConfig<In, Out> {
     fn default() -> Self {
         Self {
-            receivers: HashMap::new(),
-            senders: HashMap::new(),
+            receivers: HandleMap::new(),
+            senders: HandleMap::new(),
         }
     }
 }
@@ -160,19 +162,19 @@ impl<In, Out> ChannelsConfig<In, Out> {
         Self { receivers, senders }
     }
 
-    fn close_channel(&mut self, kind: ChannelHalf, name: &str) {
+    fn close_channel(&mut self, kind: ChannelHalf, path: HandlePath<'_>) {
         match kind {
             ChannelHalf::Receiver => {
-                *self.receivers.get_mut(name).unwrap() = ChannelSpawnConfig::Closed;
+                *self.receivers.get_mut(&path).unwrap() = ChannelSpawnConfig::Closed;
             }
             ChannelHalf::Sender => {
-                *self.senders.get_mut(name).unwrap() = ChannelSpawnConfig::Closed;
+                *self.senders.get_mut(&path).unwrap() = ChannelSpawnConfig::Closed;
             }
         }
     }
 
-    fn copy_sender(&mut self, name: &str, source: Out) {
-        *self.senders.get_mut(name).unwrap() = ChannelSpawnConfig::Existing(source);
+    fn copy_sender(&mut self, path: HandlePath<'_>, source: Out) {
+        *self.senders.get_mut(&path).unwrap() = ChannelSpawnConfig::Existing(source);
     }
 }
 
@@ -234,7 +236,7 @@ pub trait ManageWorkflowsExt: ManageWorkflows<()> + Sized {
         args: W::Args,
     ) -> Result<WorkflowBuilder<'a, Self, W>, AccessError>
     where
-        W: WorkflowFn + GetInterface + TakeHandle<Spawner<Self>, Id = ()>,
+        W: WorkflowFn + GetInterface + TakeHandle<Spawner<Self>>,
         Self: ManageWorkflows<W>,
     {
         let provided_interface = self
@@ -264,7 +266,7 @@ impl SpecifyWorkflowChannels for Workflows {
 #[async_trait]
 impl<W> ManageWorkflows<W> for Workflows
 where
-    W: WorkflowFn + TakeHandle<RemoteWorkflow, Id = ()>,
+    W: WorkflowFn + TakeHandle<RemoteWorkflow>,
 {
     type Handle<'s> = WorkflowHandle<W>;
     type Error = HostError;
@@ -278,7 +280,7 @@ where
         let mut workflow =
             <Self as ManageWorkflows<()>>::create_workflow(self, definition_id, args, channels)
                 .await?;
-        let api = W::take_handle(&mut workflow, &()).unwrap();
+        let api = W::take_handle(&mut workflow, HandlePath::EMPTY).unwrap();
         Ok(WorkflowHandle { api, workflow })
     }
 }
@@ -332,19 +334,19 @@ impl<Ch: SpecifyWorkflowChannels> SpawnerInner<Ch> {
         }
     }
 
-    fn close_receiver(&self, channel_name: &str) {
+    fn close_receiver(&self, path: HandlePath<'_>) {
         let mut borrow = self.channels.borrow_mut();
-        borrow.close_channel(ChannelHalf::Receiver, channel_name);
+        borrow.close_channel(ChannelHalf::Receiver, path);
     }
 
-    fn close_sender(&self, channel_name: &str) {
+    fn close_sender(&self, path: HandlePath<'_>) {
         let mut borrow = self.channels.borrow_mut();
-        borrow.close_channel(ChannelHalf::Sender, channel_name);
+        borrow.close_channel(ChannelHalf::Sender, path);
     }
 
-    fn copy_sender(&self, channel_name: &str, sender: Ch::Sender) {
+    fn copy_sender(&self, path: HandlePath<'_>, sender: Ch::Sender) {
         let mut borrow = self.channels.borrow_mut();
-        borrow.copy_sender(channel_name, sender);
+        borrow.copy_sender(path, sender);
     }
 }
 
@@ -382,7 +384,7 @@ impl<Ch: SpecifyWorkflowChannels> WorkflowEnv for Spawner<Ch> {
 
     fn take_receiver<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: &str,
+        id: HandlePath<'_>,
     ) -> Result<Self::Receiver<T, C>, AccessError> {
         Ok(ReceiverConfig {
             spawner: self.clone(),
@@ -393,7 +395,7 @@ impl<Ch: SpecifyWorkflowChannels> WorkflowEnv for Spawner<Ch> {
 
     fn take_sender<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: &str,
+        id: HandlePath<'_>,
     ) -> Result<Self::Sender<T, C>, AccessError> {
         Ok(SenderConfig {
             spawner: self.clone(),
@@ -412,7 +414,7 @@ impl<Ch: SpecifyWorkflowChannels> DescribeEnv for Spawner<Ch> {
 /// Configurator of a workflow channel [`Receiver`].
 pub struct ReceiverConfig<Ch: SpecifyWorkflowChannels, T, C> {
     spawner: Spawner<Ch>,
-    channel_name: String,
+    channel_name: HandlePathBuf,
     _ty: PhantomData<fn(C) -> T>,
 }
 
@@ -438,14 +440,16 @@ where
 {
     /// Closes the channel immediately on workflow instantiation.
     pub fn close(&self) {
-        self.spawner.inner.close_receiver(&self.channel_name);
+        self.spawner
+            .inner
+            .close_receiver(self.channel_name.as_ref());
     }
 }
 
 /// Configurator of a workflow channel [`Sender`].
 pub struct SenderConfig<Ch: SpecifyWorkflowChannels, T, C> {
     spawner: Spawner<Ch>,
-    channel_name: String,
+    channel_name: HandlePathBuf,
     _ty: PhantomData<fn(C) -> T>,
 }
 
@@ -471,7 +475,7 @@ where
 {
     /// Closes the channel immediately on workflow instantiation.
     pub fn close(&self) {
-        self.spawner.inner.close_sender(&self.channel_name);
+        self.spawner.inner.close_sender(self.channel_name.as_ref());
     }
 }
 
@@ -481,7 +485,7 @@ impl<T, C: Encode<T>> SenderConfig<Workflows, T, C> {
     pub fn copy_from(&self, sender: Sender<T, C>) {
         self.spawner
             .inner
-            .copy_sender(&self.channel_name, sender.into_raw());
+            .copy_sender(self.channel_name.as_ref(), sender.into_raw());
     }
 }
 
@@ -515,14 +519,14 @@ where
 impl<'a, M, W, E> WorkflowBuilder<'a, M, W>
 where
     M: ManageWorkflows<W, Error = E>,
-    W: WorkflowFn + TakeHandle<Spawner<M>, Id = ()>,
+    W: WorkflowFn + TakeHandle<Spawner<M>>,
 {
     fn new(manager: &'a M, interface: Interface, definition_id: &str, args: W::Args) -> Self {
         let raw_args = W::Codec::encode_value(args);
         let mut spawner = Spawner {
             inner: Rc::new(SpawnerInner::new(interface, definition_id, raw_args)),
         };
-        let handle = W::take_handle(&mut spawner, &()).unwrap();
+        let handle = W::take_handle(&mut spawner, HandlePath::EMPTY).unwrap();
         Self {
             spawner,
             handle,
@@ -608,7 +612,7 @@ impl WorkflowEnv for RemoteWorkflow {
 
     fn take_receiver<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: &str,
+        id: HandlePath<'_>,
     ) -> Result<Self::Receiver<T, C>, AccessError> {
         let raw_sender = self
             .inner
@@ -619,7 +623,7 @@ impl WorkflowEnv for RemoteWorkflow {
 
     fn take_sender<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: &str,
+        id: HandlePath<'_>,
     ) -> Result<Self::Sender<T, C>, AccessError> {
         let raw_receiver = self
             .inner

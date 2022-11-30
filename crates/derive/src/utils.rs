@@ -169,12 +169,12 @@ impl TargetField {
         }
     }
 
-    pub(crate) fn id(&self) -> impl ToTokens {
+    pub(crate) fn path(&self) -> impl ToTokens {
         if self.flatten {
-            quote!(&())
+            quote!(path)
         } else {
             let name = self.name.as_ref().unwrap(); // Safe because of previous validation
-            quote!(#name)
+            quote!(path.join(#name))
         }
     }
 

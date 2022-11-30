@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use crate::{
-    interface::{AccessError, Interface},
+    interface::{AccessError, HandlePath, Interface},
     Decode, Encode,
 };
 
@@ -21,7 +21,7 @@ pub trait WorkflowEnv {
     /// Returns an error if a receiver with this ID is missing from the environment.
     fn take_receiver<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: &str,
+        id: HandlePath<'_>,
     ) -> Result<Self::Receiver<T, C>, AccessError>;
 
     /// Obtains a sender handle with the specified ID from this environment.
@@ -31,7 +31,7 @@ pub trait WorkflowEnv {
     /// Returns an error if a sender with this ID is missing from the environment.
     fn take_sender<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: &str,
+        id: HandlePath<'_>,
     ) -> Result<Self::Sender<T, C>, AccessError>;
 }
 
@@ -44,8 +44,6 @@ pub trait DescribeEnv: WorkflowEnv {
 
 /// Type with a handle in workflow [environments](WorkflowEnv).
 pub trait WithHandle {
-    /// ID of the handle, usually a `str` (for named handles) or `()` (for singleton handles).
-    type Id: ?Sized;
     /// Type of the handle in a particular environment.
     type Handle<Env: WorkflowEnv>;
 }
@@ -60,7 +58,7 @@ pub trait TakeHandle<Env: WorkflowEnv>: WithHandle {
     /// # Errors
     ///
     /// Returns an error if a handle with this ID is missing from the environment.
-    fn take_handle(env: &mut Env, id: &Self::Id) -> Result<Self::Handle<Env>, AccessError>;
+    fn take_handle(env: &mut Env, id: HandlePath<'_>) -> Result<Self::Handle<Env>, AccessError>;
 }
 
 /// Handle in a particular environment.

@@ -466,7 +466,7 @@ impl Runtime {
     /// Tests the specified workflow definition in the context of this runtime.
     pub fn test<W>(self, args: W::Args) -> TestInstance<W>
     where
-        W: SpawnWorkflow + TakeHandle<Spawner, Id = ()> + TakeHandle<RemoteWorkflow, Id = ()>,
+        W: SpawnWorkflow + TakeHandle<Spawner> + TakeHandle<RemoteWorkflow>,
     {
         TestInstance {
             runtime: self,
@@ -497,7 +497,7 @@ where
 
 impl<W> TestInstance<W>
 where
-    W: SpawnWorkflow + TakeHandle<Spawner, Id = ()> + TakeHandle<RemoteWorkflow, Id = ()>,
+    W: SpawnWorkflow + TakeHandle<Spawner> + TakeHandle<RemoteWorkflow>,
 {
     /// Creates a test instance with the default [`Runtime`].
     pub fn new(args: W::Args) -> Self {

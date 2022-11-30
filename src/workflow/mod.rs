@@ -106,8 +106,8 @@ pub use tardigrade_derive::TakeHandle;
 use crate::{
     channel::{Receiver, Sender},
     interface::{
-        AccessError, AccessErrorKind, ArgsSpec, Interface, InterfaceBuilder, InterfaceLocation,
-        ReceiverSpec, SenderSpec,
+        AccessError, AccessErrorKind, ArgsSpec, HandlePath, Interface, InterfaceBuilder,
+        InterfaceLocation, ReceiverSpec, SenderSpec,
     },
     task::TaskResult,
     Decode, Encode, Raw,
@@ -202,7 +202,7 @@ mod imp {
 /// Allows obtaining an [`Interface`] for a workflow.
 ///
 /// This trait should be derived for workflow types using the corresponding macro.
-pub trait GetInterface: TakeHandle<InterfaceBuilder, Id = ()> + Sized + 'static {
+pub trait GetInterface: TakeHandle<InterfaceBuilder> + Sized + 'static {
     /// Obtains the workflow interface.
     ///
     /// The default implementation uses the [`TakeHandle`] implementation to create
@@ -218,10 +218,10 @@ impl GetInterface for () {}
 #[doc(hidden)]
 pub fn interface_by_handle<W>() -> Interface
 where
-    W: TakeHandle<InterfaceBuilder, Id = ()>,
+    W: TakeHandle<InterfaceBuilder>,
 {
     let mut builder = InterfaceBuilder::new(ArgsSpec::default());
-    W::take_handle(&mut builder, &()).expect("failed describing workflow interface");
+    W::take_handle(&mut builder, HandlePath::EMPTY).expect("failed describing workflow interface");
     builder.build()
 }
 
@@ -231,7 +231,7 @@ impl WorkflowEnv for InterfaceBuilder {
 
     fn take_receiver<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: &str,
+        id: HandlePath<'_>,
     ) -> Result<Self::Receiver<T, C>, AccessError> {
         self.insert_receiver(id, ReceiverSpec::default());
         Ok(())
@@ -239,7 +239,7 @@ impl WorkflowEnv for InterfaceBuilder {
 
     fn take_sender<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: &str,
+        id: HandlePath<'_>,
     ) -> Result<Self::Sender<T, C>, AccessError> {
         self.insert_sender(id, SenderSpec::default());
         Ok(())
@@ -286,7 +286,7 @@ impl WorkflowEnv for Wasm {
     #[cfg(not(target_arch = "wasm32"))]
     fn take_receiver<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: &str,
+        id: HandlePath<'_>,
     ) -> Result<Self::Receiver<T, C>, AccessError> {
         use crate::interface::ReceiverName;
 
@@ -307,7 +307,7 @@ impl WorkflowEnv for Wasm {
     #[cfg(not(target_arch = "wasm32"))]
     fn take_sender<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: &str,
+        id: HandlePath<'_>,
     ) -> Result<Self::Sender<T, C>, AccessError> {
         use crate::interface::SenderName;
 
@@ -397,13 +397,16 @@ impl Wasm {
 
     pub(crate) fn take_receiver(
         &mut self,
-        channel_name: &str,
+        path: HandlePath<'_>,
     ) -> Option<crate::channel::RawReceiver> {
-        self.handles.receivers.remove(channel_name)
+        self.handles.receivers.remove(&path)
     }
 
-    pub(crate) fn take_sender(&mut self, channel_name: &str) -> Option<crate::channel::RawSender> {
-        self.handles.senders.remove(channel_name)
+    pub(crate) fn take_sender(
+        &mut self,
+        path: HandlePath<'_>,
+    ) -> Option<crate::channel::RawSender> {
+        self.handles.senders.remove(&path)
     }
 }
 
@@ -431,7 +434,7 @@ impl WorkflowFn for () {
 ///
 /// See [module docs](crate::workflow#examples) for workflow definition examples.
 #[async_trait(?Send)]
-pub trait SpawnWorkflow: GetInterface + TakeHandle<Wasm, Id = ()> + WorkflowFn {
+pub trait SpawnWorkflow: GetInterface + TakeHandle<Wasm> + WorkflowFn {
     /// Spawns the main task of the workflow.
     ///
     /// The workflow completes immediately when its main task completes,
@@ -472,7 +475,7 @@ impl TaskHandle {
         let args = W::Codec::try_decode_bytes(raw_args).map_err(|err| {
             AccessErrorKind::Custom(Box::new(err)).with_location(InterfaceLocation::Args)
         })?;
-        let handle = W::take_handle(&mut wasm, &())?;
+        let handle = W::take_handle(&mut wasm, HandlePath::EMPTY)?;
         Ok(Self::new(W::spawn(args, handle)))
     }
 

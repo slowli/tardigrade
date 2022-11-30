@@ -5,7 +5,6 @@ use pin_project_lite::pin_project;
 
 use std::{
     borrow::Cow,
-    collections::HashMap,
     future::Future,
     mem,
     pin::Pin,
@@ -19,7 +18,7 @@ use super::{
 use crate::{
     channel::{imp::raw_channel, RawReceiver, RawSender},
     error::HostError,
-    interface::ChannelHalf,
+    interface::{ChannelHalf, HandleMap, HandlePath},
     task::{JoinError, JoinHandle},
     test::Runtime,
     workflow::{UntypedHandle, Wasm},
@@ -109,9 +108,9 @@ impl From<RawReceiver> for ChannelPair {
 
 impl ChannelsConfig<RawReceiver, RawSender> {
     fn create_handles(self) -> (UntypedHandle<super::RemoteWorkflow>, UntypedHandle<Wasm>) {
-        let mut receiving_channel_pairs: HashMap<_, _> =
+        let mut receiving_channel_pairs: HandleMap<_> =
             Self::map_config(self.receivers, ChannelHalf::Receiver);
-        let mut sending_channel_pairs: HashMap<_, _> =
+        let mut sending_channel_pairs: HandleMap<_> =
             Self::map_config(self.senders, ChannelHalf::Sender);
 
         let receivers = receiving_channel_pairs
@@ -137,9 +136,9 @@ impl ChannelsConfig<RawReceiver, RawSender> {
     }
 
     fn map_config<T: Into<ChannelPair>>(
-        config: HashMap<String, ChannelSpawnConfig<T>>,
+        config: HandleMap<ChannelSpawnConfig<T>>,
         local_channel_kind: ChannelHalf,
-    ) -> HashMap<String, ChannelPair> {
+    ) -> HandleMap<ChannelPair> {
         config
             .into_iter()
             .map(|(name, config)| {
@@ -167,17 +166,17 @@ pin_project! {
 }
 
 impl RemoteWorkflow {
-    pub fn take_receiver(&mut self, channel_name: &str) -> Option<Remote<RawSender>> {
+    pub fn take_receiver(&mut self, path: HandlePath<'_>) -> Option<Remote<RawSender>> {
         self.handle
             .receivers
-            .get_mut(channel_name)
+            .get_mut(&path)
             .map(|channel| mem::replace(channel, Remote::NotCaptured))
     }
 
-    pub fn take_sender(&mut self, channel_name: &str) -> Option<Remote<RawReceiver>> {
+    pub fn take_sender(&mut self, path: HandlePath<'_>) -> Option<Remote<RawReceiver>> {
         self.handle
             .senders
-            .get_mut(channel_name)
+            .get_mut(&path)
             .map(|channel| mem::replace(channel, Remote::NotCaptured))
     }
 }
