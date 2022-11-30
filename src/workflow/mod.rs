@@ -280,7 +280,7 @@ impl WorkflowEnv for Wasm {
         &mut self,
         path: HandlePath<'_>,
     ) -> Result<Self::Receiver<T, C>, AccessError> {
-        Receiver::from_env(id)
+        Receiver::from_env(path)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -301,7 +301,7 @@ impl WorkflowEnv for Wasm {
         &mut self,
         path: HandlePath<'_>,
     ) -> Result<Self::Sender<T, C>, AccessError> {
-        Sender::from_env(id)
+        Sender::from_env(path)
     }
 
     #[cfg(not(target_arch = "wasm32"))]

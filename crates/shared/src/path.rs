@@ -7,6 +7,7 @@ use serde::{
 };
 
 use std::{
+    borrow::Cow,
     convert::Infallible,
     fmt,
     hash::{Hash, Hasher},
@@ -83,6 +84,16 @@ impl<'a> HandlePath<'a> {
 
     pub fn to_owned(self) -> HandlePathBuf {
         HandlePathBuf::from(self)
+    }
+
+    #[doc(hidden)] // sort of low-level
+    pub fn to_cow_string(self) -> Cow<'a, str> {
+        match self.inner {
+            Inner::Slice([]) => Cow::Borrowed(""),
+            Inner::Link(Inner::Slice([]), segment) => Cow::Borrowed(segment),
+            Inner::Slice([segment]) => Cow::Borrowed(segment),
+            _ => Cow::Owned(self.to_string()),
+        }
     }
 
     fn rev_segments(self) -> impl Iterator<Item = &'a str> {
@@ -287,11 +298,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn path_cow_string_produces_correct_results() {
+        let path = HandlePath::simple("first");
+        assert_eq!(path.to_cow_string(), "first");
+        let path = path.join("second");
+        assert_eq!(path.to_cow_string(), "first::second");
+    }
+
+    #[test]
     fn hash_and_equiv_implementations_match() {
         const PATH: HandlePath<'_> = HandlePath::simple("first").join("second").join("3");
 
         let path_buf = HandlePathBuf::from(PATH);
-
         let path_hash = {
             let mut hasher = DefaultHasher::default();
             PATH.hash(&mut hasher);
@@ -324,5 +342,18 @@ mod tests {
         let path = path.join(&segments[1]);
         let path = path.join(&segments[2]);
         assert_eq!(path.to_string(), "1::2::3");
+    }
+
+    #[test]
+    fn handle_map_operations() {
+        let mut handle_map = HandleMap::new();
+        handle_map.insert("test".into(), 42);
+        let path = HandlePath::simple("test");
+        let path = path.join("more");
+        handle_map.insert(path.to_owned(), 23);
+
+        assert_eq!(handle_map["test"], 42);
+        assert_eq!(handle_map[&HandlePath::simple("test")], 42);
+        assert_eq!(handle_map[&path], 23);
     }
 }

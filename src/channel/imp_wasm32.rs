@@ -13,8 +13,9 @@ use std::{
 use crate::{
     abi::IntoWasm,
     channel::SendError,
-    interface::{AccessError, AccessErrorKind, ReceiverAt, SenderAt},
+    interface::{AccessError, AccessErrorKind, HandlePath, ReceiverAt, SenderAt},
     spawn::imp::RemoteWorkflow,
+    ChannelId,
 };
 
 pub(crate) static mut ACCESS_ERROR_PAD: i64 = 0;
@@ -25,8 +26,8 @@ extern "C" {
     #[link_name = "mpsc_receiver::get"]
     pub(crate) fn mpsc_receiver_get(
         workflow: Option<&Resource<RemoteWorkflow>>,
-        channel_name_ptr: *const u8,
-        channel_name_len: usize,
+        path_ptr: *const u8,
+        path_len: usize,
         error_ptr: *mut i64,
     ) -> Option<Resource<MpscReceiver>>;
 }
@@ -43,13 +44,25 @@ impl From<Resource<Self>> for MpscReceiver {
 }
 
 impl MpscReceiver {
-    pub(super) fn from_env(id: &str) -> Result<Self, AccessError> {
+    pub(super) fn from_env(path: HandlePath<'_>) -> Result<Self, AccessError> {
+        let path_str = path.to_cow_string();
         unsafe {
-            let resource = mpsc_receiver_get(None, id.as_ptr(), id.len(), &mut ACCESS_ERROR_PAD);
+            let resource = mpsc_receiver_get(
+                None,
+                path_str.as_ptr(),
+                path_str.len(),
+                &mut ACCESS_ERROR_PAD,
+            );
             Result::<(), AccessErrorKind>::from_abi_in_wasm(ACCESS_ERROR_PAD)
                 .map(|()| resource.unwrap().into())
-                .map_err(|kind| kind.with_location(ReceiverAt(id)))
+                .map_err(|kind| kind.with_location(ReceiverAt(path)))
         }
+    }
+
+    // FIXME
+    pub(super) fn channel_id(&self) -> ChannelId {
+        let _ = self;
+        0
     }
 }
 
@@ -81,8 +94,8 @@ extern "C" {
     #[link_name = "mpsc_sender::get"]
     pub(crate) fn mpsc_sender_get(
         workflow: Option<&Resource<RemoteWorkflow>>,
-        channel_name_ptr: *const u8,
-        channel_name_len: usize,
+        path_ptr: *const u8,
+        path_len: usize,
         error_ptr: *mut i64,
     ) -> Option<Resource<MpscSender>>;
 }
@@ -102,12 +115,18 @@ impl From<Resource<Self>> for MpscSender {
 }
 
 impl MpscSender {
-    pub(super) fn from_env(id: &str) -> Result<Self, AccessError> {
+    pub(super) fn from_env(path: HandlePath<'_>) -> Result<Self, AccessError> {
+        let path_str = path.to_cow_string();
         unsafe {
-            let resource = mpsc_sender_get(None, id.as_ptr(), id.len(), &mut ACCESS_ERROR_PAD);
+            let resource = mpsc_sender_get(
+                None,
+                path_str.as_ptr(),
+                path_str.len(),
+                &mut ACCESS_ERROR_PAD,
+            );
             Result::<(), AccessErrorKind>::from_abi_in_wasm(ACCESS_ERROR_PAD)
                 .map(|()| resource.unwrap().into())
-                .map_err(|kind| kind.with_location(SenderAt(id)))
+                .map_err(|kind| kind.with_location(SenderAt(path)))
         }
     }
 

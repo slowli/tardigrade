@@ -20,7 +20,7 @@ use crate::{
         imp::{mpsc_receiver_get, mpsc_sender_get, MpscSender, ACCESS_ERROR_PAD},
         RawReceiver, RawSender,
     },
-    interface::{ChannelHalf, Interface},
+    interface::{ChannelHalf, HandlePath, Interface},
     task::{JoinError, TaskError},
 };
 
@@ -127,8 +127,8 @@ extern "C" {
     fn insert_handle(
         spawner: &Resource<ChannelsConfig<RawReceiver, RawSender>>,
         channel_kind: i32,
-        name_ptr: *const u8,
-        name_len: usize,
+        path_ptr: *const u8,
+        path_len: usize,
         is_closed: bool,
     );
 
@@ -145,15 +145,16 @@ impl ChannelSpawnConfig<RawReceiver> {
     unsafe fn configure(
         self,
         spawner: &Resource<ChannelsConfig<RawReceiver, RawSender>>,
-        channel_name: &str,
+        path: HandlePath<'_>,
     ) {
         match self {
             Self::New | Self::Closed => {
+                let path = path.to_cow_string();
                 insert_handle(
                     spawner,
                     ChannelHalf::Receiver.into_abi_in_wasm(),
-                    channel_name.as_ptr(),
-                    channel_name.len(),
+                    path.as_ptr(),
+                    path.len(),
                     matches!(self, Self::Closed),
                 );
             }
@@ -166,25 +167,21 @@ impl ChannelSpawnConfig<RawSender> {
     unsafe fn configure(
         self,
         spawner: &Resource<ChannelsConfig<RawReceiver, RawSender>>,
-        channel_name: &str,
+        path: HandlePath<'_>,
     ) {
+        let path = path.to_cow_string();
         match self {
             Self::New | Self::Closed => {
                 insert_handle(
                     spawner,
                     ChannelHalf::Sender.into_abi_in_wasm(),
-                    channel_name.as_ptr(),
-                    channel_name.len(),
+                    path.as_ptr(),
+                    path.len(),
                     matches!(self, Self::Closed),
                 );
             }
             Self::Existing(sender) => {
-                copy_sender_handle(
-                    spawner,
-                    channel_name.as_ptr(),
-                    channel_name.len(),
-                    sender.as_resource(),
-                );
+                copy_sender_handle(spawner, path.as_ptr(), path.len(), sender.as_resource());
             }
         }
     }
@@ -194,10 +191,10 @@ impl ChannelsConfig<RawReceiver, RawSender> {
     unsafe fn into_resource(self) -> Resource<Self> {
         let resource = create_handles();
         for (name, config) in self.receivers {
-            config.configure(&resource, &name);
+            config.configure(&resource, name.as_ref());
         }
         for (name, config) in self.senders {
-            config.configure(&resource, &name);
+            config.configure(&resource, name.as_ref());
         }
         resource
     }
@@ -209,12 +206,13 @@ pub(crate) struct RemoteWorkflow {
 }
 
 impl RemoteWorkflow {
-    pub fn take_receiver(&mut self, channel_name: &str) -> Option<Remote<RawSender>> {
+    pub fn take_receiver(&mut self, path: HandlePath<'_>) -> Option<Remote<RawSender>> {
+        let path = path.to_cow_string();
         let channel = unsafe {
             mpsc_sender_get(
                 Some(&self.resource),
-                channel_name.as_ptr(),
-                channel_name.len(),
+                path.as_ptr(),
+                path.len(),
                 &mut ACCESS_ERROR_PAD,
             )
         };
@@ -230,12 +228,13 @@ impl RemoteWorkflow {
         }
     }
 
-    pub fn take_sender(&mut self, channel_name: &str) -> Option<Remote<RawReceiver>> {
+    pub fn take_sender(&mut self, path: HandlePath<'_>) -> Option<Remote<RawReceiver>> {
+        let path = path.to_cow_string();
         let channel = unsafe {
             mpsc_receiver_get(
                 Some(&self.resource),
-                channel_name.as_ptr(),
-                channel_name.len(),
+                path.as_ptr(),
+                path.len(),
                 &mut ACCESS_ERROR_PAD,
             )
         };

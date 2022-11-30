@@ -77,8 +77,8 @@ impl<T, C: Decode<T>> Receiver<T, C> {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub(crate) fn from_env(name: &str) -> Result<Self, AccessError> {
-        imp::MpscReceiver::from_env(name).map(Self::new)
+    pub(crate) fn from_env(path: HandlePath<'_>) -> Result<Self, AccessError> {
+        imp::MpscReceiver::from_env(path).map(Self::new)
     }
 
     pub(crate) fn from_raw(raw: RawReceiver) -> Self {
@@ -179,8 +179,8 @@ impl<T, C: Encode<T>> Sender<T, C> {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub(crate) fn from_env(name: &str) -> Result<Self, AccessError> {
-        imp::MpscSender::from_env(name).map(Self::new)
+    pub(crate) fn from_env(path: HandlePath<'_>) -> Result<Self, AccessError> {
+        imp::MpscSender::from_env(path).map(Self::new)
     }
 
     pub(crate) fn from_raw(raw: RawSender) -> Self {
