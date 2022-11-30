@@ -23,6 +23,7 @@ use crate::{
     task::{JoinError, JoinHandle},
     test::Runtime,
     workflow::{UntypedHandle, Wasm},
+    ChannelId,
 };
 
 impl ManageInterfaces for Workflows {
@@ -70,23 +71,21 @@ struct ChannelPair {
 }
 
 impl ChannelPair {
+    fn new(channel_id: ChannelId) -> Self {
+        let (sx, rx) = raw_channel(channel_id);
+        Self {
+            sx: Some(RawSender::new(sx)),
+            rx: Some(RawReceiver::new(rx)),
+        }
+    }
+
     fn closed(local_channel_kind: ChannelHalf) -> Self {
-        let mut pair = Self::default();
+        let mut pair = Self::new(0);
         match local_channel_kind {
             ChannelHalf::Receiver => pair.sx = None,
             ChannelHalf::Sender => pair.rx = None,
         }
         pair
-    }
-}
-
-impl Default for ChannelPair {
-    fn default() -> Self {
-        let (sx, rx) = raw_channel();
-        Self {
-            sx: Some(RawSender::new(sx)),
-            rx: Some(RawReceiver::new(rx)),
-        }
     }
 }
 
@@ -145,7 +144,10 @@ impl ChannelsConfig<RawReceiver, RawSender> {
             .into_iter()
             .map(|(name, config)| {
                 let pair = match config {
-                    ChannelSpawnConfig::New => ChannelPair::default(),
+                    ChannelSpawnConfig::New => {
+                        let channel_id = Runtime::with_mut(Runtime::allocate_channel_id);
+                        ChannelPair::new(channel_id)
+                    }
                     ChannelSpawnConfig::Closed => ChannelPair::closed(local_channel_kind),
                     ChannelSpawnConfig::Existing(handle) => handle.into(),
                 };

@@ -26,6 +26,7 @@ use crate::{
     codec::{Decode, Encode, Raw},
     interface::AccessError,
     workflow::{TakeHandle, WithHandle, WorkflowEnv},
+    ChannelId,
 };
 
 mod broadcast;
@@ -39,7 +40,7 @@ mod requests;
 
 pub use self::{
     broadcast::{BroadcastError, BroadcastPublisher, BroadcastSubscriber},
-    requests::{Requests, RequestsBuilder, WithId},
+    requests::{Request, Requests, RequestsBuilder, Response},
 };
 pub use crate::error::SendError;
 
@@ -85,6 +86,10 @@ impl<T, C: Decode<T>> Receiver<T, C> {
             raw: raw.raw,
             _ty: PhantomData,
         }
+    }
+
+    pub(crate) fn channel_id(&self) -> ChannelId {
+        self.raw.channel_id()
     }
 }
 

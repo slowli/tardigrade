@@ -104,7 +104,7 @@ use crate::{
     spawn::{ManageWorkflowsExt, RemoteWorkflow, Spawner, Workflows},
     task::{self, TaskResult},
     workflow::{Handle, SpawnWorkflow, TakeHandle, TaskHandle, UntypedHandle, Wasm},
-    WorkflowId,
+    ChannelId, WorkflowId,
 };
 
 #[derive(Debug)]
@@ -343,6 +343,7 @@ pub struct Runtime {
     spawner: LocalSpawner,
     scheduler: MockScheduler,
     workflow_registry: WorkflowRegistry,
+    next_channel_id: ChannelId,
 }
 
 impl Default for Runtime {
@@ -353,6 +354,7 @@ impl Default for Runtime {
             local_pool: Some(local_pool),
             workflow_registry: WorkflowRegistry::default(),
             scheduler: MockScheduler::default(),
+            next_channel_id: 1, // 0th channel is the pre-closed one
         }
     }
 }
@@ -401,6 +403,12 @@ impl Runtime {
 
     pub(crate) fn workflow_registry(&self) -> &WorkflowRegistry {
         &self.workflow_registry
+    }
+
+    pub(crate) fn allocate_channel_id(&mut self) -> ChannelId {
+        let id = self.next_channel_id;
+        self.next_channel_id += 1;
+        id
     }
 
     /// Returns a mutable reference to the workflow registry.

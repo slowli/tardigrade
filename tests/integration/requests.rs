@@ -4,8 +4,10 @@ use async_trait::async_trait;
 use futures::{future, stream, FutureExt, SinkExt, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 
+use std::collections::HashSet;
+
 use tardigrade::{
-    channel::{Receiver, Requests, Sender, WithId},
+    channel::{Receiver, Request, Requests, Response, Sender},
     task::TaskResult,
     test::TestInstance,
     workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
@@ -37,8 +39,8 @@ struct TestInit {
 
 #[tardigrade::handle]
 struct TestHandle<Env: WorkflowEnv> {
-    requests: Handle<Sender<WithId<String>, Json>, Env>,
-    responses: Handle<Receiver<WithId<usize>, Json>, Env>,
+    requests: Handle<Sender<Request<String>, Json>, Env>,
+    responses: Handle<Receiver<Response<usize>, Json>, Env>,
 }
 
 #[derive(Debug, GetInterface, TakeHandle)]
@@ -103,17 +105,43 @@ fn test_requests(init: TestInit) {
     println!("Testing with {:?}", init.options);
 
     let expected_strings = init.strings.clone();
+    let options = init.options;
     TestInstance::<TestedWorkflow>::new(init).run(|mut api| async move {
         let mut strings = vec![];
-        while let Some(WithId { id, data }) = api.requests.next().await {
-            let response = WithId {
-                id,
-                data: data.len(),
-            };
-            strings.push(data);
-            api.responses.send(response).await.ok();
+        let mut cancelled_ids = HashSet::new();
+        while let Some(req) = api.requests.next().await {
+            match req {
+                Request::New { id, data, .. } => {
+                    let response = Response {
+                        id,
+                        data: data.len(),
+                    };
+                    strings.push(data);
+                    api.responses.send(response).await.ok();
+                }
+                Request::Cancel { id } => {
+                    cancelled_ids.insert(id);
+                }
+            }
         }
         assert_eq!(strings, expected_strings);
+
+        match (options.drop_requests, options.ignore_some_responses) {
+            (_, false) => assert!(cancelled_ids.is_empty(), "{cancelled_ids:?}"),
+            (false, true) => {
+                let len = strings.len() as u64;
+                let expected_ids: HashSet<_> = (0..len).filter(|&i| i % 2 == 0).collect();
+                assert_eq!(cancelled_ids, expected_ids);
+            }
+            (true, true) => {
+                // We might have received some extra responses, hence the inequality check.
+                let max_cancellations = (strings.len() + 1) / 2;
+                assert!(
+                    cancelled_ids.len() <= max_cancellations,
+                    "{cancelled_ids:?}"
+                );
+            }
+        }
     });
 }
 
