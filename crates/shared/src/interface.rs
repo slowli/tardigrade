@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use std::{error, fmt, ops};
 
-pub use crate::path::{HandleMap, HandlePath, HandlePathBuf};
+pub use crate::path::{HandleMap, HandlePath, HandlePathBuf, ReceiverAt, SenderAt};
 
 /// Kind of a channel half (sender or receiver) in a workflow interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -62,12 +62,12 @@ impl AccessErrorKind {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum InterfaceLocation {
-    /// Channel in the workflow interface.
+    /// Channel handle in the workflow interface.
     Channel {
-        /// Channel kind.
+        /// Channel handle kind (sender or receiver).
         kind: ChannelHalf,
-        /// Channel name.
-        name: HandlePathBuf,
+        /// Path to the channel handle.
+        path: HandlePathBuf,
     },
     /// Arguments supplied to the workflow on creation.
     Args,
@@ -76,10 +76,28 @@ pub enum InterfaceLocation {
 impl fmt::Display for InterfaceLocation {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Channel { kind, name } => {
-                write!(formatter, "{} channel `{}`", kind, name)
+            Self::Channel { kind, path } => {
+                write!(formatter, "{kind} channel `{path}`")
             }
             Self::Args => write!(formatter, "arguments"),
+        }
+    }
+}
+
+impl<'a, P: Into<HandlePath<'a>>> From<ReceiverAt<P>> for InterfaceLocation {
+    fn from(channel: ReceiverAt<P>) -> Self {
+        Self::Channel {
+            kind: ChannelHalf::Receiver,
+            path: channel.0.into().to_owned(),
+        }
+    }
+}
+
+impl<'a, P: Into<HandlePath<'a>>> From<SenderAt<P>> for InterfaceLocation {
+    fn from(channel: SenderAt<P>) -> Self {
+        Self::Channel {
+            kind: ChannelHalf::Sender,
+            path: channel.0.into().to_owned(),
         }
     }
 }
@@ -195,59 +213,6 @@ pub struct ArgsSpec {
     pub description: String,
 }
 
-/// Newtype for indexing channel receivers, e.g., in an [`Interface`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ReceiverName<'a>(pub HandlePath<'a>);
-
-impl<'a> ReceiverName<'a> {
-    /// FIXME
-    pub fn new<P: Into<HandlePath<'a>>>(path: P) -> Self {
-        Self(path.into())
-    }
-}
-
-impl fmt::Display for ReceiverName<'_> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "channel receiver `{}`", self.0)
-    }
-}
-
-impl From<ReceiverName<'_>> for InterfaceLocation {
-    fn from(channel: ReceiverName<'_>) -> Self {
-        Self::Channel {
-            kind: ChannelHalf::Receiver,
-            name: channel.0.to_owned(),
-        }
-    }
-}
-
-/// Newtype for indexing channel senders, e.g., in an [`Interface`].
-// FIXME: rename to SenderPath
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SenderName<'a>(pub HandlePath<'a>);
-
-impl<'a> SenderName<'a> {
-    /// FIXME
-    pub fn new<P: Into<HandlePath<'a>>>(path: P) -> Self {
-        Self(path.into())
-    }
-}
-
-impl fmt::Display for SenderName<'_> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "channel sender `{}`", self.0)
-    }
-}
-
-impl From<SenderName<'_>> for InterfaceLocation {
-    fn from(channel: SenderName<'_>) -> Self {
-        Self::Channel {
-            kind: ChannelHalf::Sender,
-            name: channel.0.to_owned(),
-        }
-    }
-}
-
 /// Specification of a workflow interface. Contains info about channel senders / receivers,
 /// arguments etc.
 ///
@@ -270,7 +235,7 @@ impl From<SenderName<'_>> for InterfaceLocation {
 ///     .senders()
 ///     .all(|(_, spec)| spec.capacity == Some(1)));
 /// // Indexing is also possible using newtype wrappers from the module
-/// let commands = &interface[ReceiverName("commands")];
+/// let commands = &interface[ReceiverAt("commands")];
 /// println!("{}", commands.description);
 /// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -318,32 +283,32 @@ impl Interface {
         self.version
     }
 
-    /// Returns spec for a channel receiver, or `None` if a receiver with the specified `name`
+    /// Returns spec for a channel receiver, or `None` if a receiver with the specified `path`
     /// is not present in this interface.
-    pub fn receiver<'a, P: Into<HandlePath<'a>>>(&self, name: P) -> Option<&ReceiverSpec> {
-        let name = name.into();
-        self.receivers.get(&name)
+    pub fn receiver<'a, P: Into<HandlePath<'a>>>(&self, path: P) -> Option<&ReceiverSpec> {
+        let path = path.into();
+        self.receivers.get(&path)
     }
 
     /// Lists all channel receivers in this interface.
     pub fn receivers(&self) -> impl ExactSizeIterator<Item = (HandlePath<'_>, &ReceiverSpec)> + '_ {
         self.receivers
             .iter()
-            .map(|(name, spec)| (name.as_ref(), spec))
+            .map(|(path, spec)| (path.as_ref(), spec))
     }
 
-    /// Returns spec for a channel sender, or `None` if a sender with the specified `name`
+    /// Returns spec for a channel sender, or `None` if a sender with the specified `path`
     /// is not present in this interface.
-    pub fn sender<'a, P: Into<HandlePath<'a>>>(&self, name: P) -> Option<&SenderSpec> {
-        let name = name.into();
-        self.senders.get(&name)
+    pub fn sender<'a, P: Into<HandlePath<'a>>>(&self, path: P) -> Option<&SenderSpec> {
+        let path = path.into();
+        self.senders.get(&path)
     }
 
     /// Lists all channel senders in this interface.
     pub fn senders(&self) -> impl ExactSizeIterator<Item = (HandlePath<'_>, &SenderSpec)> + '_ {
         self.senders
             .iter()
-            .map(|(name, spec)| (name.as_ref(), spec))
+            .map(|(path, spec)| (path.as_ref(), spec))
     }
 
     /// Returns spec for the arguments.
@@ -359,41 +324,47 @@ impl Interface {
     ///
     /// Returns an error if the provided interface does not match expectations.
     pub fn check_compatibility(&self, provided: &Self) -> Result<(), AccessError> {
-        self.receivers.keys().try_fold((), |(), name| {
+        self.receivers.keys().try_fold((), |(), path| {
             provided
                 .receivers
-                .get(name)
+                .get(path)
                 .map(drop)
-                .ok_or_else(|| AccessErrorKind::Unknown.with_location(ReceiverName::new(name)))
+                .ok_or_else(|| AccessErrorKind::Unknown.with_location(ReceiverAt(path)))
         })?;
-        self.senders.iter().try_fold((), |(), (name, spec)| {
+        self.senders.iter().try_fold((), |(), (path, spec)| {
             let other_spec = provided
                 .senders
-                .get(name)
-                .ok_or_else(|| AccessErrorKind::Unknown.with_location(SenderName::new(name)))?;
+                .get(path)
+                .ok_or_else(|| AccessErrorKind::Unknown.with_location(SenderAt(path)))?;
             spec.check_compatibility(other_spec)
-                .map_err(|err| err.with_location(SenderName::new(name)))
+                .map_err(|err| err.with_location(SenderAt(path)))
         })?;
 
         Ok(())
     }
 }
 
-impl ops::Index<ReceiverName<'_>> for Interface {
+impl<'a, P> ops::Index<ReceiverAt<P>> for Interface
+where
+    P: Into<HandlePath<'a>> + Copy + fmt::Display,
+{
     type Output = ReceiverSpec;
 
-    fn index(&self, index: ReceiverName<'_>) -> &Self::Output {
+    fn index(&self, index: ReceiverAt<P>) -> &Self::Output {
         self.receiver(index.0)
-            .unwrap_or_else(|| panic!("{} is not defined", index))
+            .unwrap_or_else(|| panic!("{index} is not defined"))
     }
 }
 
-impl ops::Index<SenderName<'_>> for Interface {
+impl<'a, P> ops::Index<SenderAt<P>> for Interface
+where
+    P: Into<HandlePath<'a>> + Copy + fmt::Display,
+{
     type Output = SenderSpec;
 
-    fn index(&self, index: SenderName<'_>) -> &Self::Output {
+    fn index(&self, index: SenderAt<P>) -> &Self::Output {
         self.sender(index.0)
-            .unwrap_or_else(|| panic!("{} is not defined", index))
+            .unwrap_or_else(|| panic!("{index} is not defined"))
     }
 }
 
@@ -415,13 +386,13 @@ impl InterfaceBuilder {
     }
 
     /// Adds a channel receiver spec to this builder.
-    pub fn insert_receiver(&mut self, name: impl Into<HandlePathBuf>, spec: ReceiverSpec) {
-        self.interface.receivers.insert(name.into(), spec);
+    pub fn insert_receiver(&mut self, path: impl Into<HandlePathBuf>, spec: ReceiverSpec) {
+        self.interface.receivers.insert(path.into(), spec);
     }
 
     /// Adds a channel sender spec to this builder.
-    pub fn insert_sender(&mut self, name: impl Into<HandlePathBuf>, spec: SenderSpec) {
-        self.interface.senders.insert(name.into(), spec);
+    pub fn insert_sender(&mut self, path: impl Into<HandlePathBuf>, spec: SenderSpec) {
+        self.interface.senders.insert(path.into(), spec);
     }
 
     /// Builds an interface from this builder.

@@ -5,7 +5,7 @@ use std::{fmt, ops};
 use super::{DescribeEnv, Handle, TakeHandle, WithHandle, WorkflowEnv};
 use crate::{
     channel::{RawReceiver, RawSender},
-    interface::{AccessError, HandleMap, HandlePath, ReceiverName, SenderName},
+    interface::{AccessError, HandleMap, HandlePath, ReceiverAt, SenderAt},
 };
 
 /// Dynamically-typed handle to a workflow containing handles to its channels.
@@ -53,16 +53,20 @@ impl WithHandle for () {
 }
 
 impl<Env: DescribeEnv> TakeHandle<Env> for () {
-    fn take_handle(env: &mut Env, _id: HandlePath<'_>) -> Result<UntypedHandle<Env>, AccessError> {
+    // FIXME: incorrect; `path` arg should be taken into account
+    fn take_handle(
+        env: &mut Env,
+        _path: HandlePath<'_>,
+    ) -> Result<UntypedHandle<Env>, AccessError> {
         let interface = env.interface().into_owned();
 
         let receivers = interface
             .receivers()
-            .map(|(name, _)| Ok((name.to_owned(), RawReceiver::take_handle(&mut *env, name)?)))
+            .map(|(path, _)| Ok((path.to_owned(), RawReceiver::take_handle(&mut *env, path)?)))
             .collect::<Result<_, AccessError>>()?;
         let senders = interface
             .senders()
-            .map(|(name, _)| Ok((name.to_owned(), RawSender::take_handle(&mut *env, name)?)))
+            .map(|(path, _)| Ok((path.to_owned(), RawSender::take_handle(&mut *env, path)?)))
             .collect::<Result<_, AccessError>>()?;
 
         Ok(UntypedHandle { receivers, senders })
@@ -86,26 +90,30 @@ pub trait UntypedHandleIndex<Env: WorkflowEnv>: Copy + fmt::Display {
 
 macro_rules! impl_index {
     ($target:ty => $raw:ty, $field:ident) => {
-        impl<Env: WorkflowEnv> UntypedHandleIndex<Env> for $target {
+        impl<'a, P, Env> UntypedHandleIndex<Env> for $target
+        where
+            P: Into<HandlePath<'a>> + fmt::Display + Copy,
+            Env: WorkflowEnv,
+        {
             type Output = Handle<$raw, Env>;
 
             fn get_from(self, handle: &UntypedHandle<Env>) -> Option<&Self::Output> {
-                handle.$field.get(&self.0)
+                handle.$field.get(&self.0.into())
             }
 
             fn get_mut_from(self, handle: &mut UntypedHandle<Env>) -> Option<&mut Self::Output> {
-                handle.$field.get_mut(&self.0)
+                handle.$field.get_mut(&self.0.into())
             }
 
             fn remove_from(self, handle: &mut UntypedHandle<Env>) -> Option<Self::Output> {
-                handle.$field.remove(&self.0)
+                handle.$field.remove(&self.0.into())
             }
         }
     };
 }
 
-impl_index!(ReceiverName<'_> => RawReceiver, receivers);
-impl_index!(SenderName<'_> => RawSender, senders);
+impl_index!(ReceiverAt<P> => RawReceiver, receivers);
+impl_index!(SenderAt<P> => RawSender, senders);
 
 impl<Env: WorkflowEnv, I> ops::Index<I> for UntypedHandle<Env>
 where

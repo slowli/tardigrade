@@ -82,7 +82,7 @@ use crate::{
     channel::{RawReceiver, RawSender, Receiver, SendError, Sender},
     interface::{
         AccessError, AccessErrorKind, ChannelHalf, HandleMap, HandlePath, HandlePathBuf, Interface,
-        ReceiverName, SenderName,
+        ReceiverAt, SenderAt,
     },
     task::JoinError,
     workflow::{
@@ -384,22 +384,22 @@ impl<Ch: SpecifyWorkflowChannels> WorkflowEnv for Spawner<Ch> {
 
     fn take_receiver<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: HandlePath<'_>,
+        path: HandlePath<'_>,
     ) -> Result<Self::Receiver<T, C>, AccessError> {
         Ok(ReceiverConfig {
             spawner: self.clone(),
-            channel_name: id.to_owned(),
+            path: path.to_owned(),
             _ty: PhantomData,
         })
     }
 
     fn take_sender<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: HandlePath<'_>,
+        path: HandlePath<'_>,
     ) -> Result<Self::Sender<T, C>, AccessError> {
         Ok(SenderConfig {
             spawner: self.clone(),
-            channel_name: id.to_owned(),
+            path: path.to_owned(),
             _ty: PhantomData,
         })
     }
@@ -414,7 +414,7 @@ impl<Ch: SpecifyWorkflowChannels> DescribeEnv for Spawner<Ch> {
 /// Configurator of a workflow channel [`Receiver`].
 pub struct ReceiverConfig<Ch: SpecifyWorkflowChannels, T, C> {
     spawner: Spawner<Ch>,
-    channel_name: HandlePathBuf,
+    path: HandlePathBuf,
     _ty: PhantomData<fn(C) -> T>,
 }
 
@@ -428,7 +428,7 @@ where
         formatter
             .debug_struct("ReceiverConfig")
             .field("spawner", &self.spawner)
-            .field("channel_name", &self.channel_name)
+            .field("channel_name", &self.path)
             .finish()
     }
 }
@@ -440,16 +440,14 @@ where
 {
     /// Closes the channel immediately on workflow instantiation.
     pub fn close(&self) {
-        self.spawner
-            .inner
-            .close_receiver(self.channel_name.as_ref());
+        self.spawner.inner.close_receiver(self.path.as_ref());
     }
 }
 
 /// Configurator of a workflow channel [`Sender`].
 pub struct SenderConfig<Ch: SpecifyWorkflowChannels, T, C> {
     spawner: Spawner<Ch>,
-    channel_name: HandlePathBuf,
+    path: HandlePathBuf,
     _ty: PhantomData<fn(C) -> T>,
 }
 
@@ -463,7 +461,7 @@ where
         formatter
             .debug_struct("SenderConfig")
             .field("spawner", &self.spawner)
-            .field("channel_name", &self.channel_name)
+            .field("channel_name", &self.path)
             .finish()
     }
 }
@@ -475,7 +473,7 @@ where
 {
     /// Closes the channel immediately on workflow instantiation.
     pub fn close(&self) {
-        self.spawner.inner.close_sender(self.channel_name.as_ref());
+        self.spawner.inner.close_sender(self.path.as_ref());
     }
 }
 
@@ -485,7 +483,7 @@ impl<T, C: Encode<T>> SenderConfig<Workflows, T, C> {
     pub fn copy_from(&self, sender: Sender<T, C>) {
         self.spawner
             .inner
-            .copy_sender(self.channel_name.as_ref(), sender.into_raw());
+            .copy_sender(self.path.as_ref(), sender.into_raw());
     }
 }
 
@@ -612,23 +610,23 @@ impl WorkflowEnv for RemoteWorkflow {
 
     fn take_receiver<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: HandlePath<'_>,
+        path: HandlePath<'_>,
     ) -> Result<Self::Receiver<T, C>, AccessError> {
         let raw_sender = self
             .inner
-            .take_receiver(id)
-            .ok_or_else(|| AccessErrorKind::Unknown.with_location(ReceiverName(id)))?;
+            .take_receiver(path)
+            .ok_or_else(|| AccessErrorKind::Unknown.with_location(ReceiverAt(path)))?;
         Ok(raw_sender.map(Sender::from_raw))
     }
 
     fn take_sender<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: HandlePath<'_>,
+        path: HandlePath<'_>,
     ) -> Result<Self::Sender<T, C>, AccessError> {
         let raw_receiver = self
             .inner
-            .take_sender(id)
-            .ok_or_else(|| AccessErrorKind::Unknown.with_location(SenderName(id)))?;
+            .take_sender(path)
+            .ok_or_else(|| AccessErrorKind::Unknown.with_location(SenderAt(path)))?;
         Ok(raw_receiver.map(Receiver::from_raw))
     }
 }

@@ -127,8 +127,8 @@ impl<T, C, Env: WorkflowEnv> TakeHandle<Env> for Receiver<T, C>
 where
     C: Encode<T> + Decode<T>,
 {
-    fn take_handle(env: &mut Env, id: HandlePath<'_>) -> Result<Self::Handle<Env>, AccessError> {
-        env.take_receiver(id)
+    fn take_handle(env: &mut Env, path: HandlePath<'_>) -> Result<Self::Handle<Env>, AccessError> {
+        env.take_receiver(path)
     }
 }
 
@@ -221,8 +221,8 @@ impl<T, C, Env: WorkflowEnv> TakeHandle<Env> for Sender<T, C>
 where
     C: Encode<T> + Decode<T>,
 {
-    fn take_handle(env: &mut Env, id: HandlePath<'_>) -> Result<Self::Handle<Env>, AccessError> {
-        env.take_sender(id)
+    fn take_handle(env: &mut Env, path: HandlePath<'_>) -> Result<Self::Handle<Env>, AccessError> {
+        env.take_sender(path)
     }
 }
 

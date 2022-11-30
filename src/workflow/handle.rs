@@ -21,7 +21,7 @@ pub trait WorkflowEnv {
     /// Returns an error if a receiver with this ID is missing from the environment.
     fn take_receiver<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: HandlePath<'_>,
+        path: HandlePath<'_>,
     ) -> Result<Self::Receiver<T, C>, AccessError>;
 
     /// Obtains a sender handle with the specified ID from this environment.
@@ -31,7 +31,7 @@ pub trait WorkflowEnv {
     /// Returns an error if a sender with this ID is missing from the environment.
     fn take_sender<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: HandlePath<'_>,
+        path: HandlePath<'_>,
     ) -> Result<Self::Sender<T, C>, AccessError>;
 }
 

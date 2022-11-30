@@ -186,6 +186,22 @@ impl Hash for HandlePathBuf {
     }
 }
 
+impl From<String> for HandlePathBuf {
+    fn from(segment: String) -> Self {
+        Self {
+            segments: vec![segment],
+        }
+    }
+}
+
+impl From<&str> for HandlePathBuf {
+    fn from(segment: &str) -> Self {
+        Self {
+            segments: vec![segment.to_owned()],
+        }
+    }
+}
+
 impl From<HandlePath<'_>> for HandlePathBuf {
     fn from(path: HandlePath<'_>) -> Self {
         if let Inner::Slice(segments) = path.inner {
@@ -204,6 +220,12 @@ impl Equivalent<HandlePathBuf> for HandlePath<'_> {
     fn equivalent(&self, key: &HandlePathBuf) -> bool {
         let buf_segments = key.segments.iter().rev();
         buf_segments.eq(self.rev_segments())
+    }
+}
+
+impl Equivalent<HandlePathBuf> for str {
+    fn equivalent(&self, key: &HandlePathBuf) -> bool {
+        key.segments.len() == 1 && key.segments[0] == *self
     }
 }
 
@@ -237,6 +259,26 @@ impl<'de> Deserialize<'de> for HandlePathBuf {
 }
 
 pub type HandleMap<V> = HashMap<HandlePathBuf, V>;
+
+/// Newtype for indexing channel receivers, e.g., in an [`Interface`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ReceiverAt<T>(pub T);
+
+impl<T: fmt::Display> fmt::Display for ReceiverAt<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "channel receiver `{}`", self.0)
+    }
+}
+
+/// Newtype for indexing channel senders, e.g., in an [`Interface`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SenderAt<T>(pub T);
+
+impl<T: fmt::Display> fmt::Display for SenderAt<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "channel sender `{}`", self.0)
+    }
+}
 
 #[cfg(test)]
 mod tests {

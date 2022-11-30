@@ -231,17 +231,17 @@ impl WorkflowEnv for InterfaceBuilder {
 
     fn take_receiver<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: HandlePath<'_>,
+        path: HandlePath<'_>,
     ) -> Result<Self::Receiver<T, C>, AccessError> {
-        self.insert_receiver(id, ReceiverSpec::default());
+        self.insert_receiver(path, ReceiverSpec::default());
         Ok(())
     }
 
     fn take_sender<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: HandlePath<'_>,
+        path: HandlePath<'_>,
     ) -> Result<Self::Sender<T, C>, AccessError> {
-        self.insert_sender(id, SenderSpec::default());
+        self.insert_sender(path, SenderSpec::default());
         Ok(())
     }
 }
@@ -278,7 +278,7 @@ impl WorkflowEnv for Wasm {
     #[cfg(target_arch = "wasm32")]
     fn take_receiver<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: &str,
+        path: HandlePath<'_>,
     ) -> Result<Self::Receiver<T, C>, AccessError> {
         Receiver::from_env(id)
     }
@@ -286,20 +286,20 @@ impl WorkflowEnv for Wasm {
     #[cfg(not(target_arch = "wasm32"))]
     fn take_receiver<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: HandlePath<'_>,
+        path: HandlePath<'_>,
     ) -> Result<Self::Receiver<T, C>, AccessError> {
-        use crate::interface::ReceiverName;
+        use crate::interface::ReceiverAt;
 
         let raw = self
-            .take_receiver(id)
-            .ok_or_else(|| AccessErrorKind::Unknown.with_location(ReceiverName(id)))?;
+            .take_receiver(path)
+            .ok_or_else(|| AccessErrorKind::Unknown.with_location(ReceiverAt(path)))?;
         Ok(Receiver::from_raw(raw))
     }
 
     #[cfg(target_arch = "wasm32")]
     fn take_sender<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: &str,
+        path: HandlePath<'_>,
     ) -> Result<Self::Sender<T, C>, AccessError> {
         Sender::from_env(id)
     }
@@ -307,13 +307,13 @@ impl WorkflowEnv for Wasm {
     #[cfg(not(target_arch = "wasm32"))]
     fn take_sender<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: HandlePath<'_>,
+        path: HandlePath<'_>,
     ) -> Result<Self::Sender<T, C>, AccessError> {
-        use crate::interface::SenderName;
+        use crate::interface::SenderAt;
 
         let raw = self
-            .take_sender(id)
-            .ok_or_else(|| AccessErrorKind::Unknown.with_location(SenderName(id)))?;
+            .take_sender(path)
+            .ok_or_else(|| AccessErrorKind::Unknown.with_location(SenderAt(path)))?;
         Ok(Sender::from_raw(raw))
     }
 }

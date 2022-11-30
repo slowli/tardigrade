@@ -13,7 +13,7 @@ use std::{
 use crate::{
     abi::IntoWasm,
     channel::SendError,
-    interface::{AccessError, AccessErrorKind, ReceiverName, SenderName},
+    interface::{AccessError, AccessErrorKind, ReceiverAt, SenderAt},
     spawn::imp::RemoteWorkflow,
 };
 
@@ -48,7 +48,7 @@ impl MpscReceiver {
             let resource = mpsc_receiver_get(None, id.as_ptr(), id.len(), &mut ACCESS_ERROR_PAD);
             Result::<(), AccessErrorKind>::from_abi_in_wasm(ACCESS_ERROR_PAD)
                 .map(|()| resource.unwrap().into())
-                .map_err(|kind| kind.with_location(ReceiverName(id)))
+                .map_err(|kind| kind.with_location(ReceiverAt(id)))
         }
     }
 }
@@ -107,7 +107,7 @@ impl MpscSender {
             let resource = mpsc_sender_get(None, id.as_ptr(), id.len(), &mut ACCESS_ERROR_PAD);
             Result::<(), AccessErrorKind>::from_abi_in_wasm(ACCESS_ERROR_PAD)
                 .map(|()| resource.unwrap().into())
-                .map_err(|kind| kind.with_location(SenderName(id)))
+                .map_err(|kind| kind.with_location(SenderAt(id)))
         }
     }
 
