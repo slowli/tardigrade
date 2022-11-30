@@ -2,7 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use std::{collections::HashMap, error, fmt, ops};
+use std::{error, fmt, ops};
+
+pub use crate::path::{HandleMap, HandlePath, HandlePathBuf};
 
 /// Kind of a channel half (sender or receiver) in a workflow interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -65,7 +67,7 @@ pub enum InterfaceLocation {
         /// Channel kind.
         kind: ChannelHalf,
         /// Channel name.
-        name: String,
+        name: HandlePathBuf,
     },
     /// Arguments supplied to the workflow on creation.
     Args,
@@ -195,7 +197,14 @@ pub struct ArgsSpec {
 
 /// Newtype for indexing channel receivers, e.g., in an [`Interface`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ReceiverName<'a>(pub &'a str);
+pub struct ReceiverName<'a>(pub HandlePath<'a>);
+
+impl<'a> ReceiverName<'a> {
+    /// FIXME
+    pub fn new<P: Into<HandlePath<'a>>>(path: P) -> Self {
+        Self(path.into())
+    }
+}
 
 impl fmt::Display for ReceiverName<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -213,8 +222,16 @@ impl From<ReceiverName<'_>> for InterfaceLocation {
 }
 
 /// Newtype for indexing channel senders, e.g., in an [`Interface`].
+// FIXME: rename to SenderPath
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SenderName<'a>(pub &'a str);
+pub struct SenderName<'a>(pub HandlePath<'a>);
+
+impl<'a> SenderName<'a> {
+    /// FIXME
+    pub fn new<P: Into<HandlePath<'a>>>(path: P) -> Self {
+        Self(path.into())
+    }
+}
 
 impl fmt::Display for SenderName<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -260,10 +277,10 @@ impl From<SenderName<'_>> for InterfaceLocation {
 pub struct Interface {
     #[serde(rename = "v")]
     version: u32,
-    #[serde(rename = "in", default, skip_serializing_if = "HashMap::is_empty")]
-    receivers: HashMap<String, ReceiverSpec>,
-    #[serde(rename = "out", default, skip_serializing_if = "HashMap::is_empty")]
-    senders: HashMap<String, SenderSpec>,
+    #[serde(rename = "in", default, skip_serializing_if = "HandleMap::is_empty")]
+    receivers: HandleMap<ReceiverSpec>,
+    #[serde(rename = "out", default, skip_serializing_if = "HandleMap::is_empty")]
+    senders: HandleMap<SenderSpec>,
     #[serde(rename = "args", default)]
     args: ArgsSpec,
 }
@@ -303,28 +320,30 @@ impl Interface {
 
     /// Returns spec for a channel receiver, or `None` if a receiver with the specified `name`
     /// is not present in this interface.
-    pub fn receiver(&self, name: &str) -> Option<&ReceiverSpec> {
-        self.receivers.get(name)
+    pub fn receiver<'a, P: Into<HandlePath<'a>>>(&self, name: P) -> Option<&ReceiverSpec> {
+        let name = name.into();
+        self.receivers.get(&name)
     }
 
     /// Lists all channel receivers in this interface.
-    pub fn receivers(&self) -> impl ExactSizeIterator<Item = (&str, &ReceiverSpec)> + '_ {
+    pub fn receivers(&self) -> impl ExactSizeIterator<Item = (HandlePath<'_>, &ReceiverSpec)> + '_ {
         self.receivers
             .iter()
-            .map(|(name, spec)| (name.as_str(), spec))
+            .map(|(name, spec)| (name.as_ref(), spec))
     }
 
     /// Returns spec for a channel sender, or `None` if a sender with the specified `name`
     /// is not present in this interface.
-    pub fn sender(&self, name: &str) -> Option<&SenderSpec> {
-        self.senders.get(name)
+    pub fn sender<'a, P: Into<HandlePath<'a>>>(&self, name: P) -> Option<&SenderSpec> {
+        let name = name.into();
+        self.senders.get(&name)
     }
 
     /// Lists all channel senders in this interface.
-    pub fn senders(&self) -> impl ExactSizeIterator<Item = (&str, &SenderSpec)> + '_ {
+    pub fn senders(&self) -> impl ExactSizeIterator<Item = (HandlePath<'_>, &SenderSpec)> + '_ {
         self.senders
             .iter()
-            .map(|(name, spec)| (name.as_str(), spec))
+            .map(|(name, spec)| (name.as_ref(), spec))
     }
 
     /// Returns spec for the arguments.
@@ -345,15 +364,15 @@ impl Interface {
                 .receivers
                 .get(name)
                 .map(drop)
-                .ok_or_else(|| AccessErrorKind::Unknown.with_location(ReceiverName(name)))
+                .ok_or_else(|| AccessErrorKind::Unknown.with_location(ReceiverName::new(name)))
         })?;
         self.senders.iter().try_fold((), |(), (name, spec)| {
             let other_spec = provided
                 .senders
                 .get(name)
-                .ok_or_else(|| AccessErrorKind::Unknown.with_location(SenderName(name)))?;
+                .ok_or_else(|| AccessErrorKind::Unknown.with_location(SenderName::new(name)))?;
             spec.check_compatibility(other_spec)
-                .map_err(|err| err.with_location(SenderName(name)))
+                .map_err(|err| err.with_location(SenderName::new(name)))
         })?;
 
         Ok(())
@@ -396,12 +415,12 @@ impl InterfaceBuilder {
     }
 
     /// Adds a channel receiver spec to this builder.
-    pub fn insert_receiver(&mut self, name: impl Into<String>, spec: ReceiverSpec) {
+    pub fn insert_receiver(&mut self, name: impl Into<HandlePathBuf>, spec: ReceiverSpec) {
         self.interface.receivers.insert(name.into(), spec);
     }
 
     /// Adds a channel sender spec to this builder.
-    pub fn insert_sender(&mut self, name: impl Into<String>, spec: SenderSpec) {
+    pub fn insert_sender(&mut self, name: impl Into<HandlePathBuf>, spec: SenderSpec) {
         self.interface.senders.insert(name.into(), spec);
     }
 
