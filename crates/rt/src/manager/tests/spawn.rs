@@ -459,7 +459,7 @@ async fn spawning_child_with_copied_sender() {
     let manager = create_test_manager(poll_fns, ()).await;
     let workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
-    let events_id = workflow.ids().channel_ids["events"].factor();
+    let events_id = channel_id(workflow.ids(), "events");
 
     init_workflow_with_copied_child_channel(&manager, workflow_id, &mut poll_fn_sx).await;
 
@@ -502,7 +502,7 @@ async fn test_child_with_copied_closed_sender(close_before_spawn: bool) {
     let manager = create_test_manager(poll_fns, ()).await;
     let workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
-    let events_id = workflow.ids().channel_ids["events"].factor();
+    let events_id = channel_id(workflow.ids(), "events");
 
     if close_before_spawn {
         manager.close_host_receiver(events_id).await;
@@ -544,7 +544,7 @@ async fn test_child_with_aliased_sender(complete_child: bool) {
     let manager = create_test_manager(poll_fns, ()).await;
     let workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
-    let events_id = workflow.ids().channel_ids["events"].factor();
+    let events_id = channel_id(workflow.ids(), "events");
 
     let spawn_child: MockPollFn = |ctx| spawn_child_with_copied_sender(ctx, true);
     poll_fn_sx
@@ -561,9 +561,8 @@ async fn test_child_with_aliased_sender(complete_child: bool) {
         HashSet::from_iter([workflow_id, CHILD_ID])
     );
     let child = manager.workflow(CHILD_ID).await.unwrap();
-    let child_channel_ids = &child.ids().channel_ids;
-    assert_eq!(child_channel_ids["events"].factor(), events_id);
-    assert_eq!(child_channel_ids["traces"].factor(), events_id);
+    assert_eq!(channel_id(child.ids(), "events"), events_id);
+    assert_eq!(channel_id(child.ids(), "traces"), events_id);
 
     let write_event_and_drop_events: MockPollFn = |ctx| {
         let channels = ctx.data().persisted.channels();
@@ -729,7 +728,7 @@ async fn completing_child_with_panic() {
     assert_eq!(tick_result.workflow_id(), workflow_id);
     tick_result.into_inner().unwrap();
     let child = manager.workflow(CHILD_ID).await.unwrap();
-    let child_events_id = child.ids().channel_ids["events"].factor();
+    let child_events_id = channel_id(child.ids(), "events");
 
     let tick_result = poll_fn_sx
         .send_all([poll_child_completion, complete_task_with_panic])
@@ -811,7 +810,7 @@ async fn test_aborting_child(initialize_child: bool) {
     init_workflow_with_child(&manager, workflow_id, &mut poll_fn_sx).await;
 
     let child = manager.workflow(CHILD_ID).await.unwrap();
-    let child_events_id = child.ids().channel_ids["events"].factor();
+    let child_events_id = channel_id(child.ids(), "events");
     if initialize_child {
         poll_fn_sx
             .send(|_| Ok(Poll::Pending))
@@ -843,8 +842,8 @@ async fn aborting_parent() {
     init_workflow_with_child(&manager, workflow_id, &mut poll_fn_sx).await;
 
     let child = manager.workflow(CHILD_ID).await.unwrap();
-    let child_events_id = child.ids().channel_ids["events"].factor();
-    let child_orders_id = child.ids().channel_ids["orders"].factor();
+    let child_events_id = channel_id(child.ids(), "events");
+    let child_orders_id = channel_id(child.ids(), "orders");
     manager.abort_workflow(workflow_id).await.unwrap();
     let child_events = manager.channel(child_events_id).await.unwrap();
     assert!(child_events.is_closed);

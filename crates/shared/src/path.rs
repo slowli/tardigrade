@@ -17,9 +17,12 @@ use std::{
 
 const PATH_SEP: &str = "::";
 
+/// Inner part of `HandlePath`.
 #[derive(Debug, Clone, Copy)]
 enum Inner<'a> {
+    /// Linked list cell, with the suffix containing 1 or more segments.
     Link(&'a Self, &'a str),
+    /// Slice borrowed from a `HandlePathBuf`.
     Slice(&'a [String]),
 }
 
@@ -37,7 +40,7 @@ impl Inner<'static> {
 /// ```
 /// # use hashbrown::HashMap;
 /// # use tardigrade_shared::interface::{HandlePath, HandlePathBuf};
-/// const PATH: HandlePath<'_> = HandlePath::simple("test").join("path");
+/// const PATH: HandlePath<'_> = HandlePath::new("test").join("path");
 /// assert_eq!(PATH.to_string(), "test::join");
 /// let path_buf: HandlePathBuf = PATH.to_owned();
 /// assert_eq!(path_buf.as_ref(), PATH);
@@ -52,7 +55,7 @@ impl Inner<'static> {
 /// // Note that `str` keys can be used for indexing as well:
 /// map.insert("third_path".into(), 42);
 /// assert_eq!(map["third_path"], 42);
-/// assert!(map.contains_key(&HandlePath::simple("third_path")));
+/// assert!(map.contains_key(&HandlePath::new("third_path")));
 /// # Ok::<_, Box<dyn std::error::Error>>(())
 /// ```
 #[derive(Debug, Clone, Copy)]
@@ -62,8 +65,7 @@ pub struct HandlePath<'a> {
 
 impl fmt::Display for HandlePath<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut segments: Vec<_> = self.rev_segments().collect();
-        segments.reverse();
+        let segments: Vec<_> = self.segments().collect();
         for (i, segment) in segments.iter().enumerate() {
             formatter.write_str(segment)?;
             if i + 1 < segments.len() {
@@ -76,7 +78,7 @@ impl fmt::Display for HandlePath<'_> {
 
 impl PartialEq for HandlePath<'_> {
     fn eq(&self, other: &Self) -> bool {
-        self.rev_segments().eq(other.rev_segments())
+        self.segments().eq(other.segments())
     }
 }
 
@@ -84,7 +86,7 @@ impl Eq for HandlePath<'_> {}
 
 impl Hash for HandlePath<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        for segment in self.rev_segments() {
+        for segment in self.segments() {
             str::hash(segment, state);
         }
     }
@@ -98,10 +100,15 @@ impl HandlePath<'static> {
 }
 
 impl<'a> HandlePath<'a> {
-    /// Creates a simple path from a single segment.
-    pub const fn simple(segment: &'a str) -> Self {
+    /// Creates a path from the supplied string.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the supplied string is empty. Use `Self::EMPTY` in these cases.
+    pub const fn new(s: &'a str) -> Self {
+        assert!(!s.is_empty(), "empty path supplied");
         Self {
-            inner: Inner::Link(&Inner::EMPTY, segment),
+            inner: Inner::Link(&Inner::EMPTY, s),
         }
     }
 
@@ -128,14 +135,18 @@ impl<'a> HandlePath<'a> {
         }
     }
 
-    fn rev_segments(self) -> impl Iterator<Item = &'a str> {
+    /// Iterates over the segments in this path.
+    pub fn segments(self) -> impl Iterator<Item = &'a str> {
         let ancestors = iter::successors(Some(self.inner), |&inner| match inner {
             Inner::Link(head, _) => Some(*head),
             Inner::Slice(_) => None,
         });
-        ancestors.flat_map(|inner| match inner {
-            Inner::Link(_, tail) => Either::Left(iter::once(tail)),
-            Inner::Slice(slice) => Either::Right(slice.iter().rev().map(String::as_str)),
+        let mut ancestors: Vec<_> = ancestors.collect();
+        ancestors.reverse();
+
+        ancestors.into_iter().flat_map(|inner| match inner {
+            Inner::Link(_, tail) => Either::Left(tail.split(PATH_SEP)),
+            Inner::Slice(slice) => Either::Right(slice.iter().map(String::as_str)),
         })
     }
 }
@@ -143,7 +154,7 @@ impl<'a> HandlePath<'a> {
 /// Creates a path consisting of a single provided segment.
 impl<'a> From<&'a str> for HandlePath<'a> {
     fn from(segment: &'a str) -> Self {
-        Self::simple(segment)
+        Self::new(segment)
     }
 }
 
@@ -212,12 +223,12 @@ impl fmt::Display for HandlePathBuf {
 }
 
 /// Parses a path from its string presentation (e.g., `some::compound::path` for a 3-segment path).
+/// This conversion is infallible; it simply delegates to [`From`]`<&str>`.
 impl FromStr for HandlePathBuf {
     type Err = Infallible;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let segments: Vec<_> = s.split(PATH_SEP).map(String::from).collect();
-        Ok(Self { segments })
+        Ok(Self::from(s))
     }
 }
 
@@ -229,27 +240,17 @@ impl PartialEq for HandlePathBuf {
 
 impl Hash for HandlePathBuf {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        for segment in self.segments.iter().rev() {
+        for segment in &self.segments {
             str::hash(segment, state);
         }
     }
 }
 
-/// Creates a path consisting of a single provided segment.
-impl From<String> for HandlePathBuf {
-    fn from(segment: String) -> Self {
-        Self {
-            segments: vec![segment],
-        }
-    }
-}
-
-/// Creates a path consisting of a single provided segment.
+/// Parses a path from its string presentation (e.g., `some::compound::path` for a 3-segment path).
 impl From<&str> for HandlePathBuf {
-    fn from(segment: &str) -> Self {
-        Self {
-            segments: vec![segment.to_owned()],
-        }
+    fn from(s: &str) -> Self {
+        let segments: Vec<_> = s.split(PATH_SEP).map(String::from).collect();
+        Self { segments }
     }
 }
 
@@ -260,8 +261,7 @@ impl From<HandlePath<'_>> for HandlePathBuf {
                 segments: segments.to_vec(),
             }
         } else {
-            let mut segments: Vec<_> = path.rev_segments().map(String::from).collect();
-            segments.reverse();
+            let segments = path.segments().map(String::from).collect();
             Self { segments }
         }
     }
@@ -269,14 +269,8 @@ impl From<HandlePath<'_>> for HandlePathBuf {
 
 impl Equivalent<HandlePathBuf> for HandlePath<'_> {
     fn equivalent(&self, key: &HandlePathBuf) -> bool {
-        let buf_segments = key.segments.iter().rev();
-        buf_segments.eq(self.rev_segments())
-    }
-}
-
-impl Equivalent<HandlePathBuf> for str {
-    fn equivalent(&self, key: &HandlePathBuf) -> bool {
-        key.segments.len() == 1 && key.segments[0] == *self
+        let buf_segments = key.segments.iter();
+        buf_segments.eq(self.segments())
     }
 }
 
@@ -338,8 +332,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn creating_paths() {
+        let path = HandlePath::new("first::second::third");
+        let segments: Vec<_> = path.segments().collect();
+        assert_eq!(segments, ["first", "second", "third"]);
+
+        let prefix = HandlePath::new("first");
+        let same_path = prefix.join("second::third");
+        let segments: Vec<_> = same_path.segments().collect();
+        assert_eq!(segments, ["first", "second", "third"]);
+        assert_eq!(path, same_path);
+        assert_ne!(path, prefix);
+    }
+
+    #[test]
     fn path_cow_string_produces_correct_results() {
-        let path = HandlePath::simple("first");
+        let path = HandlePath::new("first");
         assert_eq!(path.to_cow_string(), "first");
         let path = path.join("second");
         assert_eq!(path.to_cow_string(), "first::second");
@@ -347,7 +355,7 @@ mod tests {
 
     #[test]
     fn hash_and_equiv_implementations_match() {
-        const PATH: HandlePath<'_> = HandlePath::simple("first").join("second").join("3");
+        const PATH: HandlePath<'_> = HandlePath::new("first").join("second").join("3");
 
         let path_buf = HandlePathBuf::from(PATH);
         let path_hash = {
@@ -388,12 +396,12 @@ mod tests {
     fn handle_map_operations() {
         let mut handle_map = HashMap::new();
         handle_map.insert("test".into(), 42);
-        let path = HandlePath::simple("test");
+        let path = HandlePath::new("test");
         let path = path.join("more");
         handle_map.insert(path.to_owned(), 23);
 
-        assert_eq!(handle_map["test"], 42);
-        assert_eq!(handle_map[&HandlePath::simple("test")], 42);
+        //assert_eq!(handle_map["test"], 42);
+        assert_eq!(handle_map[&HandlePath::new("test")], 42);
         assert_eq!(handle_map[&path], 23);
     }
 }
