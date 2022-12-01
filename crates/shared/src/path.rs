@@ -1,4 +1,4 @@
-#![allow(missing_docs)]
+//! `HandlePath` and related types.
 
 use hashbrown::Equivalent;
 use serde::{
@@ -27,6 +27,34 @@ impl Inner<'static> {
     const EMPTY: Self = Self::Slice(&[]);
 }
 
+/// Path to a [`Handle`](crate::interface::Handle) in a [map](crate::interface::HandleMap).
+///
+/// Conceptually, a path consists of zero or more string segments. A path can be represented
+/// as a string, with the segments separated by `::`.
+///
+/// # Examples
+///
+/// ```
+/// # use hashbrown::HashMap;
+/// # use tardigrade_shared::interface::{HandlePath, HandlePathBuf};
+/// const PATH: HandlePath<'_> = HandlePath::simple("test").join("path");
+/// assert_eq!(PATH.to_string(), "test::join");
+/// let path_buf: HandlePathBuf = PATH.to_owned();
+/// assert_eq!(path_buf.as_ref(), PATH);
+/// let other_path_buf: HandlePathBuf = "other::path".parse()?;
+///
+/// // One of key path properties is ability to use as keys in hash maps:
+/// let mut map =
+///     HashMap::from_iter([(path_buf, 555), (other_path_buf, 777)]);
+/// assert_eq!(map[&PATH], 555);
+/// assert_eq!(map[&other_path_buf], 777);
+///
+/// // Note that `str` keys can be used for indexing as well:
+/// map.insert("third_path".into(), 42);
+/// assert_eq!(map["third_path"], 42);
+/// assert!(map.contains_key(&HandlePath::simple("third_path")));
+/// # Ok::<_, Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub struct HandlePath<'a> {
     inner: Inner<'a>,
@@ -63,18 +91,21 @@ impl Hash for HandlePath<'_> {
 }
 
 impl HandlePath<'static> {
+    /// Empty path, i.e., a path with zero segments.
     pub const EMPTY: Self = Self {
         inner: Inner::EMPTY,
     };
 }
 
 impl<'a> HandlePath<'a> {
+    /// Creates a simple path from a single segment.
     pub const fn simple(segment: &'a str) -> Self {
         Self {
             inner: Inner::Link(&Inner::EMPTY, segment),
         }
     }
 
+    /// Appends the `suffix` to this path and returns the resulting path.
     #[must_use]
     pub const fn join(&'a self, suffix: &'a str) -> Self {
         Self {
@@ -82,6 +113,7 @@ impl<'a> HandlePath<'a> {
         }
     }
 
+    /// Converts this path to the owned form.
     pub fn to_owned(self) -> HandlePathBuf {
         HandlePathBuf::from(self)
     }
@@ -105,6 +137,19 @@ impl<'a> HandlePath<'a> {
             Inner::Link(_, tail) => Either::Left(iter::once(tail)),
             Inner::Slice(slice) => Either::Right(slice.iter().rev().map(String::as_str)),
         })
+    }
+}
+
+/// Creates a path consisting of a single provided segment.
+impl<'a> From<&'a str> for HandlePath<'a> {
+    fn from(segment: &'a str) -> Self {
+        Self::simple(segment)
+    }
+}
+
+impl<'a> From<&'a HandlePathBuf> for HandlePath<'a> {
+    fn from(path: &'a HandlePathBuf) -> Self {
+        path.as_ref()
     }
 }
 
@@ -137,24 +182,16 @@ where
     }
 }
 
-impl<'a> From<&'a str> for HandlePath<'a> {
-    fn from(segment: &'a str) -> Self {
-        Self::simple(segment)
-    }
-}
-
-impl<'a> From<&'a HandlePathBuf> for HandlePath<'a> {
-    fn from(path: &'a HandlePathBuf) -> Self {
-        path.as_ref()
-    }
-}
-
+/// Owned version of a [`HandlePath`].
+///
+/// See [`HandlePath`] docs for examples of usage.
 #[derive(Debug, Clone, Eq)]
 pub struct HandlePathBuf {
     segments: Vec<String>,
 }
 
 impl HandlePathBuf {
+    /// Borrows a [`HandlePath`] from this path.
     pub fn as_ref(&self) -> HandlePath<'_> {
         HandlePath {
             inner: Inner::Slice(&self.segments),
@@ -174,6 +211,7 @@ impl fmt::Display for HandlePathBuf {
     }
 }
 
+/// Parses a path from its string presentation (e.g., `some::compound::path` for a 3-segment path).
 impl FromStr for HandlePathBuf {
     type Err = Infallible;
 
@@ -197,6 +235,7 @@ impl Hash for HandlePathBuf {
     }
 }
 
+/// Creates a path consisting of a single provided segment.
 impl From<String> for HandlePathBuf {
     fn from(segment: String) -> Self {
         Self {
@@ -205,6 +244,7 @@ impl From<String> for HandlePathBuf {
     }
 }
 
+/// Creates a path consisting of a single provided segment.
 impl From<&str> for HandlePathBuf {
     fn from(segment: &str) -> Self {
         Self {

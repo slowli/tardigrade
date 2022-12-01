@@ -10,14 +10,14 @@ use crate::utils::{find_meta_attrs, take_derive, DeriveAttrs, TargetField, Targe
 
 impl TargetField {
     fn check_for_handle(&self, env_ident: &Ident) -> darling::Result<()> {
-        const MSG: &str = "fields in handle struct must be wrapped in `Handle<_, _>`";
+        const MSG: &str = "fields in handle struct must be wrapped in `InEnv<_, _>`";
 
         let wrapper = self
             .wrapper
             .as_ref()
             .ok_or_else(|| darling::Error::custom(MSG).with_span(&self.span))?;
 
-        if wrapper.ident != "Handle" || wrapper.inner_types.len() != 2 {
+        if wrapper.ident != "InEnv" || wrapper.inner_types.len() != 2 {
             return Err(darling::Error::custom(MSG).with_span(&self.span));
         }
 

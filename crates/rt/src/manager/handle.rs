@@ -19,9 +19,9 @@ use crate::{
 };
 use tardigrade::{
     channel::SendError,
-    interface::{AccessError, HandleMapKey, HandlePath, Interface, ReceiverAt, Resource, SenderAt},
+    interface::{AccessError, Handle, HandleMapKey, HandlePath, Interface, ReceiverAt, SenderAt},
     task::JoinError,
-    workflow::{DescribeEnv, GetInterface, Handle, TakeHandle, WorkflowEnv},
+    workflow::{DescribeEnv, GetInterface, InEnv, TakeHandle, WorkflowEnv},
     ChannelId, Decode, Encode, Raw, WorkflowId,
 };
 
@@ -137,8 +137,8 @@ impl<'a, M: AsManager> WorkflowHandle<'a, (), M> {
         channel_ids: &ChannelIds,
     ) -> HashSet<ChannelId> {
         let sender_ids = channel_ids.values().filter_map(|id| match id {
-            Resource::Sender(id) => Some(*id),
-            Resource::Receiver(_) => None,
+            Handle::Sender(id) => Some(*id),
+            Handle::Receiver(_) => None,
         });
         let channel_tasks = sender_ids.map(|id| async move {
             let channel = transaction.channel(id).await.unwrap();
@@ -224,7 +224,7 @@ impl<W: TakeHandle<Self>, M: AsManager> WorkflowHandle<'_, W, M> {
 
     /// Returns a handle for the workflow that allows interacting with its channels.
     #[allow(clippy::missing_panics_doc)] // false positive
-    pub fn handle(&mut self) -> Handle<W, Self> {
+    pub fn handle(&mut self) -> InEnv<W, Self> {
         W::take_handle(self, HandlePath::EMPTY).unwrap()
     }
 }

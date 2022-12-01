@@ -19,7 +19,7 @@ use crate::{
     },
     workflow::{ChannelIds, PersistedWorkflow, Workflow},
 };
-use tardigrade::interface::Resource;
+use tardigrade::interface::Handle;
 use tardigrade::{
     interface::{HandleMap, Interface},
     spawn::{
@@ -168,13 +168,13 @@ impl<S: DefineWorkflow> NewWorkflows<S> {
         for (path, &id_res) in &channel_ids {
             let channel_id = id_res.factor();
             let state = match id_res {
-                Resource::Receiver(_) => ChannelRecord::new(executed_workflow_id, Some(child_id)),
-                Resource::Sender(_) => ChannelRecord::new(Some(child_id), executed_workflow_id),
+                Handle::Receiver(_) => ChannelRecord::new(executed_workflow_id, Some(child_id)),
+                Handle::Sender(_) => ChannelRecord::new(Some(child_id), executed_workflow_id),
             };
             let state = transaction.get_or_insert_channel(channel_id, state).await;
             if state.is_closed {
                 persisted.close_channel(id_res);
-            } else if matches!(id_res, Resource::Sender(_)) {
+            } else if matches!(id_res, Handle::Sender(_)) {
                 transaction
                     .manipulate_channel(channel_id, |channel| {
                         channel.sender_workflow_ids.insert(child_id);

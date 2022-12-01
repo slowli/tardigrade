@@ -24,7 +24,7 @@ use crate::{
     workflow::ChannelIds,
 };
 use tardigrade::{
-    interface::{HandleMapKey, Interface, ReceiverAt, Resource, SenderAt},
+    interface::{Handle, HandleMapKey, Interface, ReceiverAt, SenderAt},
     spawn::{ChannelsConfig, HostError},
     task::JoinError,
     ChannelId, WakerId, WorkflowId,
@@ -165,8 +165,8 @@ impl PersistedWorkflowData {
         self.schedule_wakers(wakers, WakeUpCause::InitWorkflow { stub_id });
         for spec in channel_ids.values_mut() {
             *spec = match spec {
-                Resource::Sender(id) => Resource::Receiver(*id),
-                Resource::Receiver(id) => Resource::Sender(*id),
+                Handle::Sender(id) => Handle::Receiver(*id),
+                Handle::Receiver(id) => Handle::Sender(*id),
             };
         }
 
@@ -314,8 +314,8 @@ impl WorkflowData {
         if let Some(interface) = interface {
             for (path, spec) in interface.handles() {
                 match spec {
-                    Resource::Receiver(_) => ReceiverAt(path).get(channels)?,
-                    Resource::Sender(_) => SenderAt(path).get(channels)?,
+                    Handle::Receiver(_) => ReceiverAt(path).get(channels)?,
+                    Handle::Sender(_) => SenderAt(path).get(channels)?,
                 };
             }
 

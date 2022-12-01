@@ -18,8 +18,8 @@ use tardigrade::interface::AccessErrorKind;
 use tardigrade::{
     channel::SendError,
     interface::{
-        AccessError, ChannelHalf, HandleMap, HandleMapKey, HandlePath, Interface, ReceiverAt,
-        Resource, SenderAt,
+        AccessError, ChannelHalf, Handle, HandleMap, HandleMapKey, HandlePath, Interface,
+        ReceiverAt, SenderAt,
     },
     spawn::{ChannelSpawnConfig, ChannelsConfig},
     ChannelId, WakerId, WorkflowId,
@@ -237,10 +237,10 @@ impl ChannelStates {
     {
         for (path, &id_handle) in channel_ids {
             match id_handle {
-                Resource::Receiver(id) => {
+                Handle::Receiver(id) => {
                     self.receivers.entry(id).or_insert_with(ReceiverState::new);
                 }
-                Resource::Sender(id) => {
+                Handle::Sender(id) => {
                     let capacity = sender_cap_fn(path.as_ref());
                     let state = self
                         .senders
@@ -254,7 +254,7 @@ impl ChannelStates {
     }
 }
 
-type ChannelState<'a> = Resource<&'a ReceiverState, &'a SenderState>;
+type ChannelState<'a> = Handle<&'a ReceiverState, &'a SenderState>;
 
 /// Information about channels for a particular workflow interface.
 #[derive(Debug, Clone, Copy)]

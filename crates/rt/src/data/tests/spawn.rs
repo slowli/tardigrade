@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use super::*;
 use crate::{engine::DefineWorkflow, manager::StashWorkflow};
 use tardigrade::{
-    interface::{Interface, ReceiverAt, Resource, SenderAt},
+    interface::{Handle, Interface, ReceiverAt, SenderAt},
     spawn::{ChannelSpawnConfig, HostError, ManageInterfaces},
     ChannelId,
 };
@@ -148,11 +148,8 @@ fn get_child_workflow_channel(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>
 
 fn configure_handles() -> ChannelsConfig<ChannelId> {
     let mut config = ChannelsConfig::default();
-    config.insert(
-        "commands".into(),
-        Resource::Receiver(ChannelSpawnConfig::New),
-    );
-    config.insert("traces".into(), Resource::Sender(ChannelSpawnConfig::New));
+    config.insert("commands".into(), Handle::Receiver(ChannelSpawnConfig::New));
+    config.insert("traces".into(), Handle::Sender(ChannelSpawnConfig::New));
     config
 }
 
@@ -210,7 +207,7 @@ fn spawning_child_workflow_with_extra_channel() {
         let id = "test:latest";
         let args = b"child_input".to_vec();
         let mut handles = configure_handles();
-        handles.insert(id.into(), Resource::Receiver(ChannelSpawnConfig::New));
+        handles.insert(id.into(), Handle::Receiver(ChannelSpawnConfig::New));
 
         let err = ctx
             .data_mut()

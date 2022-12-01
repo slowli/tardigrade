@@ -2,15 +2,15 @@
 
 use std::{fmt, ops};
 
-use super::{DescribeEnv, Handle, TakeHandle, WithHandle, WorkflowEnv};
+use super::{DescribeEnv, InEnv, TakeHandle, WithHandle, WorkflowEnv};
 use crate::{
     channel::{RawReceiver, RawSender},
-    interface::{AccessError, HandleMap, HandleMapKey, HandlePath, Resource},
+    interface::{AccessError, Handle, HandleMap, HandleMapKey, HandlePath},
 };
 
 /// Dynamically-typed handle to a workflow containing handles to its channels.
 pub struct UntypedHandle<Env: WorkflowEnv> {
-    pub(crate) handles: HandleMap<Handle<RawReceiver, Env>, Handle<RawSender, Env>>,
+    pub(crate) handles: HandleMap<InEnv<RawReceiver, Env>, InEnv<RawSender, Env>>,
 }
 
 impl<Env: WorkflowEnv> Default for UntypedHandle<Env> {
@@ -23,8 +23,8 @@ impl<Env: WorkflowEnv> Default for UntypedHandle<Env> {
 
 impl<Env: WorkflowEnv> fmt::Debug for UntypedHandle<Env>
 where
-    Handle<RawReceiver, Env>: fmt::Debug,
-    Handle<RawSender, Env>: fmt::Debug,
+    InEnv<RawReceiver, Env>: fmt::Debug,
+    InEnv<RawSender, Env>: fmt::Debug,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&self.handles, formatter)
@@ -32,7 +32,7 @@ where
 }
 
 type KeyHandle<K, Env> =
-    <K as HandleMapKey>::Output<Handle<RawReceiver, Env>, Handle<RawSender, Env>>;
+    <K as HandleMapKey>::Output<InEnv<RawReceiver, Env>, InEnv<RawSender, Env>>;
 
 impl<Env: WorkflowEnv> UntypedHandle<Env> {
     /// Removes an element with the specified index from this handle.
@@ -62,12 +62,10 @@ impl<Env: DescribeEnv> TakeHandle<Env> for () {
             .handles()
             .map(|(path, spec)| {
                 let handle = match spec {
-                    Resource::Receiver(_) => {
-                        Resource::Receiver(RawReceiver::take_handle(&mut *env, path)?)
+                    Handle::Receiver(_) => {
+                        Handle::Receiver(RawReceiver::take_handle(&mut *env, path)?)
                     }
-                    Resource::Sender(_) => {
-                        Resource::Sender(RawSender::take_handle(&mut *env, path)?)
-                    }
+                    Handle::Sender(_) => Handle::Sender(RawSender::take_handle(&mut *env, path)?),
                 };
                 Ok((path.to_owned(), handle))
             })

@@ -17,7 +17,7 @@
 //! # use tardigrade::{
 //! #     channel::Sender,
 //! #     task::TaskResult,
-//! #     workflow::{Handle, GetInterface, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
+//! #     workflow::{InEnv, GetInterface, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
 //! #     Json,
 //! # };
 //! // Assume we want to test a workflow.
@@ -29,7 +29,7 @@
 //! #[tardigrade::handle]
 //! #[derive(Debug)]
 //! pub struct MyHandle<Env: WorkflowEnv> {
-//!     pub events: Handle<Sender<Event, Json>, Env>,
+//!     pub events: InEnv<Sender<Event, Json>, Env>,
 //! }
 //!
 //! /// Arguments provided to the workflow on creation.
@@ -103,7 +103,7 @@ use crate::{
     interface::Interface,
     spawn::{ManageWorkflowsExt, RemoteWorkflow, Spawner, Workflows},
     task::{self, TaskResult},
-    workflow::{Handle, SpawnWorkflow, TakeHandle, TaskHandle, UntypedHandle, Wasm},
+    workflow::{InEnv, SpawnWorkflow, TakeHandle, TaskHandle, UntypedHandle, Wasm},
     ChannelId, WorkflowId,
 };
 
@@ -511,7 +511,7 @@ where
     #[allow(clippy::missing_panics_doc)] // false positive
     pub fn run<F, Fut>(mut self, test_fn: F)
     where
-        F: FnOnce(Handle<W, RemoteWorkflow>) -> Fut,
+        F: FnOnce(InEnv<W, RemoteWorkflow>) -> Fut,
         Fut: Future<Output = ()>,
     {
         const DEFINITION_ID: &str = "__tested_workflow";

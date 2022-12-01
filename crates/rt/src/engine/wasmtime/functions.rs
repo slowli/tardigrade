@@ -20,7 +20,7 @@ use crate::{
 };
 use tardigrade::{
     abi::{IntoWasm, TryFromWasm},
-    interface::{AccessError, AccessErrorKind, ChannelHalf, HandlePathBuf, Resource},
+    interface::{AccessError, AccessErrorKind, ChannelHalf, Handle, HandlePathBuf},
     spawn::{ChannelSpawnConfig, HostError},
     task::{JoinError, TaskError},
     TaskId, TimerDefinition, TimerId, WakerId,
@@ -500,10 +500,10 @@ impl SpawnFunctions {
         let mut handles = handles.inner.lock().unwrap();
         match channel_kind {
             ChannelHalf::Receiver => {
-                handles.insert(path, Resource::Receiver(channel_config));
+                handles.insert(path, Handle::Receiver(channel_config));
             }
             ChannelHalf::Sender => {
-                handles.insert(path, Resource::Sender(channel_config));
+                handles.insert(path, Handle::Sender(channel_config));
             }
         }
         tracing::debug!(?handles, "inserted channel handle");
@@ -531,7 +531,7 @@ impl SpawnFunctions {
         let mut handles = handles.inner.lock().unwrap();
         handles.insert(
             path,
-            Resource::Sender(ChannelSpawnConfig::Existing(channel_id)),
+            Handle::Sender(ChannelSpawnConfig::Existing(channel_id)),
         );
         tracing::debug!(?handles, "inserted channel handle");
         Ok(())

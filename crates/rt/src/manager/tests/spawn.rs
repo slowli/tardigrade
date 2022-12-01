@@ -10,7 +10,7 @@ use crate::{
     storage::{LocalTransaction, Readonly, WorkflowWaker},
 };
 use tardigrade::{
-    interface::Resource,
+    interface::Handle,
     spawn::{ChannelSpawnConfig, ChannelsConfig},
     task::JoinError,
 };
@@ -41,9 +41,9 @@ async fn peek_channel(
 
 fn configure_handles() -> ChannelsConfig<ChannelId> {
     let mut config = ChannelsConfig::default();
-    config.insert("orders".into(), Resource::Receiver(ChannelSpawnConfig::New));
-    config.insert("events".into(), Resource::Sender(ChannelSpawnConfig::New));
-    config.insert("traces".into(), Resource::Sender(ChannelSpawnConfig::New));
+    config.insert("orders".into(), Handle::Receiver(ChannelSpawnConfig::New));
+    config.insert("events".into(), Handle::Sender(ChannelSpawnConfig::New));
+    config.insert("traces".into(), Handle::Sender(ChannelSpawnConfig::New));
     config
 }
 
@@ -409,7 +409,7 @@ fn spawn_child_with_copied_sender(
         .channel_id("events")
         .unwrap();
     let mut handles = configure_handles();
-    let config = Resource::Sender(ChannelSpawnConfig::Existing(events_id));
+    let config = Handle::Sender(ChannelSpawnConfig::Existing(events_id));
     handles.insert("events".into(), config);
     if copy_traces {
         handles.insert("traces".into(), config);

@@ -106,20 +106,20 @@ pub use crate::{
 /// # Examples
 ///
 /// ```
-/// use tardigrade::{channel::{Sender, Receiver}, workflow::{Handle, WorkflowEnv}, Json};
+/// use tardigrade::{channel::{Sender, Receiver}, workflow::{InEnv, WorkflowEnv}, Json};
 ///
 /// /// Handle for the workflow.
 /// #[tardigrade::handle]
 /// #[derive(Debug)]
 /// pub struct MyHandle<Env: WorkflowEnv> {
-///     pub receiver: Handle<Receiver<i64, Json>, Env>,
-///     pub sender: Handle<Sender<i64, Json>, Env>,
+///     pub receiver: InEnv<Receiver<i64, Json>, Env>,
+///     pub sender: InEnv<Sender<i64, Json>, Env>,
 /// }
 /// ```
 ///
 /// See the [`workflow`](crate::workflow) module docs for an end-to-end example of usage.
 ///
-/// [`Handle`]: crate::workflow::Handle
+/// [`Handle`]: crate::workflow::InEnv
 /// [`TakeHandle`]: crate::workflow::TakeHandle
 pub use tardigrade_derive::handle;
 

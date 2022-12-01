@@ -10,7 +10,7 @@ use tardigrade::{
     channel::{Receiver, Request, Requests, Response, Sender},
     task::TaskResult,
     test::TestInstance,
-    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
+    workflow::{GetInterface, InEnv, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
     Json,
 };
 
@@ -39,8 +39,8 @@ struct TestInit {
 
 #[tardigrade::handle]
 struct TestHandle<Env: WorkflowEnv> {
-    requests: Handle<Sender<Request<String>, Json>, Env>,
-    responses: Handle<Receiver<Response<usize>, Json>, Env>,
+    requests: InEnv<Sender<Request<String>, Json>, Env>,
+    responses: InEnv<Receiver<Response<usize>, Json>, Env>,
 }
 
 #[derive(Debug, GetInterface, TakeHandle)]

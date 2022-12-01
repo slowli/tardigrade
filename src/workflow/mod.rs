@@ -19,9 +19,9 @@
 //! #[derive(Debug)]
 //! pub struct MyHandle<Env: WorkflowEnv = Wasm> {
 //!     /// Receiver for commands.
-//!     pub commands: Handle<Receiver<Command, Json>, Env>,
+//!     pub commands: InEnv<Receiver<Command, Json>, Env>,
 //!     /// Sender for events.
-//!     pub events: Handle<Sender<Event, Json>, Env>,
+//!     pub events: InEnv<Sender<Event, Json>, Env>,
 //! }
 //!
 //! /// Args provided to the workflow on creation.
@@ -117,7 +117,7 @@ mod handle;
 mod untyped;
 
 pub use self::{
-    handle::{DescribeEnv, Handle, TakeHandle, WithHandle, WorkflowEnv},
+    handle::{DescribeEnv, InEnv, TakeHandle, WithHandle, WorkflowEnv},
     untyped::UntypedHandle,
 };
 
@@ -445,7 +445,7 @@ pub trait SpawnWorkflow: GetInterface + TakeHandle<Wasm> + WorkflowFn {
     /// [`spawn`]: crate::task::spawn()
     /// [`JoinHandle`]: crate::task::JoinHandle
     /// [`TaskError`]: crate::task::TaskError
-    async fn spawn(args: Self::Args, handle: Handle<Self, Wasm>) -> TaskResult;
+    async fn spawn(args: Self::Args, handle: InEnv<Self, Wasm>) -> TaskResult;
 }
 
 /// Handle to a task, essentially equivalent to a boxed [`Future`].

@@ -10,7 +10,7 @@ use tardigrade::{
     channel::Sender,
     spawn::{ManageWorkflowsExt, Workflows},
     task::{TaskError, TaskResult},
-    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
+    workflow::{GetInterface, InEnv, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
     Json,
 };
 
@@ -76,8 +76,8 @@ pub struct DurationMetric {
 
 #[tardigrade::handle]
 pub struct BakingHandle<Env: WorkflowEnv = Wasm> {
-    pub events: Handle<Sender<DomainEvent, Json>, Env>,
-    pub duration: Handle<Sender<DurationMetric, Json>, Env>,
+    pub events: InEnv<Sender<DomainEvent, Json>, Env>,
+    pub duration: InEnv<Sender<DurationMetric, Json>, Env>,
 }
 
 #[derive(Debug, GetInterface, TakeHandle)]

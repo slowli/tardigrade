@@ -62,4 +62,4 @@ pub trait TakeHandle<Env: WorkflowEnv>: WithHandle {
 }
 
 /// Handle in a particular environment.
-pub type Handle<T, Env> = <T as WithHandle>::Handle<Env>;
+pub type InEnv<T, Env> = <T as WithHandle>::Handle<Env>;

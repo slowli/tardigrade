@@ -11,7 +11,7 @@
 //! # use tardigrade::{
 //! #     channel::{Sender, Receiver},
 //! #     task::TaskResult,
-//! #     workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
+//! #     workflow::{GetInterface, InEnv, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
 //! #     Json,
 //! # };
 //! // Assume we want to spawn a child workflow defined as follows:
@@ -22,8 +22,8 @@
 //! #[tardigrade::handle]
 //! #[derive(Debug)]
 //! pub struct ChildHandle<Env: WorkflowEnv> {
-//!     pub commands: Handle<Receiver<String, Json>, Env>,
-//!     pub events: Handle<Sender<String, Json>, Env>,
+//!     pub commands: InEnv<Receiver<String, Json>, Env>,
+//!     pub events: InEnv<Sender<String, Json>, Env>,
 //! }
 //!
 //! impl WorkflowFn for ChildWorkflow {
@@ -75,7 +75,7 @@ use std::{
     rc::Rc,
     task::{Context, Poll},
 };
-use tardigrade_shared::interface::Resource;
+use tardigrade_shared::interface::Handle;
 
 pub use crate::error::HostError;
 
@@ -83,9 +83,7 @@ use crate::{
     channel::{RawReceiver, RawSender, Receiver, SendError, Sender},
     interface::{AccessError, AccessErrorKind, HandleMap, HandlePath, HandlePathBuf, Interface},
     task::JoinError,
-    workflow::{
-        DescribeEnv, GetInterface, Handle, TakeHandle, WithHandle, WorkflowEnv, WorkflowFn,
-    },
+    workflow::{DescribeEnv, GetInterface, InEnv, TakeHandle, WithHandle, WorkflowEnv, WorkflowFn},
     Decode, Encode,
 };
 
@@ -296,10 +294,10 @@ impl<Ch: SpecifyWorkflowChannels> SpawnerInner<Ch> {
     fn close_channel_half(&self, path: HandlePath<'_>) {
         let mut borrow = self.channels.borrow_mut();
         match borrow.get_mut(&path).unwrap() {
-            Resource::Receiver(rx) => {
+            Handle::Receiver(rx) => {
                 *rx = ChannelSpawnConfig::Closed;
             }
-            Resource::Sender(sx) => {
+            Handle::Sender(sx) => {
                 *sx = ChannelSpawnConfig::Closed;
             }
         }
@@ -307,7 +305,7 @@ impl<Ch: SpecifyWorkflowChannels> SpawnerInner<Ch> {
 
     fn copy_sender(&self, path: HandlePath<'_>, sender: Ch::Sender) {
         let mut borrow = self.channels.borrow_mut();
-        if let Resource::Sender(sx) = borrow.get_mut(&path).unwrap() {
+        if let Handle::Sender(sx) = borrow.get_mut(&path).unwrap() {
             *sx = ChannelSpawnConfig::Existing(sender);
         }
     }
@@ -457,7 +455,7 @@ where
     W: WithHandle,
 {
     spawner: Spawner<M>,
-    handle: Handle<W, Spawner<M>>,
+    handle: InEnv<W, Spawner<M>>,
     manager: &'a M,
 }
 
@@ -466,7 +464,7 @@ where
     M: SpecifyWorkflowChannels,
     Spawner<M>: fmt::Debug,
     W: WithHandle,
-    Handle<W, Spawner<M>>: fmt::Debug,
+    InEnv<W, Spawner<M>>: fmt::Debug,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -496,7 +494,7 @@ where
     }
 
     /// Returns a [handle](TakeHandle) that can be used to configure created workflow channels.
-    pub fn handle(&self) -> &Handle<W, Spawner<M>> {
+    pub fn handle(&self) -> &InEnv<W, Spawner<M>> {
         &self.handle
     }
 
@@ -548,7 +546,7 @@ impl Future for RemoteWorkflow {
 pub struct WorkflowHandle<W: WithHandle> {
     /// Channel handles associated with the workflow. Each channel receiver in the remote workflow
     /// is mapped to a local sender, and vice versa.
-    pub api: Handle<W, RemoteWorkflow>,
+    pub api: InEnv<W, RemoteWorkflow>,
     /// Workflow handle that can be polled for completion.
     pub workflow: RemoteWorkflow,
 }
@@ -556,7 +554,7 @@ pub struct WorkflowHandle<W: WithHandle> {
 impl<W> fmt::Debug for WorkflowHandle<W>
 where
     W: WithHandle,
-    Handle<W, RemoteWorkflow>: fmt::Debug,
+    InEnv<W, RemoteWorkflow>: fmt::Debug,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter

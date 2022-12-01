@@ -18,7 +18,7 @@ use crate::{
     workflow::{ChannelIds, Workflow},
 };
 use tardigrade::{
-    interface::Resource,
+    interface::Handle,
     spawn::{ChannelsConfig, HostError},
     task::JoinError,
     ChannelId, TaskId, TimerId, WorkflowId,
@@ -81,10 +81,10 @@ impl PersistedWorkflow {
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
-    pub(crate) fn close_channel(&mut self, channel_id: Resource<ChannelId>) {
+    pub(crate) fn close_channel(&mut self, channel_id: Handle<ChannelId>) {
         match channel_id {
-            Resource::Receiver(id) => self.data.close_receiver(id),
-            Resource::Sender(id) => self.data.close_sender(id),
+            Handle::Receiver(id) => self.data.close_receiver(id),
+            Handle::Sender(id) => self.data.close_sender(id),
         }
     }
 
