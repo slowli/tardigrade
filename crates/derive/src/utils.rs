@@ -5,7 +5,7 @@ use proc_macro2::{Ident, Span};
 use quote::{quote, ToTokens};
 use syn::{
     parse_quote, spanned::Spanned, Attribute, Data, DataStruct, DeriveInput, Generics, NestedMeta,
-    Path, Type,
+    Path, Type, TypePath,
 };
 
 use std::collections::HashSet;
@@ -29,45 +29,6 @@ pub(crate) struct DeriveAttrs {
     pub crate_path: Option<Path>,
 }
 
-#[derive(Debug)]
-pub(crate) struct FieldWrapper {
-    pub ident: Ident,
-    pub inner_types: Vec<Type>,
-}
-
-impl FieldWrapper {
-    const MAX_INNER_TYPES: usize = 2;
-
-    fn new(ty: &Type) -> Option<Self> {
-        if let Type::Path(syn::TypePath { path, .. }) = ty {
-            let last_segment = path.segments.last().unwrap();
-            let args = match &last_segment.arguments {
-                syn::PathArguments::AngleBracketed(args) => &args.args,
-                _ => return None,
-            };
-
-            if args.is_empty() || args.len() > Self::MAX_INNER_TYPES {
-                return None;
-            }
-            let inner_types = args.iter().filter_map(|arg| match arg {
-                syn::GenericArgument::Type(ty) => Some(ty.clone()),
-                _ => None,
-            });
-            let inner_types: Vec<_> = inner_types.collect();
-            if inner_types.len() == args.len() {
-                Some(Self {
-                    ident: last_segment.ident.clone(),
-                    inner_types,
-                })
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-}
-
 /// Field of a struct for which one of traits needs to be derived.
 #[derive(Debug)]
 pub(crate) struct TargetField {
@@ -75,15 +36,13 @@ pub(crate) struct TargetField {
     pub ident: Option<Ident>,
     /// Name of the field considering a potential `#[_(rename = "...")]` override.
     pub name: Option<String>,
-    pub ty: Type,
+    pub ty: Path,
     pub flatten: bool,
-    pub wrapper: Option<FieldWrapper>,
 }
 
 impl TargetField {
     fn new(field: &syn::Field) -> darling::Result<Self> {
         let ident = field.ident.clone();
-
         let attrs = find_meta_attrs("tardigrade", &field.attrs).map_or_else(
             || Ok(TargetFieldAttrs::default()),
             |meta| TargetFieldAttrs::from_nested_meta(&meta),
@@ -92,14 +51,16 @@ impl TargetField {
         let name = attrs
             .rename
             .or_else(|| ident.as_ref().map(ToString::to_string));
+        let Type::Path(TypePath { path, .. }) = &field.ty else {
+            return Err(darling::Error::custom("unsupported field shape"));
+        };
 
         Ok(Self {
             span: field.span(),
             ident,
             name,
-            ty: field.ty.clone(),
+            ty: path.clone(),
             flatten: attrs.flatten,
-            wrapper: FieldWrapper::new(&field.ty),
         })
     }
 

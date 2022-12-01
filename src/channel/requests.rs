@@ -13,11 +13,12 @@ use futures::{
 };
 use serde::{Deserialize, Serialize};
 
-use std::{collections::HashMap, future::Future, marker::PhantomData};
+use std::{collections::HashMap, fmt, future::Future, marker::PhantomData};
 
 use crate::{
     channel::{Receiver, Sender},
     task::{self, JoinHandle},
+    workflow::{InEnv, TakeHandle, Wasm, WorkflowEnv},
     ChannelId, Decode, Encode,
 };
 
@@ -338,5 +339,50 @@ where
             requests_sx: inner_sx,
         };
         (requests, task)
+    }
+}
+
+/// Sender an receiver pairs to handle requests.
+#[derive(TakeHandle)]
+#[tardigrade(crate = "crate")]
+pub struct RequestHandles<Req, Resp, C, Env: WorkflowEnv = Wasm>
+where
+    C: Encode<Request<Req>>
+        + Decode<Request<Req>>
+        + Encode<Response<Resp>>
+        + Decode<Response<Resp>>,
+{
+    /// Requests sender.
+    pub requests: InEnv<Sender<Request<Req>, C>, Env>,
+    /// Responses receiver.
+    pub responses: InEnv<Receiver<Response<Resp>, C>, Env>,
+}
+
+// FIXME: use auto-derived impl
+impl<Req, Resp, C, Env> fmt::Debug for RequestHandles<Req, Resp, C, Env>
+where
+    Env: WorkflowEnv,
+    C: Encode<Request<Req>>
+        + Decode<Request<Req>>
+        + Encode<Response<Resp>>
+        + Decode<Response<Resp>>,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RequestHandles")
+            .finish_non_exhaustive()
+    }
+}
+
+impl<Req: 'static, Resp: 'static, C> RequestHandles<Req, Resp, C>
+where
+    C: Encode<Request<Req>>
+        + Decode<Request<Req>>
+        + Encode<Response<Resp>>
+        + Decode<Response<Resp>>,
+{
+    /// Starts building a [`Requests`] processor based on the contained sender-receiver pair.
+    pub fn process_requests(self) -> RequestsBuilder<'static, Req, Resp, C> {
+        Requests::builder(self.requests, self.responses)
     }
 }

@@ -14,7 +14,7 @@ use tardigrade::{
     Json, Timer,
 };
 
-#[tardigrade::handle]
+#[derive(TakeHandle)]
 struct TestHandle<Env: WorkflowEnv> {
     timestamps: InEnv<Sender<DateTime<Utc>, Json>, Env>,
 }

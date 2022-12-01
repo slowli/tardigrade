@@ -7,10 +7,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 use tardigrade::{
-    channel::{Receiver, Request, Requests, Response, Sender},
+    channel::{Request, RequestHandles, Response},
     task::TaskResult,
     test::TestInstance,
-    workflow::{GetInterface, InEnv, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
+    workflow::{GetInterface, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
     Json,
 };
 
@@ -37,10 +37,10 @@ struct TestInit {
     options: Options,
 }
 
-#[tardigrade::handle]
+#[derive(TakeHandle)]
 struct TestHandle<Env: WorkflowEnv> {
-    requests: InEnv<Sender<Request<String>, Json>, Env>,
-    responses: InEnv<Receiver<Response<usize>, Json>, Env>,
+    #[tardigrade(flatten)]
+    str_lengths: RequestHandles<String, usize, Json, Env>,
 }
 
 #[derive(Debug, GetInterface, TakeHandle)]
@@ -57,7 +57,9 @@ impl SpawnWorkflow for TestedWorkflow {
     async fn spawn(args: TestInit, handle: TestHandle<Wasm>) -> TaskResult {
         let strings = args.strings;
         let options = args.options;
-        let (requests, requests_task) = Requests::builder(handle.requests, handle.responses)
+        let (requests, requests_task) = handle
+            .str_lengths
+            .process_requests()
             .with_capacity(options.capacity)
             .build();
 
@@ -106,10 +108,11 @@ fn test_requests(init: TestInit) {
 
     let expected_strings = init.strings.clone();
     let options = init.options;
-    TestInstance::<TestedWorkflow>::new(init).run(|mut api| async move {
+    TestInstance::<TestedWorkflow>::new(init).run(|api| async move {
+        let mut str_lengths = api.str_lengths;
         let mut strings = vec![];
         let mut cancelled_ids = HashSet::new();
-        while let Some(req) = api.requests.next().await {
+        while let Some(req) = str_lengths.requests.next().await {
             match req {
                 Request::New { id, data, .. } => {
                     let response = Response {
@@ -117,7 +120,7 @@ fn test_requests(init: TestInit) {
                         data: data.len(),
                     };
                     strings.push(data);
-                    api.responses.send(response).await.ok();
+                    str_lengths.responses.send(response).await.ok();
                 }
                 Request::Cancel { id } => {
                     cancelled_ids.insert(id);

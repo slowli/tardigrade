@@ -1,5 +1,7 @@
 //! Codecs for converting values from / to bytes.
 
+// FIXME: simplify to single trait
+
 use std::{convert::Infallible, error};
 
 /// Decoder for a particular type.

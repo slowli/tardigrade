@@ -40,7 +40,7 @@ mod requests;
 
 pub use self::{
     broadcast::{BroadcastError, BroadcastPublisher, BroadcastSubscriber},
-    requests::{Request, Requests, RequestsBuilder, Response},
+    requests::{Request, RequestHandles, Requests, RequestsBuilder, Response},
 };
 pub use crate::error::SendError;
 

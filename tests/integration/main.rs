@@ -17,8 +17,7 @@ use tardigrade::{
     Json,
 };
 
-#[tardigrade::handle]
-#[derive(Debug)]
+#[derive(TakeHandle)]
 struct TestHandle<Env: WorkflowEnv> {
     commands: InEnv<Receiver<i32, Json>, Env>,
     events: InEnv<Sender<i32, Json>, Env>,

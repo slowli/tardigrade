@@ -4,41 +4,46 @@ use darling::{ast::Style, FromMeta};
 use proc_macro::TokenStream;
 use proc_macro2::Ident;
 use quote::{quote, ToTokens};
-use syn::{parse_quote, AngleBracketedGenericArguments, DeriveInput, Generics, Path, Type};
+use syn::{
+    parse_quote, AngleBracketedGenericArguments, DeriveInput, GenericArgument, Generics, Path,
+    PathArguments, Type, TypePath,
+};
 
 use crate::utils::{find_meta_attrs, DeriveAttrs, TargetField, TargetStruct};
 
 impl TargetField {
-    fn check_for_handle(&self, env_ident: &Ident) -> darling::Result<()> {
-        const MSG: &str = "fields in handle struct must be wrapped in `InEnv<_, _>`";
+    fn init_by_take_handle(
+        &self,
+        cr: &Path,
+        env_ident: &Ident,
+        field_index: usize,
+    ) -> darling::Result<impl ToTokens> {
+        const MSG: &str = "fields in handle struct must have env param as last type arg`";
 
-        let wrapper = self
-            .wrapper
-            .as_ref()
-            .ok_or_else(|| darling::Error::custom(MSG).with_span(&self.span))?;
-
-        if wrapper.ident != "InEnv" || wrapper.inner_types.len() != 2 {
-            return Err(darling::Error::custom(MSG).with_span(&self.span));
-        }
-
-        let is_valid = if let Type::Path(syn::TypePath { path, .. }) = &wrapper.inner_types[1] {
-            path.get_ident().map_or(false, |id| id == env_ident)
-        } else {
-            false
+        let mut unwrapped_ty = self.ty.clone();
+        let Some(last_segment) = unwrapped_ty.segments.last_mut() else {
+            return Err(darling::Error::custom(MSG).with_span(&self.ty));
         };
-        if is_valid {
-            Ok(())
+        let args = match &mut last_segment.arguments {
+            PathArguments::AngleBracketed(args) => &mut args.args,
+            _ => return Err(darling::Error::custom(MSG).with_span(&self.ty)),
+        };
+        let last_arg = args
+            .last_mut()
+            .ok_or_else(|| darling::Error::custom(MSG).with_span(&self.ty))?;
+        if let GenericArgument::Type(Type::Path(TypePath { path, .. })) = last_arg {
+            if !path.is_ident(env_ident) {
+                return Err(darling::Error::custom(MSG).with_span(&self.ty));
+            }
+            *path = syn::parse_quote!(#cr::workflow::Wasm);
         } else {
-            Err(darling::Error::custom(MSG).with_span(&self.span))
+            return Err(darling::Error::custom(MSG).with_span(&self.ty));
         }
-    }
 
-    fn init_by_take_handle(&self, cr: &Path, field_index: usize) -> impl ToTokens {
-        let unwrapped_ty = &self.wrapper.as_ref().unwrap().inner_types[0];
         let path = self.path();
         let tr = quote!(#cr::workflow::TakeHandle<Env>);
         let field = self.ident(field_index);
-        quote!(#field: <#unwrapped_ty as #tr>::take_handle(&mut *env, #path)?)
+        Ok(quote!(#field: <#unwrapped_ty as #tr>::take_handle(&mut *env, #path)?))
     }
 }
 
@@ -55,9 +60,6 @@ impl Handle {
     fn new(input: &DeriveInput, crate_path: Path) -> darling::Result<Self> {
         let env = Self::env_generic(&input.generics)?;
         let mut base = TargetStruct::new(input)?;
-        for field in &base.fields {
-            field.check_for_handle(&env)?;
-        }
         base.generics = input.generics.clone();
 
         Ok(Self {
@@ -83,7 +85,7 @@ impl Handle {
         }
     }
 
-    fn impl_take_handle(&self) -> impl ToTokens {
+    fn impl_take_handle(&self) -> darling::Result<impl ToTokens> {
         let cr = &self.crate_path;
         let handle = &self.base.ident;
         let env = &self.env;
@@ -93,8 +95,7 @@ impl Handle {
         let mut reduced_generics = self.base.generics.clone();
         reduced_generics.params.pop(); // removes the env generic
         let (reduced_impl_generics, wasm_ty_generics, _) = reduced_generics.split_for_impl();
-        let wasm_ty_generics: AngleBracketedGenericArguments = if reduced_generics.params.is_empty()
-        {
+        let wasm_ty_generics = if reduced_generics.params.is_empty() {
             syn::parse_quote!(<#cr::workflow::Wasm>)
         } else {
             let mut args: AngleBracketedGenericArguments = syn::parse_quote!(#wasm_ty_generics);
@@ -110,13 +111,15 @@ impl Handle {
         };
 
         let handle_fields = self.base.fields.iter().enumerate();
-        let handle_fields = handle_fields.map(|(idx, field)| field.init_by_take_handle(cr, idx));
+        let handle_fields = handle_fields
+            .map(|(idx, field)| field.init_by_take_handle(cr, env, idx))
+            .collect::<Result<Vec<_>, _>>()?;
         let handle_fields = match self.base.style {
             Style::Struct => quote!({ #(#handle_fields,)* }),
             Style::Tuple | Style::Unit => quote!(( #(#handle_fields,)* )),
         };
         let tr = quote!(#cr::workflow::TakeHandle);
-        quote! {
+        Ok(quote! {
             #with_handle_impl
 
             impl #impl_generics #tr <#env> for #handle #wasm_ty_generics #where_clause {
@@ -127,12 +130,10 @@ impl Handle {
                     core::result::Result::Ok(#handle #handle_fields)
                 }
             }
-        }
+        })
     }
-}
 
-impl ToTokens for Handle {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+    fn to_tokens(&self) -> darling::Result<proc_macro2::TokenStream> {
         let clone_impl = if self.derive_clone {
             Some(self.base.impl_clone())
         } else {
@@ -143,13 +144,13 @@ impl ToTokens for Handle {
         } else {
             None
         };
-        let take_handle_impl = self.impl_take_handle();
+        let take_handle_impl = self.impl_take_handle()?;
 
-        tokens.extend(quote! {
+        Ok(quote! {
             #clone_impl
             #debug_impl
             #take_handle_impl
-        });
+        })
     }
 }
 
@@ -166,8 +167,7 @@ fn derive_take_handle(input: &DeriveInput) -> darling::Result<impl ToTokens> {
     if let Some(handle) = &attrs.handle {
         Ok(impl_take_handle_delegation(input, &crate_path, handle))
     } else {
-        let handle = Handle::new(input, crate_path)?;
-        Ok(quote!(#handle))
+        Handle::new(input, crate_path)?.to_tokens()
     }
 }
 
