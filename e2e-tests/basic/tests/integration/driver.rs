@@ -18,7 +18,7 @@ use std::{
 
 use crate::LocalManager;
 use tardigrade::{
-    interface::{ReceiverName, SenderName},
+    interface::{ReceiverAt, SenderAt},
     spawn::ManageWorkflowsExt,
     Decode, Encode, Json, TimerId,
 };
@@ -510,12 +510,13 @@ async fn dynamically_typed_async_handle() -> TestResult {
         .await?;
     let mut handle = workflow.handle();
     let mut env = Driver::new();
-    let orders_sx = handle.remove(ReceiverName("orders")).unwrap();
+    let orders_sx = handle.remove(ReceiverAt("orders")).unwrap();
     let orders_id = orders_sx.channel_id();
     let mut orders_sx = orders_sx.into_sink(&mut env);
-    let events_rx = handle.remove(SenderName("events")).unwrap();
+    let events_rx = handle.remove(SenderAt("events")).unwrap();
     let events_id = events_rx.channel_id();
     let events_rx = events_rx.into_stream(&mut env);
+    drop(handle);
 
     let join_handle = spawn_traced_task(async move {
         env.drive(&mut manager).await;
@@ -567,8 +568,10 @@ async fn rollbacks_on_trap() -> TestResult {
     let mut handle = workflow.handle();
     let mut env = Driver::new();
     env.drop_erroneous_messages();
-    let orders_sx = handle.remove(ReceiverName("orders")).unwrap();
+    let orders_sx = handle.remove(ReceiverAt("orders")).unwrap();
     let mut orders_sx = orders_sx.into_sink(&mut env);
+    drop(handle);
+
     let results = env.tick_results();
     let join_handle = spawn_traced_task(async move { env.drive(&mut manager).await });
 

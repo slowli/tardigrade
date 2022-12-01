@@ -1,19 +1,25 @@
 {
   "v": 0,
-  "in": {
+  "handles": {
     "orders": {
-      "description": "New pizza orders go here"
+      "receiver": {
+        "description": "New pizza orders go here"
+      }
     },
-    "baking_responses": {
-      "description": "Responses for `baking_tasks`"
-    }
-  },
-  "out": {
     "events": {
-      "description": "Domain events emitted during pizza order lifecycle"
+      "sender": {
+        "description": "Domain events emitted during pizza order lifecycle"
+      }
     },
     "baking_tasks": {
-      "description": "Tasks to bake pizzas"
+      "sender":{
+        "description": "Tasks to bake pizzas"
+      }
+    },
+    "baking_responses": {
+      "receiver": {
+        "description": "Responses for `baking_tasks`"
+      }
     }
   },
   "args": {

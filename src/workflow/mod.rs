@@ -107,7 +107,7 @@ use crate::{
     channel::{Receiver, Sender},
     interface::{
         AccessError, AccessErrorKind, ArgsSpec, HandlePath, Interface, InterfaceBuilder,
-        InterfaceLocation, ReceiverAt, ReceiverSpec, SenderAt, SenderSpec,
+        InterfaceLocation, ReceiverSpec, SenderSpec,
     },
     task::TaskResult,
     Decode, Encode, Raw,
@@ -391,6 +391,8 @@ impl Wasm {
         &mut self,
         path: HandlePath<'_>,
     ) -> Result<crate::channel::RawReceiver, AccessError> {
+        use crate::interface::ReceiverAt;
+
         self.handles.remove(ReceiverAt(path))
     }
 
@@ -398,6 +400,8 @@ impl Wasm {
         &mut self,
         path: HandlePath<'_>,
     ) -> Result<crate::channel::RawSender, AccessError> {
+        use crate::interface::SenderAt;
+
         self.handles.remove(SenderAt(path))
     }
 }

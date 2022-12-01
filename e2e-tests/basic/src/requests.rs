@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{DomainEvent, PizzaOrder, SharedHandle};
 use tardigrade::{
-    channel::{Receiver, Requests, Sender, WithId},
+    channel::{Receiver, Request, Requests, Response, Sender},
     task::TaskResult,
     workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
     Json,
@@ -19,8 +19,8 @@ pub struct WorkflowHandle<Env: WorkflowEnv> {
     pub orders: Handle<Receiver<PizzaOrder, Json>, Env>,
     #[tardigrade(flatten)]
     pub shared: Handle<SharedHandle<Wasm>, Env>,
-    pub baking_tasks: Handle<Sender<WithId<PizzaOrder>, Json>, Env>,
-    pub baking_responses: Handle<Receiver<WithId<()>, Json>, Env>,
+    pub baking_tasks: Handle<Sender<Request<PizzaOrder>, Json>, Env>,
+    pub baking_responses: Handle<Receiver<Response<()>, Json>, Env>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -20,7 +20,9 @@ use crate::{
         imp::{mpsc_receiver_get, mpsc_sender_get, MpscSender, ACCESS_ERROR_PAD},
         RawReceiver, RawSender,
     },
-    interface::{ChannelHalf, HandlePath, Interface},
+    interface::{
+        AccessError, AccessErrorKind, ChannelHalf, HandlePath, Interface, ReceiverAt, SenderAt,
+    },
     task::{JoinError, TaskError},
 };
 
@@ -72,7 +74,7 @@ impl ManageWorkflows<()> for Workflows {
                 definition_id.len(),
                 args.as_ptr(),
                 args.len(),
-                channels.into_resource(),
+                config_into_resource(channels),
             )
         };
         WorkflowInit { stub }.await
@@ -187,17 +189,17 @@ impl ChannelSpawnConfig<RawSender> {
     }
 }
 
-impl ChannelsConfig<RawReceiver, RawSender> {
-    unsafe fn into_resource(self) -> Resource<Self> {
-        let resource = create_handles();
-        for (name, config) in self.receivers {
-            config.configure(&resource, name.as_ref());
-        }
-        for (name, config) in self.senders {
-            config.configure(&resource, name.as_ref());
-        }
-        resource
+unsafe fn config_into_resource(
+    config: ChannelsConfig<RawReceiver, RawSender>,
+) -> Resource<ChannelsConfig<RawReceiver, RawSender>> {
+    let resource = create_handles();
+    for (path, config) in config {
+        let path = path.as_ref();
+        config
+            .map_receiver(|config| config.configure(&resource, path))
+            .map_sender(|config| config.configure(&resource, path));
     }
+    resource
 }
 
 #[derive(Debug)]
@@ -206,47 +208,53 @@ pub(crate) struct RemoteWorkflow {
 }
 
 impl RemoteWorkflow {
-    pub fn take_receiver(&mut self, path: HandlePath<'_>) -> Option<Remote<RawSender>> {
-        let path = path.to_cow_string();
+    pub fn take_receiver(
+        &mut self,
+        path: HandlePath<'_>,
+    ) -> Result<Remote<RawSender>, AccessError> {
+        let path_str = path.to_cow_string();
         let channel = unsafe {
             mpsc_sender_get(
                 Some(&self.resource),
-                path.as_ptr(),
-                path.len(),
+                path_str.as_ptr(),
+                path_str.len(),
                 &mut ACCESS_ERROR_PAD,
             )
         };
 
-        if unsafe { ACCESS_ERROR_PAD } != 0 {
-            // Got an error, meaning that the channel does not exist
-            debug_assert!(channel.is_none());
-            None
-        } else if let Some(channel) = channel {
-            Some(Remote::Some(RawSender::from_resource(channel)))
+        unsafe {
+            Result::<(), AccessErrorKind>::from_abi_in_wasm(ACCESS_ERROR_PAD)
+                .map_err(|kind| kind.with_location(ReceiverAt(path)))?;
+        }
+        if let Some(channel) = channel {
+            Ok(Remote::Some(RawSender::from_resource(channel)))
         } else {
-            Some(Remote::NotCaptured)
+            Ok(Remote::NotCaptured)
         }
     }
 
-    pub fn take_sender(&mut self, path: HandlePath<'_>) -> Option<Remote<RawReceiver>> {
-        let path = path.to_cow_string();
+    pub fn take_sender(
+        &mut self,
+        path: HandlePath<'_>,
+    ) -> Result<Remote<RawReceiver>, AccessError> {
+        let path_str = path.to_cow_string();
         let channel = unsafe {
             mpsc_receiver_get(
                 Some(&self.resource),
-                path.as_ptr(),
-                path.len(),
+                path_str.as_ptr(),
+                path_str.len(),
                 &mut ACCESS_ERROR_PAD,
             )
         };
 
-        if unsafe { ACCESS_ERROR_PAD } != 0 {
-            // Got an error, meaning that the channel does not exist
-            debug_assert!(channel.is_none());
-            None
-        } else if let Some(channel) = channel {
-            Some(Remote::Some(RawReceiver::from_resource(channel)))
+        unsafe {
+            Result::<(), AccessErrorKind>::from_abi_in_wasm(ACCESS_ERROR_PAD)
+                .map_err(|kind| kind.with_location(SenderAt(path)))?;
+        }
+        if let Some(channel) = channel {
+            Ok(Remote::Some(RawReceiver::from_resource(channel)))
         } else {
-            Some(Remote::NotCaptured)
+            Ok(Remote::NotCaptured)
         }
     }
 }

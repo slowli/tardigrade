@@ -8,7 +8,7 @@ use std::{collections::HashSet, task::Poll};
 
 use crate::create_module;
 use tardigrade::{
-    interface::{ReceiverName, SenderName},
+    interface::{ReceiverAt, SenderAt},
     spawn::ManageWorkflowsExt,
     Decode, Encode, Json,
 };
@@ -95,7 +95,7 @@ async fn basic_workflow() -> TestResult {
     let orders_id = workflow
         .persisted()
         .channels()
-        .receiver_id("orders")
+        .channel_id("orders")
         .unwrap();
     assert_matches!(
         &execution.events[0],
@@ -207,7 +207,7 @@ fn assert_send_receipt(receipt: &Receipt, persisted: &PersistedWorkflow) {
     });
     assert!(is_consumed, "{receipt:#?}");
 
-    let events_id = persisted.channels().sender_id("events").unwrap();
+    let events_id = persisted.channels().channel_id("events").unwrap();
     let is_event_sent = receipt.events().any(|event| {
         matches!(event,
             Event::Channel(ChannelEvent {
@@ -248,7 +248,7 @@ fn assert_time_update_receipt(receipt: &Receipt, persisted: &PersistedWorkflow) 
     });
     assert!(is_timer_dropped, "{receipt:#?}");
 
-    let events_id = persisted.channels().sender_id("events").unwrap();
+    let events_id = persisted.channels().channel_id("events").unwrap();
     let is_event_sent = receipt.events().any(|event| {
         matches!(event,
             Event::Channel(ChannelEvent {
@@ -434,20 +434,20 @@ async fn untyped_workflow() -> TestResult {
         kind: PizzaKind::Pepperoni,
         delivery_distance: 10,
     };
-    handle[ReceiverName("orders")]
+    handle[ReceiverAt("orders")]
         .send(Json::encode_value(order))
         .await?;
     let receipt = manager.tick().await?.drop_handle().into_inner()?;
     assert_send_receipt(&receipt, workflow.persisted());
 
-    let event = handle[SenderName("events")].receive_message(0).await?;
+    let event = handle[SenderAt("events")].receive_message(0).await?;
     let event: DomainEvent = Json::try_decode_bytes(event.decode().unwrap())?;
     assert_eq!(event, DomainEvent::OrderTaken { index: 1, order });
 
-    let chan = handle[ReceiverName("orders")].channel_info().await;
+    let chan = handle[ReceiverAt("orders")].channel_info().await;
     assert!(!chan.is_closed);
     assert_eq!(chan.received_messages, 1);
-    let chan = handle[SenderName("events")].channel_info().await;
+    let chan = handle[SenderAt("events")].channel_info().await;
     assert_eq!(chan.received_messages, 1);
     Ok(())
 }
@@ -467,7 +467,7 @@ async fn workflow_recovery_after_trap() -> TestResult {
         .build()
         .await?;
     let mut handle = workflow.handle();
-    let mut events_drain = Drain::new(handle.remove(SenderName("events")).unwrap());
+    let mut events_drain = Drain::new(handle.remove(SenderAt("events")).unwrap());
     manager.tick().await?.drop_handle().into_inner()?;
 
     let order = PizzaOrder {
@@ -483,7 +483,7 @@ async fn workflow_recovery_after_trap() -> TestResult {
     });
 
     for (i, message) in messages.enumerate() {
-        handle[ReceiverName("orders")].send(message).await?;
+        handle[ReceiverAt("orders")].send(message).await?;
 
         let result = loop {
             let tick_result = manager.tick().await?;

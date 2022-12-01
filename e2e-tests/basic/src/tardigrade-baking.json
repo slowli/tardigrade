@@ -1,12 +1,15 @@
 {
   "v": 0,
-  "in": {},
-  "out": {
+  "handles": {
     "events": {
-      "description": "Domain events emitted during pizza order lifecycle"
+      "sender": {
+        "description": "Domain events emitted during pizza order lifecycle"
+      }
     },
     "duration": {
-      "description": "Baking duration metrics"
+      "sender": {
+        "description": "Baking duration metrics"
+      }
     }
   },
   "args": {

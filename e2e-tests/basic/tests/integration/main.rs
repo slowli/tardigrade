@@ -10,6 +10,7 @@ use tracing_subscriber::{
 
 use std::{collections::HashMap, error};
 
+use tardigrade::interface::ReceiverAt;
 use tardigrade_rt::{
     engine::{Wasmtime, WasmtimeModule},
     manager::WorkflowManager,
@@ -81,12 +82,10 @@ fn enable_tracing_assertions() -> (DefaultGuard, SharedStorage) {
 #[test]
 fn module_information_is_correct() -> TestResult {
     let interfaces: HashMap<_, _> = MODULE.interfaces().collect();
-    assert!(interfaces["PizzaDelivery"].receiver("orders").is_some());
+    interfaces["PizzaDelivery"].handle(ReceiverAt("orders"))?;
     assert!(interfaces["PizzaDelivery"]
-        .receiver("baking_responses")
-        .is_none());
-    assert!(interfaces["PizzaDeliveryWithRequests"]
-        .receiver("baking_responses")
-        .is_some());
+        .handle(ReceiverAt("baking_responses"))
+        .is_err());
+    interfaces["PizzaDeliveryWithRequests"].handle(ReceiverAt("baking_responses"))?;
     Ok(())
 }

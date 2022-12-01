@@ -102,7 +102,7 @@ impl SpawnWorkflow for Baking {
             index: idx,
             duration_millis: (tardigrade::now() - start).num_milliseconds() as u64,
         };
-        tracing::info!(?metric, "sending baking duration metric");
+        tracing::info!(?metric, "sent baking duration metric");
         handle.duration.send(metric).await.ok();
         Ok(())
     }

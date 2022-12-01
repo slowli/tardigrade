@@ -2,11 +2,14 @@
 
 use assert_matches::assert_matches;
 use async_std::task;
-use futures::{channel::mpsc, future, stream, SinkExt, StreamExt, TryStreamExt};
+use futures::{channel::mpsc, future, stream, FutureExt, SinkExt, StreamExt, TryStreamExt};
 
 use std::cmp;
 
-use tardigrade::{channel::WithId, spawn::ManageWorkflowsExt};
+use tardigrade::{
+    channel::{Request, Response},
+    spawn::ManageWorkflowsExt,
+};
 use tardigrade_rt::{
     driver::{Driver, Termination},
     AsyncIoScheduler,
@@ -44,25 +47,27 @@ async fn test_external_tasks(
     let join_handle = task::spawn(async move { driver.drive(&mut manager).await });
 
     let (executor_events_sx, executor_events_rx) = mpsc::unbounded();
-    let tasks_stream = baking_tasks_rx.try_for_each_concurrent(
-        task_concurrency,
-        move |WithId { id, data: order }| {
-            let mut responses = responses_sx.clone();
-            let executor_events_sx = executor_events_sx.clone();
-            let index = id as usize;
-            async move {
-                executor_events_sx
-                    .unbounded_send(DomainEvent::OrderTaken { index, order })
-                    .unwrap();
-                task::sleep(order.kind.baking_time()).await;
-                responses.send(WithId { id, data: () }).await.ok();
-                executor_events_sx
-                    .unbounded_send(DomainEvent::Baked { index, order })
-                    .unwrap();
-                Ok(())
-            }
-        },
-    );
+    let tasks_stream = baking_tasks_rx.try_for_each_concurrent(task_concurrency, move |request| {
+        let Request::New { id, data: order, .. } = request else {
+                return future::ok(()).left_future();
+            };
+
+        let mut responses = responses_sx.clone();
+        let executor_events_sx = executor_events_sx.clone();
+        let index = id as usize;
+        async move {
+            executor_events_sx
+                .unbounded_send(DomainEvent::OrderTaken { index, order })
+                .unwrap();
+            task::sleep(order.kind.baking_time()).await;
+            responses.send(Response { id, data: () }).await.ok();
+            executor_events_sx
+                .unbounded_send(DomainEvent::Baked { index, order })
+                .unwrap();
+            Ok(())
+        }
+        .right_future()
+    });
     let tasks_handle = task::spawn(tasks_stream);
 
     send_orders(orders_sx, order_count).await?;
@@ -121,12 +126,16 @@ async fn closing_task_responses_on_host() -> TestResult {
     let join_handle = task::spawn(async move { driver.drive(&mut manager).await });
 
     let tasks_stream = baking_tasks_rx.map(move |res| {
-        let WithId { id, data: order } = res.unwrap();
+        let Request::New { id, data: order, .. } = res.unwrap() else {
+            return future::ready(()).left_future();
+        };
+
         let mut responses_sx = responses_sx.clone();
         async move {
             task::sleep(order.kind.baking_time()).await;
-            responses_sx.send(WithId { id, data: () }).await.ok();
+            responses_sx.send(Response { id, data: () }).await.ok();
         }
+        .right_future()
     });
     // Complete first `SUCCESSFUL_TASK_COUNT` tasks, then drop the executor.
     let tasks_stream = tasks_stream

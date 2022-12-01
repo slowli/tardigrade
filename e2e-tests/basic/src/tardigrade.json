@@ -1,13 +1,15 @@
 {
   "v": 0,
-  "in": {
+  "handles": {
     "orders": {
-      "description": "New pizza orders go here"
-    }
-  },
-  "out": {
+      "receiver": {
+        "description": "New pizza orders go here"
+      }
+    },
     "events": {
-      "description": "Domain events emitted during pizza order lifecycle"
+      "sender": {
+        "description": "Domain events emitted during pizza order lifecycle"
+      }
     }
   },
   "args": {
