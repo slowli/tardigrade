@@ -20,7 +20,7 @@ use crate::{
 };
 use tardigrade::{
     abi::{IntoWasm, TryFromWasm},
-    interface::{AccessErrorKind, ChannelHalf, HandlePathBuf},
+    interface::{AccessError, AccessErrorKind, ChannelHalf, HandlePathBuf, Resource},
     spawn::{ChannelSpawnConfig, HostError},
     task::{JoinError, TaskError},
     TaskId, TimerDefinition, TimerId, WakerId,
@@ -190,7 +190,7 @@ impl WorkflowFunctions {
         let result = result.map(|acquire_result| {
             channel_ref = acquire_result.map(|id| HostResource::Receiver(id).into_ref());
         });
-        Self::write_access_result(&mut ctx, result, error_ptr)?;
+        Self::write_access_result(&mut ctx, result.map_err(AccessError::into_kind), error_ptr)?;
         Ok(channel_ref)
     }
 
@@ -231,7 +231,7 @@ impl WorkflowFunctions {
         let result = result.map(|acquire_result| {
             channel_ref = acquire_result.map(|id| HostResource::Sender(id).into_ref());
         });
-        Self::write_access_result(&mut ctx, result, error_ptr)?;
+        Self::write_access_result(&mut ctx, result.map_err(AccessError::into_kind), error_ptr)?;
         Ok(channel_ref)
     }
 
@@ -500,10 +500,10 @@ impl SpawnFunctions {
         let mut handles = handles.inner.lock().unwrap();
         match channel_kind {
             ChannelHalf::Receiver => {
-                handles.receivers.insert(path, channel_config);
+                handles.insert(path, Resource::Receiver(channel_config));
             }
             ChannelHalf::Sender => {
-                handles.senders.insert(path, channel_config);
+                handles.insert(path, Resource::Sender(channel_config));
             }
         }
         tracing::debug!(?handles, "inserted channel handle");
@@ -529,9 +529,10 @@ impl SpawnFunctions {
 
         let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
         let mut handles = handles.inner.lock().unwrap();
-        handles
-            .senders
-            .insert(path, ChannelSpawnConfig::Existing(channel_id));
+        handles.insert(
+            path,
+            Resource::Sender(ChannelSpawnConfig::Existing(channel_id)),
+        );
         tracing::debug!(?handles, "inserted channel handle");
         Ok(())
     }

@@ -3,7 +3,6 @@
 use anyhow::anyhow;
 use assert_matches::assert_matches;
 use chrono::{DateTime, Utc};
-use futures::{future, stream, FutureExt};
 
 use std::{
     collections::{HashMap, HashSet},
@@ -71,7 +70,7 @@ fn initialize_task(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
 
 fn emit_event_and_flush(ctx: &mut MockInstance) -> anyhow::Result<()> {
     let data = ctx.data_mut();
-    let events_id = data.persisted.channels().sender_id("events").unwrap();
+    let events_id = data.persisted.channels().channel_id("events").unwrap();
     let poll_res = data.sender(events_id).poll_ready().into_inner(ctx)?;
     assert_matches!(poll_res, Poll::Ready(Ok(_)));
 
@@ -84,9 +83,9 @@ fn emit_event_and_flush(ctx: &mut MockInstance) -> anyhow::Result<()> {
 
 fn consume_message(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     let channels = ctx.data().persisted.channels();
-    let orders_id = channels.receiver_id("orders").unwrap();
-    let events_id = channels.sender_id("events").unwrap();
-    let traces_id = channels.sender_id("traces").unwrap();
+    let orders_id = channels.channel_id("orders").unwrap();
+    let events_id = channels.channel_id("events").unwrap();
+    let traces_id = channels.channel_id("traces").unwrap();
 
     // Poll the channel again, since we yielded on this previously
     let mut orders = ctx.data_mut().receiver(orders_id);
@@ -114,15 +113,16 @@ fn consume_message(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
 }
 
 fn mock_channel_ids(interface: &Interface, next_channel_id: &mut ChannelId) -> ChannelIds {
-    let config = ChannelsConfig::from_interface(interface);
-    let new_channel_ids = stream::unfold(next_channel_id, |next_channel_id| {
-        let id = *next_channel_id;
+    let ids = interface.handles().map(|(path, spec)| {
+        let channel_id = *next_channel_id;
         *next_channel_id += 1;
-        future::ready(Some((id, next_channel_id)))
+        let channel_id = spec
+            .as_ref()
+            .map_sender(|_| channel_id)
+            .map_receiver(|_| channel_id);
+        (path.to_owned(), channel_id)
     });
-    ChannelIds::new(config, new_channel_ids)
-        .now_or_never()
-        .unwrap()
+    ids.collect()
 }
 
 fn create_workflow_with_scheduler(
@@ -179,7 +179,7 @@ fn starting_workflow() {
     assert_eq!(execution.events.len(), 1);
 
     let mapping = workflow.data().persisted.channels();
-    let orders_id = mapping.receiver_id("orders").unwrap();
+    let orders_id = mapping.channel_id("orders").unwrap();
     assert_matches!(
         &execution.events[0],
         Event::Channel(ChannelEvent {
@@ -193,7 +193,7 @@ fn starting_workflow() {
 
 fn push_message_and_tick(workflow: &mut Workflow<MockInstance>) -> Result<Receipt, ExecutionError> {
     let mapping = workflow.data().persisted.channels();
-    let orders_id = mapping.receiver_id("orders").unwrap();
+    let orders_id = mapping.channel_id("orders").unwrap();
     workflow
         .data_mut()
         .persisted
@@ -217,10 +217,10 @@ fn receiving_inbound_message() {
 
     let messages = workflow.data_mut().drain_messages();
     let mapping = workflow.data().persisted.channels();
-    let traces_id = mapping.sender_id("traces").unwrap();
+    let traces_id = mapping.channel_id("traces").unwrap();
     assert_eq!(messages[&traces_id].len(), 1);
     assert_eq!(messages[&traces_id][0].as_ref(), b"trace #1");
-    let events_id = mapping.sender_id("events").unwrap();
+    let events_id = mapping.channel_id("events").unwrap();
     assert_eq!(messages[&events_id].len(), 1);
     assert_eq!(messages[&events_id][0].as_ref(), b"event #1");
 
@@ -238,9 +238,9 @@ fn receiving_inbound_message() {
 
 fn assert_inbound_message_receipt(workflow: &Workflow<MockInstance>, receipt: &Receipt) {
     let mapping = workflow.data().persisted.channels();
-    let orders_id = mapping.receiver_id("orders").unwrap();
-    let events_id = mapping.sender_id("events").unwrap();
-    let traces_id = mapping.sender_id("traces").unwrap();
+    let orders_id = mapping.channel_id("orders").unwrap();
+    let events_id = mapping.channel_id("events").unwrap();
+    let traces_id = mapping.channel_id("traces").unwrap();
 
     assert_eq!(receipt.executions().len(), 2);
     assert_matches!(
@@ -505,7 +505,12 @@ fn rolling_back_emitting_messages_on_trap() {
         .scope(|| create_workflow(poll_fns));
 
     let emit_message_and_trap: MockPollFn = |ctx| {
-        let traces_id = ctx.data().persisted.channels().sender_id("traces").unwrap();
+        let traces_id = ctx
+            .data()
+            .persisted
+            .channels()
+            .channel_id("traces")
+            .unwrap();
         let mut traces = ctx.data_mut().sender(traces_id);
         let poll_res = traces.poll_ready().into_inner(ctx)?;
         assert_matches!(poll_res, Poll::Ready(Ok(_)));
@@ -612,7 +617,7 @@ fn dropping_receiver_in_workflow() {
     let drop_channel: MockPollFn = |ctx| {
         let _ = initialize_task(ctx)?;
         let channels = ctx.data().persisted.channels();
-        let orders_id = channels.receiver_id("orders").unwrap();
+        let orders_id = channels.channel_id("orders").unwrap();
         let _wakers = ctx.data_mut().receiver(orders_id).drop();
         Ok(Poll::Pending)
     };

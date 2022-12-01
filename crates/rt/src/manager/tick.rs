@@ -20,7 +20,7 @@ use crate::{
     workflow::Workflow,
     PersistedWorkflow,
 };
-use tardigrade::{ChannelId, WorkflowId};
+use tardigrade::{interface::Resource, ChannelId, WorkflowId};
 
 /// Result of [ticking](WorkflowManager::tick()) a [`WorkflowManager`].
 #[derive(Debug)]
@@ -135,7 +135,7 @@ impl<'a, D: DefineWorkflow> WorkflowSeed<'a, D> {
                     self.persisted.set_current_time(timer);
                 }
                 WorkflowWaker::SenderClosure(channel_id) => {
-                    self.persisted.close_sender(channel_id);
+                    self.persisted.close_channel(Resource::Sender(channel_id));
                 }
                 WorkflowWaker::ChildCompletion(child_id) => {
                     let child = transaction.workflow(child_id).await.unwrap();
@@ -182,7 +182,8 @@ impl<'a, D: DefineWorkflow> WorkflowSeed<'a, D> {
                 Err(MessageError::NonExistingIndex { is_closed: true }) => {
                     // Signal to the workflow that the channel is closed. This can be performed
                     // on a persisted workflow, without executing it.
-                    self.persisted.close_receiver(pending.channel_id);
+                    self.persisted
+                        .close_channel(Resource::Receiver(pending.channel_id));
                 }
                 _ => {
                     // Skip processing for now: we want to pinpoint consumption-related

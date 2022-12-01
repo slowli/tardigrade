@@ -16,7 +16,7 @@ use tardigrade::interface::{ReceiverAt, SenderAt};
 
 fn poll_orders(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     let channels = ctx.data().persisted.channels();
-    let orders_id = channels.receiver_id("orders").unwrap();
+    let orders_id = channels.channel_id("orders").unwrap();
     let mut orders = ctx.data_mut().receiver(orders_id);
     let poll_result = orders.poll_next().into_inner(ctx)?;
     assert!(poll_result.is_pending());
@@ -26,8 +26,8 @@ fn poll_orders(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
 
 fn handle_order(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     let channels = ctx.data().persisted.channels();
-    let orders_id = channels.receiver_id("orders").unwrap();
-    let events_id = channels.sender_id("events").unwrap();
+    let orders_id = channels.channel_id("orders").unwrap();
+    let events_id = channels.channel_id("events").unwrap();
 
     let mut orders = ctx.data_mut().receiver(orders_id);
     let poll_result = orders.poll_next().into_inner(ctx)?;
@@ -66,8 +66,8 @@ async fn completing_workflow_via_driver() {
 async fn test_driver_with_multiple_messages(start_after_tick: bool) {
     let poll_orders_and_send_event: MockPollFn = |ctx| {
         let channels = ctx.data().persisted.channels();
-        let orders_id = channels.receiver_id("orders").unwrap();
-        let events_id = channels.sender_id("events").unwrap();
+        let orders_id = channels.channel_id("orders").unwrap();
+        let events_id = channels.channel_id("events").unwrap();
 
         let mut orders = ctx.data_mut().receiver(orders_id);
         let poll_result = orders.poll_next().into_inner(ctx)?;

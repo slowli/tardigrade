@@ -14,9 +14,13 @@ use super::{
     PersistedWorkflowData, WorkflowData,
 };
 use crate::{receipt::WakeUpCause, utils::Message, workflow::ChannelIds};
+use tardigrade::interface::AccessErrorKind;
 use tardigrade::{
     channel::SendError,
-    interface::{AccessErrorKind, ChannelHalf, HandleMap, HandlePath, HandlePathBuf, Interface},
+    interface::{
+        AccessError, ChannelHalf, HandleMap, HandleMapKey, HandlePath, Interface, ReceiverAt,
+        Resource, SenderAt,
+    },
     spawn::{ChannelSpawnConfig, ChannelsConfig},
     ChannelId, WakerId, WorkflowId,
 };
@@ -47,7 +51,7 @@ impl fmt::Display for ConsumeError {
 impl error::Error for ConsumeError {}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-struct ChannelMappingState {
+pub(super) struct ChannelMappingState {
     id: ChannelId,
     is_acquired: bool,
 }
@@ -70,47 +74,25 @@ impl ChannelMappingState {
 }
 
 /// Mapping of channels (from names to IDs) for a workflow.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub(super) struct ChannelMapping {
-    receivers: HandleMap<ChannelMappingState>,
-    senders: HandleMap<ChannelMappingState>,
+pub(super) type ChannelMapping = HandleMap<ChannelMappingState>;
+
+pub(super) fn new_channel_mapping(ids: ChannelIds) -> ChannelMapping {
+    let it = ids.into_iter().map(|(path, id)| {
+        let mapping = id.map(ChannelMappingState::new);
+        (path, mapping)
+    });
+    it.collect()
 }
 
-impl ChannelMapping {
-    pub fn new(ids: ChannelIds) -> Self {
-        let receivers = ids
-            .receivers
-            .into_iter()
-            .map(|(path, id)| (path, ChannelMappingState::new(id)))
-            .collect();
-        let senders = ids
-            .senders
-            .into_iter()
-            .map(|(path, id)| (path, ChannelMappingState::new(id)))
-            .collect();
-        Self { receivers, senders }
-    }
-
-    pub fn receiver_paths(&self) -> impl Iterator<Item = &HandlePathBuf> + '_ {
-        self.receivers.keys()
-    }
-
-    pub fn sender_paths(&self) -> impl Iterator<Item = &HandlePathBuf> + '_ {
-        self.senders.keys()
-    }
-
-    pub fn acquire_non_captured_channels(&mut self, config: &ChannelsConfig<ChannelId>) {
-        for (path, channel_config) in &config.receivers {
-            if matches!(channel_config, ChannelSpawnConfig::Existing(_)) {
-                let state = self.senders.get_mut(path).unwrap();
-                state.is_acquired = true;
-            }
-        }
-        for (path, channel_config) in &config.senders {
-            if matches!(channel_config, ChannelSpawnConfig::Existing(_)) {
-                let state = self.receivers.get_mut(path).unwrap();
-                state.is_acquired = true;
-            }
+pub(super) fn acquire_non_captured_channels(
+    mapping: &mut ChannelMapping,
+    config: &ChannelsConfig<ChannelId>,
+) {
+    for (path, channel_config) in config {
+        let channel_config = channel_config.as_ref().factor();
+        if matches!(channel_config, ChannelSpawnConfig::Existing(_)) {
+            let state = mapping.get_mut(path).unwrap();
+            state.as_mut().factor().is_acquired = true;
         }
     }
 }
@@ -243,30 +225,36 @@ impl ChannelStates {
     pub fn new(channel_ids: ChannelIds, interface: &Interface) -> Self {
         let mut this = Self::default();
         this.insert_channels(&channel_ids, |path| {
-            interface.sender(path).unwrap().capacity
+            interface.handle(SenderAt(path)).unwrap().capacity
         });
-        this.mapping = ChannelMapping::new(channel_ids);
+        this.mapping = new_channel_mapping(channel_ids);
         this
     }
 
     pub fn insert_channels<F>(&mut self, channel_ids: &ChannelIds, sender_cap_fn: F)
     where
-        F: Fn(&HandlePathBuf) -> Option<usize>,
+        F: Fn(HandlePath<'_>) -> Option<usize>,
     {
-        for &id in channel_ids.receivers.values() {
-            self.receivers.entry(id).or_insert_with(ReceiverState::new);
-        }
-        for (name, &id) in &channel_ids.senders {
-            let capacity = sender_cap_fn(name);
-            let state = self
-                .senders
-                .entry(id)
-                .or_insert_with(|| SenderState::new(capacity));
-            state.ensure_capacity(capacity);
-            state.ref_count += 1;
+        for (path, &id_handle) in channel_ids {
+            match id_handle {
+                Resource::Receiver(id) => {
+                    self.receivers.entry(id).or_insert_with(ReceiverState::new);
+                }
+                Resource::Sender(id) => {
+                    let capacity = sender_cap_fn(path.as_ref());
+                    let state = self
+                        .senders
+                        .entry(id)
+                        .or_insert_with(|| SenderState::new(capacity));
+                    state.ensure_capacity(capacity);
+                    state.ref_count += 1;
+                }
+            }
         }
     }
 }
+
+type ChannelState<'a> = Resource<&'a ReceiverState, &'a SenderState>;
 
 /// Information about channels for a particular workflow interface.
 #[derive(Debug, Clone, Copy)]
@@ -282,57 +270,50 @@ impl<'a> Channels<'a> {
 
     /// Returns the channel ID of the receiver with the specified name, or `None` if the receiver
     /// is not present.
-    pub fn receiver_id<'p, P: Into<HandlePath<'p>>>(&self, path: P) -> Option<ChannelId> {
+    pub fn channel_id<'p, P: Into<HandlePath<'p>>>(&self, path: P) -> Option<ChannelId> {
         self.mapping
-            .receivers
             .get(&path.into())
-            .map(|state| state.id)
+            .map(|state| state.as_ref().factor().id)
     }
 
-    /// Returns information about the receiver with the specified name.
-    pub fn receiver<'p, P: Into<HandlePath<'p>>>(&self, path: P) -> Option<&'a ReceiverState> {
-        let channel_id = self.mapping.receivers.get(&path.into())?.id;
-        self.states.receivers.get(&channel_id)
+    /// Returns information about a channel handle with the specified path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the channel does not exist or has an unexpected type.
+    pub fn handle<K: HandleMapKey>(
+        &self,
+        key: K,
+    ) -> Result<K::Output<&'a ReceiverState, &'a SenderState>, AccessError> {
+        let mapping = key
+            .with_path(|path| self.mapping.get(&path))
+            .ok_or_else(|| AccessErrorKind::Unknown.with_location(key))?;
+        let state = mapping
+            .as_ref()
+            .map_receiver(|mapping| &self.states.receivers[&mapping.id])
+            .map_sender(|mapping| &self.states.senders[&mapping.id]);
+        K::from_handle(state).ok_or_else(|| AccessErrorKind::KindMismatch.with_location(key))
     }
 
-    /// Iterates over all receivers.
-    pub fn receivers(&self) -> impl Iterator<Item = (HandlePath<'a>, &'a ReceiverState)> + '_ {
-        self.mapping.receivers.iter().filter_map(|(name, state)| {
-            let state = self.states.receivers.get(&state.id)?;
-            Some((name.as_ref(), state))
-        })
-    }
-
-    /// Returns the channel ID of the sender with the specified name, or `None` if the sender
-    /// is not present.
-    pub fn sender_id<'p, P: Into<HandlePath<'p>>>(&self, path: P) -> Option<ChannelId> {
-        self.mapping.senders.get(&path.into()).map(|state| state.id)
-    }
-
-    /// Returns information about the sender with the specified name.
-    pub fn sender<'p, P: Into<HandlePath<'p>>>(&self, path: P) -> Option<&'a SenderState> {
-        let channel_id = self.mapping.senders.get(&path.into())?.id;
-        self.states.senders.get(&channel_id)
-    }
-
-    /// Iterates over all senders.
-    pub fn senders(&self) -> impl Iterator<Item = (HandlePath<'a>, &'a SenderState)> + '_ {
-        self.mapping.senders.iter().filter_map(|(name, state)| {
-            let state = self.states.senders.get(&state.id)?;
-            Some((name.as_ref(), state))
+    /// Iterates over all channel handles.
+    pub fn handles(&self) -> impl Iterator<Item = (HandlePath<'a>, ChannelState<'a>)> + '_ {
+        self.mapping.iter().map(|(path, mapping)| {
+            let state = mapping
+                .as_ref()
+                .map_receiver(|mapping| &self.states.receivers[&mapping.id])
+                .map_sender(|mapping| &self.states.senders[&mapping.id]);
+            (path.as_ref(), state)
         })
     }
 
     pub(crate) fn to_ids(self) -> ChannelIds {
-        let receivers = self.mapping.receivers.iter();
-        let receivers = receivers
-            .map(|(name, state)| (name.clone(), state.id))
-            .collect();
-        let senders = self.mapping.senders.iter();
-        let senders = senders
-            .map(|(name, state)| (name.clone(), state.id))
-            .collect();
-        ChannelIds { receivers, senders }
+        let handles = self.mapping.iter();
+        handles
+            .map(|(name, state)| {
+                let id = state.map(|mapping| mapping.id);
+                (name.clone(), id)
+            })
+            .collect()
     }
 }
 
@@ -611,13 +592,9 @@ impl WorkflowData {
         &mut self,
         child_id: Option<WorkflowId>,
         path: HandlePath<'_>,
-    ) -> Result<Option<ChannelId>, AccessErrorKind> {
+    ) -> Result<Option<ChannelId>, AccessError> {
         let mapping = self.persisted.channel_mapping(child_id);
-
-        let mapping = mapping
-            .receivers
-            .get_mut(&path)
-            .ok_or(AccessErrorKind::Unknown)?;
+        let mapping = ReceiverAt(path).get_mut(mapping)?;
         Ok(mapping.acquire().ok())
     }
 
@@ -649,13 +626,9 @@ impl WorkflowData {
         &mut self,
         child_id: Option<WorkflowId>,
         path: HandlePath<'_>,
-    ) -> Result<Option<ChannelId>, AccessErrorKind> {
+    ) -> Result<Option<ChannelId>, AccessError> {
         let mapping = self.persisted.channel_mapping(child_id);
-
-        let mapping = mapping
-            .senders
-            .get_mut(&path)
-            .ok_or(AccessErrorKind::Unknown)?;
+        let mapping = SenderAt(path).get_mut(mapping)?;
         Ok(mapping.acquire().ok())
     }
 

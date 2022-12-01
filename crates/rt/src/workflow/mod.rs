@@ -1,7 +1,6 @@
 //! `Workflow` and tightly related types.
 
 use anyhow::Context;
-use serde::{Deserialize, Serialize};
 
 use std::{collections::HashMap, mem};
 
@@ -27,12 +26,7 @@ struct ExecutionOutput {
     task_result: Option<TaskResult>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[allow(clippy::unsafe_derive_deserialize)] // false positive
-pub(crate) struct ChannelIds {
-    pub receivers: HandleMap<ChannelId>,
-    pub senders: HandleMap<ChannelId>,
-}
+pub(crate) type ChannelIds = HandleMap<ChannelId>;
 
 /// Workflow instance.
 #[derive(Debug)]

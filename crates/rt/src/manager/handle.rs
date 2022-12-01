@@ -19,7 +19,7 @@ use crate::{
 };
 use tardigrade::{
     channel::SendError,
-    interface::{AccessError, AccessErrorKind, HandlePath, Interface, ReceiverAt, SenderAt},
+    interface::{AccessError, HandleMapKey, HandlePath, Interface, ReceiverAt, Resource, SenderAt},
     task::JoinError,
     workflow::{DescribeEnv, GetInterface, Handle, TakeHandle, WorkflowEnv},
     ChannelId, Decode, Encode, Raw, WorkflowId,
@@ -136,8 +136,11 @@ impl<'a, M: AsManager> WorkflowHandle<'a, (), M> {
         transaction: &impl ReadChannels,
         channel_ids: &ChannelIds,
     ) -> HashSet<ChannelId> {
-        let sender_ids = channel_ids.senders.values();
-        let channel_tasks = sender_ids.map(|&id| async move {
+        let sender_ids = channel_ids.values().filter_map(|id| match id {
+            Resource::Sender(id) => Some(*id),
+            Resource::Receiver(_) => None,
+        });
+        let channel_tasks = sender_ids.map(|id| async move {
             let channel = transaction.channel(id).await.unwrap();
             Some(id).filter(|_| channel.receiver_workflow_id.is_none())
         });
@@ -273,36 +276,29 @@ impl<'a, W, M: AsManager> WorkflowEnv for WorkflowHandle<'a, W, M> {
 
     fn take_receiver<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: HandlePath<'_>,
+        path: HandlePath<'_>,
     ) -> Result<Self::Receiver<T, C>, AccessError> {
-        if let Some(channel_id) = self.ids.channel_ids.receivers.get(&id).copied() {
-            Ok(MessageSender {
-                manager: self.manager,
-                channel_id,
-                _ty: PhantomData,
-            })
-        } else {
-            Err(AccessErrorKind::Unknown.with_location(ReceiverAt(id)))
-        }
+        let channel_id = *ReceiverAt(path).get(&self.ids.channel_ids)?;
+        Ok(MessageSender {
+            manager: self.manager,
+            channel_id,
+            _ty: PhantomData,
+        })
     }
 
     fn take_sender<T, C: Encode<T> + Decode<T>>(
         &mut self,
-        id: HandlePath<'_>,
+        path: HandlePath<'_>,
     ) -> Result<Self::Sender<T, C>, AccessError> {
-        if let Some(channel_id) = self.ids.channel_ids.senders.get(&id).copied() {
-            // The 0th channel is always closed and thus cannot be manipulated.
-            let can_manipulate =
-                channel_id != 0 && self.host_receiver_channels.contains(&channel_id);
-            Ok(MessageReceiver {
-                manager: self.manager,
-                channel_id,
-                can_manipulate,
-                _ty: PhantomData,
-            })
-        } else {
-            Err(AccessErrorKind::Unknown.with_location(SenderAt(id)))
-        }
+        let channel_id = *SenderAt(path).get(&self.ids.channel_ids)?;
+        // The 0th channel is always closed and thus cannot be manipulated.
+        let can_manipulate = channel_id != 0 && self.host_receiver_channels.contains(&channel_id);
+        Ok(MessageReceiver {
+            manager: self.manager,
+            channel_id,
+            can_manipulate,
+            _ty: PhantomData,
+        })
     }
 }
 

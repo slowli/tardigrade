@@ -19,6 +19,7 @@ use crate::{
     },
     workflow::{ChannelIds, PersistedWorkflow, Workflow},
 };
+use tardigrade::interface::Resource;
 use tardigrade::{
     interface::{HandleMap, Interface},
     spawn::{
@@ -44,33 +45,23 @@ impl ChannelRecord {
     }
 }
 
-impl ChannelIds {
-    pub(crate) async fn new(
-        channels: ChannelsConfig<ChannelId>,
-        new_channel_ids: impl Stream<Item = ChannelId>,
-    ) -> Self {
-        futures::pin_mut!(new_channel_ids);
-        Self {
-            receivers: Self::map_channels(channels.receivers, &mut new_channel_ids).await,
-            senders: Self::map_channels(channels.senders, &mut new_channel_ids).await,
-        }
-    }
+async fn new_channel_ids(
+    config: ChannelsConfig<ChannelId>,
+    id_stream: impl Stream<Item = ChannelId>,
+) -> ChannelIds {
+    futures::pin_mut!(id_stream);
 
-    async fn map_channels(
-        config: HandleMap<ChannelSpawnConfig<ChannelId>>,
-        mut new_channel_ids: impl Stream<Item = ChannelId> + Unpin,
-    ) -> HandleMap<ChannelId> {
-        let mut channel_ids = HandleMap::with_capacity(config.len());
-        for (name, spec) in config {
-            let channel_id = match spec {
-                ChannelSpawnConfig::New => new_channel_ids.next().await.unwrap(),
-                ChannelSpawnConfig::Closed => 0,
-                ChannelSpawnConfig::Existing(id) => id,
-            };
-            channel_ids.insert(name, channel_id);
-        }
-        channel_ids
+    let mut channel_ids = HandleMap::with_capacity(config.len());
+    for (name, config) in config {
+        let channel_id = match config.factor() {
+            ChannelSpawnConfig::New => id_stream.next().await.unwrap(),
+            ChannelSpawnConfig::Closed => 0,
+            ChannelSpawnConfig::Existing(id) => id,
+        };
+        let channel_id = config.map(|_| channel_id);
+        channel_ids.insert(name, channel_id);
     }
+    channel_ids
 }
 
 #[derive(Debug)]
@@ -93,11 +84,11 @@ impl WorkflowStub {
             workflows: None,
             tracer: None,
         };
-        let new_channel_ids = stream::unfold(transaction, |persistence| async {
+        let id_stream = stream::unfold(transaction, |persistence| async {
             let id = persistence.allocate_channel_id().await;
             Some((id, persistence))
         });
-        let channel_ids = ChannelIds::new(self.channels.clone(), new_channel_ids).await;
+        let channel_ids = new_channel_ids(self.channels.clone(), id_stream).await;
         let args = mem::take(&mut self.args);
         let data = WorkflowData::new(definition.interface(), channel_ids.clone(), services);
         let mut workflow = Workflow::new(definition, data, Some(args.into()))?;
@@ -174,27 +165,23 @@ impl<S: DefineWorkflow> NewWorkflows<S> {
         let child_id = transaction.allocate_workflow_id().await;
 
         tracing::debug!(?channel_ids, "handling channels for new workflow");
-        for (path, &channel_id) in &channel_ids.receivers {
-            let state = ChannelRecord::new(executed_workflow_id, Some(child_id));
+        for (path, &id_res) in &channel_ids {
+            let channel_id = id_res.factor();
+            let state = match id_res {
+                Resource::Receiver(_) => ChannelRecord::new(executed_workflow_id, Some(child_id)),
+                Resource::Sender(_) => ChannelRecord::new(Some(child_id), executed_workflow_id),
+            };
             let state = transaction.get_or_insert_channel(channel_id, state).await;
             if state.is_closed {
-                persisted.close_receiver(channel_id);
-            }
-            tracing::debug!(?path, channel_id, ?state, "prepared channel receiver");
-        }
-        for (path, &channel_id) in &channel_ids.senders {
-            let state = ChannelRecord::new(Some(child_id), executed_workflow_id);
-            let state = transaction.get_or_insert_channel(channel_id, state).await;
-            if state.is_closed {
-                persisted.close_sender(channel_id);
-            } else {
+                persisted.close_channel(id_res);
+            } else if matches!(id_res, Resource::Sender(_)) {
                 transaction
                     .manipulate_channel(channel_id, |channel| {
                         channel.sender_workflow_ids.insert(child_id);
                     })
                     .await;
             }
-            tracing::debug!(?path, channel_id, ?state, "prepared channel sender");
+            tracing::debug!(?path, channel_id, ?state, "prepared channel");
         }
 
         let (module_id, name_in_module) =

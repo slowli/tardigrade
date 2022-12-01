@@ -82,22 +82,10 @@ impl WorkflowData {
     pub(crate) fn new(interface: &Interface, channel_ids: ChannelIds, services: Services) -> Self {
         debug_assert_eq!(
             interface
-                .receivers()
-                .map(|(name, _)| name)
+                .handles()
+                .map(|(path, _)| path)
                 .collect::<HashSet<_>>(),
             channel_ids
-                .receivers
-                .keys()
-                .map(HandlePathBuf::as_ref)
-                .collect::<HashSet<_>>()
-        );
-        debug_assert_eq!(
-            interface
-                .senders()
-                .map(|(name, _)| name)
-                .collect::<HashSet<_>>(),
-            channel_ids
-                .senders
                 .keys()
                 .map(HandlePathBuf::as_ref)
                 .collect::<HashSet<_>>()

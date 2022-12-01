@@ -98,8 +98,8 @@ async fn feed_message(
 
 fn initialize_task(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     let channels = ctx.data().persisted.channels();
-    let orders_id = channels.receiver_id("orders").unwrap();
-    let traces_id = channels.sender_id("traces").unwrap();
+    let orders_id = channels.channel_id("orders").unwrap();
+    let traces_id = channels.channel_id("traces").unwrap();
 
     let mut orders = ctx.data_mut().receiver(orders_id);
     let poll_result = orders.poll_next().into_inner(ctx)?;
@@ -122,13 +122,13 @@ async fn instantiating_workflow() {
     let record = storage.workflow(workflow.id()).await.unwrap();
     assert_eq!(record.module_id, "test@latest");
     assert_eq!(record.name_in_module, "TestWorkflow");
-    let orders_id = workflow.ids().channel_ids.receivers["orders"];
+    let orders_id = workflow.ids().channel_ids["orders"].factor();
     let orders_record = storage.channel(orders_id).await.unwrap();
     assert_eq!(orders_record.receiver_workflow_id, Some(workflow.id()));
     assert_eq!(orders_record.sender_workflow_ids, HashSet::new());
     assert!(orders_record.has_external_sender);
 
-    let traces_id = workflow.ids().channel_ids.senders["traces"];
+    let traces_id = workflow.ids().channel_ids["traces"].factor();
     let traces_record = storage.channel(traces_id).await.unwrap();
     assert_eq!(traces_record.receiver_workflow_id, None);
     assert_eq!(
@@ -150,7 +150,7 @@ async fn test_initializing_workflow(manager: &LocalManager<()>, ids: &WorkflowAn
     let main_execution = &receipt.executions()[0];
     assert_matches!(main_execution.function, ExecutedFunction::Entry { .. });
 
-    let traces_id = ids.channel_ids.senders["traces"];
+    let traces_id = ids.channel_ids["traces"].factor();
     let transaction = manager.storage.readonly_transaction().await;
     let traces = transaction.channel(traces_id).await.unwrap();
     assert_eq!(traces.received_messages, 1);
@@ -162,8 +162,8 @@ async fn test_initializing_workflow(manager: &LocalManager<()>, ids: &WorkflowAn
 async fn initializing_workflow_with_closed_channels() {
     let test_channels: MockPollFn = |ctx| {
         let channels = ctx.data().persisted.channels();
-        let orders_id = channels.receiver_id("orders").unwrap();
-        let traces_id = channels.sender_id("traces").unwrap();
+        let orders_id = channels.channel_id("orders").unwrap();
+        let traces_id = channels.channel_id("traces").unwrap();
 
         let mut traces = ctx.data_mut().sender(traces_id);
         let poll_result = traces.poll_ready().into_inner(ctx)?;
@@ -186,8 +186,8 @@ async fn initializing_workflow_with_closed_channels() {
     let workflow = builder.build().await.unwrap();
     let workflow_id = workflow.id();
 
-    assert_eq!(workflow.ids().channel_ids.receivers["orders"], 0);
-    assert_eq!(workflow.ids().channel_ids.senders["traces"], 0);
+    assert_eq!(workflow.ids().channel_ids["orders"].factor(), 0);
+    assert_eq!(workflow.ids().channel_ids["traces"].factor(), 0);
 
     poll_fn_sx
         .send(test_channels)
@@ -213,7 +213,7 @@ async fn initializing_workflow_with_closed_channels() {
 async fn closing_workflow_channels() {
     let block_on_flush: MockPollFn = |ctx| {
         let channels = ctx.data().persisted.channels();
-        let events_id = channels.sender_id("events").unwrap();
+        let events_id = channels.channel_id("events").unwrap();
         let mut events = ctx.data_mut().sender(events_id);
 
         events.start_send(b"event #1".to_vec())?;
@@ -225,8 +225,8 @@ async fn closing_workflow_channels() {
         // Check that the channel sender is closed. Note that flushing the channel
         // must succeed (messages are flushed before the closure).
         let channels = ctx.data().persisted.channels();
-        let orders_id = channels.receiver_id("orders").unwrap();
-        let events_id = channels.sender_id("events").unwrap();
+        let orders_id = channels.channel_id("orders").unwrap();
+        let events_id = channels.channel_id("events").unwrap();
 
         let mut events = ctx.data_mut().sender(events_id);
         let poll_result = events.poll_flush().into_inner(ctx)?;
@@ -244,8 +244,8 @@ async fn closing_workflow_channels() {
     let manager = create_test_manager(poll_fns, ()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
-    let events_id = workflow.ids().channel_ids.senders["events"];
-    let orders_id = workflow.ids().channel_ids.receivers["orders"];
+    let events_id = workflow.ids().channel_ids["events"].factor();
+    let orders_id = workflow.ids().channel_ids["orders"].factor();
 
     poll_fn_sx
         .send(block_on_flush)
@@ -290,7 +290,7 @@ fn extract_channel_events(
 async fn test_closing_receiver_from_host_side(with_message: bool) {
     let poll_receiver: MockPollFn = |ctx| {
         let channels = ctx.data().persisted.channels();
-        let orders_id = channels.receiver_id("orders").unwrap();
+        let orders_id = channels.channel_id("orders").unwrap();
         let mut orders = ctx.data_mut().receiver(orders_id);
         let poll_result = orders.poll_next().into_inner(ctx)?;
         assert_matches!(poll_result, Poll::Ready(Some(_)));
@@ -303,7 +303,7 @@ async fn test_closing_receiver_from_host_side(with_message: bool) {
     };
     let test_closed_channel: MockPollFn = |ctx| {
         let channels = ctx.data().persisted.channels();
-        let orders_id = channels.receiver_id("orders").unwrap();
+        let orders_id = channels.channel_id("orders").unwrap();
         let mut orders = ctx.data_mut().receiver(orders_id);
         let poll_result = orders.poll_next().into_inner(ctx)?;
         assert_matches!(poll_result, Poll::Ready(None));
@@ -314,7 +314,7 @@ async fn test_closing_receiver_from_host_side(with_message: bool) {
     let manager = create_test_manager(poll_fns, ()).await;
     let workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
-    let orders_id = workflow.ids().channel_ids.receivers["orders"];
+    let orders_id = workflow.ids().channel_ids["orders"].factor();
 
     poll_fn_sx
         .send(initialize_task)
@@ -414,7 +414,7 @@ async fn error_initializing_workflow() {
 
 fn poll_receiver(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     let channels = ctx.data().persisted.channels();
-    let orders_id = channels.receiver_id("orders").unwrap();
+    let orders_id = channels.channel_id("orders").unwrap();
     let mut orders = ctx.data_mut().receiver(orders_id);
     let poll_result = orders.poll_next().into_inner(ctx)?;
     assert!(poll_result.is_pending());
@@ -424,7 +424,7 @@ fn poll_receiver(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
 
 fn consume_message(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     let channels = ctx.data().persisted.channels();
-    let orders_id = channels.receiver_id("orders").unwrap();
+    let orders_id = channels.channel_id("orders").unwrap();
     let mut orders = ctx.data_mut().receiver(orders_id);
     let poll_result = orders.poll_next().into_inner(ctx)?;
     assert_matches!(poll_result, Poll::Ready(Some(_)));
@@ -438,7 +438,7 @@ async fn sending_message_to_workflow() {
     let manager = create_test_manager(poll_fns, ()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
-    let orders_id = workflow.ids().channel_ids.receivers["orders"];
+    let orders_id = workflow.ids().channel_ids["orders"].factor();
 
     poll_fn_sx
         .send(poll_receiver)
@@ -486,7 +486,7 @@ async fn sending_message_to_workflow() {
 async fn error_processing_inbound_message_in_workflow() {
     let error_after_consuming_message: MockPollFn = |ctx| {
         let channels = ctx.data().persisted.channels();
-        let orders_id = channels.receiver_id("orders").unwrap();
+        let orders_id = channels.channel_id("orders").unwrap();
         let mut orders = ctx.data_mut().receiver(orders_id);
         let poll_result = orders.poll_next().into_inner(ctx)?;
         assert_matches!(poll_result, Poll::Ready(Some(_)));
@@ -498,7 +498,7 @@ async fn error_processing_inbound_message_in_workflow() {
     let manager = create_test_manager(poll_fns, ()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
-    let orders_id = workflow.ids().channel_ids.receivers["orders"];
+    let orders_id = workflow.ids().channel_ids["orders"].factor();
 
     poll_fn_sx
         .send(initialize_task)
@@ -554,7 +554,7 @@ async fn workflow_not_consuming_inbound_message() {
     let manager = create_test_manager(poll_fns, ()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
-    let orders_id = workflow.ids().channel_ids.receivers["orders"];
+    let orders_id = workflow.ids().channel_ids["orders"].factor();
 
     poll_fn_sx
         .send(poll_receiver)
