@@ -40,8 +40,10 @@ impl Inner<'static> {
 /// ```
 /// # use hashbrown::HashMap;
 /// # use tardigrade_shared::interface::{HandlePath, HandlePathBuf};
-/// const PATH: HandlePath<'_> = HandlePath::new("test").join("path");
-/// assert_eq!(PATH.to_string(), "test::join");
+/// const PATH: HandlePath<'_> = HandlePath::new("some::test").join("path");
+/// assert_eq!(PATH.to_string(), "some::test::path");
+/// assert_eq!(PATH.segments().collect::<Vec<_>>(), ["some", "test", "path"]);
+///
 /// let path_buf: HandlePathBuf = PATH.to_owned();
 /// assert_eq!(path_buf.as_ref(), PATH);
 /// let other_path_buf: HandlePathBuf = "other::path".parse()?;
@@ -51,11 +53,6 @@ impl Inner<'static> {
 ///     HashMap::from_iter([(path_buf, 555), (other_path_buf, 777)]);
 /// assert_eq!(map[&PATH], 555);
 /// assert_eq!(map[&other_path_buf], 777);
-///
-/// // Note that `str` keys can be used for indexing as well:
-/// map.insert("third_path".into(), 42);
-/// assert_eq!(map["third_path"], 42);
-/// assert!(map.contains_key(&HandlePath::new("third_path")));
 /// # Ok::<_, Box<dyn std::error::Error>>(())
 /// ```
 #[derive(Debug, Clone, Copy)]

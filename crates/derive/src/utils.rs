@@ -4,8 +4,8 @@ use darling::{ast::Style, FromMeta};
 use proc_macro2::{Ident, Span};
 use quote::{quote, ToTokens};
 use syn::{
-    parse_quote, punctuated::Punctuated, spanned::Spanned, Attribute, Data, DataStruct,
-    DeriveInput, Generics, Meta, NestedMeta, Path, Token, Type,
+    parse_quote, spanned::Spanned, Attribute, Data, DataStruct, DeriveInput, Generics, NestedMeta,
+    Path, Type,
 };
 
 use std::collections::HashSet;
@@ -15,65 +15,6 @@ pub(crate) fn find_meta_attrs(name: &str, args: &[Attribute]) -> Option<NestedMe
         .filter_map(|attr| attr.parse_meta().ok())
         .find(|meta| meta.path().is_ident(name))
         .map(NestedMeta::from)
-}
-
-fn take_meta_attr(name: &str, attrs: &mut Vec<Attribute>) -> Option<NestedMeta> {
-    let (i, meta) = attrs.iter().enumerate().find_map(|(i, attr)| {
-        if let Ok(meta) = attr.parse_meta() {
-            if meta.path().is_ident(name) {
-                return Some((i, NestedMeta::from(meta)));
-            }
-        }
-        None
-    })?;
-    attrs.remove(i);
-    Some(meta)
-}
-
-pub(crate) fn take_derive(attrs: &mut Vec<Attribute>, name: &str) -> bool {
-    let idx = attrs.iter_mut().enumerate().find_map(|(i, attr)| {
-        if attr.path.is_ident("derive") {
-            if let Ok(Meta::List(mut list)) = attr.parse_meta() {
-                let trait_pos = list.nested.iter().position(|tr| {
-                    if let NestedMeta::Meta(Meta::Path(path)) = tr {
-                        path.is_ident(name)
-                    } else {
-                        false
-                    }
-                });
-
-                if let Some(trait_pos) = trait_pos {
-                    remove_nested(&mut list.nested, trait_pos);
-                    *attr = parse_quote!(#[ #list ]);
-                    return Some((i, list.nested.is_empty()));
-                }
-            }
-        }
-        None
-    });
-
-    if let Some((idx, needs_removal)) = idx {
-        if needs_removal {
-            attrs.remove(idx);
-        }
-        true
-    } else {
-        false
-    }
-}
-
-fn remove_nested(list: &mut Punctuated<NestedMeta, Token![,]>, idx: usize) {
-    debug_assert!(idx < list.len());
-    let tail_len = list.len() - idx - 1;
-    let mut popped_items: Vec<_> = (0..tail_len)
-        .map(|_| list.pop().unwrap().into_value())
-        .collect();
-    popped_items.reverse();
-
-    list.pop(); // Remove the target item
-    for item in popped_items {
-        list.push(item);
-    }
 }
 
 #[derive(Debug, Default, FromMeta)]
@@ -138,10 +79,10 @@ pub(crate) struct TargetField {
 }
 
 impl TargetField {
-    fn new(field: &mut syn::Field) -> darling::Result<Self> {
+    fn new(field: &syn::Field) -> darling::Result<Self> {
         let ident = field.ident.clone();
 
-        let attrs = take_meta_attr("tardigrade", &mut field.attrs).map_or_else(
+        let attrs = find_meta_attrs("tardigrade", &field.attrs).map_or_else(
             || Ok(TargetFieldAttrs::default()),
             |meta| TargetFieldAttrs::from_nested_meta(&meta),
         )?;
@@ -213,8 +154,8 @@ pub(crate) struct TargetStruct {
 }
 
 impl TargetStruct {
-    pub fn new(input: &mut DeriveInput) -> darling::Result<Self> {
-        let fields = match &mut input.data {
+    pub fn new(input: &DeriveInput) -> darling::Result<Self> {
+        let fields = match &input.data {
             Data::Struct(DataStruct { fields, .. }) => fields,
             _ => {
                 return Err(darling::Error::unsupported_shape(
@@ -222,9 +163,9 @@ impl TargetStruct {
                 ))
             }
         };
-        let style = Style::from(&*fields);
+        let style = Style::from(fields);
         let fields = fields
-            .iter_mut()
+            .iter()
             .map(TargetField::new)
             .collect::<Result<_, _>>()?;
 
@@ -297,35 +238,5 @@ impl TargetStruct {
             }
         };
         self.impl_std_trait(quote!(core::fmt::Debug), methods)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn taking_derive() {
-        let mut input: DeriveInput = parse_quote! {
-            #[derive(Debug, PartialEq)]
-            #[derive(Clone)]
-            struct Foo;
-        };
-        take_derive(&mut input.attrs, "Debug");
-
-        let expected: DeriveInput = parse_quote! {
-            #[derive(PartialEq)]
-            #[derive(Clone)]
-            struct Foo;
-        };
-        assert_eq!(input, expected);
-
-        take_derive(&mut input.attrs, "Clone");
-
-        let expected: DeriveInput = parse_quote! {
-            #[derive(PartialEq)]
-            struct Foo;
-        };
-        assert_eq!(input, expected);
     }
 }

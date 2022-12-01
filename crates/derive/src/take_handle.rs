@@ -4,9 +4,9 @@ use darling::{ast::Style, FromMeta};
 use proc_macro::TokenStream;
 use proc_macro2::Ident;
 use quote::{quote, ToTokens};
-use syn::{parse_quote, DeriveInput, Generics, Type};
+use syn::{parse_quote, DeriveInput, Generics, Path, Type};
 
-use crate::utils::{find_meta_attrs, take_derive, DeriveAttrs, TargetField, TargetStruct};
+use crate::utils::{find_meta_attrs, DeriveAttrs, TargetField, TargetStruct};
 
 impl TargetField {
     fn check_for_handle(&self, env_ident: &Ident) -> darling::Result<()> {
@@ -51,44 +51,29 @@ struct Handle {
 }
 
 impl Handle {
-    fn new(input: &mut DeriveInput) -> darling::Result<Self> {
+    fn new(input: &DeriveInput) -> darling::Result<Self> {
         let env = Self::env_generic(&input.generics)?;
         let mut base = TargetStruct::new(input)?;
         for field in &base.fields {
             field.check_for_handle(&env)?;
         }
-
-        let fields = match &mut input.data {
-            syn::Data::Struct(syn::DataStruct { fields, .. }) => fields,
-            _ => {
-                return Err(darling::Error::unsupported_shape(
-                    "can be only implemented for structs",
-                ))
-            }
-        };
-        for field in fields {
-            field.attrs.clear();
-        }
-
-        let derive_clone = take_derive(&mut input.attrs, "Clone");
-        let derive_debug = take_derive(&mut input.attrs, "Debug");
         base.generics = input.generics.clone();
 
         Ok(Self {
             base,
             env,
-            derive_clone,
-            derive_debug,
+            derive_clone: false, // FIXME
+            derive_debug: false,
         })
     }
 
     fn env_generic(generics: &Generics) -> darling::Result<Ident> {
-        const MSG: &str = "Handle struct must have single type generic";
+        const MSG: &str = "Handle struct must have an env generic";
 
-        if generics.params.len() != 1 {
+        if generics.params.is_empty() {
             return Err(darling::Error::custom(MSG).with_span(generics));
         }
-        let generic = generics.params.first().unwrap();
+        let generic = generics.params.last().unwrap();
         if let syn::GenericParam::Type(ty_param) = generic {
             Ok(ty_param.ident.clone())
         } else {
@@ -153,29 +138,23 @@ impl ToTokens for Handle {
     }
 }
 
-pub(crate) fn impl_handle(input: TokenStream) -> TokenStream {
-    let mut input: DeriveInput = match syn::parse(input) {
-        Ok(input) => input,
-        Err(err) => return err.into_compile_error().into(),
-    };
-    let handle = match Handle::new(&mut input) {
-        Ok(handle) => handle,
-        Err(err) => return err.write_errors().into(),
-    };
-    quote!(#input #handle).into()
+fn derive_take_handle(input: &DeriveInput) -> darling::Result<impl ToTokens> {
+    // Determine whether we deal with a handle or a delegated struct.
+    let attrs = find_meta_attrs("tardigrade", &input.attrs).map_or_else(
+        || Ok(DeriveAttrs::default()),
+        |meta| DeriveAttrs::from_nested_meta(&meta),
+    )?;
+
+    if let Some(handle) = &attrs.handle {
+        Ok(impl_take_handle_delegation(input, handle))
+    } else {
+        let handle = Handle::new(input)?;
+        Ok(quote!(#handle))
+    }
 }
 
-fn derive_take_handle(input: &DeriveInput) -> darling::Result<impl ToTokens> {
-    let meta = find_meta_attrs("tardigrade", &input.attrs).ok_or_else(|| {
-        let msg = "#[tardigrade(handle = ..)] must be specified";
-        darling::Error::custom(msg).with_span(&input)
-    })?;
-    let attrs = DeriveAttrs::from_nested_meta(&meta)?;
-    let handle = attrs.handle.as_ref().ok_or_else(|| {
-        let msg = "#[tardigrade(handle = ..)] must be specified";
-        darling::Error::custom(msg).with_span(&meta)
-    })?;
-
+// TODO: support generic handles
+fn impl_take_handle_delegation(input: &DeriveInput, handle: &Path) -> proc_macro2::TokenStream {
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let target = &input.ident;
     let tr = quote!(tardigrade::workflow::WithHandle);
@@ -205,7 +184,7 @@ fn derive_take_handle(input: &DeriveInput) -> darling::Result<impl ToTokens> {
         }
     };
 
-    Ok(quote!(#with_handle_impl #take_handle_impl))
+    quote!(#with_handle_impl #take_handle_impl)
 }
 
 pub(crate) fn impl_take_handle(input: TokenStream) -> TokenStream {

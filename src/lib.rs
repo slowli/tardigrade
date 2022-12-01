@@ -84,45 +84,6 @@ pub use crate::{
     time::{now, sleep, Timer, TimerDefinition},
 };
 
-/// Proc macro attribute for workflow handles.
-///
-/// The attribute should be placed on a struct with handles to the workflow interface elements,
-/// such as channels. These handles must be specified using the [`Handle`] type
-/// alias, with the second type arg (the environment) being the only type arg of the struct.
-///
-/// The attribute will transform the input as follows:
-///
-/// - Add a `where` clause for the handle struct specifying that field handles exist
-///   in an environment
-/// - Derive [`TakeHandle`] for the workflow type using the handle struct as a handle
-/// - Optionally, derive `Clone` and/or `Debug` for the handle struct if the corresponding derives
-///   are requested via `#[derive(..)]`. (Ordinary derivation of these traits is problematic
-///   because of the `where` clause on the struct.)
-///
-/// # Attributes
-///
-/// No attributes are supported.
-///
-/// # Examples
-///
-/// ```
-/// use tardigrade::{channel::{Sender, Receiver}, workflow::{InEnv, WorkflowEnv}, Json};
-///
-/// /// Handle for the workflow.
-/// #[tardigrade::handle]
-/// #[derive(Debug)]
-/// pub struct MyHandle<Env: WorkflowEnv> {
-///     pub receiver: InEnv<Receiver<i64, Json>, Env>,
-///     pub sender: InEnv<Sender<i64, Json>, Env>,
-/// }
-/// ```
-///
-/// See the [`workflow`](crate::workflow) module docs for an end-to-end example of usage.
-///
-/// [`Handle`]: crate::workflow::InEnv
-/// [`TakeHandle`]: crate::workflow::TakeHandle
-pub use tardigrade_derive::handle;
-
 pub use tardigrade_shared::interface;
 
 #[doc(hidden)] // used by the derive macros; not public

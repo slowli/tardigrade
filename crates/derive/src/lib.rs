@@ -21,12 +21,6 @@ mod interface;
 mod take_handle;
 mod utils;
 
-// FIXME: rework as derive macro
-#[proc_macro_attribute]
-pub fn handle(_attr: TokenStream, input: TokenStream) -> TokenStream {
-    take_handle::impl_handle(input)
-}
-
 #[proc_macro_derive(GetInterface, attributes(tardigrade))]
 pub fn get_interface(input: TokenStream) -> TokenStream {
     interface::impl_get_interface(input)
