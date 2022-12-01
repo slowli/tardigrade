@@ -107,7 +107,7 @@ use crate::{
     channel::{Receiver, Sender},
     interface::{
         AccessError, AccessErrorKind, ArgsSpec, HandlePath, Interface, InterfaceBuilder,
-        InterfaceLocation, ReceiverSpec, SenderSpec,
+        InterfaceLocation, ReceiverAt, ReceiverSpec, SenderAt, SenderSpec,
     },
     task::TaskResult,
     Decode, Encode, Raw,
@@ -118,7 +118,7 @@ mod untyped;
 
 pub use self::{
     handle::{DescribeEnv, Handle, TakeHandle, WithHandle, WorkflowEnv},
-    untyped::{UntypedHandle, UntypedHandleIndex},
+    untyped::UntypedHandle,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -288,11 +288,7 @@ impl WorkflowEnv for Wasm {
         &mut self,
         path: HandlePath<'_>,
     ) -> Result<Self::Receiver<T, C>, AccessError> {
-        use crate::interface::ReceiverAt;
-
-        let raw = self
-            .take_receiver(path)
-            .ok_or_else(|| AccessErrorKind::Unknown.with_location(ReceiverAt(path)))?;
+        let raw = self.take_receiver(path)?;
         Ok(Receiver::from_raw(raw))
     }
 
@@ -309,11 +305,7 @@ impl WorkflowEnv for Wasm {
         &mut self,
         path: HandlePath<'_>,
     ) -> Result<Self::Sender<T, C>, AccessError> {
-        use crate::interface::SenderAt;
-
-        let raw = self
-            .take_sender(path)
-            .ok_or_else(|| AccessErrorKind::Unknown.with_location(SenderAt(path)))?;
+        let raw = self.take_sender(path)?;
         Ok(Sender::from_raw(raw))
     }
 }
@@ -398,15 +390,15 @@ impl Wasm {
     pub(crate) fn take_receiver(
         &mut self,
         path: HandlePath<'_>,
-    ) -> Option<crate::channel::RawReceiver> {
-        self.handles.receivers.remove(&path)
+    ) -> Result<crate::channel::RawReceiver, AccessError> {
+        self.handles.remove(ReceiverAt(path))
     }
 
     pub(crate) fn take_sender(
         &mut self,
         path: HandlePath<'_>,
-    ) -> Option<crate::channel::RawSender> {
-        self.handles.senders.remove(&path)
+    ) -> Result<crate::channel::RawSender, AccessError> {
+        self.handles.remove(SenderAt(path))
     }
 }
 

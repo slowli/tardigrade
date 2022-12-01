@@ -1,6 +1,6 @@
 #![allow(missing_docs)]
 
-use hashbrown::{Equivalent, HashMap};
+use hashbrown::Equivalent;
 use serde::{
     de::{Error as DeError, Visitor},
     Deserialize, Deserializer, Serialize, Serializer,
@@ -269,8 +269,6 @@ impl<'de> Deserialize<'de> for HandlePathBuf {
     }
 }
 
-pub type HandleMap<V> = HashMap<HandlePathBuf, V>;
-
 /// Newtype for indexing channel receivers, e.g., in an [`Interface`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ReceiverAt<T>(pub T);
@@ -293,6 +291,8 @@ impl<T: fmt::Display> fmt::Display for SenderAt<T> {
 
 #[cfg(test)]
 mod tests {
+    use hashbrown::HashMap;
+
     use std::collections::hash_map::DefaultHasher;
 
     use super::*;
@@ -346,7 +346,7 @@ mod tests {
 
     #[test]
     fn handle_map_operations() {
-        let mut handle_map = HandleMap::new();
+        let mut handle_map = HashMap::new();
         handle_map.insert("test".into(), 42);
         let path = HandlePath::simple("test");
         let path = path.join("more");
