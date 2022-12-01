@@ -57,17 +57,29 @@ struct Handle {
 }
 
 impl Handle {
-    fn new(input: &DeriveInput, crate_path: Path) -> darling::Result<Self> {
+    fn new(input: &DeriveInput, attrs: DeriveAttrs) -> darling::Result<Self> {
         let env = Self::env_generic(&input.generics)?;
         let mut base = TargetStruct::new(input)?;
         base.generics = input.generics.clone();
 
+        for derive in attrs.derive.keys() {
+            if derive != "Clone" && derive != "Debug" {
+                let msg = format!(
+                    "Unsupported additional derive: `{derive}`. Only `Clone` and `Debug` \
+                    are supported for now"
+                );
+                return Err(darling::Error::custom(msg).with_span(input));
+            }
+        }
+
         Ok(Self {
             base,
             env,
-            crate_path,
-            derive_clone: false, // FIXME
-            derive_debug: false,
+            crate_path: attrs
+                .crate_path
+                .unwrap_or_else(|| syn::parse_quote!(tardigrade)),
+            derive_clone: attrs.derive.contains_key("Clone"),
+            derive_debug: attrs.derive.contains_key("Debug"),
         })
     }
 
@@ -160,14 +172,14 @@ fn derive_take_handle(input: &DeriveInput) -> darling::Result<impl ToTokens> {
         || Ok(DeriveAttrs::default()),
         |meta| DeriveAttrs::from_nested_meta(&meta),
     )?;
-    let crate_path = attrs
-        .crate_path
-        .unwrap_or_else(|| syn::parse_quote!(tardigrade));
 
     if let Some(handle) = &attrs.handle {
+        let crate_path = attrs
+            .crate_path
+            .unwrap_or_else(|| syn::parse_quote!(tardigrade));
         Ok(impl_take_handle_delegation(input, &crate_path, handle))
     } else {
-        Handle::new(input, crate_path)?.to_tokens()
+        Handle::new(input, attrs)?.to_tokens()
     }
 }
 

@@ -8,7 +8,7 @@ use syn::{
     Path, Type, TypePath,
 };
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub(crate) fn find_meta_attrs(name: &str, args: &[Attribute]) -> Option<NestedMeta> {
     args.iter()
@@ -27,6 +27,9 @@ pub(crate) struct DeriveAttrs {
     pub auto_interface: Option<()>,
     #[darling(rename = "crate", default)]
     pub crate_path: Option<Path>,
+    #[darling(default)]
+    #[allow(clippy::zero_sized_map_values)] // required for `derive(FromMeta)`
+    pub derive: HashMap<String, ()>,
 }
 
 /// Field of a struct for which one of traits needs to be derived.

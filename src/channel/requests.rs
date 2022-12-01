@@ -13,7 +13,7 @@ use futures::{
 };
 use serde::{Deserialize, Serialize};
 
-use std::{collections::HashMap, fmt, future::Future, marker::PhantomData};
+use std::{collections::HashMap, future::Future, marker::PhantomData};
 
 use crate::{
     channel::{Receiver, Sender},
@@ -344,7 +344,7 @@ where
 
 /// Sender an receiver pairs to handle requests.
 #[derive(TakeHandle)]
-#[tardigrade(crate = "crate")]
+#[tardigrade(crate = "crate", derive(Debug, Clone))]
 pub struct RequestHandles<Req, Resp, C, Env: WorkflowEnv = Wasm>
 where
     C: Codec<Request<Req>> + Codec<Response<Resp>>,
@@ -353,19 +353,6 @@ where
     pub requests: InEnv<Sender<Request<Req>, C>, Env>,
     /// Responses receiver.
     pub responses: InEnv<Receiver<Response<Resp>, C>, Env>,
-}
-
-// FIXME: use auto-derived impl
-impl<Req, Resp, C, Env> fmt::Debug for RequestHandles<Req, Resp, C, Env>
-where
-    Env: WorkflowEnv,
-    C: Codec<Request<Req>> + Codec<Response<Resp>>,
-{
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("RequestHandles")
-            .finish_non_exhaustive()
-    }
 }
 
 impl<Req: 'static, Resp: 'static, C> RequestHandles<Req, Resp, C>
