@@ -20,7 +20,7 @@ use crate::LocalManager;
 use tardigrade::{
     interface::{ReceiverAt, SenderAt},
     spawn::ManageWorkflowsExt,
-    Decode, Encode, Json, TimerId,
+    Codec, Json, TimerId,
 };
 use tardigrade_rt::{
     driver::{Driver, MessageReceiver, MessageSender, Termination},
@@ -531,7 +531,7 @@ async fn dynamically_typed_async_handle() -> TestResult {
     drop(orders_sx); // to terminate the workflow
 
     let events: Vec<_> = events_rx
-        .map(|res| <Json as Decode<DomainEvent>>::try_decode_bytes(res.unwrap()))
+        .map(|res| <Json as Codec<DomainEvent>>::try_decode_bytes(res.unwrap()))
         .try_collect()
         .await?;
     assert_matches!(

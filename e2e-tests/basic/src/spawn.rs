@@ -74,7 +74,7 @@ pub struct DurationMetric {
     duration_millis: u64,
 }
 
-#[tardigrade::handle]
+#[derive(TakeHandle)]
 pub struct BakingHandle<Env: WorkflowEnv = Wasm> {
     pub events: InEnv<Sender<DomainEvent, Json>, Env>,
     pub duration: InEnv<Sender<DurationMetric, Json>, Env>,

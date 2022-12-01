@@ -40,8 +40,8 @@ async fn test_external_tasks(
         .await?;
     let handle = workflow.handle();
     let mut driver = Driver::new();
-    let responses_sx = handle.baking_responses.into_sink(&mut driver);
-    let baking_tasks_rx = handle.baking_tasks.into_stream(&mut driver);
+    let responses_sx = handle.baking.responses.into_sink(&mut driver);
+    let baking_tasks_rx = handle.baking.requests.into_stream(&mut driver);
     let orders_sx = handle.orders.into_sink(&mut driver);
     let events_rx = handle.shared.events.into_stream(&mut driver);
     let join_handle = task::spawn(async move { driver.drive(&mut manager).await });
@@ -119,8 +119,8 @@ async fn closing_task_responses_on_host() -> TestResult {
 
     let mut driver = Driver::new();
     let handle = workflow.handle();
-    let responses_sx = handle.baking_responses.into_sink(&mut driver);
-    let baking_tasks_rx = handle.baking_tasks.into_stream(&mut driver);
+    let responses_sx = handle.baking.responses.into_sink(&mut driver);
+    let baking_tasks_rx = handle.baking.requests.into_stream(&mut driver);
     let mut orders_sx = handle.orders.into_sink(&mut driver);
     let events_rx = handle.shared.events.into_stream(&mut driver);
     let join_handle = task::spawn(async move { driver.drive(&mut manager).await });

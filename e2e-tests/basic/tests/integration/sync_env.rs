@@ -10,7 +10,7 @@ use crate::create_module;
 use tardigrade::{
     interface::{ReceiverAt, SenderAt},
     spawn::ManageWorkflowsExt,
-    Decode, Encode, Json,
+    Codec, Json,
 };
 use tardigrade_rt::{
     engine::{WasmtimeDefinition, WasmtimeInstance, WasmtimeModule, WorkflowEngine},
@@ -37,7 +37,7 @@ struct Drain<'a, T, C, M> {
 
 impl<'a, T, C, M> Drain<'a, T, C, M>
 where
-    C: Decode<T> + Default,
+    C: Codec<T>,
     M: AsManager,
 {
     fn new(receiver: MessageReceiver<'a, T, C, M>) -> Self {

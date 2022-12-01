@@ -11,12 +11,12 @@
         "description": "Domain events emitted during pizza order lifecycle"
       }
     },
-    "baking_tasks": {
+    "baking::requests": {
       "sender":{
         "description": "Tasks to bake pizzas"
       }
     },
-    "baking_responses": {
+    "baking::responses": {
       "receiver": {
         "description": "Responses for `baking_tasks`"
       }

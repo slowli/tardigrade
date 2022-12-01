@@ -84,8 +84,8 @@ fn module_information_is_correct() -> TestResult {
     let interfaces: HashMap<_, _> = MODULE.interfaces().collect();
     interfaces["PizzaDelivery"].handle(ReceiverAt("orders"))?;
     assert!(interfaces["PizzaDelivery"]
-        .handle(ReceiverAt("baking_responses"))
+        .handle(ReceiverAt("baking::responses"))
         .is_err());
-    interfaces["PizzaDeliveryWithRequests"].handle(ReceiverAt("baking_responses"))?;
+    interfaces["PizzaDeliveryWithRequests"].handle(ReceiverAt("baking::responses"))?;
     Ok(())
 }
