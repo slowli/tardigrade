@@ -40,6 +40,7 @@ async fn test_external_tasks(
         .await?;
     let handle = workflow.handle();
     let mut driver = Driver::new();
+    let responses_id = handle.baking.responses.channel_id();
     let responses_sx = handle.baking.responses.into_sink(&mut driver);
     let baking_tasks_rx = handle.baking.requests.into_stream(&mut driver);
     let orders_sx = handle.orders.into_sink(&mut driver);
@@ -48,9 +49,10 @@ async fn test_external_tasks(
 
     let (executor_events_sx, executor_events_rx) = mpsc::unbounded();
     let tasks_stream = baking_tasks_rx.try_for_each_concurrent(task_concurrency, move |request| {
-        let Request::New { id, data: order, .. } = request else {
-                return future::ok(()).left_future();
-            };
+        let Request::New { id, data: order, response_channel_id } = request else {
+            return future::ok(()).left_future();
+        };
+        assert_eq!(response_channel_id, responses_id);
 
         let mut responses = responses_sx.clone();
         let executor_events_sx = executor_events_sx.clone();

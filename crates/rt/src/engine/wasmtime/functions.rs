@@ -61,8 +61,22 @@ pub(super) struct WorkflowFunctions;
 
 /// General-purpose functions.
 impl WorkflowFunctions {
+    #[tracing::instrument(level = "debug", skip_all, err, fields(resource))]
+    pub fn resource_id(resource: Option<ExternRef>) -> anyhow::Result<u64> {
+        let resource = HostResource::from_ref(resource.as_ref())?;
+        tracing::Span::current().record("resource", field::debug(resource));
+
+        match resource {
+            HostResource::Receiver(id) | HostResource::Sender(id) | HostResource::Workflow(id) => {
+                Ok(*id)
+            }
+
+            _ => Err(anyhow!("getting ID for resource not supported")),
+        }
+    }
+
     #[allow(clippy::needless_pass_by_value)] // required by wasmtime
-    pub fn drop_ref(
+    pub fn drop_resource(
         mut ctx: StoreContextMut<'_, InstanceData>,
         dropped: Option<ExternRef>,
     ) -> anyhow::Result<()> {

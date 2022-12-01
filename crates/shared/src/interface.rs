@@ -78,14 +78,13 @@ impl<T> Handle<T> {
 /// Map of handles keyed by [owned handle paths](HandlePathBuf).
 pub type HandleMap<Rx, Sx = Rx> = HashMap<HandlePathBuf, Handle<Rx, Sx>>;
 
-// TODO: remove in favor of `Handle<()>`?
 /// Kind of a channel half (sender or receiver) in a workflow interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChannelHalf {
     /// Receiver.
-    Receiver = 0,
+    Receiver,
     /// Sender.
-    Sender = 1,
+    Sender,
 }
 
 impl fmt::Display for ChannelHalf {

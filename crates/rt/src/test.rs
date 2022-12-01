@@ -187,7 +187,7 @@ impl ModuleCompiler {
             )
         });
         let processed_bytes = Processor::default()
-            .set_drop_fn("tardigrade_rt", "drop_ref")
+            .set_drop_fn("tardigrade_rt", "resource::drop")
             .process_bytes(&module_bytes)
             .unwrap();
 

@@ -59,10 +59,15 @@ impl MpscReceiver {
         }
     }
 
-    // FIXME
     pub(super) fn channel_id(&self) -> ChannelId {
-        let _ = self;
-        0
+        #[externref]
+        #[link(wasm_import_module = "tardigrade_rt")]
+        extern "C" {
+            #[link_name = "resource::id"]
+            fn mpsc_receiver_id(receiver: &Resource<MpscReceiver>) -> ChannelId;
+        }
+
+        unsafe { mpsc_receiver_id(&self.resource) }
     }
 }
 
