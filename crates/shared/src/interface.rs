@@ -49,20 +49,21 @@ impl<Rx, Sx> Resource<Rx, Sx> {
             Self::Sender(sx) => Resource::Sender(mapping(sx)),
         }
     }
+}
 
+impl<T> Resource<T> {
     #[inline]
-    fn into_receiver(self) -> Result<Rx, AccessErrorKind> {
+    pub fn map<U>(self, mapping: impl FnOnce(T) -> U) -> Resource<U> {
         match self {
-            Self::Receiver(rx) => Ok(rx),
-            Self::Sender(_) => Err(AccessErrorKind::KindMismatch),
+            Self::Receiver(rx) => Resource::Receiver(mapping(rx)),
+            Self::Sender(sx) => Resource::Sender(mapping(sx)),
         }
     }
 
     #[inline]
-    fn into_sender(self) -> Result<Sx, AccessErrorKind> {
+    pub fn factor(self) -> T {
         match self {
-            Self::Sender(rx) => Ok(rx),
-            Self::Receiver(_) => Err(AccessErrorKind::KindMismatch),
+            Self::Receiver(value) | Self::Sender(value) => value,
         }
     }
 }
@@ -228,86 +229,151 @@ impl AccessError {
         &self.kind
     }
 
+    #[doc(hidden)]
+    pub fn into_kind(self) -> AccessErrorKind {
+        self.kind
+    }
+
     /// Returns location of this error.
     pub fn location(&self) -> Option<&InterfaceLocation> {
         self.location.as_ref()
     }
 }
 
-pub trait HandleMapKey: Copy + fmt::Debug {
+pub trait HandleMapKey: Into<InterfaceLocation> + Copy + fmt::Debug {
     type Output<Rx, Sx>;
 
-    fn get<Rx, Sx>(self, map: &HandleMap<Rx, Sx>) -> Result<&Self::Output<Rx, Sx>, AccessError>;
+    // This is quite ugly, but we cannot return `HandlePath<'_>` from a method
+    // even if we introduce a surrogate lifetime by using the `&self` receiver.
+    #[doc(hidden)]
+    fn with_path<R>(self, action: impl FnOnce(HandlePath<'_>) -> R) -> R;
+
+    #[doc(hidden)]
+    fn from_handle<Rx, Sx>(handle: Resource<Rx, Sx>) -> Option<Self::Output<Rx, Sx>>;
+
+    // We cannot only use `Self::from_handle()` with `<&Rx, &Sx>` type args because
+    // we need a reference in some cases (e.g., for indexing).
+    #[doc(hidden)]
+    fn from_handle_ref<Rx, Sx>(handle: &Resource<Rx, Sx>) -> Option<&Self::Output<Rx, Sx>>;
+
+    #[doc(hidden)]
+    fn from_handle_mut<Rx, Sx>(handle: &mut Resource<Rx, Sx>) -> Option<&mut Self::Output<Rx, Sx>>;
+
+    fn get<Rx, Sx>(self, map: &HandleMap<Rx, Sx>) -> Result<&Self::Output<Rx, Sx>, AccessError> {
+        let result = self
+            .with_path(|path| map.get(&path))
+            .ok_or(AccessErrorKind::Unknown);
+        result
+            .and_then(|handle| Self::from_handle_ref(handle).ok_or(AccessErrorKind::KindMismatch))
+            .map_err(|err| err.with_location(self))
+    }
+
     fn get_mut<Rx, Sx>(
         self,
         map: &mut HandleMap<Rx, Sx>,
-    ) -> Result<&mut Self::Output<Rx, Sx>, AccessError>;
+    ) -> Result<&mut Self::Output<Rx, Sx>, AccessError> {
+        let result = self
+            .with_path(|path| map.get_mut(&path))
+            .ok_or(AccessErrorKind::Unknown);
+        result
+            .and_then(|handle| Self::from_handle_mut(handle).ok_or(AccessErrorKind::KindMismatch))
+            .map_err(|err| err.with_location(self))
+    }
+
     fn remove<Rx, Sx>(
         self,
         map: &mut HandleMap<Rx, Sx>,
-    ) -> Result<Self::Output<Rx, Sx>, AccessError>;
+    ) -> Result<Self::Output<Rx, Sx>, AccessError> {
+        self.get(map)?;
+        let handle = self.with_path(|path| map.remove(&path)).unwrap();
+        Ok(Self::from_handle(handle).unwrap())
+    }
 }
 
-macro_rules! impl_handle_map_key {
-    ($target:ty => $output:ty { $(path = $path:tt;)? filter = $($filter:ident)?; }) => {
-        impl<'p, P> HandleMapKey for $target
-        where
-            P: Into<HandlePath<'p>> + Copy + fmt::Debug,
-        {
-            type Output<Rx, Sx> = $output;
+impl<'p, P> HandleMapKey for P
+where
+    P: Into<HandlePath<'p>> + Copy + fmt::Debug,
+{
+    type Output<Rx, Sx> = Resource<Rx, Sx>;
 
-            fn get<Rx, Sx>(
-                self,
-                map: &HandleMap<Rx, Sx>,
-            ) -> Result<&Self::Output<Rx, Sx>, AccessError> {
-                let result = map
-                    .get(&self$(.$path)?.into())
-                    .ok_or_else(|| AccessErrorKind::Unknown)
-                    $(.and_then(|handle| handle.as_ref().$filter()))?;
-                result.map_err(|err| err.with_location(self))
-            }
+    fn with_path<R>(self, action: impl FnOnce(HandlePath<'_>) -> R) -> R {
+        action(self.into())
+    }
 
-            fn get_mut<Rx, Sx>(
-                self,
-                map: &mut HandleMap<Rx, Sx>,
-            ) -> Result<&mut Self::Output<Rx, Sx>, AccessError> {
-                let result = map
-                    .get_mut(&self$(.$path)?.into())
-                    .ok_or_else(|| AccessErrorKind::Unknown)
-                    $(.and_then(|handle| handle.as_mut().$filter()))?;
-                result.map_err(|err| err.with_location(self))
-            }
+    fn from_handle<Rx, Sx>(handle: Resource<Rx, Sx>) -> Option<Self::Output<Rx, Sx>> {
+        Some(handle)
+    }
 
-            fn remove<Rx, Sx>(
-                self,
-                map: &mut HandleMap<Rx, Sx>,
-            ) -> Result<Self::Output<Rx, Sx>, AccessError> {
-                self.get(map)?;
-                let handle = map.remove(&self$(.$path)?.into()).unwrap();
-                $(let handle = handle.$filter().unwrap();)?
-                Ok(handle)
-            }
+    fn from_handle_ref<Rx, Sx>(handle: &Resource<Rx, Sx>) -> Option<&Self::Output<Rx, Sx>> {
+        Some(handle)
+    }
+
+    fn from_handle_mut<Rx, Sx>(handle: &mut Resource<Rx, Sx>) -> Option<&mut Self::Output<Rx, Sx>> {
+        Some(handle)
+    }
+}
+
+impl<'p, P> HandleMapKey for ReceiverAt<P>
+where
+    P: 'p + Into<HandlePath<'p>> + Copy + fmt::Debug,
+{
+    type Output<Rx, Sx> = Rx;
+
+    fn with_path<R>(self, action: impl FnOnce(HandlePath<'_>) -> R) -> R {
+        action(self.0.into())
+    }
+
+    fn from_handle<Rx, Sx>(handle: Resource<Rx, Sx>) -> Option<Rx> {
+        match handle {
+            Resource::Receiver(rx) => Some(rx),
+            Resource::Sender(_) => None,
         }
-    };
-}
+    }
 
-impl_handle_map_key! {
-    P => Resource<Rx, Sx> {
-        filter = ;
+    fn from_handle_ref<Rx, Sx>(handle: &Resource<Rx, Sx>) -> Option<&Rx> {
+        match handle {
+            Resource::Receiver(rx) => Some(rx),
+            Resource::Sender(_) => None,
+        }
+    }
+
+    fn from_handle_mut<Rx, Sx>(handle: &mut Resource<Rx, Sx>) -> Option<&mut Rx> {
+        match handle {
+            Resource::Receiver(rx) => Some(rx),
+            Resource::Sender(_) => None,
+        }
     }
 }
 
-impl_handle_map_key! {
-    ReceiverAt<P> => Rx {
-        path = 0;
-        filter = into_receiver;
-    }
-}
+impl<'p, P> HandleMapKey for SenderAt<P>
+where
+    P: 'p + Into<HandlePath<'p>> + Copy + fmt::Debug,
+{
+    type Output<Rx, Sx> = Sx;
 
-impl_handle_map_key! {
-    SenderAt<P> => Sx {
-        path = 0;
-        filter = into_sender;
+    fn with_path<R>(self, action: impl FnOnce(HandlePath<'_>) -> R) -> R {
+        action(self.0.into())
+    }
+
+    fn from_handle<Rx, Sx>(handle: Resource<Rx, Sx>) -> Option<Sx> {
+        match handle {
+            Resource::Sender(sx) => Some(sx),
+            Resource::Receiver(_) => None,
+        }
+    }
+
+    fn from_handle_ref<Rx, Sx>(handle: &Resource<Rx, Sx>) -> Option<&Sx> {
+        match handle {
+            Resource::Sender(sx) => Some(sx),
+            Resource::Receiver(_) => None,
+        }
+    }
+
+    fn from_handle_mut<Rx, Sx>(handle: &mut Resource<Rx, Sx>) -> Option<&mut Sx> {
+        match handle {
+            Resource::Sender(sx) => Some(sx),
+            Resource::Receiver(_) => None,
+        }
     }
 }
 
@@ -402,7 +468,11 @@ pub type HandleSpec = Resource<ReceiverSpec, SenderSpec>;
 pub struct Interface {
     #[serde(rename = "v")]
     version: u32,
-    #[serde(rename = "in", default, skip_serializing_if = "HandleMap::is_empty")]
+    #[serde(
+        rename = "handles",
+        default,
+        skip_serializing_if = "HandleMap::is_empty"
+    )]
     handles: HandleMap<ReceiverSpec, SenderSpec>,
     #[serde(rename = "args", default)]
     args: ArgsSpec,

@@ -127,7 +127,7 @@ impl<T> ChannelSpawnConfig<T> {
 }
 
 #[doc(hidden)]
-pub type ChannelsConfig<Rx, Sx> = HandleMap<ChannelSpawnConfig<Rx>, ChannelSpawnConfig<Sx>>;
+pub type ChannelsConfig<Rx, Sx = Rx> = HandleMap<ChannelSpawnConfig<Rx>, ChannelSpawnConfig<Sx>>;
 
 /// Manager of [`Interface`]s that allows obtaining an interface by a string identifier.
 pub trait ManageInterfaces {
