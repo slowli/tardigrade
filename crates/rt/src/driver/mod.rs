@@ -22,7 +22,7 @@ use crate::{
     storage::{MessageError, ReadChannels, Storage},
     Schedule,
 };
-use tardigrade::{ChannelId, Decode, Encode};
+use tardigrade::{ChannelId, Codec};
 
 #[derive(Debug)]
 enum ListenedEventOutput {
@@ -341,7 +341,7 @@ impl<T, C: Clone> Clone for MessageSender<T, C> {
     }
 }
 
-impl<T, C: Encode<T>, M: AsManager> manager::MessageSender<'_, T, C, M> {
+impl<T, C: Codec<T>, M: AsManager> manager::MessageSender<'_, T, C, M> {
     /// Registers this sender in `driver`, allowing to later asynchronously send messages.
     pub fn into_sink(self, driver: &mut Driver) -> MessageSender<T, C> {
         let (sx, rx) = mpsc::channel(1);
@@ -353,7 +353,7 @@ impl<T, C: Encode<T>, M: AsManager> manager::MessageSender<'_, T, C, M> {
     }
 }
 
-impl<T, C: Encode<T>> Sink<T> for MessageSender<T, C> {
+impl<T, C: Codec<T>> Sink<T> for MessageSender<T, C> {
     type Error = mpsc::SendError;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -393,7 +393,7 @@ pin_project! {
     }
 }
 
-impl<T, C: Decode<T> + Default, M: AsManager> manager::MessageReceiver<'_, T, C, M> {
+impl<T, C: Codec<T>, M: AsManager> manager::MessageReceiver<'_, T, C, M> {
     /// Registers this receiver in `driver`, allowing to later asynchronously receive messages.
     pub fn into_stream(self, driver: &mut Driver) -> MessageReceiver<T, C> {
         let (sx, rx) = mpsc::unbounded();
@@ -409,7 +409,7 @@ impl<T, C: Decode<T> + Default, M: AsManager> manager::MessageReceiver<'_, T, C,
     }
 }
 
-impl<T, C: Decode<T>> Stream for MessageReceiver<T, C> {
+impl<T, C: Codec<T>> Stream for MessageReceiver<T, C> {
     type Item = Result<T, C::Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {

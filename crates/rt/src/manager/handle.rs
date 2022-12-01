@@ -22,7 +22,7 @@ use tardigrade::{
     interface::{AccessError, Handle, HandleMapKey, HandlePath, Interface, ReceiverAt, SenderAt},
     task::JoinError,
     workflow::{DescribeEnv, GetInterface, InEnv, TakeHandle, WorkflowEnv},
-    ChannelId, Decode, Encode, Raw, WorkflowId,
+    ChannelId, Codec, Raw, WorkflowId,
 };
 
 /// Concurrency errors for modifying operations on workflows.
@@ -239,7 +239,7 @@ pub struct MessageSender<'a, T, C, M> {
     _ty: PhantomData<(fn(T), C)>,
 }
 
-impl<T, C: Encode<T>, M: AsManager> MessageSender<'_, T, C, M> {
+impl<T, C: Codec<T>, M: AsManager> MessageSender<'_, T, C, M> {
     /// Returns the ID of the channel this sender is connected to.
     pub fn channel_id(&self) -> ChannelId {
         self.channel_id
@@ -271,10 +271,10 @@ impl<T, C: Encode<T>, M: AsManager> MessageSender<'_, T, C, M> {
 }
 
 impl<'a, W, M: AsManager> WorkflowEnv for WorkflowHandle<'a, W, M> {
-    type Receiver<T, C: Encode<T> + Decode<T>> = MessageSender<'a, T, C, M>;
-    type Sender<T, C: Encode<T> + Decode<T>> = MessageReceiver<'a, T, C, M>;
+    type Receiver<T, C: Codec<T>> = MessageSender<'a, T, C, M>;
+    type Sender<T, C: Codec<T>> = MessageReceiver<'a, T, C, M>;
 
-    fn take_receiver<T, C: Encode<T> + Decode<T>>(
+    fn take_receiver<T, C: Codec<T>>(
         &mut self,
         path: HandlePath<'_>,
     ) -> Result<Self::Receiver<T, C>, AccessError> {
@@ -286,7 +286,7 @@ impl<'a, W, M: AsManager> WorkflowEnv for WorkflowHandle<'a, W, M> {
         })
     }
 
-    fn take_sender<T, C: Encode<T> + Decode<T>>(
+    fn take_sender<T, C: Codec<T>>(
         &mut self,
         path: HandlePath<'_>,
     ) -> Result<Self::Sender<T, C>, AccessError> {
@@ -319,7 +319,7 @@ pub struct MessageReceiver<'a, T, C, M> {
     _ty: PhantomData<(C, fn() -> T)>,
 }
 
-impl<T, C: Decode<T> + Default, M: AsManager> MessageReceiver<'_, T, C, M> {
+impl<T, C: Codec<T>, M: AsManager> MessageReceiver<'_, T, C, M> {
     /// Returns the ID of the channel this receiver is connected to.
     pub fn channel_id(&self) -> ChannelId {
         self.channel_id
@@ -425,7 +425,7 @@ pub struct ReceivedMessage<T, C> {
     _ty: PhantomData<(C, fn() -> T)>,
 }
 
-impl<T, C: Decode<T>> ReceivedMessage<T, C> {
+impl<T, C: Codec<T>> ReceivedMessage<T, C> {
     /// Returns zero-based message index.
     pub fn index(&self) -> usize {
         self.index

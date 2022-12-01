@@ -110,7 +110,7 @@ use crate::{
         InterfaceLocation, ReceiverSpec, SenderSpec,
     },
     task::TaskResult,
-    Decode, Encode, Raw,
+    Codec, Raw,
 };
 
 mod handle;
@@ -226,10 +226,10 @@ where
 }
 
 impl WorkflowEnv for InterfaceBuilder {
-    type Receiver<T, C: Encode<T> + Decode<T>> = ();
-    type Sender<T, C: Encode<T> + Decode<T>> = ();
+    type Receiver<T, C: Codec<T>> = ();
+    type Sender<T, C: Codec<T>> = ();
 
-    fn take_receiver<T, C: Encode<T> + Decode<T>>(
+    fn take_receiver<T, C: Codec<T>>(
         &mut self,
         path: HandlePath<'_>,
     ) -> Result<Self::Receiver<T, C>, AccessError> {
@@ -237,7 +237,7 @@ impl WorkflowEnv for InterfaceBuilder {
         Ok(())
     }
 
-    fn take_sender<T, C: Encode<T> + Decode<T>>(
+    fn take_sender<T, C: Codec<T>>(
         &mut self,
         path: HandlePath<'_>,
     ) -> Result<Self::Sender<T, C>, AccessError> {
@@ -272,11 +272,11 @@ pub struct Wasm {
 }
 
 impl WorkflowEnv for Wasm {
-    type Receiver<T, C: Encode<T> + Decode<T>> = Receiver<T, C>;
-    type Sender<T, C: Encode<T> + Decode<T>> = Sender<T, C>;
+    type Receiver<T, C: Codec<T>> = Receiver<T, C>;
+    type Sender<T, C: Codec<T>> = Sender<T, C>;
 
     #[cfg(target_arch = "wasm32")]
-    fn take_receiver<T, C: Encode<T> + Decode<T>>(
+    fn take_receiver<T, C: Codec<T>>(
         &mut self,
         path: HandlePath<'_>,
     ) -> Result<Self::Receiver<T, C>, AccessError> {
@@ -284,7 +284,7 @@ impl WorkflowEnv for Wasm {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn take_receiver<T, C: Encode<T> + Decode<T>>(
+    fn take_receiver<T, C: Codec<T>>(
         &mut self,
         path: HandlePath<'_>,
     ) -> Result<Self::Receiver<T, C>, AccessError> {
@@ -293,7 +293,7 @@ impl WorkflowEnv for Wasm {
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn take_sender<T, C: Encode<T> + Decode<T>>(
+    fn take_sender<T, C: Codec<T>>(
         &mut self,
         path: HandlePath<'_>,
     ) -> Result<Self::Sender<T, C>, AccessError> {
@@ -301,7 +301,7 @@ impl WorkflowEnv for Wasm {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn take_sender<T, C: Encode<T> + Decode<T>>(
+    fn take_sender<T, C: Codec<T>>(
         &mut self,
         path: HandlePath<'_>,
     ) -> Result<Self::Sender<T, C>, AccessError> {
@@ -412,7 +412,7 @@ pub trait WorkflowFn {
     type Args;
     /// Codec used for [`Self::Args`] to encode / decode the arguments in order to pass them from
     /// the host to WASM.
-    type Codec: Encode<Self::Args> + Decode<Self::Args>;
+    type Codec: Codec<Self::Args>;
 }
 
 impl WorkflowFn for () {

@@ -80,7 +80,7 @@ pub mod workflow;
 #[cfg(feature = "serde_json")]
 pub use crate::codec::Json;
 pub use crate::{
-    codec::{Decode, Encode, Raw},
+    codec::{Codec, Raw},
     time::{now, sleep, Timer, TimerDefinition},
 };
 

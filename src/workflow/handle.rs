@@ -4,22 +4,22 @@ use std::borrow::Cow;
 
 use crate::{
     interface::{AccessError, HandlePath, Interface},
-    Decode, Encode,
+    Codec,
 };
 
 /// Workflow environment containing its elements (channel senders and receivers).
 pub trait WorkflowEnv {
     /// Receiver handle in this environment.
-    type Receiver<T, C: Encode<T> + Decode<T>>;
+    type Receiver<T, C: Codec<T>>;
     /// Sender handle in this environment.
-    type Sender<T, C: Encode<T> + Decode<T>>;
+    type Sender<T, C: Codec<T>>;
 
     /// Obtains a receiver handle with the specified ID from this environment.
     ///
     /// # Errors
     ///
     /// Returns an error if a receiver with this ID is missing from the environment.
-    fn take_receiver<T, C: Encode<T> + Decode<T>>(
+    fn take_receiver<T, C: Codec<T>>(
         &mut self,
         path: HandlePath<'_>,
     ) -> Result<Self::Receiver<T, C>, AccessError>;
@@ -29,7 +29,7 @@ pub trait WorkflowEnv {
     /// # Errors
     ///
     /// Returns an error if a sender with this ID is missing from the environment.
-    fn take_sender<T, C: Encode<T> + Decode<T>>(
+    fn take_sender<T, C: Codec<T>>(
         &mut self,
         path: HandlePath<'_>,
     ) -> Result<Self::Sender<T, C>, AccessError>;

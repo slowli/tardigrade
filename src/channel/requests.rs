@@ -19,7 +19,7 @@ use crate::{
     channel::{Receiver, Sender},
     task::{self, JoinHandle},
     workflow::{InEnv, TakeHandle, Wasm, WorkflowEnv},
-    ChannelId, Decode, Encode,
+    ChannelId, Codec,
 };
 
 /// Container for a request.
@@ -71,7 +71,7 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
         mut requests_sx: Sender<Request<Req>, C>,
         responses_rx: Receiver<Response<Resp>, C>,
     ) where
-        C: Encode<Request<Req>> + Decode<Response<Resp>>,
+        C: Codec<Request<Req>> + Codec<Response<Resp>>,
     {
         const MAX_ALLOC_CAPACITY: usize = 16;
 
@@ -253,7 +253,7 @@ impl<Req: 'static, Resp: 'static> Requests<Req, Resp> {
         responses_rx: Receiver<Response<Resp>, C>,
     ) -> RequestsBuilder<'static, Req, Resp, C>
     where
-        C: Encode<Request<Req>> + Decode<Response<Resp>>,
+        C: Codec<Request<Req>> + Codec<Response<Resp>>,
     {
         RequestsBuilder {
             requests_sx,
@@ -297,7 +297,7 @@ impl<'a, Req, Resp, C> RequestsBuilder<'a, Req, Resp, C>
 where
     Req: 'static,
     Resp: 'static,
-    C: Encode<Request<Req>> + Decode<Response<Resp>>,
+    C: Codec<Request<Req>> + Codec<Response<Resp>>,
 {
     /// Specifies the capacity (max number of concurrently processed requests).
     /// The default requests capacity is 1.
@@ -347,10 +347,7 @@ where
 #[tardigrade(crate = "crate")]
 pub struct RequestHandles<Req, Resp, C, Env: WorkflowEnv = Wasm>
 where
-    C: Encode<Request<Req>>
-        + Decode<Request<Req>>
-        + Encode<Response<Resp>>
-        + Decode<Response<Resp>>,
+    C: Codec<Request<Req>> + Codec<Response<Resp>>,
 {
     /// Requests sender.
     pub requests: InEnv<Sender<Request<Req>, C>, Env>,
@@ -362,10 +359,7 @@ where
 impl<Req, Resp, C, Env> fmt::Debug for RequestHandles<Req, Resp, C, Env>
 where
     Env: WorkflowEnv,
-    C: Encode<Request<Req>>
-        + Decode<Request<Req>>
-        + Encode<Response<Resp>>
-        + Decode<Response<Resp>>,
+    C: Codec<Request<Req>> + Codec<Response<Resp>>,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -376,10 +370,7 @@ where
 
 impl<Req: 'static, Resp: 'static, C> RequestHandles<Req, Resp, C>
 where
-    C: Encode<Request<Req>>
-        + Decode<Request<Req>>
-        + Encode<Response<Resp>>
-        + Decode<Response<Resp>>,
+    C: Codec<Request<Req>> + Codec<Response<Resp>>,
 {
     /// Starts building a [`Requests`] processor based on the contained sender-receiver pair.
     pub fn process_requests(self) -> RequestsBuilder<'static, Req, Resp, C> {

@@ -84,7 +84,7 @@ use crate::{
     interface::{AccessError, AccessErrorKind, HandleMap, HandlePath, HandlePathBuf, Interface},
     task::JoinError,
     workflow::{DescribeEnv, GetInterface, InEnv, TakeHandle, WithHandle, WorkflowEnv, WorkflowFn},
-    Decode, Encode,
+    Codec,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -340,10 +340,10 @@ impl<Ch: SpecifyWorkflowChannels> Clone for Spawner<Ch> {
 }
 
 impl<Ch: SpecifyWorkflowChannels> WorkflowEnv for Spawner<Ch> {
-    type Receiver<T, C: Encode<T> + Decode<T>> = ReceiverConfig<Ch, T, C>;
-    type Sender<T, C: Encode<T> + Decode<T>> = SenderConfig<Ch, T, C>;
+    type Receiver<T, C: Codec<T>> = ReceiverConfig<Ch, T, C>;
+    type Sender<T, C: Codec<T>> = SenderConfig<Ch, T, C>;
 
-    fn take_receiver<T, C: Encode<T> + Decode<T>>(
+    fn take_receiver<T, C: Codec<T>>(
         &mut self,
         path: HandlePath<'_>,
     ) -> Result<Self::Receiver<T, C>, AccessError> {
@@ -354,7 +354,7 @@ impl<Ch: SpecifyWorkflowChannels> WorkflowEnv for Spawner<Ch> {
         })
     }
 
-    fn take_sender<T, C: Encode<T> + Decode<T>>(
+    fn take_sender<T, C: Codec<T>>(
         &mut self,
         path: HandlePath<'_>,
     ) -> Result<Self::Sender<T, C>, AccessError> {
@@ -397,7 +397,7 @@ where
 impl<Ch, T, C> ReceiverConfig<Ch, T, C>
 where
     Ch: SpecifyWorkflowChannels,
-    C: Encode<T>,
+    C: Codec<T>,
 {
     /// Closes the channel immediately on workflow instantiation.
     pub fn close(&self) {
@@ -430,7 +430,7 @@ where
 impl<Ch, T, C> SenderConfig<Ch, T, C>
 where
     Ch: SpecifyWorkflowChannels,
-    C: Encode<T>,
+    C: Codec<T>,
 {
     /// Closes the channel immediately on workflow instantiation.
     pub fn close(&self) {
@@ -438,7 +438,7 @@ where
     }
 }
 
-impl<T, C: Encode<T>> SenderConfig<Workflows, T, C> {
+impl<T, C: Codec<T>> SenderConfig<Workflows, T, C> {
     /// Copies the channel from the provided `sender`. Thus, the created workflow will send
     /// messages over the same channel as `sender`.
     pub fn copy_from(&self, sender: Sender<T, C>) {
@@ -566,10 +566,10 @@ where
 }
 
 impl WorkflowEnv for RemoteWorkflow {
-    type Receiver<T, C: Encode<T> + Decode<T>> = Remote<Sender<T, C>>;
-    type Sender<T, C: Encode<T> + Decode<T>> = Remote<Receiver<T, C>>;
+    type Receiver<T, C: Codec<T>> = Remote<Sender<T, C>>;
+    type Sender<T, C: Codec<T>> = Remote<Receiver<T, C>>;
 
-    fn take_receiver<T, C: Encode<T> + Decode<T>>(
+    fn take_receiver<T, C: Codec<T>>(
         &mut self,
         path: HandlePath<'_>,
     ) -> Result<Self::Receiver<T, C>, AccessError> {
@@ -577,7 +577,7 @@ impl WorkflowEnv for RemoteWorkflow {
         Ok(raw_sender.map(Sender::from_raw))
     }
 
-    fn take_sender<T, C: Encode<T> + Decode<T>>(
+    fn take_sender<T, C: Codec<T>>(
         &mut self,
         path: HandlePath<'_>,
     ) -> Result<Self::Sender<T, C>, AccessError> {
@@ -586,7 +586,7 @@ impl WorkflowEnv for RemoteWorkflow {
     }
 }
 
-impl<T, C: Decode<T>> Stream for Remote<Receiver<T, C>> {
+impl<T, C: Codec<T>> Stream for Remote<Receiver<T, C>> {
     type Item = T;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -597,7 +597,7 @@ impl<T, C: Decode<T>> Stream for Remote<Receiver<T, C>> {
     }
 }
 
-impl<T, C: Encode<T>> Sink<T> for Remote<Sender<T, C>> {
+impl<T, C: Codec<T>> Sink<T> for Remote<Sender<T, C>> {
     type Error = SendError;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
