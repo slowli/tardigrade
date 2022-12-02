@@ -40,7 +40,7 @@
 //!
 //! *(On by default)*
 //!
-//! Exposes [`Json`] [codec](Encode) for messages received by a workflow.
+//! Exposes [`Json`] [codec](Codec) for messages received by a workflow.
 //!
 //! ## `tracing`
 //!

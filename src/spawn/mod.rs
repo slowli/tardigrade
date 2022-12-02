@@ -19,8 +19,8 @@
 //! #[tardigrade(handle = "ChildHandle", auto_interface)]
 //! pub struct ChildWorkflow(());
 //!
-//! #[tardigrade::handle]
-//! #[derive(Debug)]
+//! #[derive(TakeHandle)]
+//! #[tardigrade(derive(Debug))]
 //! pub struct ChildHandle<Env: WorkflowEnv> {
 //!     pub commands: InEnv<Receiver<String, Json>, Env>,
 //!     pub events: InEnv<Sender<String, Json>, Env>,

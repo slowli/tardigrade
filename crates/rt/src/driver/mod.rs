@@ -120,6 +120,7 @@ pub enum Termination {
 /// let events_rx = handle.remove(SenderAt("events"))
 ///     .unwrap()
 ///     .into_stream(&mut driver);
+/// drop(handle);
 ///
 /// // Run the environment in a separate task.
 /// task::spawn(async move { driver.drive(&mut manager).await });

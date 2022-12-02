@@ -32,8 +32,10 @@ impl Inner<'static> {
 
 /// Path to a [`Handle`](crate::interface::Handle) in a [map](crate::interface::HandleMap).
 ///
-/// Conceptually, a path consists of zero or more string segments. A path can be represented
-/// as a string, with the segments separated by `::`.
+/// Conceptually, a path is hierarchical like a path in a file system; consists of zero or more
+/// string segments. A path can be represented as a string with the segments separated by `::`.
+/// Hierarchical nature of paths is used to compose simplest workflow handles (channel senders
+/// and receivers) into composable high-level components.
 ///
 /// # Examples
 ///
@@ -49,8 +51,10 @@ impl Inner<'static> {
 /// let other_path_buf: HandlePathBuf = "other::path".parse()?;
 ///
 /// // One of key path properties is ability to use as keys in hash maps:
-/// let mut map =
-///     HashMap::from_iter([(path_buf, 555), (other_path_buf, 777)]);
+/// let mut map = HashMap::<_, _>::from_iter([
+///     (path_buf, 555),
+///     (other_path_buf.clone(), 777),
+/// ]);
 /// assert_eq!(map[&PATH], 555);
 /// assert_eq!(map[&other_path_buf], 777);
 /// # Ok::<_, Box<dyn std::error::Error>>(())
@@ -98,22 +102,24 @@ impl HandlePath<'static> {
 
 impl<'a> HandlePath<'a> {
     /// Creates a path from the supplied string.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the supplied string is empty. Use `Self::EMPTY` in these cases.
     pub const fn new(s: &'a str) -> Self {
-        assert!(!s.is_empty(), "empty path supplied");
-        Self {
-            inner: Inner::Link(&Inner::EMPTY, s),
-        }
+        let inner = if s.is_empty() {
+            Inner::EMPTY
+        } else {
+            Inner::Link(&Inner::EMPTY, s)
+        };
+        Self { inner }
     }
 
     /// Appends the `suffix` to this path and returns the resulting path.
     #[must_use]
     pub const fn join(&'a self, suffix: &'a str) -> Self {
-        Self {
-            inner: Inner::Link(&self.inner, suffix),
+        if suffix.is_empty() {
+            *self
+        } else {
+            Self {
+                inner: Inner::Link(&self.inner, suffix),
+            }
         }
     }
 
@@ -132,6 +138,11 @@ impl<'a> HandlePath<'a> {
         }
     }
 
+    /// Checks whether this path is empty (contains no segments).
+    pub fn is_empty(self) -> bool {
+        matches!(self.inner, Inner::Slice([]))
+    }
+
     /// Iterates over the segments in this path.
     pub fn segments(self) -> impl Iterator<Item = &'a str> {
         let ancestors = iter::successors(Some(self.inner), |&inner| match inner {
@@ -148,7 +159,6 @@ impl<'a> HandlePath<'a> {
     }
 }
 
-/// Creates a path consisting of a single provided segment.
 impl<'a> From<&'a str> for HandlePath<'a> {
     fn from(segment: &'a str) -> Self {
         Self::new(segment)
@@ -192,7 +202,7 @@ where
 
 /// Owned version of a [`HandlePath`].
 ///
-/// See [`HandlePath`] docs for examples of usage.
+/// See [`HandlePath`] docs for an overview and examples of usage.
 #[derive(Debug, Clone, Eq)]
 pub struct HandlePathBuf {
     segments: Vec<String>,
@@ -204,6 +214,16 @@ impl HandlePathBuf {
         HandlePath {
             inner: Inner::Slice(&self.segments),
         }
+    }
+
+    /// Checks whether this path is empty (contains no segments).
+    pub fn is_empty(&self) -> bool {
+        self.segments.is_empty()
+    }
+
+    /// Iterates over the segments in this path.
+    pub fn segments(&self) -> impl Iterator<Item = &str> + '_ {
+        self.segments.iter().map(String::as_str)
     }
 }
 
@@ -301,6 +321,8 @@ impl<'de> Deserialize<'de> for HandlePathBuf {
 }
 
 /// Newtype for indexing channel receivers, e.g., in an [`Interface`].
+///
+/// [`Interface`]: crate::interface::Interface
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ReceiverAt<T>(pub T);
 
@@ -311,6 +333,8 @@ impl<T: fmt::Display> fmt::Display for ReceiverAt<T> {
 }
 
 /// Newtype for indexing channel senders, e.g., in an [`Interface`].
+///
+/// [`Interface`]: crate::interface::Interface
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SenderAt<T>(pub T);
 
@@ -340,6 +364,23 @@ mod tests {
         assert_eq!(segments, ["first", "second", "third"]);
         assert_eq!(path, same_path);
         assert_ne!(path, prefix);
+    }
+
+    #[test]
+    fn empty_paths() {
+        let path = HandlePath::new("");
+        assert_eq!(path, HandlePath::EMPTY);
+        assert!(path.is_empty());
+        assert!(path.segments().next().is_none());
+
+        let path = path.join("test");
+        assert_eq!(path, HandlePath::new("test"));
+        assert!(!path.is_empty());
+        assert_eq!(path.segments().collect::<Vec<_>>(), ["test"]);
+
+        let same_path = path.join("");
+        assert_eq!(same_path, path);
+        assert_eq!(path.segments().collect::<Vec<_>>(), ["test"]);
     }
 
     #[test]

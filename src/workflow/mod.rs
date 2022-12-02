@@ -15,8 +15,8 @@
 //! };
 //!
 //! /// Handle for the workflow. Fields are public for integration testing.
-//! #[tardigrade::handle]
-//! #[derive(Debug)]
+//! #[derive(TakeHandle)]
+//! #[tardigrade(derive(Debug))]
 //! pub struct MyHandle<Env: WorkflowEnv = Wasm> {
 //!     /// Receiver for commands.
 //!     pub commands: InEnv<Receiver<Command, Json>, Env>,

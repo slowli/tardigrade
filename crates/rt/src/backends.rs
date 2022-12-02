@@ -50,6 +50,7 @@ mod mock {
     /// let mut events_rx = handle.remove(SenderAt("events"))
     ///     .unwrap()
     ///     .into_stream(&mut driver);
+    /// drop(handle);
     /// task::spawn(async move { driver.drive(&mut manager).await });
     ///
     /// // Advance mocked wall clock.

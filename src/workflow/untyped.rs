@@ -5,7 +5,7 @@ use std::{fmt, ops};
 use super::{DescribeEnv, InEnv, TakeHandle, WithHandle, WorkflowEnv};
 use crate::{
     channel::{RawReceiver, RawSender},
-    interface::{AccessError, Handle, HandleMap, HandleMapKey, HandlePath},
+    interface::{AccessError, AccessErrorKind, Handle, HandleMap, HandleMapKey, HandlePath},
 };
 
 /// Dynamically-typed handle to a workflow containing handles to its channels.
@@ -51,11 +51,11 @@ impl WithHandle for () {
 }
 
 impl<Env: DescribeEnv> TakeHandle<Env> for () {
-    // FIXME: incorrect; `path` arg should be taken into account
-    fn take_handle(
-        env: &mut Env,
-        _path: HandlePath<'_>,
-    ) -> Result<UntypedHandle<Env>, AccessError> {
+    fn take_handle(env: &mut Env, path: HandlePath<'_>) -> Result<UntypedHandle<Env>, AccessError> {
+        if !path.is_empty() {
+            let message = "untyped handle can only obtained from an empty path";
+            return Err(AccessErrorKind::custom(message).with_location(path));
+        }
         let interface = env.interface().into_owned();
 
         let handles = interface

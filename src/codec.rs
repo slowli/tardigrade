@@ -2,9 +2,9 @@
 
 use std::{convert::Infallible, error};
 
-/// Codec for a particular type.
+/// Codec for a particular data type.
 ///
-/// When used in workflows (e.g., in [`Receiver`]), [`Self::decode_bytes()`] method
+/// When used for decoding in workflows (e.g., in [`Receiver`]), [`Self::decode_bytes()`] method
 /// is used. That is, decoding operations panic if an error occurs during decoding. This is usually
 /// the intended behavior, since the primary reason of such a panic would be an incorrect input
 /// supplied via arguments or a channel receiver. The workflow runtime is expected to roll back

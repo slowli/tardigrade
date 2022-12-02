@@ -26,8 +26,8 @@
 //! pub struct MyWorkflow(());
 //!
 //! /// Workflow handle.
-//! #[tardigrade::handle]
-//! #[derive(Debug)]
+//! #[derive(TakeHandle)]
+//! #[tardigrade(derive(Debug))]
 //! pub struct MyHandle<Env: WorkflowEnv> {
 //!     pub events: InEnv<Sender<Event, Json>, Env>,
 //! }

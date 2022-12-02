@@ -248,9 +248,11 @@ impl AccessError {
     }
 }
 
-/// Potential key type for accessing a [`HandleMap`].
+/// Key type for accessing handles in a named collections, such as a [`HandleMap`]
+/// or an [`Interface`].
 pub trait HandleMapKey: Into<InterfaceLocation> + Copy + fmt::Debug {
-    /// Output of the access operation.
+    /// Output of the access operation. Parameterized by receiver and sender types
+    /// (e.g., the corresponding specifications for [`Interface`]).
     type Output<Rx, Sx>;
 
     // This is quite ugly, but we cannot return `HandlePath<'_>` from a method
@@ -262,7 +264,7 @@ pub trait HandleMapKey: Into<InterfaceLocation> + Copy + fmt::Debug {
     fn from_handle<Rx, Sx>(handle: Handle<Rx, Sx>) -> Option<Self::Output<Rx, Sx>>;
 
     // We cannot only use `Self::from_handle()` with `<&Rx, &Sx>` type args because
-    // we need a reference in some cases (e.g., for indexing).
+    // we need a reference to be returned in some cases (e.g., for indexing).
     #[doc(hidden)]
     fn from_handle_ref<Rx, Sx>(handle: &Handle<Rx, Sx>) -> Option<&Self::Output<Rx, Sx>>;
 
@@ -478,18 +480,17 @@ pub type HandleSpec = Handle<ReceiverSpec, SenderSpec>;
 /// # use tardigrade_shared::interface::*;
 /// # const INTERFACE_BYTES: &[u8] = br#"{
 /// #     "v": 0,
-/// #     "in": { "commands": {} },
-/// #     "out": { "events": {} }
+/// #     "handles": { "commands": { "receiver": {} } }
 /// # }"#;
 /// let interface: Interface = // ...
 /// #     Interface::from_bytes(INTERFACE_BYTES);
 ///
-/// let spec = interface.receiver("commands").unwrap();
-/// println!("{}", spec.description);
+/// let spec = interface.handle("commands").unwrap();
+/// println!("{spec:?}");
 ///
-/// assert!(interface
-///     .senders()
-///     .all(|(_, spec)| spec.capacity == Some(1)));
+/// for (path, spec) in interface.handles() {
+///     println!("{path}: {spec:?}");
+/// }
 /// // Indexing is also possible using newtype wrappers from the module
 /// let commands = &interface[ReceiverAt("commands")];
 /// println!("{}", commands.description);

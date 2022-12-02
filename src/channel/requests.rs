@@ -193,7 +193,7 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 /// # use serde::{Deserialize, Serialize};
 /// #
 /// # use tardigrade::{
-/// #     channel::{Requests, Sender, Receiver, WithId},
+/// #     channel::{Request, Requests, Response, Sender, Receiver},
 /// #     task::{TaskResult, ErrorContextExt},
 /// #     workflow::{
 /// #         GetInterface, InEnv, SpawnWorkflow, TaskHandle, TakeHandle, Wasm, WorkflowEnv,
@@ -202,11 +202,11 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 /// #     Json,
 /// # };
 /// #[derive(Debug, Serialize, Deserialize)]
-/// pub struct Request {
+/// pub struct MyRequest {
 ///     // request fields...
 /// }
 /// #[derive(Debug, Serialize, Deserialize)]
-/// pub struct Response {
+/// pub struct MyResponse {
 ///     // response fields...
 /// }
 ///
@@ -214,11 +214,11 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 /// # #[tardigrade(handle = "MyHandle", auto_interface)]
 /// pub struct MyWorkflow(());
 ///
-/// #[tardigrade::handle]
-/// #[derive(Debug)]
+/// #[derive(TakeHandle)]
+/// #[tardigrade(derive(Debug))]
 /// pub struct MyHandle<Env: WorkflowEnv> {
-///     pub requests: InEnv<Sender<WithId<Request>, Json>, Env>,
-///     pub responses: InEnv<Receiver<WithId<Response>, Json>, Env>,
+///     pub requests: InEnv<Sender<Request<MyRequest>, Json>, Env>,
+///     pub responses: InEnv<Receiver<Response<MyResponse>, Json>, Env>,
 /// }
 /// # impl WorkflowFn for MyWorkflow {
 /// #     type Args = ();
@@ -233,7 +233,7 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 ///             .with_task_name("handling_requests")
 ///             .build();
 ///         let response = requests
-///             .request(Request { /* ... */ })
+///             .request(MyRequest { /* ... */ })
 ///             .await
 ///             .context("request cancelled")?;
 ///         // Do something with the response...
@@ -241,6 +241,8 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 ///     }
 /// }
 /// ```
+///
+/// See [`RequestHandles`] docs for a higher-level alternative way to build `Requests`.
 #[derive(Debug)]
 pub struct Requests<Req, Resp> {
     requests_sx: mpsc::Sender<(Req, oneshot::Sender<Resp>)>,
@@ -342,7 +344,40 @@ where
     }
 }
 
-/// Sender an receiver pairs to handle requests.
+/// A pair consisting of a sender and a receiver that can be used to handle requests.
+///
+/// # Examples
+///
+/// `RequestHandles` can be used as a higher-level alternative to manually creating [`Requests`].
+///
+/// ```
+/// # use serde::{Deserialize, Serialize};
+/// # use std::error::Error;
+/// # use tardigrade::{
+/// #     channel::{SendError, RequestHandles}, workflow::{TakeHandle, Wasm, WorkflowEnv}, Json,
+/// # };
+/// #[derive(Serialize, Deserialize)]
+/// pub struct MyRequest {
+///     // request fields...
+/// }
+///
+/// #[derive(TakeHandle)]
+/// #[tardigrade(derive(Debug))]
+/// pub struct MyHandle<Env: WorkflowEnv = Wasm> {
+///     pub task: RequestHandles<MyRequest, (), Json, Env>,
+///     // other handles...
+/// }
+///
+/// // Usage in workflow code:
+/// # async fn workflow_code(handle: MyHandle) -> Result<(), Box<dyn Error>> {
+/// let handle: MyHandle = // ...
+/// # handle;
+/// let (requests, _) =
+///     handle.task.process_requests().with_capacity(4).build();
+/// requests.request(MyRequest { /* .. */ }).await?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(TakeHandle)]
 #[tardigrade(crate = "crate", derive(Debug, Clone))]
 pub struct RequestHandles<Req, Resp, C, Env: WorkflowEnv = Wasm>
