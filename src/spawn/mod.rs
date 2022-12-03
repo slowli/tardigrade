@@ -61,29 +61,37 @@
 //! ```
 
 use async_trait::async_trait;
-use futures::{Sink, Stream};
+use futures::future;
 use pin_project_lite::pin_project;
-use serde::{Deserialize, Serialize};
 
 use std::{
     borrow::Cow,
     cell::RefCell,
+    convert::Infallible,
     fmt,
     future::Future,
     marker::PhantomData,
+    mem,
     pin::Pin,
     rc::Rc,
     task::{Context, Poll},
 };
-use tardigrade_shared::interface::Handle;
 
 pub use crate::error::HostError;
 
+use crate::channel::{channel, RawReceiver, RawSender};
+use crate::workflow::TakeHandles;
 use crate::{
-    channel::{RawReceiver, RawSender, Receiver, SendError, Sender},
-    interface::{AccessError, AccessErrorKind, HandleMap, HandlePath, HandlePathBuf, Interface},
+    channel::{Receiver, Sender},
+    interface::{
+        AccessError, AccessErrorKind, Handle, HandleMap, HandleMapKey, HandlePath, HandlePathBuf,
+        Interface, ReceiverAt, SenderAt,
+    },
     task::JoinError,
-    workflow::{DescribeEnv, GetInterface, InEnv, TakeHandle, WithHandle, WorkflowEnv, WorkflowFn},
+    workflow::{
+        GetInterface, HandleFormat, InEnv, IntoRaw, TryFromRaw, UntypedHandles, Wasm, WithHandle,
+        WorkflowFn,
+    },
     Codec,
 };
 
@@ -94,67 +102,96 @@ pub(crate) mod imp;
 #[path = "imp_mock.rs"]
 mod imp;
 
-/// Configuration for a single workflow channel during workflow instantiation.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[doc(hidden)] // used only in low-level `ManageWorkflows` API
-#[allow(clippy::unsafe_derive_deserialize)] // unsafe methods do not concern type data
-pub enum ChannelSpawnConfig<T> {
-    /// Create a new channel.
-    New,
-    /// Close the channel immediately on workflow creation.
-    Closed,
-    /// Copy an existing channel sender or move an existing receiver.
-    Existing(T),
-}
-
-impl<T> Default for ChannelSpawnConfig<T> {
-    fn default() -> Self {
-        Self::New
-    }
-}
-
-impl<T> ChannelSpawnConfig<T> {
-    pub fn map_ref<U>(&self, map_fn: impl FnOnce(&T) -> U) -> ChannelSpawnConfig<U> {
-        match self {
-            Self::New => ChannelSpawnConfig::New,
-            Self::Closed => ChannelSpawnConfig::Closed,
-            Self::Existing(value) => ChannelSpawnConfig::Existing(map_fn(value)),
-        }
-    }
-}
-
-#[doc(hidden)]
-pub type ChannelsConfig<Rx, Sx = Rx> = HandleMap<ChannelSpawnConfig<Rx>, ChannelSpawnConfig<Sx>>;
-
 /// Manager of [`Interface`]s that allows obtaining an interface by a string identifier.
 pub trait ManageInterfaces {
     /// Returns the interface spec of a workflow with the specified ID.
     fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>>;
 }
 
-/// Specifier of channel handles when [spawning workflows](WorkflowBuilder).
-///
-/// Depending on the environment (e.g., workflow code vs host code), channel handles
-/// can be specified in different ways. This trait encapsulates this variability.
-pub trait SpecifyWorkflowChannels {
-    /// Type of a channel receiver handle.
-    type Receiver;
-    /// Type of a channel sender handle.
-    type Sender;
-}
-
 /// Manager of workflows that allows spawning workflows of a certain type.
 ///
 /// This trait is low-level; use [`ManageWorkflowsExt`] for a high-level alternative.
 #[async_trait]
-pub trait ManageWorkflows<W: WorkflowFn>: ManageInterfaces + SpecifyWorkflowChannels {
+pub trait ManageWorkflows: ManageInterfaces {
     /// Handle to an instantiated workflow.
-    type Handle<'s>
+    type Spawned<'s, W: WorkflowFn + GetInterface>
     where
         Self: 's;
     /// Error spawning a workflow.
     type Error: 'static + Send + Sync;
+    /// Format of handles that this manager operates in.
+    type Fmt: HandleFormat;
+
+    #[doc(hidden)] // implementation detail; should only be used via `WorkflowBuilder`
+    async fn new_workflow_raw(
+        &self,
+        definition_id: &str,
+        args: Vec<u8>,
+        handles: UntypedHandles<Self::Fmt>,
+    ) -> Result<Self::Spawned<'_, ()>, Self::Error>;
+
+    #[doc(hidden)]
+    fn downcast<W: WorkflowFn + GetInterface>(
+        &self,
+        spawned: Self::Spawned<'_, ()>,
+    ) -> Self::Spawned<'_, W>;
+
+    /// Initiates creating a new workflow and returns the corresponding builder.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on interface mismatch between `W` and the workflow definition
+    /// contained in this manager under `definition_id`.
+    fn new_workflow<'a, W: WorkflowFn + GetInterface>(
+        &'a self,
+        definition_id: &'a str,
+    ) -> Result<WorkflowBuilder<'a, Self, W>, AccessError>
+    where
+        Self: Sized,
+    {
+        let provided_interface = self
+            .interface(definition_id)
+            .ok_or(AccessErrorKind::Unknown)?;
+        W::interface().check_compatibility(&provided_interface)?;
+
+        Ok(WorkflowBuilder {
+            manager: self,
+            definition_id,
+            _ty: PhantomData,
+        })
+    }
+}
+
+/// Builder of child workflows.
+pub struct WorkflowBuilder<'a, M: ManageWorkflows, W> {
+    manager: &'a M,
+    definition_id: &'a str,
+    _ty: PhantomData<W>,
+}
+
+impl<M: ManageWorkflows, W> fmt::Debug for WorkflowBuilder<'_, M, W> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WorkflowBuilder")
+            .field("definition_id", &self.definition_id)
+            .finish()
+    }
+}
+
+impl<'a, M, W> WorkflowBuilder<'a, M, W>
+where
+    M: ManageWorkflows,
+    W: WorkflowFn + GetInterface,
+{
+    /// Builds the handles pair allowing to configure handles in the process.
+    pub async fn handles<F>(&self, config_fn: F) -> (InEnv<W, Wasm>, InEnv<W, ForSelf>)
+    where
+        F: FnOnce(&InEnv<W, Spawner>),
+    {
+        let handles_builder = HandlesBuilder::<W>::new();
+        config_fn(handles_builder.config());
+        handles_builder.build().await
+    }
 
     /// Creates a new workflow.
     ///
@@ -162,359 +199,45 @@ pub trait ManageWorkflows<W: WorkflowFn>: ManageInterfaces + SpecifyWorkflowChan
     ///
     /// Returns an error if the workflow cannot be spawned, e.g., if the provided `args`
     /// are incorrect.
-    #[doc(hidden)] // implementation detail; should only be used via `WorkflowBuilder`
-    async fn create_workflow(
-        &self,
-        definition_id: &str,
-        args: Vec<u8>,
-        channels: ChannelsConfig<Self::Receiver, Self::Sender>,
-    ) -> Result<Self::Handle<'_>, Self::Error>;
-}
-
-/// Extension trait for [workflow managers](ManageWorkflows).
-pub trait ManageWorkflowsExt: ManageWorkflows<()> + Sized {
-    /// Returns a workflow builder for the specified definition and args.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the definition is unknown, or does not conform to the interface
-    /// specified via the type param of this trait.
-    fn new_workflow<'a, W>(
-        &'a self,
-        definition_id: &'a str,
+    pub async fn build(
+        self,
         args: W::Args,
-    ) -> Result<WorkflowBuilder<'a, Self, W>, AccessError>
-    where
-        W: WorkflowFn + GetInterface + TakeHandle<Spawner<Self>>,
-        Self: ManageWorkflows<W>,
-    {
-        let provided_interface = self
-            .interface(definition_id)
-            .ok_or(AccessErrorKind::Unknown)?;
-        W::interface().check_compatibility(&provided_interface)?;
-        Ok(WorkflowBuilder::new(
-            self,
-            provided_interface.into_owned(),
-            definition_id,
-            args,
-        ))
+        handles: W::Handle<M::Fmt>,
+    ) -> Result<M::Spawned<'a, W>, M::Error> {
+        let raw_args = <W::Codec>::encode_value(args);
+        let raw_handles = W::into_untyped(handles);
+        let spawned = self
+            .manager
+            .new_workflow_raw(self.definition_id, raw_args, raw_handles)
+            .await?;
+        Ok(self.manager.downcast(spawned))
     }
 }
-
-impl<M: ManageWorkflows<()>> ManageWorkflowsExt for M {}
 
 /// Client-side connection to a [workflow manager][`ManageWorkflows`].
 #[derive(Debug)]
 pub struct Workflows;
 
-impl SpecifyWorkflowChannels for Workflows {
-    type Receiver = RawReceiver;
-    type Sender = RawSender;
-}
-
 #[async_trait]
-impl<W> ManageWorkflows<W> for Workflows
-where
-    W: WorkflowFn + TakeHandle<RemoteWorkflow>,
-{
-    type Handle<'s> = WorkflowHandle<W>;
+impl ManageWorkflows for Workflows {
+    type Spawned<'s, W: WorkflowFn + GetInterface> = RemoteWorkflow;
     type Error = HostError;
+    type Fmt = Wasm;
 
-    async fn create_workflow(
+    async fn new_workflow_raw(
         &self,
         definition_id: &str,
         args: Vec<u8>,
-        channels: ChannelsConfig<RawReceiver, RawSender>,
-    ) -> Result<Self::Handle<'_>, Self::Error> {
-        let mut workflow =
-            <Self as ManageWorkflows<()>>::create_workflow(self, definition_id, args, channels)
-                .await?;
-        let api = W::take_handle(&mut workflow, HandlePath::EMPTY).unwrap();
-        Ok(WorkflowHandle { api, workflow })
-    }
-}
-
-/// Wrapper for remote components of a workflow, such as [`Sender`]s and [`Receiver`]s.
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum Remote<T> {
-    /// The remote handle is not captured.
-    NotCaptured,
-    /// The remote handle is available.
-    Some(T),
-}
-
-impl<T> Remote<T> {
-    /// Unwraps and returns the contained handle.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the handle is not captured.
-    pub fn unwrap(self) -> T {
-        match self {
-            Self::Some(value) => value,
-            Self::NotCaptured => panic!("handle not captured"),
-        }
+        handles: UntypedHandles<Self::Fmt>,
+    ) -> Result<Self::Spawned<'_, ()>, Self::Error> {
+        imp::new_workflow(definition_id, args, handles).await
     }
 
-    fn map<U>(self, map_fn: impl FnOnce(T) -> U) -> Remote<U> {
-        match self {
-            Self::NotCaptured => Remote::NotCaptured,
-            Self::Some(value) => Remote::Some(map_fn(value)),
-        }
-    }
-}
-
-#[derive(Debug)]
-struct SpawnerInner<Ch: SpecifyWorkflowChannels> {
-    definition_id: String,
-    interface: Interface,
-    args: Vec<u8>,
-    channels: RefCell<ChannelsConfig<Ch::Receiver, Ch::Sender>>,
-}
-
-impl<Ch: SpecifyWorkflowChannels> SpawnerInner<Ch> {
-    fn new(interface: Interface, definition_id: &str, args: Vec<u8>) -> Self {
-        let config = interface.handles().map(|(path, spec)| {
-            let config = spec
-                .as_ref()
-                .map_receiver(|_| ChannelSpawnConfig::default())
-                .map_sender(|_| ChannelSpawnConfig::default());
-            (path.to_owned(), config)
-        });
-
-        Self {
-            definition_id: definition_id.to_owned(),
-            channels: RefCell::new(config.collect()),
-            interface,
-            args,
-        }
-    }
-
-    fn close_channel_half(&self, path: HandlePath<'_>) {
-        let mut borrow = self.channels.borrow_mut();
-        match borrow.get_mut(&path).unwrap() {
-            Handle::Receiver(rx) => {
-                *rx = ChannelSpawnConfig::Closed;
-            }
-            Handle::Sender(sx) => {
-                *sx = ChannelSpawnConfig::Closed;
-            }
-        }
-    }
-
-    fn copy_sender(&self, path: HandlePath<'_>, sender: Ch::Sender) {
-        let mut borrow = self.channels.borrow_mut();
-        if let Handle::Sender(sx) = borrow.get_mut(&path).unwrap() {
-            *sx = ChannelSpawnConfig::Existing(sender);
-        }
-    }
-}
-
-/// Spawn [environment](TakeHandle) that can be used to configure channels before spawning
-/// a workflow.
-pub struct Spawner<Ch: SpecifyWorkflowChannels = Workflows> {
-    inner: Rc<SpawnerInner<Ch>>,
-}
-
-impl<Ch> fmt::Debug for Spawner<Ch>
-where
-    Ch: SpecifyWorkflowChannels + fmt::Debug,
-    Ch::Receiver: fmt::Debug,
-    Ch::Sender: fmt::Debug,
-{
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("Spawner")
-            .field("inner", &self.inner)
-            .finish()
-    }
-}
-
-impl<Ch: SpecifyWorkflowChannels> Clone for Spawner<Ch> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: Rc::clone(&self.inner),
-        }
-    }
-}
-
-impl<Ch: SpecifyWorkflowChannels> WorkflowEnv for Spawner<Ch> {
-    type Receiver<T, C: Codec<T>> = ReceiverConfig<Ch, T, C>;
-    type Sender<T, C: Codec<T>> = SenderConfig<Ch, T, C>;
-
-    fn take_receiver<T, C: Codec<T>>(
-        &mut self,
-        path: HandlePath<'_>,
-    ) -> Result<Self::Receiver<T, C>, AccessError> {
-        Ok(ReceiverConfig {
-            spawner: self.clone(),
-            path: path.to_owned(),
-            _ty: PhantomData,
-        })
-    }
-
-    fn take_sender<T, C: Codec<T>>(
-        &mut self,
-        path: HandlePath<'_>,
-    ) -> Result<Self::Sender<T, C>, AccessError> {
-        Ok(SenderConfig {
-            spawner: self.clone(),
-            path: path.to_owned(),
-            _ty: PhantomData,
-        })
-    }
-}
-
-impl<Ch: SpecifyWorkflowChannels> DescribeEnv for Spawner<Ch> {
-    fn interface(&self) -> Cow<'_, Interface> {
-        Cow::Borrowed(&self.inner.interface)
-    }
-}
-
-/// Configurator of a workflow channel [`Receiver`].
-pub struct ReceiverConfig<Ch: SpecifyWorkflowChannels, T, C> {
-    spawner: Spawner<Ch>,
-    path: HandlePathBuf,
-    _ty: PhantomData<fn(C) -> T>,
-}
-
-impl<Ch, T, C> fmt::Debug for ReceiverConfig<Ch, T, C>
-where
-    Ch: SpecifyWorkflowChannels + fmt::Debug,
-    Ch::Receiver: fmt::Debug,
-    Ch::Sender: fmt::Debug,
-{
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("ReceiverConfig")
-            .field("spawner", &self.spawner)
-            .field("channel_name", &self.path)
-            .finish()
-    }
-}
-
-impl<Ch, T, C> ReceiverConfig<Ch, T, C>
-where
-    Ch: SpecifyWorkflowChannels,
-    C: Codec<T>,
-{
-    /// Closes the channel immediately on workflow instantiation.
-    pub fn close(&self) {
-        self.spawner.inner.close_channel_half(self.path.as_ref());
-    }
-}
-
-/// Configurator of a workflow channel [`Sender`].
-pub struct SenderConfig<Ch: SpecifyWorkflowChannels, T, C> {
-    spawner: Spawner<Ch>,
-    path: HandlePathBuf,
-    _ty: PhantomData<fn(C) -> T>,
-}
-
-impl<Ch, T, C> fmt::Debug for SenderConfig<Ch, T, C>
-where
-    Ch: SpecifyWorkflowChannels + fmt::Debug,
-    Ch::Receiver: fmt::Debug,
-    Ch::Sender: fmt::Debug,
-{
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("SenderConfig")
-            .field("spawner", &self.spawner)
-            .field("channel_name", &self.path)
-            .finish()
-    }
-}
-
-impl<Ch, T, C> SenderConfig<Ch, T, C>
-where
-    Ch: SpecifyWorkflowChannels,
-    C: Codec<T>,
-{
-    /// Closes the channel immediately on workflow instantiation.
-    pub fn close(&self) {
-        self.spawner.inner.close_channel_half(self.path.as_ref());
-    }
-}
-
-impl<T, C: Codec<T>> SenderConfig<Workflows, T, C> {
-    /// Copies the channel from the provided `sender`. Thus, the created workflow will send
-    /// messages over the same channel as `sender`.
-    pub fn copy_from(&self, sender: Sender<T, C>) {
-        self.spawner
-            .inner
-            .copy_sender(self.path.as_ref(), sender.into_raw());
-    }
-}
-
-/// Builder allowing to configure workflow aspects, such as channels, before instantiation.
-pub struct WorkflowBuilder<'a, M, W>
-where
-    M: SpecifyWorkflowChannels,
-    W: WithHandle,
-{
-    spawner: Spawner<M>,
-    handle: InEnv<W, Spawner<M>>,
-    manager: &'a M,
-}
-
-impl<M, W> fmt::Debug for WorkflowBuilder<'_, M, W>
-where
-    M: SpecifyWorkflowChannels,
-    Spawner<M>: fmt::Debug,
-    W: WithHandle,
-    InEnv<W, Spawner<M>>: fmt::Debug,
-{
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("SpawnBuilder")
-            .field("spawner", &self.spawner)
-            .field("handle", &self.handle)
-            .finish()
-    }
-}
-
-impl<'a, M, W, E> WorkflowBuilder<'a, M, W>
-where
-    M: ManageWorkflows<W, Error = E>,
-    W: WorkflowFn + TakeHandle<Spawner<M>>,
-{
-    fn new(manager: &'a M, interface: Interface, definition_id: &str, args: W::Args) -> Self {
-        let raw_args = W::Codec::encode_value(args);
-        let mut spawner = Spawner {
-            inner: Rc::new(SpawnerInner::new(interface, definition_id, raw_args)),
-        };
-        let handle = W::take_handle(&mut spawner, HandlePath::EMPTY).unwrap();
-        Self {
-            spawner,
-            handle,
-            manager,
-        }
-    }
-
-    /// Returns a [handle](TakeHandle) that can be used to configure created workflow channels.
-    pub fn handle(&self) -> &InEnv<W, Spawner<M>> {
-        &self.handle
-    }
-
-    /// Instantiates the child workflow and returns a handle to it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if instantiation fails for whatever reasons. Error handling is specific
-    /// to the [manager](ManageWorkflows) being used.
-    #[allow(clippy::missing_panics_doc)] // false positive
-    pub async fn build(self) -> Result<M::Handle<'a>, E> {
-        drop(self.handle);
-        let spawner = Rc::try_unwrap(self.spawner.inner).map_err(drop).unwrap();
-        self.manager
-            .create_workflow(
-                &spawner.definition_id,
-                spawner.args,
-                spawner.channels.into_inner(),
-            )
-            .await
+    fn downcast<W: WorkflowFn + GetInterface>(
+        &self,
+        spawned: Self::Spawned<'_, ()>,
+    ) -> Self::Spawned<'_, W> {
+        spawned
     }
 }
 
@@ -541,90 +264,463 @@ impl Future for RemoteWorkflow {
     }
 }
 
-/// Handle to a remote workflow together with channel handles connected to the workflow.
-#[non_exhaustive]
-pub struct WorkflowHandle<W: WithHandle> {
-    /// Channel handles associated with the workflow. Each channel receiver in the remote workflow
-    /// is mapped to a local sender, and vice versa.
-    pub api: InEnv<W, RemoteWorkflow>,
-    /// Workflow handle that can be polled for completion.
-    pub workflow: RemoteWorkflow,
+/// Configuration for a single workflow channel during workflow instantiation.
+#[derive(Debug)]
+pub enum ChannelSpawnConfig<T> {
+    /// Create a new channel.
+    New,
+    /// Close the channel immediately on workflow creation.
+    Closed,
+    /// Copy an existing channel sender or move an existing receiver.
+    Existing(T),
 }
 
-impl<W> fmt::Debug for WorkflowHandle<W>
+impl<T> Default for ChannelSpawnConfig<T> {
+    fn default() -> Self {
+        Self::New
+    }
+}
+
+type ChannelsConfig<Fmt> = HandleMap<
+    ChannelSpawnConfig<<Fmt as HandleFormat>::RawReceiver>,
+    ChannelSpawnConfig<<Fmt as HandleFormat>::RawSender>,
+>;
+
+struct SpawnerInner<Fmt: HandleFormat> {
+    channels: RefCell<ChannelsConfig<Fmt>>,
+}
+
+impl<Fmt> fmt::Debug for SpawnerInner<Fmt>
 where
-    W: WithHandle,
-    InEnv<W, RemoteWorkflow>: fmt::Debug,
+    Fmt: HandleFormat,
+    Fmt::RawReceiver: fmt::Debug,
+    Fmt::RawSender: fmt::Debug,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("WorkflowHandle")
-            .field("api", &self.api)
-            .field("workflow", &self.workflow)
+            .debug_struct("Spawner")
+            .field("channels", &self.channels)
             .finish()
     }
 }
 
-impl WorkflowEnv for RemoteWorkflow {
-    type Receiver<T, C: Codec<T>> = Remote<Sender<T, C>>;
-    type Sender<T, C: Codec<T>> = Remote<Receiver<T, C>>;
+impl<Fmt: HandleFormat> SpawnerInner<Fmt> {
+    fn new(interface: &Interface) -> Self {
+        let config = interface.handles().map(|(path, spec)| {
+            let config = spec
+                .as_ref()
+                .map_receiver(|_| ChannelSpawnConfig::default())
+                .map_sender(|_| ChannelSpawnConfig::default());
+            (path.to_owned(), config)
+        });
 
-    fn take_receiver<T, C: Codec<T>>(
-        &mut self,
-        path: HandlePath<'_>,
-    ) -> Result<Self::Receiver<T, C>, AccessError> {
-        let raw_sender = self.inner.take_receiver(path)?;
-        Ok(raw_sender.map(Sender::from_raw))
+        Self {
+            channels: RefCell::new(config.collect()),
+        }
     }
 
-    fn take_sender<T, C: Codec<T>>(
-        &mut self,
-        path: HandlePath<'_>,
-    ) -> Result<Self::Sender<T, C>, AccessError> {
-        let raw_receiver = self.inner.take_sender(path)?;
-        Ok(raw_receiver.map(Receiver::from_raw))
+    fn close_channel_half(&self, path: HandlePath<'_>) {
+        let mut borrow = self.channels.borrow_mut();
+        match borrow.get_mut(&path).unwrap() {
+            Handle::Receiver(rx) => {
+                *rx = ChannelSpawnConfig::Closed;
+            }
+            Handle::Sender(sx) => {
+                *sx = ChannelSpawnConfig::Closed;
+            }
+        }
     }
-}
 
-impl<T, C: Codec<T>> Stream for Remote<Receiver<T, C>> {
-    type Item = T;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match self.get_mut() {
-            Self::NotCaptured => Poll::Ready(None),
-            Self::Some(receiver) => Pin::new(receiver).poll_next(cx),
+    fn copy_sender(&self, path: HandlePath<'_>, sender: Fmt::RawSender) {
+        let mut borrow = self.channels.borrow_mut();
+        if let Handle::Sender(sx) = borrow.get_mut(&path).unwrap() {
+            *sx = ChannelSpawnConfig::Existing(sender);
         }
     }
 }
 
-impl<T, C: Codec<T>> Sink<T> for Remote<Sender<T, C>> {
-    type Error = SendError;
+/// Spawn [environment](TakeHandle) that can be used to configure channels before spawning
+/// a workflow.
+pub struct Spawner<Fmt: HandleFormat = Wasm> {
+    inner: Rc<SpawnerInner<Fmt>>,
+}
 
-    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match self.get_mut() {
-            Self::NotCaptured => Poll::Ready(Err(SendError::Closed)),
-            Self::Some(sender) => Pin::new(sender).poll_ready(cx),
+impl<Fmt: HandleFormat> fmt::Debug for Spawner<Fmt>
+where
+    Fmt::RawReceiver: fmt::Debug,
+    Fmt::RawSender: fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.inner, formatter)
+    }
+}
+
+impl<Fmt: HandleFormat> HandleFormat for Spawner<Fmt> {
+    type RawReceiver = ReceiverConfig<Fmt, (), ()>;
+    type Receiver<T, C: Codec<T>> = ReceiverConfig<Fmt, T, C>;
+    type RawSender = SenderConfig<Fmt, (), ()>;
+    type Sender<T, C: Codec<T>> = SenderConfig<Fmt, T, C>;
+}
+
+/// Configurator of a workflow channel [`Receiver`].
+pub struct ReceiverConfig<Fmt: HandleFormat, T, C> {
+    spawner: Rc<SpawnerInner<Fmt>>,
+    path: HandlePathBuf,
+    _ty: PhantomData<fn(C) -> T>,
+}
+
+impl<Fmt, T, C> fmt::Debug for ReceiverConfig<Fmt, T, C>
+where
+    Fmt: HandleFormat,
+    Fmt::RawReceiver: fmt::Debug,
+    Fmt::RawSender: fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ReceiverConfig")
+            .field("spawner", &self.spawner)
+            .field("channel_name", &self.path)
+            .finish()
+    }
+}
+
+impl<Fmt, T, C> ReceiverConfig<Fmt, T, C>
+where
+    Fmt: HandleFormat,
+    C: Codec<T>,
+{
+    /// Closes the channel immediately on workflow instantiation.
+    pub fn close(&self) {
+        self.spawner.close_channel_half(self.path.as_ref());
+    }
+}
+
+impl<Fmt, T, C> TryFromRaw<ReceiverConfig<Fmt, (), ()>> for ReceiverConfig<Fmt, T, C>
+where
+    Fmt: HandleFormat,
+    C: Codec<T>,
+{
+    type Error = Infallible;
+
+    #[inline]
+    fn try_from_raw(raw: ReceiverConfig<Fmt, (), ()>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            spawner: raw.spawner,
+            path: raw.path,
+            _ty: PhantomData,
+        })
+    }
+}
+
+impl<Fmt, T, C> IntoRaw<ReceiverConfig<Fmt, (), ()>> for ReceiverConfig<Fmt, T, C>
+where
+    Fmt: HandleFormat,
+    C: Codec<T>,
+{
+    #[inline]
+    fn into_raw(self) -> ReceiverConfig<Fmt, (), ()> {
+        ReceiverConfig {
+            spawner: self.spawner,
+            path: self.path,
+            _ty: PhantomData,
+        }
+    }
+}
+
+/// Configurator of a workflow channel [`Sender`].
+pub struct SenderConfig<Fmt: HandleFormat, T, C> {
+    spawner: Rc<SpawnerInner<Fmt>>,
+    path: HandlePathBuf,
+    _ty: PhantomData<fn(C) -> T>,
+}
+
+impl<Fmt, T, C> fmt::Debug for SenderConfig<Fmt, T, C>
+where
+    Fmt: HandleFormat,
+    Fmt::RawReceiver: fmt::Debug,
+    Fmt::RawSender: fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SenderConfig")
+            .field("spawner", &self.spawner)
+            .field("channel_name", &self.path)
+            .finish()
+    }
+}
+
+impl<Fmt, T, C> SenderConfig<Fmt, T, C>
+where
+    Fmt: HandleFormat,
+    C: Codec<T>,
+{
+    /// Closes the channel immediately on workflow instantiation.
+    pub fn close(&self) {
+        self.spawner.close_channel_half(self.path.as_ref());
+    }
+}
+
+impl<Fmt, T, C> SenderConfig<Fmt, T, C>
+where
+    Fmt: HandleFormat,
+    C: Codec<T>,
+{
+    /// Copies the channel from the provided `sender`. Thus, the created workflow will send
+    /// messages over the same channel as `sender`.
+    pub fn copy_from(&self, sender: Fmt::Sender<T, C>) {
+        self.spawner
+            .copy_sender(self.path.as_ref(), sender.into_raw());
+    }
+}
+
+impl<Fmt, T, C> TryFromRaw<SenderConfig<Fmt, (), ()>> for SenderConfig<Fmt, T, C>
+where
+    Fmt: HandleFormat,
+    C: Codec<T>,
+{
+    type Error = Infallible;
+
+    #[inline]
+    fn try_from_raw(raw: SenderConfig<Fmt, (), ()>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            spawner: raw.spawner,
+            path: raw.path,
+            _ty: PhantomData,
+        })
+    }
+}
+
+impl<Fmt, T, C> IntoRaw<SenderConfig<Fmt, (), ()>> for SenderConfig<Fmt, T, C>
+where
+    Fmt: HandleFormat,
+    C: Codec<T>,
+{
+    #[inline]
+    fn into_raw(self) -> SenderConfig<Fmt, (), ()> {
+        SenderConfig {
+            spawner: self.spawner,
+            path: self.path,
+            _ty: PhantomData,
+        }
+    }
+}
+
+/// Builder of handle pairs: ones to be retained in the parent workflow and ones to be provided
+/// to the child workflow.
+pub struct HandlesBuilder<W: WithHandle, Fmt: HandleFormat = Wasm> {
+    spawner: Spawner<Fmt>,
+    config: InEnv<W, Spawner<Fmt>>,
+}
+
+impl<W: WithHandle, Fmt: HandleFormat> fmt::Debug for HandlesBuilder<W, Fmt>
+where
+    Fmt::RawReceiver: fmt::Debug,
+    Fmt::RawSender: fmt::Debug,
+    InEnv<W, Spawner<Fmt>>: fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HandlesBuilder")
+            .field("spawner", &self.spawner)
+            .field("config", &self.config)
+            .finish()
+    }
+}
+
+impl<W, Fmt> Default for HandlesBuilder<W, Fmt>
+where
+    W: GetInterface + WithHandle,
+    Fmt: HandleFormat,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<W, Fmt> HandlesBuilder<W, Fmt>
+where
+    Fmt: HandleFormat,
+    W: GetInterface + WithHandle,
+{
+    /// Creates a new builder based on the interface of `W`.
+    #[allow(clippy::missing_panics_doc)] // false positive
+    pub fn new() -> Self {
+        let interface = W::interface();
+        let spawner = Spawner {
+            inner: Rc::new(SpawnerInner::new(&interface)),
+        };
+        let untyped = interface.handles().map(|(path, spec)| {
+            let config = spec
+                .as_ref()
+                .map_receiver(|_| ReceiverConfig {
+                    spawner: Rc::clone(&spawner.inner),
+                    path: path.to_owned(),
+                    _ty: PhantomData,
+                })
+                .map_sender(|_| SenderConfig {
+                    spawner: Rc::clone(&spawner.inner),
+                    path: path.to_owned(),
+                    _ty: PhantomData,
+                });
+            (path.to_owned(), config)
+        });
+        let untyped = UntypedHandles {
+            handles: untyped.collect(),
+        };
+
+        let config = W::try_from_untyped(untyped).unwrap();
+        Self { spawner, config }
+    }
+
+    /// Returns a [handle](TakeHandle) that can be used to configure created workflow channels.
+    pub fn config(&self) -> &InEnv<W, Spawner<Fmt>> {
+        &self.config
+    }
+}
+
+impl<W: WithHandle> HandlesBuilder<W> {
+    /// Builds the handles pair. This method must be called in the client environment.
+    #[allow(clippy::missing_panics_doc)] // false positive
+    pub async fn build(self) -> (InEnv<W, Wasm>, InEnv<W, ForSelf>) {
+        drop(self.config);
+        let spawner = Rc::try_unwrap(self.spawner.inner).map_err(drop).unwrap();
+        let channels = spawner.channels.into_inner();
+
+        let pairs = channels.into_iter().map(|(path, config)| async {
+            let pair = match config {
+                Handle::Receiver(rx_config) => {
+                    Handle::Receiver(ChannelPair::for_remote_receiver(rx_config).await)
+                }
+                Handle::Sender(sx_config) => {
+                    Handle::Sender(ChannelPair::for_remote_sender(sx_config).await)
+                }
+            };
+            (path, pair)
+        });
+        let pairs = future::join_all(pairs).await;
+
+        let mut remote = ForSelf {
+            inner: pairs.into_iter().collect(),
+        };
+        let remote_handles = W::take_from_untyped(&mut remote, HandlePath::EMPTY).unwrap();
+        let mut local = ForChild {
+            inner: remote.inner,
+        };
+        let local_handles = W::take_from_untyped(&mut local, HandlePath::EMPTY).unwrap();
+        (local_handles, remote_handles)
+    }
+}
+
+#[derive(Debug)]
+struct ChannelPair {
+    sender: Option<RawSender>,
+    receiver: Option<RawReceiver>,
+}
+
+impl ChannelPair {
+    fn new(sender: RawSender, receiver: RawReceiver) -> Self {
+        Self {
+            sender: Some(sender),
+            receiver: Some(receiver),
         }
     }
 
-    fn start_send(self: Pin<&mut Self>, item: T) -> Result<(), Self::Error> {
-        match self.get_mut() {
-            Self::NotCaptured => Err(SendError::Closed),
-            Self::Some(sender) => Pin::new(sender).start_send(item),
-        }
+    async fn for_remote_receiver(config: ChannelSpawnConfig<RawReceiver>) -> Self {
+        let (sender, receiver) = match config {
+            ChannelSpawnConfig::New => channel().await,
+            ChannelSpawnConfig::Closed => (RawSender::closed(), RawReceiver::closed()),
+            ChannelSpawnConfig::Existing(rx) => (RawSender::closed(), rx),
+        };
+        Self::new(sender, receiver)
     }
 
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match self.get_mut() {
-            Self::NotCaptured => Poll::Ready(Err(SendError::Closed)),
-            Self::Some(sender) => Pin::new(sender).poll_flush(cx),
-        }
+    async fn for_remote_sender(config: ChannelSpawnConfig<RawSender>) -> Self {
+        let (sender, receiver) = match config {
+            ChannelSpawnConfig::New => channel().await,
+            ChannelSpawnConfig::Closed => (RawSender::closed(), RawReceiver::closed()),
+            ChannelSpawnConfig::Existing(sx) => (sx, RawReceiver::closed()),
+        };
+        Self::new(sender, receiver)
+    }
+}
+
+/// Handles format for handles retained for the parent workflow of a spawned child.
+#[derive(Debug)]
+pub struct ForSelf {
+    inner: HandleMap<ChannelPair>,
+}
+
+impl HandleFormat for ForSelf {
+    type RawReceiver = RawSender;
+    type Receiver<T, C: Codec<T>> = Sender<T, C>;
+    type RawSender = RawReceiver;
+    type Sender<T, C: Codec<T>> = Receiver<T, C>;
+}
+
+impl TakeHandles<Self> for ForSelf {
+    fn take_receiver(&mut self, path: HandlePath<'_>) -> Result<RawSender, AccessError> {
+        let pair = ReceiverAt(path).get_mut(&mut self.inner)?;
+        pair.sender.take().ok_or_else(|| {
+            AccessErrorKind::custom("attempted to take the same handle twice")
+                .with_location(ReceiverAt(path))
+        })
     }
 
-    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match self.get_mut() {
-            Self::NotCaptured => Poll::Ready(Ok(())),
-            Self::Some(sender) => Pin::new(sender).poll_close(cx),
+    fn take_sender(&mut self, path: HandlePath<'_>) -> Result<RawReceiver, AccessError> {
+        let pair = SenderAt(path).get_mut(&mut self.inner)?;
+        pair.receiver.take().ok_or_else(|| {
+            AccessErrorKind::custom("attempted to take the same handle twice")
+                .with_location(ReceiverAt(path))
+        })
+    }
+
+    fn drain(&mut self) -> UntypedHandles<Self> {
+        let handles = self.inner.iter_mut().filter_map(|(path, handle)| {
+            let handle = match handle {
+                Handle::Receiver(pair) => Handle::Receiver(pair.sender.take()?),
+                Handle::Sender(pair) => Handle::Sender(pair.receiver.take()?),
+            };
+            Some((path.clone(), handle))
+        });
+        UntypedHandles {
+            handles: handles.collect(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ForChild {
+    inner: HandleMap<ChannelPair>,
+}
+
+impl TakeHandles<Wasm> for ForChild {
+    fn take_receiver(&mut self, path: HandlePath<'_>) -> Result<RawReceiver, AccessError> {
+        let pair = ReceiverAt(path).get_mut(&mut self.inner)?;
+        pair.receiver.take().ok_or_else(|| {
+            AccessErrorKind::custom("attempted to take the same handle twice")
+                .with_location(ReceiverAt(path))
+        })
+    }
+
+    fn take_sender(&mut self, path: HandlePath<'_>) -> Result<RawSender, AccessError> {
+        let pair = SenderAt(path).get_mut(&mut self.inner)?;
+        pair.sender.take().ok_or_else(|| {
+            AccessErrorKind::custom("attempted to take the same handle twice")
+                .with_location(ReceiverAt(path))
+        })
+    }
+
+    fn drain(&mut self) -> UntypedHandles<Wasm> {
+        let handles = mem::take(&mut self.inner).into_iter();
+        let handles = handles.filter_map(|(path, handle)| {
+            let handle = match handle {
+                Handle::Receiver(pair) => Handle::Receiver(pair.receiver?),
+                Handle::Sender(pair) => Handle::Sender(pair.sender?),
+            };
+            Some((path, handle))
+        });
+        UntypedHandles {
+            handles: handles.collect(),
         }
     }
 }

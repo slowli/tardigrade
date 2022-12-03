@@ -8,25 +8,29 @@ use std::collections::HashSet;
 use crate::{TestHandle, TestedWorkflow};
 use tardigrade::{
     channel::Sender,
-    spawn::{ManageWorkflowsExt, Workflows},
+    spawn::{ManageWorkflows, Workflows},
     task::TaskResult,
     test::Runtime,
-    workflow::{GetInterface, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
+    workflow::{GetInterface, SpawnWorkflow, Wasm, WithHandle, WorkflowFn},
     Json,
 };
 
-#[derive(Debug, GetInterface, TakeHandle)]
+#[derive(Debug, GetInterface, WithHandle)]
 #[tardigrade(handle = "TestHandle", auto_interface)]
 struct ParentWorkflow;
 
 impl ParentWorkflow {
     async fn spawn_child(command: i32, events: Sender<i32, Json>) -> TaskResult {
-        let builder = Workflows.new_workflow::<TestedWorkflow>("child", ())?;
-        builder.handle().events.copy_from(events);
-        let mut child = builder.build().await?;
-        child.api.commands.send(command).await?;
-        drop(child.api.commands); // Should terminate the child workflow
-        child.workflow.await?;
+        let builder = Workflows.new_workflow::<TestedWorkflow>("child")?;
+        let (child_handles, mut self_handles) = builder
+            .handles(|config| {
+                config.events.copy_from(events);
+            })
+            .await;
+        let child = builder.build((), child_handles).await?;
+        self_handles.commands.send(command).await?;
+        drop(self_handles.commands); // Should terminate the child workflow
+        child.await?;
         Ok(())
     }
 }

@@ -13,17 +13,17 @@ use tardigrade::{
     channel::{Receiver, Sender},
     task::TaskResult,
     test::TestInstance,
-    workflow::{GetInterface, InEnv, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
+    workflow::{GetInterface, HandleFormat, InEnv, SpawnWorkflow, Wasm, WithHandle, WorkflowFn},
     Json,
 };
 
-#[derive(TakeHandle)]
-struct TestHandle<Env: WorkflowEnv> {
-    commands: InEnv<Receiver<i32, Json>, Env>,
-    events: InEnv<Sender<i32, Json>, Env>,
+#[derive(WithHandle)]
+struct TestHandle<Fmt: HandleFormat> {
+    commands: InEnv<Receiver<i32, Json>, Fmt>,
+    events: InEnv<Sender<i32, Json>, Fmt>,
 }
 
-#[derive(Debug, GetInterface, TakeHandle)]
+#[derive(Debug, GetInterface, WithHandle)]
 #[tardigrade(handle = "TestHandle", auto_interface)]
 struct TestedWorkflow;
 

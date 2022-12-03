@@ -8,10 +8,10 @@ use serde::{Deserialize, Serialize};
 use crate::TestHandle;
 use tardigrade::{
     channel::SendError,
-    spawn::{ManageWorkflowsExt, Workflows},
+    spawn::{ManageWorkflows, Workflows},
     task::{self, JoinError, TaskError, TaskResult},
     test::Runtime,
-    workflow::{GetInterface, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
+    workflow::{GetInterface, SpawnWorkflow, Wasm, WithHandle, WorkflowFn},
     Json,
 };
 
@@ -22,7 +22,7 @@ struct Args {
     abort_subtask: bool,
 }
 
-#[derive(Debug, GetInterface, TakeHandle)]
+#[derive(Debug, GetInterface, WithHandle)]
 #[tardigrade(handle = "TestHandle", auto_interface)]
 struct WorkflowWithSubtask;
 
@@ -67,14 +67,16 @@ fn test_workflow_termination(args: Args) {
     runtime
         .workflow_registry_mut()
         .insert::<WorkflowWithSubtask>("test");
+
     runtime.run(async {
         let builder = Workflows
-            .new_workflow::<WorkflowWithSubtask>("test", args)
+            .new_workflow::<WorkflowWithSubtask>("test")
             .unwrap();
-        let handle = builder.build().await.unwrap();
-        handle.workflow.await.unwrap();
+        let (child_handles, self_handles) = builder.handles(|_| ()).await;
+        let child = builder.build(args, child_handles).await.unwrap();
+        child.await.unwrap();
 
-        let events: Vec<_> = handle.api.events.collect().await;
+        let events: Vec<_> = self_handles.events.collect().await;
         assert_eq!(events, [42]);
     });
 }
@@ -124,12 +126,16 @@ fn workflow_failure_in_main_task() {
         .insert::<WorkflowWithSubtask>("test");
     runtime.run(async {
         let builder = Workflows
-            .new_workflow::<WorkflowWithSubtask>("test", Args::default())
+            .new_workflow::<WorkflowWithSubtask>("test")
             .unwrap();
-        builder.handle().events.close(); // makes the workflow fail on sending the "42" event
-        let handle = builder.build().await.unwrap();
+        let (child_handles, _) = builder
+            .handles(|config| {
+                config.events.close(); // makes the workflow fail on sending the "42" event
+            })
+            .await;
+        let child = builder.build(Args::default(), child_handles).await.unwrap();
 
-        let err = handle.workflow.await.unwrap_err();
+        let err = child.await.unwrap_err();
         let err = into_task_error(err);
         assert!(err.location().filename.ends_with("task.rs"));
         let cause = err.cause().downcast_ref::<SendError>().unwrap();

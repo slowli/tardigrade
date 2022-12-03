@@ -101,9 +101,9 @@ use std::{
 
 use crate::{
     interface::Interface,
-    spawn::{ManageWorkflowsExt, RemoteWorkflow, Spawner, Workflows},
+    spawn::{ForSelf, ManageWorkflows, Workflows},
     task::{self, TaskResult},
-    workflow::{InEnv, SpawnWorkflow, TakeHandle, TaskHandle, UntypedHandle, Wasm},
+    workflow::{InEnv, SpawnWorkflow, TaskHandle, UntypedHandles, Wasm, WithHandle},
     ChannelId, WorkflowId,
 };
 
@@ -225,7 +225,7 @@ impl Timers {
     }
 }
 
-type SpawnFn = Box<dyn Fn(Vec<u8>, Wasm, TaskContext) -> TaskHandle>;
+type SpawnFn = Box<dyn Fn(Vec<u8>, UntypedHandles<Wasm>, TaskContext) -> TaskHandle>;
 
 struct ErasedWorkflowDefinition {
     interface: Cow<'static, Interface>,
@@ -271,8 +271,8 @@ impl WorkflowRegistry {
             id.into(),
             ErasedWorkflowDefinition {
                 interface,
-                spawn_fn: Box::new(|args, wasm, context| {
-                    Self::wrap_spawn_fn::<W>(args, wasm, context)
+                spawn_fn: Box::new(|args, handles, context| {
+                    Self::wrap_spawn_fn::<W>(args, handles, context)
                 }),
             },
         );
@@ -280,7 +280,7 @@ impl WorkflowRegistry {
 
     fn wrap_spawn_fn<W: SpawnWorkflow>(
         args: Vec<u8>,
-        wasm: Wasm,
+        handles: UntypedHandles<Wasm>,
         context: TaskContext,
     ) -> TaskHandle {
         let workflow_id = context.workflow_id;
@@ -289,7 +289,7 @@ impl WorkflowRegistry {
             // otherwise we could get `RefCell` borrow errors (e.g., if the init code
             // spawns tasks). Additionally, this more closely matches execution flow
             // of the real runtime.
-            TaskHandle::from_workflow::<W>(args, wasm)
+            TaskHandle::from_workflow::<W>(args, handles)
                 .expect("failed spawning workflow")
                 .into_inner()
                 .await
@@ -311,7 +311,7 @@ impl WorkflowRegistry {
         &mut self,
         definition_id: &str,
         args: Vec<u8>,
-        remote_handles: UntypedHandle<Wasm>,
+        remote_handles: UntypedHandles<Wasm>,
     ) -> TaskHandle {
         let definition = self.definitions.get(definition_id).unwrap_or_else(|| {
             panic!("workflow `{}` is not defined", definition_id);
@@ -320,7 +320,7 @@ impl WorkflowRegistry {
             workflow_id: self.next_workflow_id,
         };
         self.next_workflow_id += 1;
-        (definition.spawn_fn)(args, Wasm::new(remote_handles), context)
+        (definition.spawn_fn)(args, remote_handles, context)
     }
 
     fn register_task(&mut self, workflow_id: WorkflowId, abort_handle: AbortHandle) {
@@ -420,7 +420,7 @@ impl Runtime {
         &mut self,
         definition_id: &str,
         args: Vec<u8>,
-        remote_handles: UntypedHandle<Wasm>,
+        remote_handles: UntypedHandles<Wasm>,
     ) -> RemoteHandle<TaskResult> {
         let task = self
             .workflow_registry
@@ -466,7 +466,7 @@ impl Runtime {
     /// Tests the specified workflow definition in the context of this runtime.
     pub fn test<W>(self, args: W::Args) -> TestInstance<W>
     where
-        W: SpawnWorkflow + TakeHandle<Spawner> + TakeHandle<RemoteWorkflow>,
+        W: SpawnWorkflow,
     {
         TestInstance {
             runtime: self,
@@ -497,7 +497,7 @@ where
 
 impl<W> TestInstance<W>
 where
-    W: SpawnWorkflow + TakeHandle<Spawner> + TakeHandle<RemoteWorkflow>,
+    W: SpawnWorkflow + WithHandle,
 {
     /// Creates a test instance with the default [`Runtime`].
     pub fn new(args: W::Args) -> Self {
@@ -511,7 +511,7 @@ where
     #[allow(clippy::missing_panics_doc)] // false positive
     pub fn run<F, Fut>(mut self, test_fn: F)
     where
-        F: FnOnce(InEnv<W, RemoteWorkflow>) -> Fut,
+        F: FnOnce(InEnv<W, ForSelf>) -> Fut,
         Fut: Future<Output = ()>,
     {
         const DEFINITION_ID: &str = "__tested_workflow";
@@ -519,10 +519,14 @@ where
         let args = self.args;
         self.runtime.workflow_registry.insert::<W>(DEFINITION_ID);
         self.runtime.run(async {
-            let builder = Workflows.new_workflow::<W>(DEFINITION_ID, args).unwrap();
-            let workflow = builder.build().await.expect("failed spawning workflow");
+            let builder = Workflows.new_workflow::<W>(DEFINITION_ID).unwrap();
+            let (child_handles, self_handles) = builder.handles(|_| ()).await;
+            builder
+                .build(args, child_handles)
+                .await
+                .expect("failed spawning workflow");
             task::yield_now().await; // allow the workflow to initialize
-            test_fn(workflow.api).await;
+            test_fn(self_handles).await;
         });
     }
 }

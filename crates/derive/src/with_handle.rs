@@ -5,19 +5,14 @@ use proc_macro::TokenStream;
 use proc_macro2::Ident;
 use quote::{quote, ToTokens};
 use syn::{
-    parse_quote, AngleBracketedGenericArguments, DeriveInput, GenericArgument, Generics, Path,
-    PathArguments, Type, TypePath,
+    AngleBracketedGenericArguments, DeriveInput, GenericArgument, Generics, Path, PathArguments,
+    Type, TypePath,
 };
 
 use crate::utils::{find_meta_attrs, DeriveAttrs, TargetField, TargetStruct};
 
 impl TargetField {
-    fn init_by_take_handle(
-        &self,
-        cr: &Path,
-        env_ident: &Ident,
-        field_index: usize,
-    ) -> darling::Result<impl ToTokens> {
+    fn unwrap_ty(&self, cr: &Path, fmt: &Ident) -> darling::Result<Path> {
         const MSG: &str = "fields in handle struct must have env param as last type arg`";
 
         let mut unwrapped_ty = self.ty.clone();
@@ -32,25 +27,49 @@ impl TargetField {
             .last_mut()
             .ok_or_else(|| darling::Error::custom(MSG).with_span(&self.ty))?;
         if let GenericArgument::Type(Type::Path(TypePath { path, .. })) = last_arg {
-            if !path.is_ident(env_ident) {
+            if !path.is_ident(fmt) {
                 return Err(darling::Error::custom(MSG).with_span(&self.ty));
             }
             *path = syn::parse_quote!(#cr::workflow::Wasm);
         } else {
             return Err(darling::Error::custom(MSG).with_span(&self.ty));
         }
+        Ok(unwrapped_ty)
+    }
 
+    fn insert_handle(
+        &self,
+        cr: &Path,
+        fmt: &Ident,
+        field_index: usize,
+    ) -> darling::Result<impl ToTokens> {
+        let unwrapped_ty = self.unwrap_ty(cr, fmt)?;
         let path = self.path();
-        let tr = quote!(#cr::workflow::TakeHandle<Env>);
+        let tr = quote!(#cr::workflow::WithHandle);
         let field = self.ident(field_index);
-        Ok(quote!(#field: <#unwrapped_ty as #tr>::take_handle(&mut *env, #path)?))
+        Ok(quote! {
+            <#unwrapped_ty as #tr>::insert_into_untyped(handle.#field, untyped, #path)
+        })
+    }
+
+    fn init_by_take_handle(
+        &self,
+        cr: &Path,
+        fmt: &Ident,
+        field_index: usize,
+    ) -> darling::Result<impl ToTokens> {
+        let unwrapped_ty = self.unwrap_ty(cr, fmt)?;
+        let path = self.path();
+        let tr = quote!(#cr::workflow::WithHandle);
+        let field = self.ident(field_index);
+        Ok(quote!(#field: <#unwrapped_ty as #tr>::take_from_untyped(untyped, #path)?))
     }
 }
 
 #[derive(Debug)]
 struct Handle {
     base: TargetStruct,
-    env: Ident,
+    fmt: Ident,
     crate_path: Path,
     derive_clone: bool,
     derive_debug: bool,
@@ -58,7 +77,7 @@ struct Handle {
 
 impl Handle {
     fn new(input: &DeriveInput, attrs: DeriveAttrs) -> darling::Result<Self> {
-        let env = Self::env_generic(&input.generics)?;
+        let fmt = Self::fmt_generic(&input.generics)?;
         let mut base = TargetStruct::new(input)?;
         base.generics = input.generics.clone();
 
@@ -74,7 +93,7 @@ impl Handle {
 
         Ok(Self {
             base,
-            env,
+            fmt,
             crate_path: attrs
                 .crate_path
                 .unwrap_or_else(|| syn::parse_quote!(tardigrade)),
@@ -83,8 +102,8 @@ impl Handle {
         })
     }
 
-    fn env_generic(generics: &Generics) -> darling::Result<Ident> {
-        const MSG: &str = "Handle struct must have an env generic";
+    fn fmt_generic(generics: &Generics) -> darling::Result<Ident> {
+        const MSG: &str = "Handle struct must have a format generic";
 
         if generics.params.is_empty() {
             return Err(darling::Error::custom(MSG).with_span(generics));
@@ -97,15 +116,15 @@ impl Handle {
         }
     }
 
-    fn impl_take_handle(&self) -> darling::Result<impl ToTokens> {
+    fn impl_with_handle(&self) -> darling::Result<impl ToTokens> {
         let cr = &self.crate_path;
         let handle = &self.base.ident;
-        let env = &self.env;
-        let env_tr = quote!(#cr::workflow::WorkflowEnv);
+        let fmt = &self.fmt;
+        let fmt_tr = quote!(#cr::workflow::HandleFormat);
 
-        let (impl_generics, ty_generics, where_clause) = self.base.generics.split_for_impl();
+        let (_, ty_generics, where_clause) = self.base.generics.split_for_impl();
         let mut reduced_generics = self.base.generics.clone();
-        reduced_generics.params.pop(); // removes the env generic
+        reduced_generics.params.pop(); // removes the format generic
         let (reduced_impl_generics, wasm_ty_generics, _) = reduced_generics.split_for_impl();
         let wasm_ty_generics = if reduced_generics.params.is_empty() {
             syn::parse_quote!(<#cr::workflow::Wasm>)
@@ -115,31 +134,38 @@ impl Handle {
             args
         };
 
-        let tr = quote!(#cr::workflow::WithHandle);
-        let with_handle_impl = quote! {
-            impl #reduced_impl_generics #tr for #handle #wasm_ty_generics #where_clause {
-                type Handle<#env: #env_tr> = #handle #ty_generics;
-            }
-        };
-
         let handle_fields = self.base.fields.iter().enumerate();
         let handle_fields = handle_fields
-            .map(|(idx, field)| field.init_by_take_handle(cr, env, idx))
+            .map(|(idx, field)| field.init_by_take_handle(cr, fmt, idx))
             .collect::<Result<Vec<_>, _>>()?;
-        let handle_fields = match self.base.style {
+        let take_fields = match self.base.style {
             Style::Struct => quote!({ #(#handle_fields,)* }),
             Style::Tuple | Style::Unit => quote!(( #(#handle_fields,)* )),
         };
-        let tr = quote!(#cr::workflow::TakeHandle);
-        Ok(quote! {
-            #with_handle_impl
 
-            impl #impl_generics #tr <#env> for #handle #wasm_ty_generics #where_clause {
-                fn take_handle(
-                    env: &mut #env,
+        let handle_fields = self.base.fields.iter().enumerate();
+        let insert_fields = handle_fields
+            .map(|(idx, field)| field.insert_handle(cr, fmt, idx))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let tr = quote!(#cr::workflow::WithHandle);
+        Ok(quote! {
+            impl #reduced_impl_generics #tr for #handle #wasm_ty_generics #where_clause {
+                type Handle<#fmt: #fmt_tr> = #handle #ty_generics;
+
+                fn take_from_untyped<#fmt: #fmt_tr>(
+                    untyped: &mut dyn #cr::workflow::TakeHandles<#fmt>,
                     path: #cr::interface::HandlePath<'_>,
-                ) -> core::result::Result<Self::Handle<#env>, #cr::interface::AccessError> {
-                    core::result::Result::Ok(#handle #handle_fields)
+                ) -> core::result::Result<Self::Handle<#fmt>, #cr::interface::AccessError> {
+                    core::result::Result::Ok(#handle #take_fields)
+                }
+
+                fn insert_into_untyped<#fmt: #fmt_tr>(
+                    handle: Self::Handle<#fmt>,
+                    untyped: &mut dyn #cr::workflow::BuildHandles<#fmt>,
+                    path: #cr::interface::HandlePath<'_>,
+                ) {
+                    #(#insert_fields;)*
                 }
             }
         })
@@ -156,17 +182,17 @@ impl Handle {
         } else {
             None
         };
-        let take_handle_impl = self.impl_take_handle()?;
+        let with_handle_impl = self.impl_with_handle()?;
 
         Ok(quote! {
             #clone_impl
             #debug_impl
-            #take_handle_impl
+            #with_handle_impl
         })
     }
 }
 
-fn derive_take_handle(input: &DeriveInput) -> darling::Result<impl ToTokens> {
+fn derive_with_handle(input: &DeriveInput) -> darling::Result<impl ToTokens> {
     // Determine whether we deal with a handle or a delegated struct.
     let attrs = find_meta_attrs("tardigrade", &input.attrs).map_or_else(
         || Ok(DeriveAttrs::default()),
@@ -177,56 +203,53 @@ fn derive_take_handle(input: &DeriveInput) -> darling::Result<impl ToTokens> {
         let crate_path = attrs
             .crate_path
             .unwrap_or_else(|| syn::parse_quote!(tardigrade));
-        Ok(impl_take_handle_delegation(input, &crate_path, handle))
+        Ok(impl_with_handle_delegation(input, &crate_path, handle))
     } else {
         Handle::new(input, attrs)?.to_tokens()
     }
 }
 
 // TODO: support generic handles
-fn impl_take_handle_delegation(
+fn impl_with_handle_delegation(
     input: &DeriveInput,
     cr: &Path,
     handle: &Path,
 ) -> proc_macro2::TokenStream {
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let target = &input.ident;
+    let fmt = Ident::new("Fmt", input.ident.span());
+    let fmt_tr = quote!(#cr::workflow::HandleFormat);
     let tr = quote!(#cr::workflow::WithHandle);
-    let env_tr = quote!(#cr::workflow::WorkflowEnv);
-    let with_handle_impl = quote! {
-        impl #impl_generics #tr for #target #ty_generics #where_clause {
-            type Handle<Env: #env_tr> = #handle <Env>;
-        }
-    };
-
-    let tr = quote!(#cr::workflow::TakeHandle);
     let wasm = quote!(#cr::workflow::Wasm);
-    let mut extended_generics = input.generics.clone();
-    extended_generics
-        .params
-        .push(parse_quote!(Env: #cr::workflow::WorkflowEnv));
-    let (impl_generics, _, where_clause) = extended_generics.split_for_impl();
 
-    let take_handle_impl = quote! {
-        impl #impl_generics #tr<Env> for #target #ty_generics #where_clause {
-            fn take_handle(
-                env: &mut Env,
+    quote! {
+        impl #impl_generics #tr for #target #ty_generics #where_clause {
+            type Handle<#fmt: #fmt_tr> = #handle<#fmt>;
+
+            fn take_from_untyped<#fmt: #fmt_tr>(
+                untyped: &mut dyn #cr::workflow::TakeHandles<#fmt>,
                 path: #cr::interface::HandlePath<'_>,
-            ) -> core::result::Result<Self::Handle<Env>, #cr::interface::AccessError> {
-                <#handle <#wasm> as #tr<Env>>::take_handle(env, path)
+            ) -> core::result::Result<Self::Handle<#fmt>, #cr::interface::AccessError> {
+               <#handle <#wasm> as #tr>::take_from_untyped(untyped, path)
+            }
+
+            fn insert_into_untyped<#fmt: #fmt_tr>(
+                handle: Self::Handle<#fmt>,
+                untyped: &mut dyn #cr::workflow::BuildHandles<#fmt>,
+                path: #cr::interface::HandlePath<'_>,
+            ) {
+                <#handle <#wasm> as #tr>::insert_into_untyped(handle, untyped, path)
             }
         }
-    };
-
-    quote!(#with_handle_impl #take_handle_impl)
+    }
 }
 
-pub(crate) fn impl_take_handle(input: TokenStream) -> TokenStream {
+pub(crate) fn impl_with_handle(input: TokenStream) -> TokenStream {
     let input: DeriveInput = match syn::parse(input) {
         Ok(input) => input,
         Err(err) => return err.into_compile_error().into(),
     };
-    let tokens = match derive_take_handle(&input) {
+    let tokens = match derive_with_handle(&input) {
         Ok(tokens) => tokens,
         Err(err) => return err.write_errors().into(),
     };

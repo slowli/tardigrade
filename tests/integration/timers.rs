@@ -10,16 +10,16 @@ use tardigrade::{
     channel::Sender,
     task::TaskResult,
     test::{TestInstance, Timers},
-    workflow::{GetInterface, InEnv, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv},
+    workflow::{GetInterface, HandleFormat, InEnv, SpawnWorkflow, Wasm, WithHandle},
     Json, Timer,
 };
 
-#[derive(TakeHandle)]
-struct TestHandle<Env: WorkflowEnv> {
-    timestamps: InEnv<Sender<DateTime<Utc>, Json>, Env>,
+#[derive(WithHandle)]
+struct TestHandle<Fmt: HandleFormat> {
+    timestamps: InEnv<Sender<DateTime<Utc>, Json>, Fmt>,
 }
 
-#[derive(Debug, GetInterface, TakeHandle)]
+#[derive(Debug, GetInterface, WithHandle)]
 #[tardigrade(handle = "TestHandle", auto_interface)]
 struct TimersWorkflow;
 

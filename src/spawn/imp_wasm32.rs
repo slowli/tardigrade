@@ -11,7 +11,7 @@ use std::{
 };
 
 use super::{
-    ChannelSpawnConfig, ChannelsConfig, HostError, ManageInterfaces, ManageWorkflows, Remote,
+    ChannelSpawnConfig, ChannelsConfig, ForSelf, HostError, ManageInterfaces, ManageWorkflows,
     Workflows,
 };
 use crate::{

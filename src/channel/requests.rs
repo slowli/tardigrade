@@ -18,7 +18,7 @@ use std::{collections::HashMap, future::Future, marker::PhantomData};
 use crate::{
     channel::{Receiver, Sender},
     task::{self, JoinHandle},
-    workflow::{InEnv, TakeHandle, Wasm, WorkflowEnv},
+    workflow::{HandleFormat, InEnv, Wasm, WithHandle},
     ChannelId, Codec,
 };
 
@@ -378,16 +378,16 @@ where
 /// # Ok(())
 /// # }
 /// ```
-#[derive(TakeHandle)]
+#[derive(WithHandle)]
 #[tardigrade(crate = "crate", derive(Debug, Clone))]
-pub struct RequestHandles<Req, Resp, C, Env: WorkflowEnv = Wasm>
+pub struct RequestHandles<Req, Resp, C, Fmt: HandleFormat = Wasm>
 where
     C: Codec<Request<Req>> + Codec<Response<Resp>>,
 {
     /// Requests sender.
-    pub requests: InEnv<Sender<Request<Req>, C>, Env>,
+    pub requests: InEnv<Sender<Request<Req>, C>, Fmt>,
     /// Responses receiver.
-    pub responses: InEnv<Receiver<Response<Resp>, C>, Env>,
+    pub responses: InEnv<Receiver<Response<Resp>, C>, Fmt>,
 }
 
 impl<Req: 'static, Resp: 'static, C> RequestHandles<Req, Resp, C>

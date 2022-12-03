@@ -225,6 +225,11 @@ impl HandlePathBuf {
     pub fn segments(&self) -> impl Iterator<Item = &str> + '_ {
         self.segments.iter().map(String::as_str)
     }
+
+    /// Extends this path with the specified suffix.
+    pub fn extend(&mut self, suffix: Self) {
+        self.segments.extend(suffix.segments);
+    }
 }
 
 impl fmt::Display for HandlePathBuf {
