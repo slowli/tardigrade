@@ -101,9 +101,9 @@ use std::{
 
 use crate::{
     interface::Interface,
-    spawn::{ForSelf, ManageWorkflows, Workflows},
+    spawn::{ManageWorkflows, Workflows},
     task::{self, TaskResult},
-    workflow::{InEnv, SpawnWorkflow, TaskHandle, UntypedHandles, Wasm, WithHandle},
+    workflow::{InEnv, Inverse, SpawnWorkflow, TaskHandle, UntypedHandles, Wasm, WithHandle},
     ChannelId, WorkflowId,
 };
 
@@ -511,7 +511,7 @@ where
     #[allow(clippy::missing_panics_doc)] // false positive
     pub fn run<F, Fut>(mut self, test_fn: F)
     where
-        F: FnOnce(InEnv<W, ForSelf>) -> Fut,
+        F: FnOnce(InEnv<W, Inverse<Wasm>>) -> Fut,
         Fut: Future<Output = ()>,
     {
         const DEFINITION_ID: &str = "__tested_workflow";

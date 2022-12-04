@@ -19,6 +19,8 @@ use crate::{
 };
 
 impl ManageInterfaces for Workflows {
+    type Fmt = Wasm;
+
     fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
         Runtime::with(|rt| {
             rt.workflow_registry()

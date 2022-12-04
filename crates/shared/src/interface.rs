@@ -3,7 +3,12 @@
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 
-use std::{error, fmt, ops};
+use std::{
+    borrow::{Borrow, BorrowMut},
+    error, fmt,
+    marker::PhantomData,
+    ops,
+};
 
 pub use crate::path::{HandlePath, HandlePathBuf, ReceiverAt, SenderAt};
 
@@ -77,6 +82,70 @@ impl<T> Handle<T> {
 
 /// Map of handles keyed by [owned handle paths](HandlePathBuf).
 pub type HandleMap<Rx, Sx = Rx> = HashMap<HandlePathBuf, Handle<Rx, Sx>>;
+
+/// Wrapper for [`UntypedHandles`] allowing accessing them by [`HandleMapKey`].
+#[derive(Debug)]
+pub struct IndexingHandleMap<T, Rx, Sx> {
+    inner: T,
+    _ty: PhantomData<fn(Rx, Sx)>,
+}
+
+impl<T, Rx, Sx> IndexingHandleMap<T, Rx, Sx>
+where
+    T: BorrowMut<HandleMap<Rx, Sx>>,
+{
+    /// Removes an element with the specified index from this handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the element is not present in the handle, or if it has an unexpected
+    /// type (e.g., a sender instead of a receiver).
+    pub fn remove<K: HandleMapKey>(&mut self, key: K) -> Result<K::Output<Rx, Sx>, AccessError> {
+        key.remove(self.inner.borrow_mut())
+    }
+}
+
+impl<T, Rx, Sx, K: HandleMapKey> ops::Index<K> for IndexingHandleMap<T, Rx, Sx>
+where
+    T: Borrow<HandleMap<Rx, Sx>>,
+{
+    type Output = K::Output<Rx, Sx>;
+
+    fn index(&self, index: K) -> &Self::Output {
+        index
+            .get(self.inner.borrow())
+            .unwrap_or_else(|err| panic!("{err}"))
+    }
+}
+
+impl<T, Rx, Sx, K: HandleMapKey> ops::IndexMut<K> for IndexingHandleMap<T, Rx, Sx>
+where
+    T: BorrowMut<HandleMap<Rx, Sx>>,
+{
+    fn index_mut(&mut self, index: K) -> &mut Self::Output {
+        index
+            .get_mut(self.inner.borrow_mut())
+            .unwrap_or_else(|err| panic!("{err}"))
+    }
+}
+
+/// Converts [`HandleMap`] to the [indexing form](IndexingHandleMap).
+pub trait WithIndexing<Rx, Sx>: Borrow<HandleMap<Rx, Sx>> + Sized {
+    /// Performs the conversion.
+    fn with_indexing(self) -> IndexingHandleMap<Self, Rx, Sx>;
+}
+
+impl<T, Rx, Sx> WithIndexing<Rx, Sx> for T
+where
+    T: Borrow<HandleMap<Rx, Sx>>,
+{
+    fn with_indexing(self) -> IndexingHandleMap<Self, Rx, Sx> {
+        IndexingHandleMap {
+            inner: self,
+            _ty: PhantomData,
+        }
+    }
+}
 
 /// Kind of a channel half (sender or receiver) in a workflow interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

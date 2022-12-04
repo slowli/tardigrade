@@ -1,6 +1,6 @@
 //! Handle-related logic.
 
-use std::convert::Infallible;
+use std::{convert::Infallible, marker::PhantomData};
 
 use super::untyped::UntypedHandles;
 use crate::{
@@ -60,6 +60,17 @@ impl HandleFormat for () {
     type Sender<T, C: Codec<T>> = ();
 }
 
+/// Inverse wrapper for a [`HandleFormat`] that swaps handles for senders and receivers.
+#[derive(Debug)]
+pub struct Inverse<Fmt>(PhantomData<Fmt>);
+
+impl<Fmt: HandleFormat> HandleFormat for Inverse<Fmt> {
+    type RawReceiver = Fmt::RawSender;
+    type Receiver<T, C: Codec<T>> = Fmt::Sender<T, C>;
+    type RawSender = Fmt::RawReceiver;
+    type Sender<T, C: Codec<T>> = Fmt::Receiver<T, C>;
+}
+
 /// Collection of handles in a certain format that can be taken from.
 pub trait TakeHandles<Fmt: HandleFormat> {
     /// Takes a raw receiver handle at the specified `path` from this collection.
@@ -103,7 +114,7 @@ pub(super) fn default_insert_handles<Fmt, T>(
     Fmt: HandleFormat,
     T: BuildHandles<Fmt> + ?Sized,
 {
-    for (suffix, handle) in handles.handles {
+    for (suffix, handle) in handles {
         let mut path = path.to_owned();
         path.extend(suffix);
         target.insert_handle(path, handle);
@@ -147,7 +158,7 @@ pub trait WithHandle {
     /// Converts this handle into [`UntypedHandles`]. This is a higher-level alternative to
     /// [`Self::insert_into_untyped()`].
     fn into_untyped<Fmt: HandleFormat>(handle: Self::Handle<Fmt>) -> UntypedHandles<Fmt> {
-        let mut untyped = UntypedHandles::default();
+        let mut untyped = UntypedHandles::<Fmt>::default();
         Self::insert_into_untyped(handle, &mut untyped, HandlePath::EMPTY);
         untyped
     }

@@ -107,7 +107,9 @@ mod handle;
 mod untyped;
 
 pub use self::{
-    handle::{BuildHandles, HandleFormat, InEnv, IntoRaw, TakeHandles, TryFromRaw, WithHandle},
+    handle::{
+        BuildHandles, HandleFormat, InEnv, IntoRaw, Inverse, TakeHandles, TryFromRaw, WithHandle,
+    },
     untyped::UntypedHandles,
 };
 
@@ -235,7 +237,7 @@ pub fn interface_by_handle<W: WithHandle>() -> Interface {
         }
 
         fn drain(&mut self) -> UntypedHandles<()> {
-            UntypedHandles::default() // never used
+            UntypedHandles::<()>::default() // never used
         }
     }
 
