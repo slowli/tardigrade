@@ -368,17 +368,11 @@ impl WriteChannels for LocalTransaction<'_> {
         self.next_channel_id.fetch_add(1, Ordering::SeqCst)
     }
 
-    async fn get_or_insert_channel(
-        &mut self,
-        id: ChannelId,
-        record: ChannelRecord,
-    ) -> ChannelRecord {
+    async fn insert_channel(&mut self, id: ChannelId, record: ChannelRecord) {
         self.inner
             .channels
             .entry(id)
-            .or_insert_with(|| LocalChannel::new(record))
-            .record
-            .clone()
+            .or_insert_with(|| LocalChannel::new(record));
     }
 
     async fn manipulate_channel<F: FnOnce(&mut ChannelRecord) + Send>(
@@ -611,7 +605,7 @@ mod tests {
         assert_matches!(err, MessageError::UnknownChannelId);
 
         let channel_state = create_channel_record();
-        transaction.get_or_insert_channel(1, channel_state).await;
+        transaction.insert_channel(1, channel_state).await;
 
         transaction.push_messages(1, vec![b"test".to_vec()]).await;
         let message = transaction.channel_message(1, 0).await.unwrap();
@@ -638,7 +632,7 @@ mod tests {
         let mut transaction = storage.transaction().await;
 
         let channel_state = create_channel_record();
-        transaction.get_or_insert_channel(1, channel_state).await;
+        transaction.insert_channel(1, channel_state).await;
 
         let messages: Vec<_> = transaction
             .channel_messages(1, 0..=usize::MAX)

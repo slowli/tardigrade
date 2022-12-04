@@ -12,10 +12,7 @@ use std::{
 
 use crate::{
     data::{
-        channel::{
-            acquire_non_captured_channels, new_channel_mapping, ChannelMapping, ChannelStates,
-            Channels,
-        },
+        channel::{new_channel_mapping, ChannelMapping, ChannelStates, Channels},
         helpers::{WakerPlacement, WorkflowPoll},
         PersistedWorkflowData, WorkflowData,
     },
@@ -25,9 +22,9 @@ use crate::{
 };
 use tardigrade::{
     interface::{Handle, HandleMapKey, Interface, ReceiverAt, SenderAt},
-    spawn::{ChannelsConfig, HostError},
+    spawn::HostError,
     task::JoinError,
-    ChannelId, WakerId, WorkflowId,
+    WakerId, WorkflowId,
 };
 
 type StubResult = Result<WorkflowId, HostError>;
@@ -156,7 +153,6 @@ impl PersistedWorkflowData {
         &mut self,
         stub_id: WorkflowId,
         workflow_id: WorkflowId,
-        config: &ChannelsConfig<ChannelId>,
         mut channel_ids: ChannelIds,
     ) {
         let stub = self.child_workflow_stubs.stubs.get_mut(&stub_id).unwrap();
@@ -172,8 +168,7 @@ impl PersistedWorkflowData {
 
         // TODO: what is the appropriate capacity?
         self.channels.insert_channels(&channel_ids, |_| Some(1));
-        let mut child_state = ChildWorkflowState::new(channel_ids);
-        acquire_non_captured_channels(&mut child_state.channels, config);
+        let child_state = ChildWorkflowState::new(channel_ids);
         self.child_workflows.insert(workflow_id, child_state);
     }
 
@@ -304,11 +299,7 @@ impl WorkflowData {
         interface
     }
 
-    fn validate_handles(
-        &self,
-        definition_id: &str,
-        channels: &ChannelsConfig<ChannelId>,
-    ) -> anyhow::Result<()> {
+    fn validate_handles(&self, definition_id: &str, channels: &ChannelIds) -> anyhow::Result<()> {
         let workflows = self.services().workflows.as_deref();
         let interface = workflows.and_then(|workflows| workflows.interface(definition_id));
         if let Some(interface) = interface {
@@ -329,17 +320,14 @@ impl WorkflowData {
         }
     }
 
-    fn extra_handles_error(
-        interface: &Interface,
-        channels: &ChannelsConfig<ChannelId>,
-    ) -> anyhow::Error {
+    fn extra_handles_error(interface: &Interface, channel_ids: &ChannelIds) -> anyhow::Error {
         use std::fmt::Write as _;
 
-        let mut extra_handles = channels
+        let mut extra_handles = channel_ids
             .keys()
             .filter(|path| interface.handle(path.as_ref()).is_err())
-            .fold(String::new(), |mut acc, name| {
-                write!(acc, "`{}`, ", name).unwrap();
+            .fold(String::new(), |mut acc, path| {
+                write!(acc, "`{path}`, ").unwrap();
                 acc
             });
         debug_assert!(!extra_handles.is_empty());
@@ -358,7 +346,7 @@ impl WorkflowData {
         &mut self,
         definition_id: &str,
         args: Vec<u8>,
-        channels: &ChannelsConfig<ChannelId>,
+        channels: &ChannelIds,
     ) -> anyhow::Result<WorkflowId> {
         self.validate_handles(definition_id, channels)?;
 

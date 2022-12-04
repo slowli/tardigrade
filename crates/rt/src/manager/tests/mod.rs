@@ -18,8 +18,8 @@ use crate::{
     storage::LocalStorage,
 };
 use tardigrade::{
-    interface::{HandlePath, ReceiverAt, SenderAt},
-    spawn::ManageWorkflowsExt,
+    interface::{HandlePath, ReceiverAt, SenderAt, WithIndexing},
+    spawn::ManageWorkflows,
 };
 
 const DEFINITION_ID: &str = "test@latest::TestWorkflow";
@@ -55,10 +55,10 @@ pub(crate) async fn create_test_manager<C: Clock>(
 pub(crate) async fn create_test_workflow<C: Clock>(
     manager: &LocalManager<C>,
 ) -> WorkflowHandle<'_, (), LocalManager<C>> {
-    manager
-        .new_workflow(DEFINITION_ID, b"test_input".to_vec())
-        .unwrap()
-        .build()
+    let builder = manager.new_workflow(DEFINITION_ID).unwrap();
+    let (handles, _) = builder.handles(|_| { /* use default config */ }).await;
+    builder
+        .build(b"test_input".to_vec(), handles)
         .await
         .unwrap()
 }
@@ -139,7 +139,6 @@ async fn instantiating_workflow() {
         traces_record.sender_workflow_ids,
         HashSet::from_iter([workflow.id()])
     );
-    assert!(!traces_record.has_external_sender);
     drop(storage);
 
     poll_fn_sx
@@ -182,12 +181,17 @@ async fn initializing_workflow_with_closed_channels() {
 
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
     let manager = create_test_manager(poll_fns, ()).await;
-    let builder = manager
-        .new_workflow::<()>(DEFINITION_ID, b"test_input".to_vec())
+    let builder = manager.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let handles = builder.handles(|config| {
+        let config = config.with_indexing();
+        config[ReceiverAt("orders")].close();
+        config[SenderAt("traces")].close();
+    });
+    let (local_handles, _) = handles.await;
+    let workflow = builder
+        .build(b"test_input".to_vec(), local_handles)
+        .await
         .unwrap();
-    builder.handle()[ReceiverAt("orders")].close();
-    builder.handle()[SenderAt("traces")].close();
-    let workflow = builder.build().await.unwrap();
     let workflow_id = workflow.id();
 
     assert_eq!(channel_id(workflow.ids(), "orders"), 0);
@@ -199,7 +203,8 @@ async fn initializing_workflow_with_closed_channels() {
         .await
         .unwrap();
 
-    let mut handle = manager.workflow(workflow_id).await.unwrap().handle();
+    let handle = manager.workflow(workflow_id).await.unwrap().handle();
+    let mut handle = handle.with_indexing();
     let channel_info = handle[ReceiverAt("orders")].channel_info().await;
     assert!(channel_info.is_closed);
     assert_eq!(channel_info.received_messages, 0);

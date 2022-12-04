@@ -2,8 +2,7 @@
 
 use futures::{future, FutureExt, Stream, StreamExt};
 
-use std::borrow::Cow;
-use std::{collections::HashSet, error, fmt, marker::PhantomData, ops};
+use std::{collections::HashSet, convert::Infallible, error, fmt, marker::PhantomData, ops};
 
 use crate::{
     manager::{AsManager, WorkflowAndChannelIds},
@@ -19,9 +18,9 @@ use crate::{
 };
 use tardigrade::{
     channel::SendError,
-    interface::{AccessError, Handle, HandleMapKey, HandlePath, Interface, ReceiverAt, SenderAt},
+    interface::{AccessError, Handle, Interface},
     task::JoinError,
-    workflow::{DescribeEnv, GetInterface, InEnv, TakeHandle, WorkflowEnv},
+    workflow::{GetInterface, HandleFormat, InEnv, IntoRaw, TryFromRaw, WithHandle},
     ChannelId, Codec, Raw, WorkflowId,
 };
 
@@ -176,7 +175,7 @@ impl<'a, M: AsManager> WorkflowHandle<'a, (), M> {
     }
 }
 
-impl<W: TakeHandle<Self>, M: AsManager> WorkflowHandle<'_, W, M> {
+impl<'a, W: WithHandle, M: AsManager> WorkflowHandle<'a, W, M> {
     /// Returns the ID of this workflow.
     pub fn id(&self) -> WorkflowId {
         self.ids.workflow_id
@@ -224,9 +223,38 @@ impl<W: TakeHandle<Self>, M: AsManager> WorkflowHandle<'_, W, M> {
 
     /// Returns a handle for the workflow that allows interacting with its channels.
     #[allow(clippy::missing_panics_doc)] // false positive
-    pub fn handle(&mut self) -> InEnv<W, Self> {
-        W::take_handle(self, HandlePath::EMPTY).unwrap()
+    pub fn handle(&mut self) -> InEnv<W, ManagerHandles<'a, M>> {
+        let untyped = self.ids.channel_ids.iter().map(|(path, id)| {
+            let handle = id.as_ref().map_receiver(|&channel_id| MessageSender {
+                manager: self.manager,
+                channel_id,
+                _ty: PhantomData,
+            });
+            let handle = handle.map_sender(|&channel_id| {
+                // The 0th channel is always closed and thus cannot be manipulated.
+                let can_manipulate =
+                    channel_id != 0 && self.host_receiver_channels.contains(&channel_id);
+                MessageReceiver {
+                    manager: self.manager,
+                    channel_id,
+                    can_manipulate,
+                    _ty: PhantomData,
+                }
+            });
+            (path.clone(), handle)
+        });
+        W::try_from_untyped(untyped.collect()).unwrap()
     }
+}
+
+#[derive(Debug)]
+pub struct ManagerHandles<'a, M>(PhantomData<fn(&'a M)>);
+
+impl<'a, M: AsManager> HandleFormat for ManagerHandles<'a, M> {
+    type RawReceiver = MessageSender<'a, Vec<u8>, Raw, M>;
+    type Receiver<T, C: Codec<T>> = MessageSender<'a, T, C, M>;
+    type RawSender = MessageReceiver<'a, Vec<u8>, Raw, M>;
+    type Sender<T, C: Codec<T>> = MessageReceiver<'a, T, C, M>;
 }
 
 /// Handle for a workflow channel [`Receiver`] that allows sending messages via the channel.
@@ -270,41 +298,33 @@ impl<T, C: Codec<T>, M: AsManager> MessageSender<'_, T, C, M> {
     }
 }
 
-impl<'a, W, M: AsManager> WorkflowEnv for WorkflowHandle<'a, W, M> {
-    type Receiver<T, C: Codec<T>> = MessageSender<'a, T, C, M>;
-    type Sender<T, C: Codec<T>> = MessageReceiver<'a, T, C, M>;
+impl<'a, T, C, M> TryFromRaw<MessageSender<'a, Vec<u8>, Raw, M>> for MessageSender<'a, T, C, M>
+where
+    C: Codec<T>,
+    M: AsManager,
+{
+    type Error = Infallible;
 
-    fn take_receiver<T, C: Codec<T>>(
-        &mut self,
-        path: HandlePath<'_>,
-    ) -> Result<Self::Receiver<T, C>, AccessError> {
-        let channel_id = *ReceiverAt(path).get(&self.ids.channel_ids)?;
-        Ok(MessageSender {
-            manager: self.manager,
-            channel_id,
-            _ty: PhantomData,
-        })
-    }
-
-    fn take_sender<T, C: Codec<T>>(
-        &mut self,
-        path: HandlePath<'_>,
-    ) -> Result<Self::Sender<T, C>, AccessError> {
-        let channel_id = *SenderAt(path).get(&self.ids.channel_ids)?;
-        // The 0th channel is always closed and thus cannot be manipulated.
-        let can_manipulate = channel_id != 0 && self.host_receiver_channels.contains(&channel_id);
-        Ok(MessageReceiver {
-            manager: self.manager,
-            channel_id,
-            can_manipulate,
+    fn try_from_raw(raw: MessageSender<'a, Vec<u8>, Raw, M>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            manager: raw.manager,
+            channel_id: raw.channel_id,
             _ty: PhantomData,
         })
     }
 }
 
-impl<'a, W, M: AsManager> DescribeEnv for WorkflowHandle<'a, W, M> {
-    fn interface(&self) -> Cow<'_, Interface> {
-        Cow::Borrowed(self.interface)
+impl<'a, T, C, M> IntoRaw<MessageSender<'a, Vec<u8>, Raw, M>> for MessageSender<'a, T, C, M>
+where
+    C: Codec<T>,
+    M: AsManager,
+{
+    fn into_raw(self) -> MessageSender<'a, Vec<u8>, Raw, M> {
+        MessageSender {
+            manager: self.manager,
+            channel_id: self.channel_id,
+            _ty: PhantomData,
+        }
     }
 }
 
@@ -413,6 +433,38 @@ impl<T, C: Codec<T>, M: AsManager> MessageReceiver<'_, T, C, M> {
         if self.can_manipulate {
             let manager = self.manager.as_manager();
             manager.close_host_receiver(self.channel_id).await;
+        }
+    }
+}
+
+impl<'a, T, C, M> TryFromRaw<MessageReceiver<'a, Vec<u8>, Raw, M>> for MessageReceiver<'a, T, C, M>
+where
+    C: Codec<T>,
+    M: AsManager,
+{
+    type Error = Infallible;
+
+    fn try_from_raw(raw: MessageReceiver<'a, Vec<u8>, Raw, M>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            manager: raw.manager,
+            channel_id: raw.channel_id,
+            can_manipulate: raw.can_manipulate,
+            _ty: PhantomData,
+        })
+    }
+}
+
+impl<'a, T, C, M> IntoRaw<MessageReceiver<'a, Vec<u8>, Raw, M>> for MessageReceiver<'a, T, C, M>
+where
+    C: Codec<T>,
+    M: AsManager,
+{
+    fn into_raw(self) -> MessageReceiver<'a, Vec<u8>, Raw, M> {
+        MessageReceiver {
+            manager: self.manager,
+            channel_id: self.channel_id,
+            can_manipulate: self.can_manipulate,
+            _ty: PhantomData,
         }
     }
 }

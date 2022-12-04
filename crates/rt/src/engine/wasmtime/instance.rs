@@ -4,11 +4,11 @@ use anyhow::{anyhow, ensure, Context};
 use serde::{Deserialize, Serialize};
 use wasmtime::{AsContextMut, ExternRef, Linker, Store, Val};
 
-use std::task::Poll;
 use std::{
     collections::HashMap,
     fmt,
     sync::{Arc, Mutex},
+    task::Poll,
 };
 
 use super::{
@@ -18,8 +18,9 @@ use super::{
 use crate::{
     data::WorkflowData,
     engine::{AsWorkflowData, PersistWorkflow, RunWorkflow},
+    workflow::ChannelIds,
 };
-use tardigrade::{spawn::ChannelsConfig, ChannelId, TaskId, WakerId, WorkflowId};
+use tardigrade::{ChannelId, TaskId, WakerId, WorkflowId};
 
 #[derive(Debug)]
 pub(super) struct InstanceData {
@@ -275,11 +276,9 @@ impl Memory {
     }
 }
 
-type ChannelHandles = ChannelsConfig<ChannelId>;
-
 #[derive(Debug, Clone, Default)]
 pub(super) struct SharedChannelHandles {
-    pub inner: Arc<Mutex<ChannelHandles>>,
+    pub inner: Arc<Mutex<ChannelIds>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

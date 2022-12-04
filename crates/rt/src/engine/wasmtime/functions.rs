@@ -19,9 +19,9 @@ use crate::{
     utils,
 };
 use tardigrade::{
-    abi::{IntoWasm, TryFromWasm},
-    interface::{AccessError, AccessErrorKind, ChannelHalf, Handle, HandlePathBuf},
-    spawn::{ChannelSpawnConfig, HostError},
+    abi::IntoWasm,
+    interface::{AccessError, AccessErrorKind, Handle, HandlePathBuf},
+    spawn::HostError,
     task::{JoinError, TaskError},
     TaskId, TimerDefinition, TimerId, WakerId,
 };
@@ -485,68 +485,30 @@ impl SpawnFunctions {
         Some(resource.into_ref())
     }
 
-    #[tracing::instrument(level = "debug", skip_all, err, fields(channel_kind, name, config))]
+    #[tracing::instrument(level = "debug", skip_all, err, fields(name, channel))]
     pub fn set_channel_handle(
         ctx: StoreContextMut<'_, InstanceData>,
         handles: Option<ExternRef>,
-        channel_kind: i32,
         path_ptr: u32,
         path_len: u32,
-        is_closed: i32,
+        channel_half: Option<ExternRef>,
     ) -> anyhow::Result<()> {
-        let channel_kind =
-            ChannelHalf::try_from_wasm(channel_kind).context("cannot parse channel kind")?;
-        let channel_config = match is_closed {
-            0 => ChannelSpawnConfig::New,
-            1 => ChannelSpawnConfig::Closed,
-            _ => return Err(anyhow!("invalid `is_closed` value; expected 0 or 1")),
+        let channel_id = match HostResource::from_ref(channel_half.as_ref())? {
+            HostResource::Receiver(id) => Handle::Receiver(*id),
+            HostResource::Sender(id) => Handle::Sender(*id),
+            other => return Err(anyhow!("unexpected handle supplied: {other:?}")),
         };
         let memory = ctx.data().exports().memory;
         let path = copy_string_from_wasm(&ctx, &memory, path_ptr, path_len)?;
         let path: HandlePathBuf = path.parse()?;
 
         tracing::Span::current()
-            .record("channel_kind", field::debug(channel_kind))
             .record("path", field::debug(&path))
-            .record("config", field::debug(&channel_config));
+            .record("channel", field::debug(&channel_id));
 
         let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
         let mut handles = handles.inner.lock().unwrap();
-        match channel_kind {
-            ChannelHalf::Receiver => {
-                handles.insert(path, Handle::Receiver(channel_config));
-            }
-            ChannelHalf::Sender => {
-                handles.insert(path, Handle::Sender(channel_config));
-            }
-        }
-        tracing::debug!(?handles, "inserted channel handle");
-        Ok(())
-    }
-
-    #[tracing::instrument(level = "debug", skip_all, err, fields(name, sender))]
-    pub fn copy_sender_handle(
-        ctx: StoreContextMut<'_, InstanceData>,
-        handles: Option<ExternRef>,
-        path_ptr: u32,
-        path_len: u32,
-        sender: Option<ExternRef>,
-    ) -> anyhow::Result<()> {
-        let channel_id = HostResource::from_ref(sender.as_ref())?.as_sender()?;
-        let memory = ctx.data().exports().memory;
-        let path = copy_string_from_wasm(&ctx, &memory, path_ptr, path_len)?;
-        let path: HandlePathBuf = path.parse()?;
-
-        tracing::Span::current()
-            .record("path", field::debug(&path))
-            .record("sender", channel_id);
-
-        let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
-        let mut handles = handles.inner.lock().unwrap();
-        handles.insert(
-            path,
-            Handle::Sender(ChannelSpawnConfig::Existing(channel_id)),
-        );
+        handles.insert(path, channel_id);
         tracing::debug!(?handles, "inserted channel handle");
         Ok(())
     }

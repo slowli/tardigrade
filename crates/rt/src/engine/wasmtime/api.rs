@@ -387,12 +387,8 @@ impl ExtendLinker for SpawnFunctions {
                 Func::wrap(&mut *store, Self::create_channel_handles),
             ),
             (
-                "workflow::insert_handle",
-                wrap5(&mut *store, Self::set_channel_handle),
-            ),
-            (
-                "workflow::copy_sender_handle",
-                wrap4(&mut *store, Self::copy_sender_handle),
+                "workflow::set_channel_handle",
+                wrap4(&mut *store, Self::set_channel_handle),
             ),
             ("workflow::spawn", wrap5(&mut *store, Self::spawn)),
             (

@@ -18,10 +18,7 @@ use crate::{
     workflow::{ChannelIds, Workflow},
 };
 use tardigrade::{
-    interface::Handle,
-    spawn::{ChannelsConfig, HostError},
-    task::JoinError,
-    ChannelId, TaskId, TimerId, WorkflowId,
+    interface::Handle, spawn::HostError, task::JoinError, ChannelId, TaskId, TimerId, WorkflowId,
 };
 
 /// Persisted version of a workflow containing the state of its external dependencies
@@ -129,11 +126,9 @@ impl PersistedWorkflow {
         &mut self,
         stub_id: WorkflowId,
         id: WorkflowId,
-        channels: &ChannelsConfig<ChannelId>,
         channel_ids: ChannelIds,
     ) {
-        self.data
-            .notify_on_child_init(stub_id, id, channels, channel_ids);
+        self.data.notify_on_child_init(stub_id, id, channel_ids);
     }
 
     #[tracing::instrument(level = "debug", skip(self))]

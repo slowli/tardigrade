@@ -3,18 +3,19 @@
 use std::borrow::Cow;
 
 use super::*;
-use crate::{engine::DefineWorkflow, manager::StashWorkflow};
+use crate::{
+    engine::DefineWorkflow,
+    manager::{Host, StashWorkflow},
+};
 use tardigrade::{
     interface::{Handle, Interface, ReceiverAt, SenderAt},
-    spawn::{ChannelSpawnConfig, HostError, ManageInterfaces},
-    ChannelId,
+    spawn::{HostError, ManageInterfaces},
 };
 
 #[derive(Debug)]
 struct NewWorkflowCall {
     stub_id: WorkflowId,
     args: Vec<u8>,
-    channels: ChannelsConfig<ChannelId>,
 }
 
 #[derive(Debug)]
@@ -54,7 +55,7 @@ impl MockWorkflowManager {
         } else {
             let channel_ids = mock_channel_ids(&self.interface, &mut 1);
             let child_id = 1;
-            parent.notify_on_child_init(call.stub_id, child_id, &call.channels, channel_ids);
+            parent.notify_on_child_init(call.stub_id, child_id, channel_ids);
         }
 
         restore_workflow(poll_fns, parent, clock)
@@ -62,6 +63,8 @@ impl MockWorkflowManager {
 }
 
 impl ManageInterfaces for MockWorkflowManager {
+    type Fmt = Host;
+
     fn interface(&self, id: &str) -> Option<Cow<'_, Interface>> {
         if id == "test:latest" {
             Some(Cow::Borrowed(&self.interface))
@@ -77,15 +80,11 @@ impl StashWorkflow for MockWorkflowManager {
         stub_id: WorkflowId,
         id: &str,
         args: Vec<u8>,
-        channels: ChannelsConfig<ChannelId>,
+        channels: ChannelIds,
     ) {
         assert_eq!(id, "test:latest");
         assert_eq!(channels.len(), 2);
-        self.calls.push(NewWorkflowCall {
-            stub_id,
-            args,
-            channels,
-        });
+        self.calls.push(NewWorkflowCall { stub_id, args });
     }
 }
 
@@ -146,10 +145,11 @@ fn get_child_workflow_channel(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>
     Ok(Poll::Pending)
 }
 
-fn configure_handles() -> ChannelsConfig<ChannelId> {
-    let mut config = ChannelsConfig::default();
-    config.insert("commands".into(), Handle::Receiver(ChannelSpawnConfig::New));
-    config.insert("traces".into(), Handle::Sender(ChannelSpawnConfig::New));
+// **NB.** This only works if called once per test.
+fn configure_handles() -> ChannelIds {
+    let mut config = ChannelIds::new();
+    config.insert("commands".into(), Handle::Receiver(1));
+    config.insert("traces".into(), Handle::Sender(2));
     config
 }
 
@@ -207,7 +207,7 @@ fn spawning_child_workflow_with_extra_channel() {
         let id = "test:latest";
         let args = b"child_input".to_vec();
         let mut handles = configure_handles();
-        handles.insert(id.into(), Handle::Receiver(ChannelSpawnConfig::New));
+        handles.insert(id.into(), Handle::Receiver(3));
 
         let err = ctx
             .data_mut()

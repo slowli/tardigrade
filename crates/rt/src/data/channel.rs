@@ -14,14 +14,12 @@ use super::{
     PersistedWorkflowData, WorkflowData,
 };
 use crate::{receipt::WakeUpCause, utils::Message, workflow::ChannelIds};
-use tardigrade::interface::AccessErrorKind;
 use tardigrade::{
     channel::SendError,
     interface::{
-        AccessError, ChannelHalf, Handle, HandleMap, HandleMapKey, HandlePath, Interface,
-        ReceiverAt, SenderAt,
+        AccessError, AccessErrorKind, ChannelHalf, Handle, HandleMap, HandleMapKey, HandlePath,
+        Interface, ReceiverAt, SenderAt,
     },
-    spawn::{ChannelSpawnConfig, ChannelsConfig},
     ChannelId, WakerId, WorkflowId,
 };
 
@@ -82,19 +80,6 @@ pub(super) fn new_channel_mapping(ids: ChannelIds) -> ChannelMapping {
         (path, mapping)
     });
     it.collect()
-}
-
-pub(super) fn acquire_non_captured_channels(
-    mapping: &mut ChannelMapping,
-    config: &ChannelsConfig<ChannelId>,
-) {
-    for (path, channel_config) in config {
-        let channel_config = channel_config.as_ref().factor();
-        if matches!(channel_config, ChannelSpawnConfig::Existing(_)) {
-            let state = mapping.get_mut(path).unwrap();
-            state.as_mut().factor().is_acquired = true;
-        }
-    }
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // required by serde

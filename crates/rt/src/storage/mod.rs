@@ -185,8 +185,7 @@ pub trait WriteChannels: ReadChannels {
 
     /// Creates a new channel with the provided `state`. If the channel with the specified ID
     /// already exists, does nothing (i.e., the channel state is not updated in any way).
-    async fn get_or_insert_channel(&mut self, id: ChannelId, state: ChannelRecord)
-        -> ChannelRecord;
+    async fn insert_channel(&mut self, id: ChannelId, state: ChannelRecord);
 
     /// Changes the channel state and selects the updated state.
     async fn manipulate_channel<F: FnOnce(&mut ChannelRecord) + Send>(

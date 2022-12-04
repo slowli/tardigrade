@@ -10,8 +10,7 @@ use crate::{
     storage::{LocalTransaction, Readonly, WorkflowWaker},
 };
 use tardigrade::{
-    interface::Handle,
-    spawn::{ChannelSpawnConfig, ChannelsConfig},
+    interface::{Handle, WithIndexing},
     task::JoinError,
 };
 
@@ -39,11 +38,11 @@ async fn peek_channel(
     future::try_join_all(messages).await.unwrap()
 }
 
-fn configure_handles() -> ChannelsConfig<ChannelId> {
-    let mut config = ChannelsConfig::default();
-    config.insert("orders".into(), Handle::Receiver(ChannelSpawnConfig::New));
-    config.insert("events".into(), Handle::Sender(ChannelSpawnConfig::New));
-    config.insert("traces".into(), Handle::Sender(ChannelSpawnConfig::New));
+fn configure_handles() -> ChannelIds {
+    let mut config = ChannelIds::new();
+    config.insert("orders".into(), Handle::Receiver(1));
+    config.insert("events".into(), Handle::Sender(2));
+    config.insert("traces".into(), Handle::Sender(3));
     config
 }
 
@@ -159,7 +158,8 @@ async fn spawning_child_workflow() {
     );
 
     // Check channel handles for child workflow
-    let mut handle = manager.workflow(child_id).await.unwrap().handle();
+    let handle = manager.workflow(child_id).await.unwrap().handle();
+    let mut handle = handle.with_indexing();
     let mut child_orders = handle.remove(ReceiverAt("orders")).unwrap();
     let child_orders_id = child_orders.channel_id();
     child_orders.send(b"test".to_vec()).await.unwrap();
@@ -409,7 +409,7 @@ fn spawn_child_with_copied_sender(
         .channel_id("events")
         .unwrap();
     let mut handles = configure_handles();
-    let config = Handle::Sender(ChannelSpawnConfig::Existing(events_id));
+    let config = Handle::Sender(events_id);
     handles.insert("events".into(), config);
     if copy_traces {
         handles.insert("traces".into(), config);

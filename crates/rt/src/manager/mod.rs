@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use futures::{lock::Mutex, StreamExt};
 use tracing_tunnel::{LocalSpans, PersistedMetadata, PersistedSpans};
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, convert::Infallible, sync::Arc};
 
 mod handle;
 mod new_workflows;
@@ -38,7 +38,11 @@ use crate::{
     },
     workflow::ChannelIds,
 };
-use tardigrade::{channel::SendError, ChannelId, WorkflowId};
+use tardigrade::{
+    channel::SendError,
+    workflow::{HandleFormat, IntoRaw, TryFromRaw},
+    ChannelId, Codec, WorkflowId,
+};
 
 #[derive(Debug)]
 struct WorkflowAndChannelIds {
@@ -91,6 +95,52 @@ enum ChannelSide {
     HostSender,
     WorkflowSender(WorkflowId),
     Receiver,
+}
+
+/// Host [format](HandleFormat) for channel handles.
+#[derive(Debug)]
+pub struct Host(());
+
+impl HandleFormat for Host {
+    type RawReceiver = HostChannelId;
+    type Receiver<T, C: Codec<T>> = HostChannelId;
+    type RawSender = HostChannelId;
+    type Sender<T, C: Codec<T>> = HostChannelId;
+}
+
+/// Host channel ID.
+#[derive(Debug)]
+pub struct HostChannelId(ChannelId);
+
+impl HostChannelId {
+    /// Channel ID for a closed channel.
+    pub const fn closed() -> Self {
+        Self(0)
+    }
+
+    pub(crate) fn unchecked(id: ChannelId) -> Self {
+        Self(id)
+    }
+}
+
+impl From<HostChannelId> for ChannelId {
+    fn from(channel_id: HostChannelId) -> Self {
+        channel_id.0
+    }
+}
+
+impl TryFromRaw<Self> for HostChannelId {
+    type Error = Infallible;
+
+    fn try_from_raw(raw: Self) -> Result<Self, Self::Error> {
+        Ok(raw)
+    }
+}
+
+impl IntoRaw<Self> for HostChannelId {
+    fn into_raw(self) -> Self {
+        self
+    }
 }
 
 /// Manager for workflow modules, workflows and channels.

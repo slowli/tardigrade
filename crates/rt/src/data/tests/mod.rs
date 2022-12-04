@@ -25,8 +25,7 @@ use crate::{
     workflow::{PersistedWorkflow, Workflow},
 };
 use tardigrade::{
-    abi::PollMessage, interface::Interface, spawn::ChannelsConfig, task::JoinError, ChannelId,
-    TimerDefinition,
+    abi::PollMessage, interface::Interface, task::JoinError, ChannelId, TimerDefinition,
 };
 
 fn extract_message(poll_res: PollMessage) -> Vec<u8> {
