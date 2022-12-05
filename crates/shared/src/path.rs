@@ -59,7 +59,7 @@ impl Inner<'static> {
 /// assert_eq!(map[&other_path_buf], 777);
 /// # Ok::<_, Box<dyn std::error::Error>>(())
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct HandlePath<'a> {
     inner: Inner<'a>,
 }
@@ -74,6 +74,12 @@ impl fmt::Display for HandlePath<'_> {
             }
         }
         Ok(())
+    }
+}
+
+impl fmt::Debug for HandlePath<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, formatter)
     }
 }
 
@@ -203,7 +209,7 @@ where
 /// Owned version of a [`HandlePath`].
 ///
 /// See [`HandlePath`] docs for an overview and examples of usage.
-#[derive(Debug, Clone, Eq)]
+#[derive(Clone, Eq)]
 pub struct HandlePathBuf {
     segments: Vec<String>,
 }
@@ -241,6 +247,12 @@ impl fmt::Display for HandlePathBuf {
             }
         }
         Ok(())
+    }
+}
+
+impl fmt::Debug for HandlePathBuf {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, formatter)
     }
 }
 

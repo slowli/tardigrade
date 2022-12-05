@@ -60,6 +60,8 @@
 //! # }).unwrap();
 //! ```
 
+// FIXME: split module into parts
+
 use async_trait::async_trait;
 use futures::future;
 use pin_project_lite::pin_project;
@@ -305,7 +307,7 @@ impl Future for RemoteWorkflow {
 
 /// Configuration for a single workflow channel during workflow instantiation.
 #[derive(Debug)]
-pub enum ChannelSpawnConfig<T> {
+enum ChannelSpawnConfig<T> {
     /// Create a new channel.
     New,
     /// Close the channel immediately on workflow creation.
