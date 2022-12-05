@@ -9,7 +9,7 @@ mod persistence;
 pub use self::persistence::PersistedWorkflow;
 
 use crate::{
-    data::WorkflowData,
+    data::{WakerOrTask, WorkflowData},
     engine::{DefineWorkflow, PersistWorkflow, RunWorkflow},
     manager::Services,
     receipt::{
@@ -18,7 +18,9 @@ use crate::{
     },
     utils::Message,
 };
-use tardigrade::{interface::HandleMap, task::TaskResult, ChannelId, TaskId};
+use tardigrade::{
+    interface::HandleMap, spawn::HostError, task::TaskResult, ChannelId, TaskId, WorkflowId,
+};
 
 #[derive(Debug, Default)]
 struct ExecutionOutput {
@@ -28,6 +30,12 @@ struct ExecutionOutput {
 
 pub(crate) type ChannelIds = HandleMap<ChannelId>;
 
+#[derive(Debug)]
+pub(crate) struct WorkflowAndChannelIds {
+    pub workflow_id: WorkflowId,
+    pub channel_ids: ChannelIds,
+}
+
 /// Workflow instance.
 #[derive(Debug)]
 pub(crate) struct Workflow<T> {
@@ -35,7 +43,7 @@ pub(crate) struct Workflow<T> {
     args: Option<Message>,
 }
 
-impl<T: RunWorkflow + PersistWorkflow> Workflow<T> {
+impl<T: RunWorkflow> Workflow<T> {
     pub(crate) fn new<D>(
         definition: &D,
         data: WorkflowData,
@@ -102,7 +110,9 @@ impl<T: RunWorkflow + PersistWorkflow> Workflow<T> {
                 waker_id,
                 wake_up_cause,
             } => {
-                WorkflowData::wake(&mut self.inner, *waker_id, wake_up_cause.clone())?;
+                WorkflowData::wake(&mut self.inner, wake_up_cause.clone(), |workflow| {
+                    workflow.wake_waker(*waker_id)
+                })?;
             }
             ExecutedFunction::TaskDrop { task_id } => {
                 self.inner.drop_task(*task_id)?;
@@ -178,12 +188,19 @@ impl<T: RunWorkflow + PersistWorkflow> Workflow<T> {
 
     fn wake_tasks(&mut self, receipt: &mut Receipt) -> Result<(), ExecutionError> {
         let wakers = self.inner.data_mut().take_wakers();
-        for (waker_id, wake_up_cause) in wakers {
-            let function = ExecutedFunction::Waker {
-                waker_id,
-                wake_up_cause,
-            };
-            self.execute(function, None, receipt)?;
+        for (waker_or_task, wake_up_cause) in wakers {
+            match waker_or_task {
+                WakerOrTask::Task(task_id) => {
+                    self.inner.data_mut().enqueue_task(task_id, &wake_up_cause);
+                }
+                WakerOrTask::Waker(waker_id) => {
+                    let function = ExecutedFunction::Waker {
+                        waker_id,
+                        wake_up_cause,
+                    };
+                    self.execute(function, None, receipt)?;
+                }
+            }
         }
         Ok(())
     }
@@ -224,17 +241,47 @@ impl<T: RunWorkflow + PersistWorkflow> Workflow<T> {
         self.inner.data_mut().take_services()
     }
 
+    pub(crate) fn notify_on_channel_init(&mut self, local_id: ChannelId, id: ChannelId) {
+        let cause = WakeUpCause::StubInitialized;
+        self.inner.data_mut().persisted.notify_on_channel_init(id);
+        WorkflowData::wake(&mut self.inner, cause, |workflow| {
+            workflow.initialize_channel(local_id, Ok(id));
+        });
+    }
+
+    pub(crate) fn notify_on_child_init(
+        &mut self,
+        local_id: WorkflowId,
+        result: Result<WorkflowAndChannelIds, HostError>,
+    ) {
+        let result = result.map(|ids| {
+            self.inner
+                .data_mut()
+                .persisted
+                .notify_on_child_init(ids.workflow_id, ids.channel_ids);
+            ids.workflow_id
+        });
+
+        let cause = WakeUpCause::StubInitialized;
+        WorkflowData::wake(&mut self.inner, cause, |workflow| {
+            workflow.initialize_child(local_id, result);
+        });
+    }
+
     #[tracing::instrument(level = "debug", skip(self), ret)]
     pub(crate) fn drain_messages(&mut self) -> HashMap<ChannelId, Vec<Message>> {
         self.inner.data_mut().drain_messages()
     }
+}
 
+impl<T: PersistWorkflow> Workflow<T> {
     /// Persists this workflow.
     ///
     /// # Panics
     ///
     /// Panics if the workflow is in such a state that it cannot be persisted right now.
     pub(crate) fn persist(&mut self) -> PersistedWorkflow {
+        self.inner.data_mut().move_task_queue_to_wakers();
         PersistedWorkflow::new(self).unwrap()
     }
 }

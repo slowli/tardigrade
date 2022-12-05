@@ -6,7 +6,6 @@ use std::{collections::HashMap, error, fmt};
 
 use super::{
     channel::{ChannelStates, ReceiverState, SenderState},
-    spawn::ChildWorkflowStubs,
     task::TaskQueue,
     time::Timers,
     PersistedWorkflowData, WorkflowData,
@@ -86,7 +85,6 @@ impl PersistedWorkflowData {
             timers: Timers::new(now),
             tasks: HashMap::new(),
             child_workflows: HashMap::new(),
-            child_workflow_stubs: ChildWorkflowStubs::default(),
             waker_queue: Vec::new(),
         }
     }

@@ -26,9 +26,18 @@ impl ChannelRecord {
             ChannelSide::WorkflowSender(id) => {
                 self.sender_workflow_ids.remove(&id);
             }
-            ChannelSide::Receiver => {
-                self.receiver_workflow_id = None;
-                self.is_closed = true;
+
+            ChannelSide::Receiver(id) => {
+                if self.receiver_workflow_id == Some(id) {
+                    self.receiver_workflow_id = None;
+                    self.is_closed = true;
+                }
+                return;
+            }
+            ChannelSide::HostReceiver => {
+                if self.receiver_workflow_id.is_none() {
+                    self.is_closed = true;
+                }
                 return;
             }
         }
@@ -91,7 +100,7 @@ impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
         let completion_receiver = if workflow.result().is_ready() {
             // Close all channels linked to the workflow.
             for (channel_id, _) in workflow.receivers() {
-                self.close_channel_side(channel_id, ChannelSide::Receiver)
+                self.close_channel_side(channel_id, ChannelSide::Receiver(id))
                     .await;
             }
             for (channel_id, _) in workflow.senders() {
@@ -124,9 +133,9 @@ impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
 
     #[tracing::instrument(skip(self, receipt))]
     pub async fn close_channels(&mut self, workflow_id: WorkflowId, receipt: &Receipt) {
-        for (channel_kind, channel_id) in receipt.closed_channel_ids() {
-            let side = match channel_kind {
-                ChannelHalf::Receiver => ChannelSide::Receiver,
+        for (channel_half, channel_id) in receipt.closed_channel_ids() {
+            let side = match channel_half {
+                ChannelHalf::Receiver => ChannelSide::Receiver(workflow_id),
                 ChannelHalf::Sender => ChannelSide::WorkflowSender(workflow_id),
             };
             self.close_channel_side(channel_id, side).await;

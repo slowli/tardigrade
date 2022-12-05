@@ -284,11 +284,11 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
             let (children, tracer) =
                 WorkflowSeed::<E::Definition>::extract_services(workflow.take_services());
             let messages = workflow.drain_messages();
-            let mut persisted = workflow.persist();
-            children.commit(transaction, &mut persisted).await;
+            children.commit(transaction, &mut workflow).await;
             let tracing_metadata = tracer.persist_metadata();
             let (spans, local_spans) = tracer.persist();
 
+            let persisted = workflow.persist();
             let mut persistence = StorageHelper::new(transaction);
             persistence.push_messages(messages).await;
             persistence

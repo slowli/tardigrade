@@ -11,7 +11,7 @@ use std::{
 };
 
 use super::{
-    helpers::{CurrentExecution, WakerPlacement, WorkflowPoll},
+    helpers::{CurrentExecution, WakerPlacement, Wakers, WorkflowPoll},
     PersistedWorkflowData, WorkflowData,
 };
 use crate::{
@@ -51,6 +51,11 @@ impl TaskQueue {
         let key = self.inner.pop_front()?;
         let value = self.causes.remove(&key).unwrap();
         Some((key, value))
+    }
+
+    fn drain(&mut self) -> impl Iterator<Item = (TaskId, WakeUpCause)> {
+        self.inner.clear();
+        mem::take(&mut self.causes).into_iter()
     }
 }
 
@@ -307,6 +312,10 @@ impl WorkflowData {
         self.task_queue.insert_task(task_id, &WakeUpCause::Spawned);
     }
 
+    pub(crate) fn enqueue_task(&mut self, id: TaskId, cause: &WakeUpCause) {
+        self.task_queue.insert_task(id, cause);
+    }
+
     pub(crate) fn take_next_task(&mut self) -> Option<(TaskId, WakeUpCause)> {
         loop {
             let (task, wake_up_cause) = self.task_queue.take_task()?;
@@ -318,5 +327,13 @@ impl WorkflowData {
 
     pub(crate) fn clear_task_queue(&mut self) {
         self.task_queue.clear();
+    }
+
+    pub(crate) fn move_task_queue_to_wakers(&mut self) {
+        for (task_id, cause) in self.task_queue.drain() {
+            self.persisted
+                .waker_queue
+                .push(Wakers::from_task(task_id, cause));
+        }
     }
 }

@@ -12,17 +12,17 @@ use std::{
 };
 
 use super::{
-    Clock, Host, HostChannelId, Services, Shared, StashWorkflow, WorkflowAndChannelIds,
-    WorkflowDefinitions, WorkflowHandle, WorkflowManager,
+    Clock, Host, HostChannelId, Services, Shared, StashWorkflow, WorkflowDefinitions,
+    WorkflowHandle, WorkflowManager,
 };
 use crate::{
     data::WorkflowData,
-    engine::{DefineWorkflow, WorkflowEngine},
+    engine::{DefineWorkflow, RunWorkflow, WorkflowEngine},
     storage::{
         ActiveWorkflowState, ChannelRecord, Storage, StorageTransaction, WorkflowRecord,
-        WorkflowWaker, WriteChannels,
+        WorkflowWaker,
     },
-    workflow::{ChannelIds, PersistedWorkflow, Workflow},
+    workflow::{ChannelIds, PersistedWorkflow, Workflow, WorkflowAndChannelIds},
 };
 use tardigrade::{
     interface::{Handle, Interface},
@@ -41,6 +41,29 @@ impl ChannelRecord {
             received_messages: 0,
         }
     }
+
+    fn owned_by_workflow(workflow_id: WorkflowId) -> Self {
+        Self {
+            receiver_workflow_id: Some(workflow_id),
+            sender_workflow_ids: HashSet::from_iter([workflow_id]),
+            has_external_sender: false,
+            is_closed: false,
+            received_messages: 0,
+        }
+    }
+}
+
+async fn commit_channel<T: StorageTransaction>(
+    executed_workflow_id: Option<WorkflowId>,
+    transaction: &mut T,
+) -> ChannelId {
+    let channel_id = transaction.allocate_channel_id().await;
+    let state = executed_workflow_id.map_or_else(
+        ChannelRecord::owned_by_host,
+        ChannelRecord::owned_by_workflow,
+    );
+    transaction.insert_channel(channel_id, state).await;
+    channel_id
 }
 
 #[derive(Debug)]
@@ -72,11 +95,13 @@ impl WorkflowStub {
     }
 }
 
+// FIXME rename to reflect new meaning
 #[derive(Debug)]
 pub(super) struct NewWorkflows<S> {
     executing_workflow_id: Option<WorkflowId>,
     shared: Shared<S>,
     new_workflows: HashMap<WorkflowId, WorkflowStub>,
+    new_channels: HashSet<ChannelId>,
 }
 
 impl<S: DefineWorkflow> NewWorkflows<S> {
@@ -85,16 +110,22 @@ impl<S: DefineWorkflow> NewWorkflows<S> {
             executing_workflow_id,
             shared,
             new_workflows: HashMap::new(),
+            new_channels: HashSet::new(),
         }
     }
 
-    pub async fn commit<T: StorageTransaction>(
-        self,
-        transaction: &mut T,
-        parent: &mut PersistedWorkflow,
-    ) {
+    pub async fn commit<T, E>(self, transaction: &mut T, parent: &mut Workflow<E>)
+    where
+        T: StorageTransaction,
+        E: RunWorkflow,
+    {
         let executed_workflow_id = self.executing_workflow_id;
-        // Create new channels and write outbound messages for them when appropriate.
+
+        for local_id in self.new_channels {
+            let channel_id = commit_channel(executed_workflow_id, transaction).await;
+            parent.notify_on_channel_init(local_id, channel_id);
+        }
+
         for (stub_id, mut child_stub) in self.new_workflows {
             let result = Self::commit_child(
                 executed_workflow_id,
@@ -102,15 +133,8 @@ impl<S: DefineWorkflow> NewWorkflows<S> {
                 transaction,
                 &mut child_stub,
             );
-            match result.await {
-                Ok(ids) => {
-                    parent.notify_on_child_init(stub_id, ids.workflow_id, ids.channel_ids);
-                }
-                Err(err) => {
-                    tracing::warn!(%err, "spawning workflow failed");
-                    parent.notify_on_child_spawn_error(stub_id, HostError::new(err.to_string()));
-                }
-            }
+            let result = result.await.map_err(|err| HostError::new(err.to_string()));
+            parent.notify_on_child_init(stub_id, result);
         }
     }
 
@@ -221,6 +245,11 @@ impl<S: DefineWorkflow> StashWorkflow for NewWorkflows<S> {
             },
         );
     }
+
+    #[tracing::instrument(skip(self))]
+    fn stash_channel(&mut self, stub_id: ChannelId) {
+        self.new_channels.insert(stub_id);
+    }
 }
 
 impl<E: WorkflowEngine, C, S> ManageInterfaces for WorkflowManager<E, C, S> {
@@ -250,9 +279,7 @@ where
 
     async fn create_channel(&self) -> (HostChannelId, HostChannelId) {
         let mut transaction = self.storage.transaction().await;
-        let channel_id = transaction.allocate_channel_id().await;
-        let state = ChannelRecord::owned_by_host();
-        transaction.insert_channel(channel_id, state).await;
+        let channel_id = commit_channel(None, &mut transaction).await;
         transaction.commit().await;
         (
             HostChannelId::unchecked(channel_id),

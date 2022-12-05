@@ -36,19 +36,12 @@ use crate::{
         ChannelRecord, ModuleRecord, ReadChannels, ReadModules, ReadWorkflows, Storage,
         StorageTransaction, WorkflowState, WriteChannels, WriteModules, WriteWorkflows,
     },
-    workflow::ChannelIds,
 };
 use tardigrade::{
     channel::SendError,
     workflow::{HandleFormat, IntoRaw, TryFromRaw},
     ChannelId, Codec, WorkflowId,
 };
-
-#[derive(Debug)]
-struct WorkflowAndChannelIds {
-    workflow_id: WorkflowId,
-    channel_ids: ChannelIds,
-}
 
 #[derive(Debug)]
 struct WorkflowDefinitions<D> {
@@ -94,7 +87,8 @@ struct Shared<D> {
 enum ChannelSide {
     HostSender,
     WorkflowSender(WorkflowId),
-    Receiver,
+    HostReceiver,
+    Receiver(WorkflowId),
 }
 
 /// Host [format](HandleFormat) for channel handles.
@@ -108,6 +102,7 @@ impl HandleFormat for Host {
     type Sender<T, C: Codec<T>> = HostChannelId;
 }
 
+// FIXME: use sender / receiver handles?
 /// Host channel ID.
 #[derive(Debug)]
 pub struct HostChannelId(ChannelId);
@@ -384,7 +379,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
             );
         }
         StorageHelper::new(&mut transaction)
-            .close_channel_side(channel_id, ChannelSide::Receiver)
+            .close_channel_side(channel_id, ChannelSide::HostReceiver)
             .await;
         transaction.commit().await;
     }

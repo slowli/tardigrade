@@ -28,12 +28,12 @@ pub use self::mock::{
 };
 pub use self::wasmtime::{Wasmtime, WasmtimeDefinition, WasmtimeInstance, WasmtimeModule};
 pub use crate::data::{
-    ChildActions, ChildStubActions, ReceiverActions, ReportedErrorKind, SenderActions, TaskActions,
-    TimerActions, WorkflowData, WorkflowPoll,
+    ChildActions, ReceiverActions, ReportedErrorKind, SenderActions, TaskActions, TimerActions,
+    WorkflowData, WorkflowPoll,
 };
 
 use crate::storage::ModuleRecord;
-use tardigrade::{interface::Interface, TaskId, WakerId};
+use tardigrade::{interface::Interface, spawn::HostError, ChannelId, TaskId, WakerId, WorkflowId};
 
 /// Workflow engine.
 #[async_trait]
@@ -116,6 +116,15 @@ pub trait RunWorkflow: AsWorkflowData {
     ///
     /// Returns an error if waking the waker fails, e.g., due to a WASM trap.
     fn wake_waker(&mut self, waker_id: WakerId) -> anyhow::Result<()>;
+
+    /// Notifies that the child workflow with the specified `local_id` has been initialized
+    /// with the specified `result`: either was allocated the ID wrapped in `Ok(_)`, or
+    /// an error has occurred during initialization.
+    fn initialize_child(&mut self, local_id: WorkflowId, result: Result<WorkflowId, HostError>);
+
+    /// Notifies that the channel with the specified `local_id` has been created
+    /// and was allocated the provided `id`.
+    fn initialize_channel(&mut self, local_id: ChannelId, result: Result<ChannelId, HostError>);
 }
 
 /// Creating wakers in workflows. This is used in [`WorkflowPoll`] to unwrap the contained
@@ -130,7 +139,7 @@ pub trait CreateWaker: AsWorkflowData {
 }
 
 /// Workflow persistence logic.
-pub trait PersistWorkflow {
+pub trait PersistWorkflow: AsWorkflowData {
     /// Persisted workflow data. This data should not include [`WorkflowData`] (it is persisted
     /// separately), but rather engine-specific data, such as the WASM memory.
     type Persisted: Serialize + DeserializeOwned;

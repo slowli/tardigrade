@@ -26,7 +26,6 @@ pub(super) enum WakerPlacement {
     Sender(ChannelId),
     Timer(TimerId),
     TaskCompletion(TaskId),
-    WorkflowInit(WorkflowId),
     WorkflowCompletion(WorkflowId),
 }
 
@@ -64,27 +63,56 @@ impl<T> WorkflowPoll<T> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum WakerOrTask {
+    Waker(WakerId),
+    Task(TaskId),
+}
+
 #[must_use = "Wakers need to be actually woken up"]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Wakers {
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     ids: HashSet<WakerId>,
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    task_ids: HashSet<TaskId>,
     cause: WakeUpCause,
 }
 
 impl Wakers {
     pub fn new(ids: HashSet<WakerId>, cause: WakeUpCause) -> Self {
-        Self { ids, cause }
+        Self {
+            ids,
+            task_ids: HashSet::new(),
+            cause,
+        }
+    }
+
+    pub fn from_task(task_id: TaskId, cause: WakeUpCause) -> Self {
+        Self {
+            ids: HashSet::new(),
+            task_ids: HashSet::from_iter([task_id]),
+            cause,
+        }
     }
 
     pub fn cause(&self) -> &WakeUpCause {
         &self.cause
     }
 
-    pub fn into_iter(self) -> impl Iterator<Item = (WakerId, WakeUpCause)> {
-        let cause = self.cause;
-        self.ids
+    pub fn into_iter(self) -> impl Iterator<Item = (WakerOrTask, WakeUpCause)> {
+        let cause = self.cause.clone();
+        let wakers = self
+            .ids
             .into_iter()
-            .map(move |waker_id| (waker_id, cause.clone()))
+            .map(move |waker_id| (WakerOrTask::Waker(waker_id), cause.clone()));
+
+        let cause = self.cause;
+        let tasks = self
+            .task_ids
+            .into_iter()
+            .map(move |task_id| (WakerOrTask::Task(task_id), cause.clone()));
+        tasks.chain(wakers)
     }
 }
 
@@ -310,9 +338,6 @@ impl WorkflowData {
             WakerPlacement::TaskCompletion(task) => {
                 persisted.tasks.get_mut(task).unwrap().insert_waker(waker);
             }
-            WakerPlacement::WorkflowInit(stub) => {
-                persisted.child_workflow_stubs.insert_waker(*stub, waker);
-            }
             WakerPlacement::WorkflowCompletion(workflow) => {
                 persisted
                     .child_workflows
@@ -337,19 +362,19 @@ impl WorkflowData {
         self.persisted.timers.remove_wakers(wakers);
     }
 
-    pub(crate) fn take_wakers(&mut self) -> impl Iterator<Item = (WakerId, WakeUpCause)> {
+    pub(crate) fn take_wakers(&mut self) -> impl Iterator<Item = (WakerOrTask, WakeUpCause)> {
         let wakers = mem::take(&mut self.persisted.waker_queue);
         wakers.into_iter().flat_map(Wakers::into_iter)
     }
 
-    pub(crate) fn wake<T: RunWorkflow>(
-        store: &mut T,
-        waker_id: WakerId,
+    pub(crate) fn wake<T: RunWorkflow, R>(
+        workflow: &mut T,
         cause: WakeUpCause,
-    ) -> anyhow::Result<()> {
-        store.data_mut().current_wakeup_cause = Some(cause);
-        let result = store.wake_waker(waker_id);
-        store.data_mut().current_wakeup_cause = None;
+        action: impl FnOnce(&mut T) -> R,
+    ) -> R {
+        workflow.data_mut().current_wakeup_cause = Some(cause);
+        let result = action(workflow);
+        workflow.data_mut().current_wakeup_cause = None;
         result
     }
 }

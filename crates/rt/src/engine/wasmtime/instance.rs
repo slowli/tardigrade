@@ -20,7 +20,7 @@ use crate::{
     engine::{AsWorkflowData, PersistWorkflow, RunWorkflow},
     workflow::ChannelIds,
 };
-use tardigrade::{ChannelId, TaskId, WakerId, WorkflowId};
+use tardigrade::{spawn::HostError, ChannelId, TaskId, WakerId, WorkflowId};
 
 #[derive(Debug)]
 pub(super) struct InstanceData {
@@ -121,6 +121,21 @@ impl RunWorkflow for WasmtimeInstance {
     fn wake_waker(&mut self, waker_id: WakerId) -> anyhow::Result<()> {
         let exports = self.store.data().exports();
         exports.wake_waker(self.store.as_context_mut(), waker_id)
+    }
+
+    fn initialize_child(&mut self, local_id: WorkflowId, result: Result<WorkflowId, HostError>) {
+        let exports = self.store.data().exports();
+        if let Err(err) = exports.initialize_child(self.store.as_context_mut(), local_id, result) {
+            tracing::warn!(%err, "failed initializing child");
+        }
+    }
+
+    fn initialize_channel(&mut self, local_id: ChannelId, result: Result<ChannelId, HostError>) {
+        let exports = self.store.data().exports();
+        if let Err(err) = exports.initialize_channel(self.store.as_context_mut(), local_id, result)
+        {
+            tracing::warn!(%err, "failed initializing channel");
+        }
     }
 }
 
@@ -289,7 +304,6 @@ pub(super) enum HostResource {
     #[serde(skip)] // FIXME: why is this allowed?
     ChannelHandles(SharedChannelHandles),
     Workflow(WorkflowId),
-    WorkflowStub(WorkflowId),
 }
 
 impl HostResource {
@@ -338,16 +352,6 @@ impl HostResource {
             Ok(*id)
         } else {
             let err = anyhow!("unexpected reference type: expected workflow handle, got {self:?}");
-            Err(err)
-        }
-    }
-
-    pub(crate) fn as_workflow_stub(&self) -> anyhow::Result<WorkflowId> {
-        if let Self::WorkflowStub(id) = self {
-            Ok(*id)
-        } else {
-            let err =
-                anyhow!("unexpected reference type: expected workflow stub handle, got {self:?}");
             Err(err)
         }
     }

@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::{manager::Host, workflow::ChannelIds};
-use tardigrade::{spawn::ManageInterfaces, WorkflowId};
+use tardigrade::{spawn::ManageInterfaces, ChannelId, WorkflowId};
 
 /// Wall clock.
 ///
@@ -63,6 +63,8 @@ pub(crate) trait StashWorkflow: Any + Send + Sync + ManageInterfaces<Fmt = Host>
         args: Vec<u8>,
         channels: ChannelIds,
     );
+
+    fn stash_channel(&mut self, stub_id: ChannelId);
 }
 
 impl dyn StashWorkflow {

@@ -5,7 +5,7 @@ use futures::{future, FutureExt, Stream, StreamExt};
 use std::{collections::HashSet, convert::Infallible, error, fmt, marker::PhantomData, ops};
 
 use crate::{
-    manager::{AsManager, WorkflowAndChannelIds},
+    manager::AsManager,
     receipt::ExecutionError,
     storage::{
         ActiveWorkflowState, ChannelRecord, CompletedWorkflowState, ErroneousMessageRef,
@@ -13,7 +13,7 @@ use crate::{
         WriteChannels,
     },
     utils::RefStream,
-    workflow::ChannelIds,
+    workflow::{ChannelIds, WorkflowAndChannelIds},
     PersistedWorkflow,
 };
 use tardigrade::{

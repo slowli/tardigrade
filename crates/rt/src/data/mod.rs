@@ -15,20 +15,21 @@ mod time;
 #[cfg(test)]
 pub(crate) mod tests;
 
-pub(crate) use self::{channel::ConsumeError, helpers::Wakers, persistence::PersistError};
+pub(crate) use self::{
+    channel::ConsumeError,
+    helpers::{WakerOrTask, Wakers},
+    persistence::PersistError,
+};
 pub use self::{
     channel::{Channels, ReceiverActions, ReceiverState, SenderActions, SenderState},
     helpers::WorkflowPoll,
-    spawn::{ChildActions, ChildStubActions, ChildWorkflow},
+    spawn::{ChildActions, ChildWorkflow},
     task::{TaskActions, TaskState},
     time::{TimerActions, TimerState},
 };
 
 use self::{
-    channel::ChannelStates,
-    helpers::CurrentExecution,
-    spawn::{ChildWorkflowState, ChildWorkflowStubs},
-    task::TaskQueue,
+    channel::ChannelStates, helpers::CurrentExecution, spawn::ChildWorkflowState, task::TaskQueue,
     time::Timers,
 };
 use crate::{
@@ -57,7 +58,6 @@ pub enum ReportedErrorKind {
 pub(crate) struct PersistedWorkflowData {
     pub timers: Timers,
     pub tasks: HashMap<TaskId, TaskState>,
-    child_workflow_stubs: ChildWorkflowStubs,
     child_workflows: HashMap<WorkflowId, ChildWorkflowState>,
     channels: ChannelStates,
     pub waker_queue: Vec<Wakers>,
