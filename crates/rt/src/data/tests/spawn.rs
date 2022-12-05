@@ -6,6 +6,7 @@ use super::*;
 use crate::{
     engine::DefineWorkflow,
     manager::{Host, StashWorkflow},
+    workflow::WorkflowAndChannelIds,
 };
 use tardigrade::{
     interface::{Handle, Interface, ReceiverAt, SenderAt},
@@ -40,25 +41,26 @@ impl MockWorkflowManager {
         }
     }
 
-    fn init_single_child(
-        self,
-        poll_fns: MockAnswers,
-        mut parent: PersistedWorkflow,
-        clock: MockScheduler,
-    ) -> Workflow<MockInstance> {
+    fn init_single_child(self, parent: &mut Workflow<MockInstance>) {
         let mut calls = self.calls;
         assert_eq!(calls.len(), 1);
         let call = calls.pop().unwrap();
 
-        if call.args == b"err_input" {
-            parent.notify_on_child_spawn_error(call.stub_id, HostError::new("invalid input!"));
+        let result = if call.args == b"err_input" {
+            Err(HostError::new("invalid input!"))
         } else {
-            let channel_ids = mock_channel_ids(&self.interface, &mut 1);
-            let child_id = 1;
-            parent.notify_on_child_init(call.stub_id, child_id, channel_ids);
-        }
+            let channel_ids = mock_channel_ids(&self.interface, &mut 100);
+            for id_handle in channel_ids.values() {
+                let id = *id_handle.as_ref().factor();
+                parent.notify_on_channel_init(id, id);
+            }
 
-        restore_workflow(poll_fns, parent, clock)
+            Ok(WorkflowAndChannelIds {
+                workflow_id: 1,
+                channel_ids,
+            })
+        };
+        parent.notify_on_child_init(call.stub_id, result);
     }
 }
 
@@ -86,6 +88,10 @@ impl StashWorkflow for MockWorkflowManager {
         assert_eq!(channels.len(), 2);
         self.calls.push(NewWorkflowCall { stub_id, args });
     }
+
+    fn stash_channel(&mut self, _stub_id: ChannelId) {
+        // Do nothing
+    }
 }
 
 fn create_workflow_with_manager(poll_fns: MockAnswers) -> Workflow<MockInstance> {
@@ -111,32 +117,20 @@ fn spawn_child_workflow(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     assert!(interface.handle(SenderAt("traces")).is_ok());
 
     // Emulate creating a workflow.
-    let stub_id = ctx.data_mut().create_workflow_stub(
+    ctx.data_mut().create_workflow_stub(
+        0,
         "test:latest",
         b"child_input".to_vec(),
-        &configure_handles(),
+        configure_handles(),
     )?;
-    let mut stub = ctx.data_mut().child_stub(stub_id);
-    let poll_result = stub.poll_init().into_inner(ctx)?;
-    assert!(poll_result.is_pending());
-
     Ok(Poll::Pending)
 }
 
 fn get_child_workflow_channel(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
-    let child_id = ctx.data_mut().child_stub(0).poll_init().into_inner(ctx)?;
-    let child_id = match child_id {
-        Poll::Ready(Ok(id)) => id,
-        other => panic!("unexpected poll result: {other:?}"),
-    };
-
+    let child_id = 1;
     // Emulate getting a receiver for the workflow.
-    let traces_id = ctx
-        .data_mut()
-        .acquire_receiver(Some(child_id), "traces".into())
-        .unwrap()
-        .unwrap();
-
+    let child = ctx.data().persisted.child_workflow(child_id).unwrap();
+    let traces_id = child.channels().channel_id("traces").unwrap();
     // ...then polling this channel
     let mut traces = ctx.data_mut().receiver(traces_id);
     let poll_res = traces.poll_next().into_inner(ctx)?;
@@ -153,21 +147,22 @@ fn configure_handles() -> ChannelIds {
     config
 }
 
-fn init_child(workflow: &mut Workflow<MockInstance>, poll_fns: MockAnswers) {
+fn init_child(workflow: &mut Workflow<MockInstance>) {
     let manager = workflow.take_services().workflows.unwrap();
     let manager = manager.downcast::<MockWorkflowManager>();
-    let persisted = workflow.persist();
-    *workflow = manager.init_single_child(poll_fns, persisted, MockScheduler::default());
+    manager.init_single_child(workflow);
 }
 
 #[test]
 fn spawning_child_workflow() {
-    let poll_fns = MockAnswers::from_value(spawn_child_workflow);
-    let mut workflow = create_workflow_with_manager(poll_fns);
-
-    let poll_fns = MockAnswers::from_value(get_child_workflow_channel);
-    init_child(&mut workflow, poll_fns);
-    workflow.tick().unwrap();
+    let (poll_fns, mut poll_fns_sx) = MockAnswers::channel();
+    let mut workflow = poll_fns_sx
+        .send(spawn_child_workflow)
+        .scope(|| create_workflow_with_manager(poll_fns));
+    init_child(&mut workflow);
+    poll_fns_sx
+        .send(get_child_workflow_channel)
+        .scope(|| workflow.tick().unwrap());
 
     let mut children: Vec<_> = workflow.data().persisted.child_workflows().collect();
     assert_eq!(children.len(), 1);
@@ -187,7 +182,7 @@ fn spawning_child_workflow_with_unknown_interface() {
         let args = b"err_input".to_vec();
         let err = ctx
             .data_mut()
-            .create_workflow_stub(bogus_id, args, &configure_handles())
+            .create_workflow_stub(0, bogus_id, args, configure_handles())
             .unwrap_err()
             .to_string();
 
@@ -211,7 +206,7 @@ fn spawning_child_workflow_with_extra_channel() {
 
         let err = ctx
             .data_mut()
-            .create_workflow_stub(id, args, &handles)
+            .create_workflow_stub(0, id, args, handles)
             .unwrap_err()
             .to_string();
 
@@ -230,28 +225,14 @@ fn spawning_child_workflow_with_host_error() {
         let id = "test:latest";
         let args = b"err_input".to_vec();
         ctx.data_mut()
-            .create_workflow_stub(id, args, &configure_handles())?;
-
-        Ok(Poll::Pending)
-    };
-    let poll_child_stub: MockPollFn = |ctx| {
-        let poll_res = ctx.data_mut().child_stub(0).poll_init().into_inner(ctx)?;
-        let err = match poll_res {
-            Poll::Ready(Err(err)) => err,
-            other => panic!("unexpected poll result: {other:?}"),
-        };
-        let err = err.to_string();
-        assert!(err.contains("invalid input"), "{err}");
+            .create_workflow_stub(0, id, args, configure_handles())?;
 
         Ok(Poll::Pending)
     };
 
-    let poll_fns = MockAnswers::from_value(spawn_with_host_error);
+    let poll_fns = MockAnswers::from_values([spawn_with_host_error]);
     let mut workflow = create_workflow_with_manager(poll_fns);
-
-    let poll_fns = MockAnswers::from_value(poll_child_stub);
-    init_child(&mut workflow, poll_fns);
-    workflow.tick().unwrap();
+    init_child(&mut workflow);
     assert!(workflow.data().persisted.child_workflows().next().is_none());
 }
 
@@ -284,8 +265,12 @@ fn consuming_message_from_child_workflow() {
         .send(spawn_child_workflow)
         .scope(|| create_workflow_with_manager(poll_fns));
 
-    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
-    init_child(&mut workflow, poll_fns);
+    init_child(&mut workflow);
+    workflow.data_mut().current_wakeup_cause = Some(WakeUpCause::StubInitialized);
+    workflow.data_mut().task(0).schedule_wakeup();
+    workflow.data_mut().current_wakeup_cause = None;
+    // ^ Emulates wakeup notification for workflow stub
+
     poll_fn_sx.send(get_child_workflow_channel).scope(|| {
         workflow.tick().unwrap(); // makes the workflow listen to the `traces` child channel
     });

@@ -16,6 +16,7 @@ use crate::{
         WakeUpCause,
     },
     storage::LocalStorage,
+    workflow::WorkflowAndChannelIds,
 };
 use tardigrade::{
     interface::{HandlePath, ReceiverAt, SenderAt, WithIndexing},

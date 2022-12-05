@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use std::{
     collections::HashMap,
-    iter,
+    iter, mem,
     sync::{Arc, Mutex},
     task::Poll,
 };
@@ -17,8 +17,13 @@ use crate::{
         WorkflowModule,
     },
     storage::ModuleRecord,
+    workflow::ChannelIds,
 };
-use tardigrade::{interface::Interface, TaskId, WakerId};
+use tardigrade::{
+    interface::{Handle, Interface},
+    spawn::HostError,
+    ChannelId, TaskId, WakerId, WorkflowId,
+};
 
 const INTERFACE: &[u8] = br#"{
     "v": 0,
@@ -117,14 +122,19 @@ impl DefineWorkflow for MockDefinition {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChildStub {
+    local_ids: ChannelIds,
+    owning_task_id: TaskId,
+}
+
 /// Mock workflow instance.
 #[derive(Debug)]
 pub struct MockInstance {
     inner: WorkflowData,
     poll_fns: SharedAnswers,
     executing_task_id: Option<TaskId>,
-    wakers: HashMap<WakerId, TaskId>,
-    next_waker_id: WakerId,
+    persisted: PersistedMockInstance,
 }
 
 impl MockInstance {
@@ -135,9 +145,54 @@ impl MockInstance {
             inner: data,
             poll_fns,
             executing_task_id: None,
-            wakers: HashMap::new(),
-            next_waker_id: 0,
+            persisted: PersistedMockInstance::new(),
         }
+    }
+
+    /// Prepares new channels for a child workflow.
+    ///
+    /// # Errors
+    ///
+    /// Propagates error that might occur during channel creation.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn create_channels_for_stub(
+        &mut self,
+        stub_id: WorkflowId,
+        local_ids: ChannelIds,
+    ) -> anyhow::Result<()> {
+        assert!(!self.persisted.child_stubs.contains_key(&stub_id));
+
+        for id_handle in local_ids.values() {
+            let local_id = id_handle.as_ref().factor();
+            self.inner.create_channel_stub(*local_id)?;
+        }
+        self.persisted.child_stubs.insert(
+            stub_id,
+            ChildStub {
+                local_ids,
+                owning_task_id: 0,
+            },
+        );
+        Ok(())
+    }
+
+    /// Takes [previously created](Self::create_channels_for_stub()) channels so that
+    /// can be used (perhaps, with closed / existing channels) to spawn a child workflow.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn take_stub_channels(&mut self, stub_id: WorkflowId) -> ChannelIds {
+        let stub = self.persisted.child_stubs.get_mut(&stub_id).unwrap();
+        let local_ids = mem::take(&mut stub.local_ids);
+        let mapping = &self.persisted.channel_mapping;
+        let ids = local_ids.into_iter().map(|(path, id_handle)| {
+            let mapped_id = id_handle.map(|local_id| mapping[&local_id]);
+            // Emulate dropping the channels moved to the child workflows.
+            let _wakers = match mapped_id {
+                Handle::Receiver(id) => self.inner.receiver(id).drop(),
+                Handle::Sender(id) => self.inner.sender(id).drop(),
+            };
+            (path, mapped_id)
+        });
+        ids.collect()
     }
 }
 
@@ -153,9 +208,10 @@ impl AsWorkflowData for MockInstance {
 
 impl CreateWaker for MockInstance {
     fn create_waker(&mut self) -> anyhow::Result<WakerId> {
-        let waker_id = self.next_waker_id;
-        self.next_waker_id += 1;
-        self.wakers
+        let waker_id = self.persisted.next_waker_id;
+        self.persisted.next_waker_id += 1;
+        self.persisted
+            .wakers
             .insert(waker_id, self.executing_task_id.unwrap());
         Ok(waker_id)
     }
@@ -179,31 +235,57 @@ impl RunWorkflow for MockInstance {
     }
 
     fn wake_waker(&mut self, waker_id: WakerId) -> anyhow::Result<()> {
-        let owning_task_id = self.wakers.remove(&waker_id).unwrap();
+        let owning_task_id = self.persisted.wakers.remove(&waker_id).unwrap();
         self.inner.task(owning_task_id).schedule_wakeup();
         Ok(())
     }
+
+    fn initialize_child(&mut self, local_id: WorkflowId, _result: Result<WorkflowId, HostError>) {
+        if let Some(stub) = self.persisted.child_stubs.get_mut(&local_id) {
+            self.inner.task(stub.owning_task_id).schedule_wakeup();
+        } else {
+            // Assume that the manually created stub was created from the main (0th) task.
+            self.inner.task(0).schedule_wakeup();
+        }
+    }
+
+    fn initialize_channel(&mut self, local_id: ChannelId, result: Result<ChannelId, HostError>) {
+        let id = result.unwrap();
+        self.persisted.channel_mapping.insert(local_id, id);
+        // Assume that the manually created stub was created from the main (0th) task.
+        self.inner.task(0).schedule_wakeup();
+    }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedMockInstance {
     wakers: HashMap<WakerId, TaskId>,
     next_waker_id: WakerId,
+    child_stubs: HashMap<WorkflowId, ChildStub>,
+    /// Mapping from local to global channel IDs.
+    channel_mapping: HashMap<ChannelId, ChannelId>,
+}
+
+impl PersistedMockInstance {
+    fn new() -> Self {
+        Self {
+            wakers: HashMap::new(),
+            next_waker_id: 0,
+            child_stubs: HashMap::new(),
+            channel_mapping: HashMap::new(),
+        }
+    }
 }
 
 impl PersistWorkflow for MockInstance {
     type Persisted = PersistedMockInstance;
 
     fn persist(&mut self) -> Self::Persisted {
-        PersistedMockInstance {
-            wakers: self.wakers.clone(),
-            next_waker_id: self.next_waker_id,
-        }
+        self.persisted.clone()
     }
 
     fn restore(&mut self, persisted: Self::Persisted) -> anyhow::Result<()> {
-        self.wakers = persisted.wakers;
-        self.next_waker_id = persisted.next_waker_id;
+        self.persisted = persisted;
         Ok(())
     }
 }
