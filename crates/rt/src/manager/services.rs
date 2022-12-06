@@ -56,13 +56,19 @@ pub type TimerFuture = Pin<Box<dyn Future<Output = DateTime<Utc>> + Send>>;
 /// The returned handle is stored in a `Workflow` and, before it's persisted, exchanged for
 /// a `WorkflowId`.
 pub(crate) trait StashStub: Any + Send + Sync + ManageInterfaces<Fmt = Host> {
+    /// Stashes a workflow stub with the specified params.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the shape of `channels` does not correspond to the interface
+    /// defined in `definition_id`.
     fn stash_workflow(
         &mut self,
         stub_id: WorkflowId,
-        id: &str,
+        definition_id: &str,
         args: Vec<u8>,
         channels: ChannelIds,
-    );
+    ) -> anyhow::Result<()>;
 
     fn stash_channel(&mut self, stub_id: ChannelId);
 }

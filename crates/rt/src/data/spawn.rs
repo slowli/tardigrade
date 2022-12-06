@@ -217,12 +217,12 @@ impl WorkflowData {
     ) -> anyhow::Result<()> {
         self.validate_handles(definition_id, &channels)?;
 
-        let workflows = self
+        let stubs = self
             .services_mut()
             .stubs
             .as_deref_mut()
             .ok_or_else(|| anyhow!("no capability to spawn workflows"))?;
-        workflows.stash_workflow(stub_id, definition_id, args, channels);
+        stubs.stash_workflow(stub_id, definition_id, args, channels)?;
 
         self.current_execution()
             .push_stub_event(StubId::Workflow(stub_id), StubEventKind::Created);

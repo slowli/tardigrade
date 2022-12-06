@@ -159,7 +159,7 @@ pub trait ManageWorkflows: ManageInterfaces {
     {
         let provided_interface = self
             .interface(definition_id)
-            .ok_or(AccessErrorKind::Unknown)?;
+            .ok_or(AccessErrorKind::Missing)?;
         W::interface().check_compatibility(&provided_interface)?;
 
         Ok(WorkflowBuilder {

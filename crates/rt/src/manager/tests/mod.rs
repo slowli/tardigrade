@@ -19,8 +19,9 @@ use crate::{
     workflow::WorkflowAndChannelIds,
 };
 use tardigrade::{
-    interface::{HandlePath, ReceiverAt, SenderAt, WithIndexing},
-    spawn::ManageWorkflows,
+    interface::{Handle, HandlePath, ReceiverAt, SenderAt, WithIndexing},
+    spawn::{ManageChannels, ManageWorkflows},
+    workflow::UntypedHandles,
 };
 
 const DEFINITION_ID: &str = "test@latest::TestWorkflow";
@@ -592,4 +593,105 @@ async fn workflow_not_consuming_inbound_message() {
     workflow.update().await.unwrap();
     let events: Vec<_> = workflow.persisted().pending_wakeup_causes().collect();
     assert!(events.is_empty(), "{events:?}");
+}
+
+#[async_std::test]
+async fn handles_shape_mismatch_error() {
+    let (poll_fns, _) = Answers::channel();
+    let manager = create_test_manager(poll_fns, ()).await;
+
+    let builder = manager.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let err = builder
+        .build(b"test_input".to_vec(), UntypedHandles::<Host>::new())
+        .await
+        .unwrap_err();
+    let err = format!("{err:#}");
+    assert!(err.contains("invalid shape of provided handles"), "{err}");
+    assert!(err.contains("missing"), "{err}");
+
+    let mut handles = UntypedHandles::<Host>::new();
+    handles.insert("orders".into(), Handle::Receiver(HostChannelId::closed()));
+    handles.insert("events".into(), Handle::Sender(HostChannelId::closed()));
+    handles.insert("traces".into(), Handle::Receiver(HostChannelId::closed()));
+    let builder = manager.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let err = builder
+        .build(b"test_input".to_vec(), handles)
+        .await
+        .unwrap_err();
+    let err = format!("{err:#}");
+    assert!(err.contains("invalid shape of provided handles"), "{err}");
+    assert!(err.contains("channel sender `traces`"), "{err}");
+}
+
+#[async_std::test]
+async fn non_owned_channel_error() {
+    let (poll_fns, _) = Answers::channel();
+    let manager = create_test_manager(poll_fns, ()).await;
+    let workflow = create_test_workflow(&manager).await;
+
+    let orders_id = channel_id(workflow.ids(), "orders");
+    let traces_id = channel_id(workflow.ids(), "traces");
+    let mut handles = UntypedHandles::<Host>::new();
+    handles.insert(
+        "orders".into(),
+        Handle::Receiver(HostChannelId::unchecked(orders_id)),
+    );
+    handles.insert(
+        "events".into(),
+        Handle::Sender(HostChannelId::unchecked(traces_id)),
+    );
+    handles.insert(
+        "traces".into(),
+        Handle::Sender(HostChannelId::unchecked(traces_id)),
+    );
+
+    let builder = manager.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let err = builder
+        .build(b"test_input".to_vec(), handles)
+        .await
+        .unwrap_err();
+    let err = err.to_string();
+    assert!(err.contains("receiver for channel"), "{err}");
+    assert!(
+        err.contains("at `orders` is not owned by requester"),
+        "{err}"
+    );
+
+    let (_, rx_handle) = manager.create_channel().await;
+    let mut handles = UntypedHandles::<Host>::new();
+    handles.insert("orders".into(), Handle::Receiver(rx_handle));
+    handles.insert(
+        "events".into(),
+        Handle::Sender(HostChannelId::unchecked(traces_id)),
+    );
+    handles.insert(
+        "traces".into(),
+        Handle::Sender(HostChannelId::unchecked(traces_id)),
+    );
+    let builder = manager.new_workflow::<()>(DEFINITION_ID).unwrap();
+    builder
+        .build(b"test_input".to_vec(), handles)
+        .await
+        .unwrap();
+
+    manager.close_host_sender(traces_id).await;
+    let mut handles = UntypedHandles::<Host>::new();
+    handles.insert("orders".into(), Handle::Receiver(HostChannelId::closed()));
+    handles.insert("events".into(), Handle::Sender(HostChannelId::closed()));
+    handles.insert(
+        "traces".into(),
+        Handle::Sender(HostChannelId::unchecked(traces_id)),
+    );
+
+    let builder = manager.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let err = builder
+        .build(b"test_input".to_vec(), handles)
+        .await
+        .unwrap_err();
+    let err = err.to_string();
+    assert!(err.contains("sender for channel"), "{err}");
+    assert!(
+        err.contains("at `traces` is not owned by requester"),
+        "{err}"
+    );
 }

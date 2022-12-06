@@ -260,7 +260,7 @@ impl IntoWasm for Result<(), AccessErrorKind> {
     fn into_wasm<A: AllocateBytes>(self, alloc: &mut A) -> Result<Self::Abi, A::Error> {
         Ok(match self {
             Ok(()) => 0,
-            Err(AccessErrorKind::Unknown) => -1,
+            Err(AccessErrorKind::Missing) => -1,
             Err(AccessErrorKind::Custom(err)) => {
                 let message = err.to_string();
                 let (ptr, len) = alloc.copy_to_wasm(message.as_bytes())?;
@@ -274,7 +274,7 @@ impl IntoWasm for Result<(), AccessErrorKind> {
     unsafe fn from_abi_in_wasm(abi: i64) -> Self {
         Err(match abi {
             0 => return Ok(()),
-            -1 => AccessErrorKind::Unknown,
+            -1 => AccessErrorKind::Missing,
             _ => {
                 let ptr = (abi >> 32) as *mut u8;
                 let len = (abi & 0xffff_ffff) as usize;

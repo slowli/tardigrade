@@ -170,7 +170,7 @@ impl fmt::Display for ChannelHalf {
 #[non_exhaustive]
 pub enum AccessErrorKind {
     /// Channel was not registered in the workflow interface.
-    Unknown,
+    Missing,
     /// Mismatch between expected anc actual kind of a handle.
     KindMismatch,
     /// Custom error.
@@ -180,9 +180,9 @@ pub enum AccessErrorKind {
 impl fmt::Display for AccessErrorKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Unknown => formatter.write_str("not registered in the workflow interface"),
+            Self::Missing => formatter.write_str("missing handle"),
             Self::KindMismatch => {
-                formatter.write_str("mismatch between expected anc actual kind of a handle")
+                formatter.write_str("mismatch between expected and actual kind of a handle")
             }
             Self::Custom(err) => fmt::Display::fmt(err, formatter),
         }
@@ -224,7 +224,7 @@ impl fmt::Display for InterfaceLocation {
         match self {
             Self::Channel { kind, path } => {
                 if let Some(kind) = kind {
-                    write!(formatter, "{kind} channel `{path}`")
+                    write!(formatter, "channel {kind} `{path}`")
                 } else {
                     write!(formatter, "channel `{path}`")
                 }
@@ -271,13 +271,9 @@ pub struct AccessError {
 impl fmt::Display for AccessError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(location) = &self.location {
-            write!(
-                formatter,
-                "cannot take handle for {}: {}",
-                location, self.kind
-            )
+            write!(formatter, "[at {location}] {}", self.kind)
         } else {
-            write!(formatter, "cannot take handle: {}", self.kind)
+            write!(formatter, "{}", self.kind)
         }
     }
 }
@@ -349,7 +345,7 @@ pub trait HandleMapKey: Into<InterfaceLocation> + Copy + fmt::Debug {
     fn get<Rx, Sx>(self, map: &HandleMap<Rx, Sx>) -> Result<&Self::Output<Rx, Sx>, AccessError> {
         let result = self
             .with_path(|path| map.get(&path))
-            .ok_or(AccessErrorKind::Unknown);
+            .ok_or(AccessErrorKind::Missing);
         result
             .and_then(|handle| Self::from_handle_ref(handle).ok_or(AccessErrorKind::KindMismatch))
             .map_err(|err| err.with_location(self))
@@ -367,7 +363,7 @@ pub trait HandleMapKey: Into<InterfaceLocation> + Copy + fmt::Debug {
     ) -> Result<&mut Self::Output<Rx, Sx>, AccessError> {
         let result = self
             .with_path(|path| map.get_mut(&path))
-            .ok_or(AccessErrorKind::Unknown);
+            .ok_or(AccessErrorKind::Missing);
         result
             .and_then(|handle| Self::from_handle_mut(handle).ok_or(AccessErrorKind::KindMismatch))
             .map_err(|err| err.with_location(self))
@@ -667,6 +663,36 @@ impl Interface {
             }
             _ => Err(AccessErrorKind::KindMismatch),
         }
+    }
+
+    /// Checks that the shape of the provided `handles` corresponds to this interface.
+    /// If the `exact` flag is set, the shape match must be exact; otherwise, there might be
+    /// extra handles not specified by this interface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on shape mismatch.
+    pub fn check_shape<Rx, Sx>(
+        &self,
+        handles: &HandleMap<Rx, Sx>,
+        exact: bool,
+    ) -> Result<(), AccessError> {
+        self.handles
+            .iter()
+            .try_fold((), |(), (path, spec)| match spec {
+                Handle::Receiver(_) => ReceiverAt(path).get(handles).map(drop),
+                Handle::Sender(_) => SenderAt(path).get(handles).map(drop),
+            })?;
+
+        if exact {
+            for path in handles.keys() {
+                if !self.handles.contains_key(path) {
+                    let err = AccessErrorKind::custom("extra handle");
+                    return Err(err.with_location(path));
+                }
+            }
+        }
+        Ok(())
     }
 }
 

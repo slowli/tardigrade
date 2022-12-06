@@ -1,12 +1,13 @@
 //! Transactions for `WorkflowManager`.
 
-use anyhow::anyhow;
+use anyhow::{anyhow, ensure, Context as _};
 use async_trait::async_trait;
 use tracing_tunnel::PersistedSpans;
 
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
+    fmt::Write as _,
     mem,
     sync::Arc,
 };
@@ -26,7 +27,7 @@ use crate::{
     workflow::{ChannelIds, PersistedWorkflow, Workflow, WorkflowAndChannelIds},
 };
 use tardigrade::{
-    interface::{Handle, Interface},
+    interface::{Handle, HandlePathBuf, Interface},
     spawn::{HostError, ManageChannels, ManageInterfaces, ManageWorkflows},
     workflow::{GetInterface, UntypedHandles, WorkflowFn},
     ChannelId, WorkflowId,
@@ -163,15 +164,16 @@ impl<S: DefineWorkflow> Stubs<S> {
         let (mut persisted, channel_ids) = child_stub.spawn(shared)?;
         let child_id = transaction.allocate_workflow_id().await;
 
-        // FIXME: check there are no duplicate receivers with ID != 0
+        Self::validate_duplicate_channels(&channel_ids)?;
 
         tracing::debug!(?channel_ids, "handling channels for new workflow");
         for (path, &id_res) in &channel_ids {
             let channel_id = id_res.factor();
             let state = transaction.channel(channel_id).await;
             let state = state.ok_or_else(|| {
-                anyhow!("channel {channel_id} specified at {path} does not exist")
+                anyhow!("channel {channel_id} specified at `{path}` does not exist")
             })?;
+            Self::validate_channel_ownership(path, id_res, &state, executed_workflow_id)?;
 
             if state.is_closed {
                 persisted.close_channel(id_res);
@@ -215,6 +217,63 @@ impl<S: DefineWorkflow> Stubs<S> {
             channel_ids,
         })
     }
+
+    fn validate_duplicate_channels(channel_ids: &ChannelIds) -> anyhow::Result<()> {
+        let mut unique_receiver_ids: HashMap<_, usize> =
+            HashMap::with_capacity(channel_ids.len() / 2);
+        for &id_handle in channel_ids.values() {
+            if let Handle::Receiver(id) = id_handle {
+                if id != 0 {
+                    // The 0th channel can be aliased as closed.
+                    *unique_receiver_ids.entry(id).or_default() += 1;
+                }
+            }
+        }
+
+        let mut bogus_ids = unique_receiver_ids
+            .into_iter()
+            .filter_map(|(id, count)| (count > 1).then_some(id))
+            .fold(String::new(), |mut acc, id| {
+                write!(&mut acc, "{id}, ").unwrap();
+                acc
+            });
+        if bogus_ids.is_empty() {
+            Ok(())
+        } else {
+            bogus_ids.truncate(bogus_ids.len() - 2); // truncate the trailing ", "
+            Err(anyhow!(
+                "receivers are aliased for channel(s) {{{bogus_ids}}}"
+            ))
+        }
+    }
+
+    fn validate_channel_ownership(
+        path: &HandlePathBuf,
+        id: Handle<ChannelId>,
+        state: &ChannelRecord,
+        executed_workflow_id: Option<WorkflowId>,
+    ) -> anyhow::Result<()> {
+        match id {
+            Handle::Receiver(id) if id != 0 => {
+                ensure!(
+                    state.receiver_workflow_id == executed_workflow_id,
+                    "receiver for channel {id} at `{path}` is not owned by requester"
+                );
+            }
+            Handle::Sender(id) if id != 0 => {
+                let is_owned = executed_workflow_id
+                    .map_or(state.has_external_sender, |workflow_id| {
+                        state.sender_workflow_ids.contains(&workflow_id)
+                    });
+                ensure!(
+                    is_owned,
+                    "sender for channel {id} at `{path}` is not owned by requester"
+                );
+            }
+            _ => { /* 0th channel doesn't have "real" ownership */ }
+        }
+        Ok(())
+    }
 }
 
 impl<S: DefineWorkflow> ManageInterfaces for Stubs<S> {
@@ -235,11 +294,14 @@ impl<S: DefineWorkflow> StashStub for Stubs<S> {
         id: &str,
         args: Vec<u8>,
         channel_ids: ChannelIds,
-    ) {
-        debug_assert!(
-            self.shared.definitions.for_full_id(id).is_some(),
-            "workflow with ID `{id}` is not defined"
-        );
+    ) -> anyhow::Result<()> {
+        let Some(definition) = self.shared.definitions.for_full_id(id) else {
+            return Err(anyhow!("definition with ID `{id}` is not defined"));
+        };
+        definition
+            .interface()
+            .check_shape(&channel_ids, true)
+            .context("invalid shape of provided handles")?;
 
         self.new_workflows.insert(
             stub_id,
@@ -249,6 +311,7 @@ impl<S: DefineWorkflow> StashStub for Stubs<S> {
                 channel_ids,
             },
         );
+        Ok(())
     }
 
     #[tracing::instrument(skip(self))]
@@ -316,7 +379,7 @@ where
             (path, id)
         });
         let mut stubs = Stubs::new(None, self.shared());
-        stubs.stash_workflow(0, definition_id, args, channel_ids.collect());
+        stubs.stash_workflow(0, definition_id, args, channel_ids.collect())?;
         let mut transaction = self.storage.transaction().await;
         let workflow_id = stubs.commit_external(&mut transaction).await?;
         transaction.commit().await;

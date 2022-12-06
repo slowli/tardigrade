@@ -240,7 +240,7 @@ impl<'a> Channels<'a> {
 
         let mapping = key
             .with_path(|path| self.mapping.get(&path))
-            .ok_or_else(|| AccessErrorKind::Unknown.with_location(key))?;
+            .ok_or_else(|| AccessErrorKind::Missing.with_location(key))?;
         let state = match mapping {
             Handle::Receiver(id) => {
                 let state = self

@@ -83,10 +83,11 @@ impl StashStub for MockWorkflowManager {
         id: &str,
         args: Vec<u8>,
         channels: ChannelIds,
-    ) {
+    ) -> anyhow::Result<()> {
         assert_eq!(id, "test:latest");
         assert_eq!(channels.len(), 2);
         self.calls.push(NewWorkflowCall { stub_id, args });
+        Ok(())
     }
 
     fn stash_channel(&mut self, _stub_id: ChannelId) {
