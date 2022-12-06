@@ -541,7 +541,7 @@ impl WorkflowData {
     ///
     /// Returns an error if a channel cannot be created.
     pub fn create_channel_stub(&mut self, id: ChannelId) -> anyhow::Result<()> {
-        let workflows = self.services_mut().workflows.as_deref_mut();
+        let workflows = self.services_mut().stubs.as_deref_mut();
         let workflows = workflows.ok_or_else(|| anyhow!("cannot create new channel"))?;
         workflows.stash_channel(id);
         self.current_execution()

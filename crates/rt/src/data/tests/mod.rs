@@ -133,7 +133,7 @@ fn create_workflow_with_scheduler(
     let channel_ids = mock_channel_ids(definition.interface(), &mut 1);
     let services = Services {
         clock: Arc::new(scheduler),
-        workflows: None,
+        stubs: None,
         tracer: None,
     };
     let data = WorkflowData::new(definition.interface(), channel_ids, services);
@@ -154,7 +154,7 @@ fn restore_workflow(
     let definition = MockDefinition::new(poll_fns);
     let services = Services {
         clock: Arc::new(scheduler),
-        workflows: None,
+        stubs: None,
         tracer: None,
     };
     persisted.restore(&definition, services).unwrap()
@@ -317,7 +317,7 @@ fn trap_when_starting_workflow() {
     let channel_ids = mock_channel_ids(definition.interface(), &mut 1);
     let services = Services {
         clock: Arc::new(MockScheduler::default()),
-        workflows: None,
+        stubs: None,
         tracer: None,
     };
     let data = WorkflowData::new(definition.interface(), channel_ids, services);

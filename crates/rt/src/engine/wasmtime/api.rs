@@ -504,7 +504,7 @@ mod tests {
         let interface = Interface::default();
         let services = Services {
             clock: Arc::new(()),
-            workflows: None,
+            stubs: None,
             tracer: None,
         };
         let data = WorkflowData::new(&interface, ChannelIds::default(), services);

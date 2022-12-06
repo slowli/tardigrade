@@ -12,8 +12,8 @@ use std::{
 };
 
 use super::{
-    Clock, Host, HostChannelId, Services, Shared, StashWorkflow, WorkflowDefinitions,
-    WorkflowHandle, WorkflowManager,
+    Clock, Host, HostChannelId, Services, Shared, StashStub, WorkflowDefinitions, WorkflowHandle,
+    WorkflowManager,
 };
 use crate::{
     data::WorkflowData,
@@ -83,7 +83,7 @@ impl WorkflowStub {
         let definition = shared.definitions.for_full_id(&self.definition_id).unwrap();
         let services = Services {
             clock: Arc::clone(&shared.clock),
-            workflows: None,
+            stubs: None,
             tracer: None,
         };
 
@@ -96,16 +96,16 @@ impl WorkflowStub {
     }
 }
 
-// FIXME rename to reflect new meaning
+/// Storage for channel / workflow stubs created by a transaction.
 #[derive(Debug)]
-pub(super) struct NewWorkflows<S> {
+pub(super) struct Stubs<S> {
     executing_workflow_id: Option<WorkflowId>,
     shared: Shared<S>,
     new_workflows: HashMap<WorkflowId, WorkflowStub>,
     new_channels: HashSet<ChannelId>,
 }
 
-impl<S: DefineWorkflow> NewWorkflows<S> {
+impl<S: DefineWorkflow> Stubs<S> {
     pub fn new(executing_workflow_id: Option<WorkflowId>, shared: Shared<S>) -> Self {
         Self {
             executing_workflow_id,
@@ -217,7 +217,7 @@ impl<S: DefineWorkflow> NewWorkflows<S> {
     }
 }
 
-impl<S: DefineWorkflow> ManageInterfaces for NewWorkflows<S> {
+impl<S: DefineWorkflow> ManageInterfaces for Stubs<S> {
     type Fmt = Host;
 
     fn interface(&self, id: &str) -> Option<Cow<'_, Interface>> {
@@ -227,7 +227,7 @@ impl<S: DefineWorkflow> ManageInterfaces for NewWorkflows<S> {
     }
 }
 
-impl<S: DefineWorkflow> StashWorkflow for NewWorkflows<S> {
+impl<S: DefineWorkflow> StashStub for Stubs<S> {
     #[tracing::instrument(skip(self, args), fields(args.len = args.len()))]
     fn stash_workflow(
         &mut self,
@@ -315,10 +315,10 @@ where
                 .map_sender(ChannelId::from);
             (path, id)
         });
-        let mut new_workflows = NewWorkflows::new(None, self.shared());
-        new_workflows.stash_workflow(0, definition_id, args, channel_ids.collect());
+        let mut stubs = Stubs::new(None, self.shared());
+        stubs.stash_workflow(0, definition_id, args, channel_ids.collect());
         let mut transaction = self.storage.transaction().await;
-        let workflow_id = new_workflows.commit_external(&mut transaction).await?;
+        let workflow_id = stubs.commit_external(&mut transaction).await?;
         transaction.commit().await;
         Ok(self.workflow(workflow_id).await.unwrap())
     }

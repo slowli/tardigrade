@@ -159,14 +159,14 @@ impl WorkflowData {
     /// Returns the interface matching the specified definition ID.
     #[tracing::instrument(level = "debug", skip(self))]
     pub fn workflow_interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
-        let workflows = self.services().workflows.as_deref();
+        let workflows = self.services().stubs.as_deref();
         let interface = workflows.and_then(|workflows| workflows.interface(definition_id));
         tracing::debug!(ret.is_some = interface.is_some());
         interface
     }
 
     fn validate_handles(&self, definition_id: &str, channels: &ChannelIds) -> anyhow::Result<()> {
-        let workflows = self.services().workflows.as_deref();
+        let workflows = self.services().stubs.as_deref();
         let interface = workflows.and_then(|workflows| workflows.interface(definition_id));
         if let Some(interface) = interface {
             for (path, spec) in interface.handles() {
@@ -219,7 +219,7 @@ impl WorkflowData {
 
         let workflows = self
             .services_mut()
-            .workflows
+            .stubs
             .as_deref_mut()
             .ok_or_else(|| anyhow!("no capability to spawn workflows"))?;
         workflows.stash_workflow(stub_id, definition_id, args, channels);

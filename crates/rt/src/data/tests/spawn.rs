@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use super::*;
 use crate::{
     engine::DefineWorkflow,
-    manager::{Host, StashWorkflow},
+    manager::{Host, StashStub},
     workflow::WorkflowAndChannelIds,
 };
 use tardigrade::{
@@ -76,7 +76,7 @@ impl ManageInterfaces for MockWorkflowManager {
     }
 }
 
-impl StashWorkflow for MockWorkflowManager {
+impl StashStub for MockWorkflowManager {
     fn stash_workflow(
         &mut self,
         stub_id: WorkflowId,
@@ -99,7 +99,7 @@ fn create_workflow_with_manager(poll_fns: MockAnswers) -> Workflow<MockInstance>
     let channel_ids = mock_channel_ids(definition.interface(), &mut 1);
     let services = Services {
         clock: Arc::new(MockScheduler::default()),
-        workflows: Some(Box::new(MockWorkflowManager::new())),
+        stubs: Some(Box::new(MockWorkflowManager::new())),
         tracer: None,
     };
     let data = WorkflowData::new(definition.interface(), channel_ids, services);
@@ -148,7 +148,7 @@ fn configure_handles() -> ChannelIds {
 }
 
 fn init_child(workflow: &mut Workflow<MockInstance>) {
-    let manager = workflow.take_services().workflows.unwrap();
+    let manager = workflow.take_services().stubs.unwrap();
     let manager = manager.downcast::<MockWorkflowManager>();
     manager.init_single_child(workflow);
 }

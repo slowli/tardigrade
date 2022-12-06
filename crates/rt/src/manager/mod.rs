@@ -9,16 +9,16 @@ use tracing_tunnel::{LocalSpans, PersistedMetadata, PersistedSpans};
 use std::{collections::HashMap, convert::Infallible, sync::Arc};
 
 mod handle;
-mod new_workflows;
 mod persistence;
 mod services;
+mod stubs;
 mod tick;
 mod traits;
 
 #[cfg(test)]
 pub(crate) mod tests;
 
-pub(crate) use self::services::{Services, StashWorkflow};
+pub(crate) use self::services::{Services, StashStub};
 pub use self::{
     handle::{
         AnyWorkflowHandle, CompletedWorkflowHandle, ConcurrencyError, ErroneousMessage,
