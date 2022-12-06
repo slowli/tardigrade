@@ -214,12 +214,11 @@ async fn send_message_from_child(
     );
 
     // Check channel handles for child workflow
-    let handle = manager.workflow(CHILD_ID).await.unwrap().handle();
-    let mut handle = handle.with_indexing();
-    let mut child_orders = handle.remove(ReceiverAt("orders")).unwrap();
+    let workflow = manager.workflow(CHILD_ID).await.unwrap();
+    let mut handle = workflow.handle().await.with_indexing();
+    let child_orders = handle.remove(ReceiverAt("orders")).unwrap();
     let child_orders_id = child_orders.channel_id();
-    child_orders.send(b"test".to_vec()).await.unwrap();
-    child_orders.close().await; // no-op: a channel sender is not owned by the host
+    assert!(!child_orders.can_manipulate());
 
     let child_events = handle.remove(SenderAt("events")).unwrap();
     let child_events_id = child_events.channel_id();

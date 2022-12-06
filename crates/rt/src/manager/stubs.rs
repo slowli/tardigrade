@@ -13,12 +13,12 @@ use std::{
 };
 
 use super::{
-    Clock, Host, HostChannelId, Services, Shared, StashStub, WorkflowDefinitions, WorkflowHandle,
-    WorkflowManager,
+    AsManager, RawMessageReceiver, RawMessageSender, Services, Shared, StashStub,
+    WorkflowDefinitions, WorkflowHandle, WorkflowManager, WorkflowManagerRef,
 };
 use crate::{
     data::WorkflowData,
-    engine::{DefineWorkflow, RunWorkflow, WorkflowEngine},
+    engine::{DefineWorkflow, RunWorkflow},
     receipt::Receipt,
     storage::{
         ActiveWorkflowState, ChannelRecord, Storage, StorageTransaction, WorkflowRecord,
@@ -58,14 +58,14 @@ impl ChannelRecord {
 async fn commit_channel<T: StorageTransaction>(
     executed_workflow_id: Option<WorkflowId>,
     transaction: &mut T,
-) -> ChannelId {
+) -> (ChannelId, ChannelRecord) {
     let channel_id = transaction.allocate_channel_id().await;
     let state = executed_workflow_id.map_or_else(
         ChannelRecord::owned_by_host,
         ChannelRecord::owned_by_workflow,
     );
-    transaction.insert_channel(channel_id, state).await;
-    channel_id
+    transaction.insert_channel(channel_id, state.clone()).await;
+    (channel_id, state)
 }
 
 #[derive(Debug)]
@@ -128,7 +128,7 @@ impl<S: DefineWorkflow> Stubs<S> {
         let executed_workflow_id = self.executing_workflow_id;
 
         for local_id in self.new_channels {
-            let channel_id = commit_channel(executed_workflow_id, transaction).await;
+            let (channel_id, _) = commit_channel(executed_workflow_id, transaction).await;
             parent.notify_on_channel_init(local_id, channel_id, receipt);
         }
 
@@ -277,8 +277,6 @@ impl<S: DefineWorkflow> Stubs<S> {
 }
 
 impl<S: DefineWorkflow> ManageInterfaces for Stubs<S> {
-    type Fmt = Host;
-
     fn interface(&self, id: &str) -> Option<Cow<'_, Interface>> {
         Some(Cow::Borrowed(
             self.shared.definitions.for_full_id(id)?.interface(),
@@ -320,76 +318,67 @@ impl<S: DefineWorkflow> StashStub for Stubs<S> {
     }
 }
 
-impl<E: WorkflowEngine, C, S> ManageInterfaces for WorkflowManager<E, C, S> {
-    type Fmt = Host;
-
+impl<M: AsManager> ManageInterfaces for WorkflowManagerRef<'_, M> {
     fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
-        Some(Cow::Borrowed(
-            self.definitions.for_full_id(definition_id)?.interface(),
-        ))
+        let definition = self.0.as_manager().definitions.for_full_id(definition_id)?;
+        Some(Cow::Borrowed(definition.interface()))
     }
 }
 
 #[async_trait]
-impl<E, C, S> ManageChannels for WorkflowManager<E, C, S>
-where
-    E: WorkflowEngine,
-    C: Clock,
-    S: Storage,
-{
-    fn closed_receiver(&self) -> HostChannelId {
-        HostChannelId::closed()
+impl<'a, M: AsManager> ManageChannels for WorkflowManagerRef<'a, M> {
+    type Fmt = Self;
+
+    fn closed_receiver(&self) -> RawMessageReceiver<'a, M> {
+        RawMessageReceiver::closed(self.0)
     }
 
-    fn closed_sender(&self) -> HostChannelId {
-        HostChannelId::closed()
+    fn closed_sender(&self) -> RawMessageSender<'a, M> {
+        RawMessageSender::closed(self.0)
     }
 
-    async fn create_channel(&self) -> (HostChannelId, HostChannelId) {
-        let mut transaction = self.storage.transaction().await;
-        let channel_id = commit_channel(None, &mut transaction).await;
+    async fn create_channel(&self) -> (RawMessageSender<'a, M>, RawMessageReceiver<'a, M>) {
+        let mut transaction = self.0.as_manager().storage.transaction().await;
+        let (channel_id, record) = commit_channel(None, &mut transaction).await;
         transaction.commit().await;
         (
-            HostChannelId::unchecked(channel_id),
-            HostChannelId::unchecked(channel_id),
+            RawMessageSender::new(self.0, channel_id, record.clone()),
+            RawMessageReceiver::new(self.0, channel_id, record),
         )
     }
 }
 
 #[async_trait]
-impl<E, C, S> ManageWorkflows for WorkflowManager<E, C, S>
-where
-    E: WorkflowEngine,
-    C: Clock,
-    S: Storage,
-{
-    type Spawned<'s, W: WorkflowFn + GetInterface> = WorkflowHandle<'s, W, Self>;
+impl<'a, M: AsManager> ManageWorkflows for WorkflowManagerRef<'a, M> {
+    type Spawned<W: WorkflowFn + GetInterface> =
+        WorkflowHandle<'a, W, WorkflowManager<M::Engine, M::Clock, M::Storage>>;
     type Error = anyhow::Error;
 
     async fn new_workflow_raw(
         &self,
         definition_id: &str,
         args: Vec<u8>,
-        handles: UntypedHandles<Host>,
-    ) -> Result<Self::Spawned<'_, ()>, Self::Error> {
+        handles: UntypedHandles<Self>,
+    ) -> Result<Self::Spawned<()>, Self::Error> {
+        let manager = self.0.as_manager();
         let channel_ids = handles.into_iter().map(|(path, handle)| {
             let id = handle
-                .map_receiver(ChannelId::from)
-                .map_sender(ChannelId::from);
+                .map_receiver(|handle| handle.channel_id())
+                .map_sender(|handle| handle.channel_id());
             (path, id)
         });
-        let mut stubs = Stubs::new(None, self.shared());
+        let mut stubs = Stubs::new(None, manager.shared());
         stubs.stash_workflow(0, definition_id, args, channel_ids.collect())?;
-        let mut transaction = self.storage.transaction().await;
+        let mut transaction = manager.storage.transaction().await;
         let workflow_id = stubs.commit_external(&mut transaction).await?;
         transaction.commit().await;
-        Ok(self.workflow(workflow_id).await.unwrap())
+        Ok(manager.workflow(workflow_id).await.unwrap())
     }
 
-    fn downcast<'sp, W: WorkflowFn + GetInterface>(
+    fn downcast<W: WorkflowFn + GetInterface>(
         &self,
-        spawned: Self::Spawned<'sp, ()>,
-    ) -> Self::Spawned<'sp, W> {
+        spawned: Self::Spawned<()>,
+    ) -> Self::Spawned<W> {
         spawned.downcast_unchecked()
     }
 }

@@ -19,9 +19,8 @@ use crate::{
     workflow::WorkflowAndChannelIds,
 };
 use tardigrade::{
-    interface::{Handle, HandlePath, ReceiverAt, SenderAt, WithIndexing},
+    interface::{Handle, HandleMap, HandlePath, ReceiverAt, SenderAt, WithIndexing},
     spawn::{ManageChannels, ManageWorkflows},
-    workflow::UntypedHandles,
 };
 
 const DEFINITION_ID: &str = "test@latest::TestWorkflow";
@@ -57,6 +56,7 @@ pub(crate) async fn create_test_manager<C: Clock>(
 pub(crate) async fn create_test_workflow<C: Clock>(
     manager: &LocalManager<C>,
 ) -> WorkflowHandle<'_, (), LocalManager<C>> {
+    let manager = manager.as_ref();
     let builder = manager.new_workflow(DEFINITION_ID).unwrap();
     let (handles, _) = builder.handles(|_| { /* use default config */ }).await;
     builder
@@ -183,7 +183,8 @@ async fn initializing_workflow_with_closed_channels() {
 
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
     let manager = create_test_manager(poll_fns, ()).await;
-    let builder = manager.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let manager_ref = manager.as_ref();
+    let builder = manager_ref.new_workflow::<()>(DEFINITION_ID).unwrap();
     let handles = builder.handles(|config| {
         let config = config.with_indexing();
         config[ReceiverAt("orders")].close();
@@ -205,19 +206,16 @@ async fn initializing_workflow_with_closed_channels() {
         .await
         .unwrap();
 
-    let handle = manager.workflow(workflow_id).await.unwrap().handle();
-    let mut handle = handle.with_indexing();
-    let channel_info = handle[ReceiverAt("orders")].channel_info().await;
+    let workflow = manager.workflow(workflow_id).await.unwrap();
+    let mut handle = workflow.handle().await.with_indexing();
+    let channel_info = handle[ReceiverAt("orders")].channel_info();
     assert!(channel_info.is_closed);
     assert_eq!(channel_info.received_messages, 0);
-    let channel_info = handle[SenderAt("traces")].channel_info().await;
+    let channel_info = handle[SenderAt("traces")].channel_info();
     assert!(channel_info.is_closed);
 
-    let err = handle[ReceiverAt("orders")]
-        .send(b"test".to_vec())
-        .await
-        .unwrap_err();
-    assert_matches!(err, SendError::Closed);
+    let orders = handle.remove(ReceiverAt("orders")).unwrap();
+    assert!(!orders.can_manipulate()); // the channel is closed
 }
 
 #[async_std::test]
@@ -600,20 +598,30 @@ async fn handles_shape_mismatch_error() {
     let (poll_fns, _) = Answers::channel();
     let manager = create_test_manager(poll_fns, ()).await;
 
-    let builder = manager.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let manager_ref = manager.as_ref();
+    let builder = manager_ref.new_workflow::<()>(DEFINITION_ID).unwrap();
     let err = builder
-        .build(b"test_input".to_vec(), UntypedHandles::<Host>::new())
+        .build(b"test_input".to_vec(), HandleMap::new())
         .await
         .unwrap_err();
     let err = format!("{err:#}");
     assert!(err.contains("invalid shape of provided handles"), "{err}");
     assert!(err.contains("missing"), "{err}");
 
-    let mut handles = UntypedHandles::<Host>::new();
-    handles.insert("orders".into(), Handle::Receiver(HostChannelId::closed()));
-    handles.insert("events".into(), Handle::Sender(HostChannelId::closed()));
-    handles.insert("traces".into(), Handle::Receiver(HostChannelId::closed()));
-    let builder = manager.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let mut handles = HandleMap::new();
+    handles.insert(
+        "orders".into(),
+        Handle::Receiver(MessageReceiver::closed(&manager)),
+    );
+    handles.insert(
+        "events".into(),
+        Handle::Sender(MessageSender::closed(&manager)),
+    );
+    handles.insert(
+        "traces".into(),
+        Handle::Receiver(MessageReceiver::closed(&manager)),
+    );
+    let builder = manager_ref.new_workflow::<()>(DEFINITION_ID).unwrap();
     let err = builder
         .build(b"test_input".to_vec(), handles)
         .await
@@ -627,25 +635,19 @@ async fn handles_shape_mismatch_error() {
 async fn non_owned_channel_error() {
     let (poll_fns, _) = Answers::channel();
     let manager = create_test_manager(poll_fns, ()).await;
+    let manager_ref = manager.as_ref();
     let workflow = create_test_workflow(&manager).await;
 
     let orders_id = channel_id(workflow.ids(), "orders");
+    let orders_rx = manager.receiver(orders_id).await.unwrap();
     let traces_id = channel_id(workflow.ids(), "traces");
-    let mut handles = UntypedHandles::<Host>::new();
-    handles.insert(
-        "orders".into(),
-        Handle::Receiver(HostChannelId::unchecked(orders_id)),
-    );
-    handles.insert(
-        "events".into(),
-        Handle::Sender(HostChannelId::unchecked(traces_id)),
-    );
-    handles.insert(
-        "traces".into(),
-        Handle::Sender(HostChannelId::unchecked(traces_id)),
-    );
+    let traces_sx = manager.sender(traces_id).await.unwrap();
+    let mut handles = HandleMap::new();
+    handles.insert("orders".into(), Handle::Receiver(orders_rx));
+    handles.insert("events".into(), Handle::Sender(traces_sx.clone()));
+    handles.insert("traces".into(), Handle::Sender(traces_sx.clone()));
 
-    let builder = manager.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let builder = manager_ref.new_workflow::<()>(DEFINITION_ID).unwrap();
     let err = builder
         .build(b"test_input".to_vec(), handles)
         .await
@@ -657,33 +659,30 @@ async fn non_owned_channel_error() {
         "{err}"
     );
 
-    let (_, rx_handle) = manager.create_channel().await;
-    let mut handles = UntypedHandles::<Host>::new();
-    handles.insert("orders".into(), Handle::Receiver(rx_handle));
-    handles.insert(
-        "events".into(),
-        Handle::Sender(HostChannelId::unchecked(traces_id)),
-    );
-    handles.insert(
-        "traces".into(),
-        Handle::Sender(HostChannelId::unchecked(traces_id)),
-    );
-    let builder = manager.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let (_, new_rx) = manager_ref.create_channel().await;
+    let mut handles = HandleMap::new();
+    handles.insert("orders".into(), Handle::Receiver(new_rx));
+    handles.insert("events".into(), Handle::Sender(traces_sx.clone()));
+    handles.insert("traces".into(), Handle::Sender(traces_sx.clone()));
+    let builder = manager_ref.new_workflow::<()>(DEFINITION_ID).unwrap();
     builder
         .build(b"test_input".to_vec(), handles)
         .await
         .unwrap();
 
     manager.close_host_sender(traces_id).await;
-    let mut handles = UntypedHandles::<Host>::new();
-    handles.insert("orders".into(), Handle::Receiver(HostChannelId::closed()));
-    handles.insert("events".into(), Handle::Sender(HostChannelId::closed()));
+    let mut handles = HandleMap::new();
     handles.insert(
-        "traces".into(),
-        Handle::Sender(HostChannelId::unchecked(traces_id)),
+        "orders".into(),
+        Handle::Receiver(MessageReceiver::closed(&manager)),
     );
+    handles.insert(
+        "events".into(),
+        Handle::Sender(MessageSender::closed(&manager)),
+    );
+    handles.insert("traces".into(), Handle::Sender(traces_sx));
 
-    let builder = manager.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let builder = manager_ref.new_workflow::<()>(DEFINITION_ID).unwrap();
     let err = builder
         .build(b"test_input".to_vec(), handles)
         .await

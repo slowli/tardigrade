@@ -11,7 +11,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::{manager::Host, workflow::ChannelIds};
+use crate::workflow::ChannelIds;
 use tardigrade::{spawn::ManageInterfaces, ChannelId, WorkflowId};
 
 /// Wall clock.
@@ -55,7 +55,7 @@ pub type TimerFuture = Pin<Box<dyn Future<Output = DateTime<Utc>> + Send>>;
 /// Similar to [`tardigrade::ManageWorkflows`], but mutable and synchronous.
 /// The returned handle is stored in a `Workflow` and, before it's persisted, exchanged for
 /// a `WorkflowId`.
-pub(crate) trait StashStub: Any + Send + Sync + ManageInterfaces<Fmt = Host> {
+pub(crate) trait StashStub: Any + Send + Sync + ManageInterfaces {
     /// Stashes a workflow stub with the specified params.
     ///
     /// # Errors

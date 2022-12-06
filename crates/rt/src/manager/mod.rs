@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use futures::{lock::Mutex, StreamExt};
 use tracing_tunnel::{LocalSpans, PersistedMetadata, PersistedSpans};
 
-use std::{collections::HashMap, convert::Infallible, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 mod handle;
 mod persistence;
@@ -22,7 +22,8 @@ pub(crate) use self::services::{Services, StashStub};
 pub use self::{
     handle::{
         AnyWorkflowHandle, CompletedWorkflowHandle, ConcurrencyError, ErroneousMessage,
-        ErroredWorkflowHandle, MessageReceiver, MessageSender, ReceivedMessage, WorkflowHandle,
+        ErroredWorkflowHandle, MessageReceiver, MessageSender, RawMessageReceiver,
+        RawMessageSender, ReceivedMessage, WorkflowHandle, WorkflowManagerRef,
     },
     services::{Clock, Schedule, TimerFuture},
     tick::{TickResult, WouldBlock},
@@ -37,11 +38,7 @@ use crate::{
         StorageTransaction, WorkflowState, WriteChannels, WriteModules, WriteWorkflows,
     },
 };
-use tardigrade::{
-    channel::SendError,
-    workflow::{HandleFormat, IntoRaw, TryFromRaw},
-    ChannelId, Codec, WorkflowId,
-};
+use tardigrade::{channel::SendError, ChannelId, WorkflowId};
 
 #[derive(Debug)]
 struct WorkflowDefinitions<D> {
@@ -89,53 +86,6 @@ enum ChannelSide {
     WorkflowSender(WorkflowId),
     HostReceiver,
     Receiver(WorkflowId),
-}
-
-/// Host [format](HandleFormat) for channel handles.
-#[derive(Debug)]
-pub struct Host(());
-
-impl HandleFormat for Host {
-    type RawReceiver = HostChannelId;
-    type Receiver<T, C: Codec<T>> = HostChannelId;
-    type RawSender = HostChannelId;
-    type Sender<T, C: Codec<T>> = HostChannelId;
-}
-
-// FIXME: use sender / receiver handles?
-/// Host channel ID.
-#[derive(Debug)]
-pub struct HostChannelId(ChannelId);
-
-impl HostChannelId {
-    /// Channel ID for a closed channel.
-    pub const fn closed() -> Self {
-        Self(0)
-    }
-
-    pub(crate) fn unchecked(id: ChannelId) -> Self {
-        Self(id)
-    }
-}
-
-impl From<HostChannelId> for ChannelId {
-    fn from(channel_id: HostChannelId) -> Self {
-        channel_id.0
-    }
-}
-
-impl TryFromRaw<Self> for HostChannelId {
-    type Error = Infallible;
-
-    fn try_from_raw(raw: Self) -> Result<Self, Self::Error> {
-        Ok(raw)
-    }
-}
-
-impl IntoRaw<Self> for HostChannelId {
-    fn into_raw(self) -> Self {
-        self
-    }
 }
 
 /// Manager for workflow modules, workflows and channels.
@@ -255,6 +205,11 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         })
     }
 
+    /// Returns a wrapped reference to this manager.
+    pub fn as_ref(&self) -> WorkflowManagerRef<'_, Self> {
+        WorkflowManagerRef(self)
+    }
+
     /// Inserts the specified module into the manager.
     pub async fn insert_module(&mut self, id: &str, module: E::Module) {
         let mut transaction = self.storage.transaction().await;
@@ -278,6 +233,18 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         let transaction = self.storage.readonly_transaction().await;
         let record = transaction.channel(channel_id).await?;
         Some(record)
+    }
+
+    /// Returns a sender handle for the specified channel, or `None` if the channel does not exist.
+    pub async fn sender(&self, channel_id: ChannelId) -> Option<RawMessageSender<'_, Self>> {
+        let record = self.channel(channel_id).await?;
+        Some(RawMessageSender::new(self, channel_id, record))
+    }
+
+    /// Returns a receiver handle for the specified channel, or `None` if the channel does not exist.
+    pub async fn receiver(&self, channel_id: ChannelId) -> Option<RawMessageReceiver<'_, Self>> {
+        let record = self.channel(channel_id).await?;
+        Some(RawMessageReceiver::new(self, channel_id, record))
     }
 
     /// Returns a handle to an active workflow with the specified ID. If the workflow is
@@ -304,8 +271,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
                     .definitions
                     .get(&record.module_id, &record.name_in_module)
                     .interface();
-                let handle =
-                    WorkflowHandle::new(self, &transaction, workflow_id, interface, *state).await;
+                let handle = WorkflowHandle::new(self, workflow_id, interface, *state);
                 Some(handle.into())
             }
 

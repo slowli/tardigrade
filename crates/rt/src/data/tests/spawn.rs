@@ -3,11 +3,7 @@
 use std::borrow::Cow;
 
 use super::*;
-use crate::{
-    engine::DefineWorkflow,
-    manager::{Host, StashStub},
-    workflow::WorkflowAndChannelIds,
-};
+use crate::{engine::DefineWorkflow, manager::StashStub, workflow::WorkflowAndChannelIds};
 use tardigrade::{
     interface::{Handle, Interface, ReceiverAt, SenderAt},
     spawn::{HostError, ManageInterfaces},
@@ -65,8 +61,6 @@ impl MockWorkflowManager {
 }
 
 impl ManageInterfaces for MockWorkflowManager {
-    type Fmt = Host;
-
     fn interface(&self, id: &str) -> Option<Cow<'_, Interface>> {
         if id == "test:latest" {
             Some(Cow::Borrowed(&self.interface))

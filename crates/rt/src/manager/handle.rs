@@ -1,8 +1,8 @@
 //! Handles for workflows in a `WorkflowManager` and their components (e.g., channels).
 
-use futures::{future, FutureExt, Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt};
 
-use std::{collections::HashSet, convert::Infallible, error, fmt, marker::PhantomData, ops};
+use std::{convert::Infallible, error, fmt, marker::PhantomData, ops};
 
 use crate::{
     manager::AsManager,
@@ -13,14 +13,14 @@ use crate::{
         WriteChannels,
     },
     utils::RefStream,
-    workflow::{ChannelIds, WorkflowAndChannelIds},
+    workflow::WorkflowAndChannelIds,
     PersistedWorkflow,
 };
 use tardigrade::{
     channel::SendError,
-    interface::{AccessError, Handle, Interface},
+    interface::{AccessError, Handle, HandleMap, Interface},
     task::JoinError,
-    workflow::{GetInterface, HandleFormat, InEnv, IntoRaw, TryFromRaw, WithHandle},
+    workflow::{GetInterface, HandleFormat, InEnv, IntoRaw, Inverse, TryFromRaw, WithHandle},
     ChannelId, Codec, Raw, WorkflowId,
 };
 
@@ -89,7 +89,6 @@ impl error::Error for ConcurrencyError {}
 pub struct WorkflowHandle<'a, W, M> {
     manager: &'a M,
     ids: WorkflowAndChannelIds,
-    host_receiver_channels: HashSet<ChannelId>,
     interface: &'a Interface,
     persisted: PersistedWorkflow,
     _ty: PhantomData<fn(W)>,
@@ -107,9 +106,8 @@ impl<W, M: fmt::Debug> fmt::Debug for WorkflowHandle<'_, W, M> {
 
 #[allow(clippy::mismatching_type_param_order)] // false positive
 impl<'a, M: AsManager> WorkflowHandle<'a, (), M> {
-    pub(super) async fn new(
+    pub(super) fn new(
         manager: &'a M,
-        transaction: &impl ReadChannels,
         id: WorkflowId,
         interface: &'a Interface,
         state: ActiveWorkflowState,
@@ -118,33 +116,14 @@ impl<'a, M: AsManager> WorkflowHandle<'a, (), M> {
             workflow_id: id,
             channel_ids: state.persisted.channels().to_ids(),
         };
-        let host_receiver_channels =
-            Self::find_host_receiver_channels(transaction, &ids.channel_ids).await;
 
         Self {
             manager,
             ids,
-            host_receiver_channels,
             interface,
             persisted: state.persisted,
             _ty: PhantomData,
         }
-    }
-
-    async fn find_host_receiver_channels(
-        transaction: &impl ReadChannels,
-        channel_ids: &ChannelIds,
-    ) -> HashSet<ChannelId> {
-        let sender_ids = channel_ids.values().filter_map(|id| match id {
-            Handle::Sender(id) => Some(*id),
-            Handle::Receiver(_) => None,
-        });
-        let channel_tasks = sender_ids.map(|id| async move {
-            let channel = transaction.channel(id).await.unwrap();
-            Some(id).filter(|_| channel.receiver_workflow_id.is_none())
-        });
-        let host_receiver_channels = future::join_all(channel_tasks).await;
-        host_receiver_channels.into_iter().flatten().collect()
     }
 
     #[cfg(test)]
@@ -167,7 +146,6 @@ impl<'a, M: AsManager> WorkflowHandle<'a, (), M> {
         WorkflowHandle {
             manager: self.manager,
             ids: self.ids,
-            host_receiver_channels: self.host_receiver_channels,
             interface: self.interface,
             persisted: self.persisted,
             _ty: PhantomData,
@@ -223,38 +201,51 @@ impl<'a, W: WithHandle, M: AsManager> WorkflowHandle<'a, W, M> {
 
     /// Returns a handle for the workflow that allows interacting with its channels.
     #[allow(clippy::missing_panics_doc)] // false positive
-    pub fn handle(&mut self) -> InEnv<W, ManagerHandles<'a, M>> {
-        let untyped = self.ids.channel_ids.iter().map(|(path, id)| {
-            let handle = id.as_ref().map_receiver(|&channel_id| MessageSender {
-                manager: self.manager,
-                channel_id,
-                _ty: PhantomData,
-            });
-            let handle = handle.map_sender(|&channel_id| {
-                // The 0th channel is always closed and thus cannot be manipulated.
-                let can_manipulate =
-                    channel_id != 0 && self.host_receiver_channels.contains(&channel_id);
-                MessageReceiver {
-                    manager: self.manager,
-                    channel_id,
-                    can_manipulate,
-                    _ty: PhantomData,
+    pub async fn handle(&self) -> InEnv<W, Inverse<WorkflowManagerRef<'a, M>>> {
+        let transaction = self
+            .manager
+            .as_manager()
+            .storage
+            .readonly_transaction()
+            .await;
+        let mut untyped = HandleMap::with_capacity(self.ids.channel_ids.len());
+
+        for (path, &id_handle) in &self.ids.channel_ids {
+            let handle = match id_handle {
+                Handle::Receiver(id) => {
+                    let record = transaction.channel(id).await.unwrap();
+                    let sender = MessageSender::new(self.manager, id, record);
+                    Handle::Receiver(sender)
                 }
-            });
-            (path.clone(), handle)
-        });
-        W::try_from_untyped(untyped.collect()).unwrap()
+                Handle::Sender(id) => {
+                    let record = transaction.channel(id).await.unwrap();
+                    let receiver = MessageReceiver::new(self.manager, id, record);
+                    Handle::Sender(receiver)
+                }
+            };
+            untyped.insert(path.clone(), handle);
+        }
+        W::try_from_untyped(untyped).unwrap()
     }
 }
 
+/// Reference to a [`WorkflowManager`].
 #[derive(Debug)]
-pub struct ManagerHandles<'a, M>(PhantomData<fn(&'a M)>);
+pub struct WorkflowManagerRef<'a, M>(pub(super) &'a M);
 
-impl<'a, M: AsManager> HandleFormat for ManagerHandles<'a, M> {
-    type RawReceiver = MessageSender<'a, Vec<u8>, Raw, M>;
-    type Receiver<T, C: Codec<T>> = MessageSender<'a, T, C, M>;
-    type RawSender = MessageReceiver<'a, Vec<u8>, Raw, M>;
-    type Sender<T, C: Codec<T>> = MessageReceiver<'a, T, C, M>;
+impl<M: AsManager> Clone for WorkflowManagerRef<'_, M> {
+    fn clone(&self) -> Self {
+        Self(self.0)
+    }
+}
+
+impl<M: AsManager> Copy for WorkflowManagerRef<'_, M> {}
+
+impl<'a, M: AsManager> HandleFormat for WorkflowManagerRef<'a, M> {
+    type RawReceiver = RawMessageReceiver<'a, M>;
+    type Receiver<T, C: Codec<T>> = MessageReceiver<'a, T, C, M>;
+    type RawSender = RawMessageSender<'a, M>;
+    type Sender<T, C: Codec<T>> = MessageSender<'a, T, C, M>;
 }
 
 /// Handle for a workflow channel [`Receiver`] that allows sending messages via the channel.
@@ -264,20 +255,73 @@ impl<'a, M: AsManager> HandleFormat for ManagerHandles<'a, M> {
 pub struct MessageSender<'a, T, C, M> {
     manager: &'a M,
     channel_id: ChannelId,
+    record: ChannelRecord,
     _ty: PhantomData<(fn(T), C)>,
 }
 
-impl<T, C: Codec<T>, M: AsManager> MessageSender<'_, T, C, M> {
+/// [`MessageSender`] for raw bytes.
+pub type RawMessageSender<'a, M> = MessageSender<'a, Vec<u8>, Raw, M>;
+
+impl<T, C: Codec<T>, M: AsManager> Clone for MessageSender<'_, T, C, M> {
+    fn clone(&self) -> Self {
+        Self {
+            manager: self.manager,
+            channel_id: self.channel_id,
+            record: self.record.clone(),
+            _ty: PhantomData,
+        }
+    }
+}
+
+impl<'a, T, C: Codec<T>, M: AsManager> MessageSender<'a, T, C, M> {
+    pub(super) fn closed(manager: &'a M) -> Self {
+        Self {
+            manager,
+            channel_id: 0,
+            record: ChannelRecord::closed(),
+            _ty: PhantomData,
+        }
+    }
+
+    pub(super) fn new(manager: &'a M, id: ChannelId, record: ChannelRecord) -> Self {
+        Self {
+            manager,
+            channel_id: id,
+            record,
+            _ty: PhantomData,
+        }
+    }
+
     /// Returns the ID of the channel this sender is connected to.
     pub fn channel_id(&self) -> ChannelId {
         self.channel_id
     }
 
-    /// Returns the current state of the channel.
-    #[allow(clippy::missing_panics_doc)] // false positive: channels are never removed
-    pub async fn channel_info(&self) -> ChannelRecord {
-        let manager = self.manager.as_manager();
-        manager.channel(self.channel_id).await.unwrap()
+    /// Returns the snapshot of the state of this channel.
+    ///
+    /// The snapshot is taken when the handle is created and can be updated
+    /// using [`Self::update()`].
+    pub fn channel_info(&self) -> &ChannelRecord {
+        &self.record
+    }
+
+    /// Updates the snapshot of the state of this channel.
+    #[allow(clippy::missing_panics_doc)] // false positive
+    pub async fn update(&mut self) {
+        let transaction = self
+            .manager
+            .as_manager()
+            .storage
+            .readonly_transaction()
+            .await;
+        self.record = transaction.channel(self.channel_id).await.unwrap();
+    }
+
+    /// Checks whether this sender can be used to manipulate the channel (e.g., close it)
+    /// [`Self::channel_info()`] (i.e., this check can be outdated).
+    /// This is possible if the channel sender is held by the host.
+    pub fn can_manipulate(&self) -> bool {
+        self.record.has_external_sender
     }
 
     /// Sends a message over the channel.
@@ -298,31 +342,33 @@ impl<T, C: Codec<T>, M: AsManager> MessageSender<'_, T, C, M> {
     }
 }
 
-impl<'a, T, C, M> TryFromRaw<MessageSender<'a, Vec<u8>, Raw, M>> for MessageSender<'a, T, C, M>
+impl<'a, T, C, M> TryFromRaw<RawMessageSender<'a, M>> for MessageSender<'a, T, C, M>
 where
     C: Codec<T>,
     M: AsManager,
 {
     type Error = Infallible;
 
-    fn try_from_raw(raw: MessageSender<'a, Vec<u8>, Raw, M>) -> Result<Self, Self::Error> {
+    fn try_from_raw(raw: RawMessageSender<'a, M>) -> Result<Self, Self::Error> {
         Ok(Self {
             manager: raw.manager,
             channel_id: raw.channel_id,
+            record: raw.record,
             _ty: PhantomData,
         })
     }
 }
 
-impl<'a, T, C, M> IntoRaw<MessageSender<'a, Vec<u8>, Raw, M>> for MessageSender<'a, T, C, M>
+impl<'a, T, C, M> IntoRaw<RawMessageSender<'a, M>> for MessageSender<'a, T, C, M>
 where
     C: Codec<T>,
     M: AsManager,
 {
-    fn into_raw(self) -> MessageSender<'a, Vec<u8>, Raw, M> {
-        MessageSender {
+    fn into_raw(self) -> RawMessageSender<'a, M> {
+        RawMessageSender {
             manager: self.manager,
             channel_id: self.channel_id,
+            record: self.record,
             _ty: PhantomData,
         }
     }
@@ -335,27 +381,55 @@ where
 pub struct MessageReceiver<'a, T, C, M> {
     manager: &'a M,
     channel_id: ChannelId,
-    can_manipulate: bool,
+    record: ChannelRecord,
     _ty: PhantomData<(C, fn() -> T)>,
 }
 
-impl<T, C: Codec<T>, M: AsManager> MessageReceiver<'_, T, C, M> {
+/// [`MessageReceiver`] for raw bytes.
+pub type RawMessageReceiver<'a, M> = MessageReceiver<'a, Vec<u8>, Raw, M>;
+
+impl<'a, T, C: Codec<T>, M: AsManager> MessageReceiver<'a, T, C, M> {
+    pub(super) fn closed(manager: &'a M) -> Self {
+        Self {
+            manager,
+            channel_id: 0,
+            record: ChannelRecord::closed(),
+            _ty: PhantomData,
+        }
+    }
+
+    pub(super) fn new(manager: &'a M, id: ChannelId, record: ChannelRecord) -> Self {
+        Self {
+            manager,
+            channel_id: id,
+            record,
+            _ty: PhantomData,
+        }
+    }
+
     /// Returns the ID of the channel this receiver is connected to.
     pub fn channel_id(&self) -> ChannelId {
         self.channel_id
     }
 
-    /// Returns the current state of the channel.
-    #[allow(clippy::missing_panics_doc)] // false positive: channels are never removed
-    pub async fn channel_info(&self) -> ChannelRecord {
-        let manager = self.manager.as_manager();
-        manager.channel(self.channel_id).await.unwrap()
+    /// Returns the snapshot of the state of this channel.
+    ///
+    /// The snapshot is taken when the handle is created and can be updated
+    /// using [`Self::update()`].
+    pub fn channel_info(&self) -> &ChannelRecord {
+        &self.record
     }
 
-    /// Checks whether this receiver can be used to manipulate the channel (e.g., close it).
-    /// This is possible if the channel receiver is not held by a workflow.
-    pub fn can_manipulate(&self) -> bool {
-        self.can_manipulate
+    /// Updates the snapshot of the state of this channel.
+    #[allow(clippy::missing_panics_doc)] // false positive
+    pub async fn update(&mut self) {
+        let transaction = self
+            .manager
+            .as_manager()
+            .storage
+            .readonly_transaction()
+            .await;
+        self.record = transaction.channel(self.channel_id).await.unwrap();
     }
 
     /// Takes a message with the specified index from the channel.
@@ -414,10 +488,16 @@ impl<T, C: Codec<T>, M: AsManager> MessageReceiver<'_, T, C, M> {
             })
     }
 
+    /// Checks whether this receiver can be used to manipulate the channel (e.g., close it).
+    /// This is possible if the channel receiver is not held by a workflow.
+    pub fn can_manipulate(&self) -> bool {
+        self.record.receiver_workflow_id.is_none()
+    }
+
     /// Truncates this channel so that its minimum message index is no less than `min_index`.
     /// If [`Self::can_manipulate()`] returns `false`, this is a no-op.
     pub async fn truncate(&self, min_index: usize) {
-        if self.can_manipulate {
+        if self.can_manipulate() {
             let manager = self.manager.as_manager();
             let mut transaction = manager.storage.transaction().await;
             transaction
@@ -430,40 +510,40 @@ impl<T, C: Codec<T>, M: AsManager> MessageReceiver<'_, T, C, M> {
     /// Closes this channel from the host side. If [`Self::can_manipulate()`] returns `false`,
     /// this is a no-op.
     pub async fn close(self) {
-        if self.can_manipulate {
+        if self.can_manipulate() {
             let manager = self.manager.as_manager();
             manager.close_host_receiver(self.channel_id).await;
         }
     }
 }
 
-impl<'a, T, C, M> TryFromRaw<MessageReceiver<'a, Vec<u8>, Raw, M>> for MessageReceiver<'a, T, C, M>
+impl<'a, T, C, M> TryFromRaw<RawMessageReceiver<'a, M>> for MessageReceiver<'a, T, C, M>
 where
     C: Codec<T>,
     M: AsManager,
 {
     type Error = Infallible;
 
-    fn try_from_raw(raw: MessageReceiver<'a, Vec<u8>, Raw, M>) -> Result<Self, Self::Error> {
+    fn try_from_raw(raw: RawMessageReceiver<'a, M>) -> Result<Self, Self::Error> {
         Ok(Self {
             manager: raw.manager,
             channel_id: raw.channel_id,
-            can_manipulate: raw.can_manipulate,
+            record: raw.record,
             _ty: PhantomData,
         })
     }
 }
 
-impl<'a, T, C, M> IntoRaw<MessageReceiver<'a, Vec<u8>, Raw, M>> for MessageReceiver<'a, T, C, M>
+impl<'a, T, C, M> IntoRaw<RawMessageReceiver<'a, M>> for MessageReceiver<'a, T, C, M>
 where
     C: Codec<T>,
     M: AsManager,
 {
-    fn into_raw(self) -> MessageReceiver<'a, Vec<u8>, Raw, M> {
-        MessageReceiver {
+    fn into_raw(self) -> RawMessageReceiver<'a, M> {
+        RawMessageReceiver {
             manager: self.manager,
             channel_id: self.channel_id,
-            can_manipulate: self.can_manipulate,
+            record: self.record,
             _ty: PhantomData,
         }
     }

@@ -13,7 +13,7 @@ use tracing_tunnel::PersistedMetadata;
 use std::{
     borrow::Cow,
     cmp,
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     ops,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -70,14 +70,7 @@ struct Inner {
 
 impl Default for Inner {
     fn default() -> Self {
-        let closed_channel = LocalChannel::new(ChannelRecord {
-            receiver_workflow_id: None,
-            sender_workflow_ids: HashSet::new(),
-            has_external_sender: false,
-            is_closed: true,
-            received_messages: 0,
-        });
-
+        let closed_channel = LocalChannel::new(ChannelRecord::closed());
         Self {
             modules: HashMap::new(),
             channels: HashMap::from_iter([(0, closed_channel)]),
@@ -583,6 +576,8 @@ impl Storage for LocalStorage {
 #[cfg(test)]
 mod tests {
     use assert_matches::assert_matches;
+
+    use std::collections::HashSet;
 
     use super::*;
 

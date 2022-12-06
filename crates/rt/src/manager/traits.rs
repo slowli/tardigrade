@@ -4,7 +4,7 @@ use super::{Clock, WorkflowManager};
 use crate::{engine::WorkflowEngine, storage::Storage};
 
 /// Trait encapsulating all type params of a [`WorkflowManager`].
-pub trait AsManager {
+pub trait AsManager: Send + Sync {
     /// Engine used by the manager.
     type Engine: WorkflowEngine;
     /// Storage used by the manager.

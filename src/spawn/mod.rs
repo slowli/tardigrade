@@ -88,15 +88,12 @@ use crate::{
     channel::{channel, RawReceiver, RawSender},
     interface::{AccessError, AccessErrorKind, Interface},
     task::JoinError,
-    workflow::{GetInterface, HandleFormat, InEnv, Inverse, UntypedHandles, WorkflowFn},
+    workflow::{GetInterface, HandleFormat, InEnv, Inverse, UntypedHandles, Wasm, WorkflowFn},
     Codec,
 };
 
 /// Manager of [`Interface`]s that allows obtaining an interface by a string identifier.
 pub trait ManageInterfaces {
-    /// Format of handles that this manager operates in.
-    type Fmt: HandleFormat;
-
     /// Returns the interface spec of a workflow with the specified ID.
     fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>>;
 }
@@ -104,6 +101,9 @@ pub trait ManageInterfaces {
 /// Manager of workflow channels.
 #[async_trait]
 pub trait ManageChannels: ManageInterfaces {
+    /// Format of handles that this manager operates in.
+    type Fmt: HandleFormat;
+
     /// Returns an instance of closed receiver. Since it's closed, aliasing is not a concern.
     fn closed_receiver(&self) -> <Self::Fmt as HandleFormat>::RawReceiver;
     /// Returns an instance of closed sender.
@@ -122,11 +122,9 @@ pub trait ManageChannels: ManageInterfaces {
 ///
 /// This trait is low-level; use [`ManageWorkflowsExt`] for a high-level alternative.
 #[async_trait]
-pub trait ManageWorkflows: ManageInterfaces {
+pub trait ManageWorkflows: ManageChannels {
     /// Handle to an instantiated workflow.
-    type Spawned<'s, W: WorkflowFn + GetInterface>
-    where
-        Self: 's;
+    type Spawned<W: WorkflowFn + GetInterface>;
     /// Error spawning a workflow.
     type Error: 'static + Send + Sync;
 
@@ -136,13 +134,13 @@ pub trait ManageWorkflows: ManageInterfaces {
         definition_id: &str,
         args: Vec<u8>,
         handles: UntypedHandles<Self::Fmt>,
-    ) -> Result<Self::Spawned<'_, ()>, Self::Error>;
+    ) -> Result<Self::Spawned<()>, Self::Error>;
 
     #[doc(hidden)]
-    fn downcast<'sp, W: WorkflowFn + GetInterface>(
+    fn downcast<W: WorkflowFn + GetInterface>(
         &self,
-        spawned: Self::Spawned<'sp, ()>,
-    ) -> Self::Spawned<'sp, W>;
+        spawned: Self::Spawned<()>,
+    ) -> Self::Spawned<W>;
 
     /// Initiates creating a new workflow and returns the corresponding builder.
     ///
@@ -189,7 +187,7 @@ impl<M: ManageWorkflows, W> fmt::Debug for WorkflowBuilder<'_, M, W> {
     }
 }
 
-impl<'a, M, W> WorkflowBuilder<'a, M, W>
+impl<M, W> WorkflowBuilder<'_, M, W>
 where
     M: ManageWorkflows,
     W: WorkflowFn + GetInterface,
@@ -204,7 +202,7 @@ where
         self,
         args: W::Args,
         handles: W::Handle<M::Fmt>,
-    ) -> Result<M::Spawned<'a, W>, M::Error> {
+    ) -> Result<M::Spawned<W>, M::Error> {
         let raw_args = <W::Codec>::encode_value(args);
         let raw_handles = W::into_untyped(handles);
         let spawned = self
@@ -217,7 +215,7 @@ where
 
 impl<'a, M, W> WorkflowBuilder<'a, M, W>
 where
-    M: ManageWorkflows + ManageChannels,
+    M: ManageWorkflows,
     W: WorkflowFn + GetInterface,
 {
     /// Builds the handles pair allowing to configure handles in the process.
@@ -237,6 +235,8 @@ pub struct Workflows;
 
 #[async_trait]
 impl ManageChannels for Workflows {
+    type Fmt = Wasm;
+
     fn closed_receiver(&self) -> RawReceiver {
         RawReceiver::closed()
     }
@@ -252,7 +252,7 @@ impl ManageChannels for Workflows {
 
 #[async_trait]
 impl ManageWorkflows for Workflows {
-    type Spawned<'s, W: WorkflowFn + GetInterface> = RemoteWorkflow;
+    type Spawned<W: WorkflowFn + GetInterface> = RemoteWorkflow;
     type Error = HostError;
 
     async fn new_workflow_raw(
@@ -260,14 +260,14 @@ impl ManageWorkflows for Workflows {
         definition_id: &str,
         args: Vec<u8>,
         handles: UntypedHandles<Self::Fmt>,
-    ) -> Result<Self::Spawned<'_, ()>, Self::Error> {
+    ) -> Result<Self::Spawned<()>, Self::Error> {
         imp::new_workflow(definition_id, args, handles).await
     }
 
-    fn downcast<'sp, W: WorkflowFn + GetInterface>(
+    fn downcast<W: WorkflowFn + GetInterface>(
         &self,
-        spawned: Self::Spawned<'sp, ()>,
-    ) -> Self::Spawned<'sp, W> {
+        spawned: Self::Spawned<()>,
+    ) -> Self::Spawned<W> {
         spawned
     }
 }
