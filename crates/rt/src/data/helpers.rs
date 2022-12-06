@@ -9,7 +9,7 @@ use crate::{
     engine::{CreateWaker, RunWorkflow},
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, PanicInfo, ResourceEvent,
-        ResourceEventKind, ResourceId, WakeUpCause,
+        ResourceEventKind, ResourceId, StubEvent, StubEventKind, StubId, WakeUpCause,
     },
 };
 use tardigrade::{
@@ -139,12 +139,14 @@ pub(super) struct CurrentExecution {
 impl CurrentExecution {
     pub fn new(function: &ExecutedFunction) -> Self {
         let task_id = function.task_id();
-        let wake_up_cause = if let ExecutedFunction::Waker { wake_up_cause, .. } = function {
-            // Copy the cause; we're not really interested in
-            // `WakeUpCause::Function { task_id: None }` that would result otherwise.
-            wake_up_cause.clone()
-        } else {
-            WakeUpCause::Function { task_id }
+        let wake_up_cause = match function {
+            ExecutedFunction::Waker { wake_up_cause, .. } => {
+                // Copy the cause; we're not really interested in
+                // `WakeUpCause::Function { task_id: None }` that would result otherwise.
+                wake_up_cause.clone()
+            }
+            ExecutedFunction::StubInitialization => WakeUpCause::StubInitialized,
+            _ => WakeUpCause::Function { task_id },
         };
 
         Self {
@@ -219,6 +221,10 @@ impl CurrentExecution {
             }
         }
         self.push_event(ResourceEvent { resource_id, kind });
+    }
+
+    pub fn push_stub_event(&mut self, stub_id: StubId, kind: StubEventKind) {
+        self.push_event(StubEvent { kind, stub_id });
     }
 
     pub fn set_panic(&mut self, info: PanicInfo) {

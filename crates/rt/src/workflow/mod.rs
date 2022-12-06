@@ -36,6 +36,19 @@ pub(crate) struct WorkflowAndChannelIds {
     pub channel_ids: ChannelIds,
 }
 
+#[derive(Debug)]
+enum ExecutedFunctionArgs<'a> {
+    WorkflowArgs(&'a [u8]),
+    NewChannel {
+        local_id: ChannelId,
+        id: ChannelId,
+    },
+    NewChild {
+        local_id: WorkflowId,
+        result: Result<WorkflowAndChannelIds, HostError>,
+    },
+}
+
 /// Workflow instance.
 #[derive(Debug)]
 pub(crate) struct Workflow<T> {
@@ -80,10 +93,11 @@ impl<T: RunWorkflow> Workflow<T> {
         Ok(spawn_receipt)
     }
 
-    fn spawn_main_task(&mut self, raw_data: &[u8]) -> Result<Receipt, ExecutionError> {
+    fn spawn_main_task(&mut self, raw_args: &[u8]) -> Result<Receipt, ExecutionError> {
+        let args = ExecutedFunctionArgs::WorkflowArgs(raw_args);
         let mut receipt = Receipt::default();
         let task_id = self
-            .execute(ExecutedFunction::Entry, Some(raw_data), &mut receipt)?
+            .execute(ExecutedFunction::Entry, Some(args), &mut receipt)?
             .main_task_id
             .expect("main task ID not set");
         self.inner.data_mut().spawn_main_task(task_id);
@@ -93,7 +107,7 @@ impl<T: RunWorkflow> Workflow<T> {
     fn do_execute(
         &mut self,
         function: &ExecutedFunction,
-        data: Option<&[u8]>,
+        args: Option<ExecutedFunctionArgs<'_>>,
     ) -> anyhow::Result<ExecutionOutput> {
         let mut output = ExecutionOutput::default();
         match function {
@@ -105,7 +119,6 @@ impl<T: RunWorkflow> Workflow<T> {
                     }
                 })?;
             }
-
             ExecutedFunction::Waker {
                 waker_id,
                 wake_up_cause,
@@ -118,7 +131,31 @@ impl<T: RunWorkflow> Workflow<T> {
                 self.inner.drop_task(*task_id)?;
             }
             ExecutedFunction::Entry => {
-                output.main_task_id = Some(self.inner.create_main_task(data.unwrap())?);
+                let Some(ExecutedFunctionArgs::WorkflowArgs(args)) = args else { unreachable!() };
+                output.main_task_id = Some(self.inner.create_main_task(args)?);
+            }
+
+            ExecutedFunction::StubInitialization => {
+                let cause = WakeUpCause::StubInitialized;
+                match args.unwrap() {
+                    ExecutedFunctionArgs::NewChannel { local_id, id } => {
+                        self.inner.data_mut().notify_on_channel_init(local_id, id);
+                        WorkflowData::wake(&mut self.inner, cause, |workflow| {
+                            workflow.initialize_channel(local_id, Ok(id));
+                        });
+                    }
+                    ExecutedFunctionArgs::NewChild { local_id, result } => {
+                        let narrow_result = result
+                            .as_ref()
+                            .map(|ids| ids.workflow_id)
+                            .map_err(HostError::clone);
+                        self.inner.data_mut().notify_on_child_init(local_id, result);
+                        WorkflowData::wake(&mut self.inner, cause, |workflow| {
+                            workflow.initialize_child(local_id, narrow_result);
+                        });
+                    }
+                    ExecutedFunctionArgs::WorkflowArgs(_) => unreachable!(),
+                }
             }
         }
         Ok(output)
@@ -127,13 +164,13 @@ impl<T: RunWorkflow> Workflow<T> {
     fn execute(
         &mut self,
         function: ExecutedFunction,
-        data: Option<&[u8]>,
+        args: Option<ExecutedFunctionArgs<'_>>,
         receipt: &mut Receipt,
     ) -> Result<ExecutionOutput, ExecutionError> {
         self.inner.data_mut().set_current_execution(&function);
 
-        let mut output = self.do_execute(&function, data);
-        let (events, panic_info) = self
+        let mut output = self.do_execute(&function, args);
+        let (mut events, panic_info) = self
             .inner
             .data_mut()
             .remove_current_execution(output.is_err());
@@ -141,11 +178,26 @@ impl<T: RunWorkflow> Workflow<T> {
         let task_result = output
             .as_mut()
             .map_or(None, |output| output.task_result.take());
-        receipt.executions.push(Execution {
-            function,
-            events,
-            task_result,
-        });
+
+        // Compress initialization executions: the fact that they are executed separately
+        // is an implementation detail.
+        let mut is_compressed = false;
+        if function.is_stub_initialization() {
+            debug_assert!(task_result.is_none());
+            if let Some(last_execution) = receipt.executions.last_mut() {
+                if last_execution.function.is_stub_initialization() {
+                    last_execution.events.extend(mem::take(&mut events));
+                    is_compressed = true;
+                }
+            }
+        }
+        if !is_compressed {
+            receipt.executions.push(Execution {
+                function,
+                events,
+                task_result,
+            });
+        }
 
         // On error, we don't drop tasks mentioned in `resource_events`.
         let output =
@@ -241,31 +293,28 @@ impl<T: RunWorkflow> Workflow<T> {
         self.inner.data_mut().take_services()
     }
 
-    pub(crate) fn notify_on_channel_init(&mut self, local_id: ChannelId, id: ChannelId) {
-        let cause = WakeUpCause::StubInitialized;
-        self.inner.data_mut().persisted.notify_on_channel_init(id);
-        WorkflowData::wake(&mut self.inner, cause, |workflow| {
-            workflow.initialize_channel(local_id, Ok(id));
-        });
+    pub(crate) fn notify_on_channel_init(
+        &mut self,
+        local_id: ChannelId,
+        id: ChannelId,
+        receipt: &mut Receipt,
+    ) {
+        let function = ExecutedFunction::StubInitialization;
+        let args = ExecutedFunctionArgs::NewChannel { local_id, id };
+        self.execute(function, Some(args), receipt).unwrap();
+        // ^ `unwrap()` should be safe; no user-generated code is executed
     }
 
     pub(crate) fn notify_on_child_init(
         &mut self,
         local_id: WorkflowId,
         result: Result<WorkflowAndChannelIds, HostError>,
+        receipt: &mut Receipt,
     ) {
-        let result = result.map(|ids| {
-            self.inner
-                .data_mut()
-                .persisted
-                .notify_on_child_init(ids.workflow_id, ids.channel_ids);
-            ids.workflow_id
-        });
-
-        let cause = WakeUpCause::StubInitialized;
-        WorkflowData::wake(&mut self.inner, cause, |workflow| {
-            workflow.initialize_child(local_id, result);
-        });
+        let function = ExecutedFunction::StubInitialization;
+        let args = ExecutedFunctionArgs::NewChild { local_id, result };
+        self.execute(function, Some(args), receipt).unwrap();
+        // ^ `unwrap()` should be safe; no user-generated code is executed
     }
 
     #[tracing::instrument(level = "debug", skip(self), ret)]

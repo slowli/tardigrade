@@ -15,6 +15,7 @@ use std::{error, fmt, ops::Range, sync::Arc, task::Poll};
 use crate::utils::{serde_poll, serde_poll_res, serde_trap};
 use tardigrade::{
     channel::SendError,
+    spawn::HostError,
     task::{ErrorLocation, TaskError, TaskResult},
     ChannelId, TaskId, TimerId, WakerId, WorkflowId,
 };
@@ -60,7 +61,7 @@ pub enum WakeUpCause {
         id: TimerId,
     },
     /// Woken up by stub initialization.
-    StubInitialized, // FIXME: include stub details
+    StubInitialized,
     /// Woken up by completion of a child workflow.
     CompletedWorkflow(WorkflowId),
 }
@@ -75,7 +76,6 @@ pub enum WakeUpCause {
 #[non_exhaustive]
 pub enum ExecutedFunction {
     /// Entry point of the workflow.
-    #[non_exhaustive]
     Entry,
     /// Polling a task.
     #[non_exhaustive]
@@ -99,6 +99,8 @@ pub enum ExecutedFunction {
         /// ID of the task getting dropped.
         task_id: TaskId,
     },
+    /// Code executed as a response to stub initialization.
+    StubInitialization,
 }
 
 impl ExecutedFunction {
@@ -107,6 +109,10 @@ impl ExecutedFunction {
             Self::Task { task_id, .. } => Some(*task_id),
             _ => None,
         }
+    }
+
+    pub(crate) fn is_stub_initialization(&self) -> bool {
+        matches!(self, Self::StubInitialization)
     }
 
     fn wake_up_cause(&self) -> Option<&WakeUpCause> {
@@ -130,6 +136,7 @@ impl ExecutedFunction {
             Self::TaskDrop { task_id } => {
                 write!(formatter, "dropping task {}", task_id)
             }
+            Self::StubInitialization => formatter.write_str("initializing stubs"),
         }
     }
 }
@@ -145,8 +152,6 @@ pub enum ResourceId {
     Task(TaskId),
     /// Workflow ID.
     Workflow(WorkflowId),
-    /// Workflow stub ID.
-    WorkflowStub(WorkflowId),
 }
 
 /// Kind of a [`ResourceEvent`].
@@ -217,6 +222,38 @@ pub struct ChannelEvent {
     pub channel_id: ChannelId,
 }
 
+/// Kind of a [`StubEvent`]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum StubEventKind {
+    /// Stub is created by the workflow code.
+    Created,
+    /// Stub is mapped to the host-managed resource (channel or workflow).
+    Mapped(Result<u64, HostError>),
+}
+
+/// ID of a workflow-managed stub resource.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum StubId {
+    /// Channel stub.
+    Channel(ChannelId),
+    /// Child workflow stub.
+    Workflow(WorkflowId),
+}
+
+/// Event related to a channel or workflow stub.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct StubEvent {
+    /// Event kind.
+    pub kind: StubEventKind,
+    /// ID of the stub assigned by the workflow.
+    pub stub_id: StubId,
+}
+
 /// Event included into a [`Receipt`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -226,6 +263,8 @@ pub enum Event {
     Resource(ResourceEvent),
     /// Event related to a channel sender / receiver.
     Channel(ChannelEvent),
+    /// Event related to a channel or workflow stub.
+    Stub(StubEvent),
 }
 
 impl From<ResourceEvent> for Event {
@@ -237,6 +276,12 @@ impl From<ResourceEvent> for Event {
 impl From<ChannelEvent> for Event {
     fn from(event: ChannelEvent) -> Self {
         Self::Channel(event)
+    }
+}
+
+impl From<StubEvent> for Event {
+    fn from(event: StubEvent) -> Self {
+        Self::Stub(event)
     }
 }
 

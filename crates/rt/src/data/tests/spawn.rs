@@ -52,7 +52,7 @@ impl MockWorkflowManager {
             let channel_ids = mock_channel_ids(&self.interface, &mut 100);
             for id_handle in channel_ids.values() {
                 let id = *id_handle.as_ref().factor();
-                parent.notify_on_channel_init(id, id);
+                parent.notify_on_channel_init(id, id, &mut Receipt::default());
             }
 
             Ok(WorkflowAndChannelIds {
@@ -60,7 +60,7 @@ impl MockWorkflowManager {
                 channel_ids,
             })
         };
-        parent.notify_on_child_init(call.stub_id, result);
+        parent.notify_on_child_init(call.stub_id, result, &mut Receipt::default());
     }
 }
 

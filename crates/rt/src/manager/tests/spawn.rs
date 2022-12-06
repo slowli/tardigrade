@@ -6,7 +6,10 @@ use mimicry::AnswersSender;
 use super::*;
 use crate::{
     data::{tests::complete_task_with_error, ReportedErrorKind},
-    receipt::{ChannelEventKind, ResourceEvent, ResourceEventKind, ResourceId},
+    receipt::{
+        ChannelEventKind, ResourceEvent, ResourceEventKind, ResourceId, StubEvent, StubEventKind,
+        StubId,
+    },
     storage::{LocalTransaction, Readonly, WorkflowWaker},
     workflow::ChannelIds,
 };
@@ -70,16 +73,17 @@ async fn initialize_child(
     manager: &LocalManager,
     workflow_id: WorkflowId,
     poll_fn_sx: &mut AnswersSender<MockPollFn>,
-) {
+) -> (Receipt, Receipt) {
     poll_fn_sx
         .send_all([allocate_channels, spawn_child])
         .async_scope(async {
             // Allocate channels for the created child.
-            tick_workflow(manager, workflow_id).await.unwrap();
+            let channels_receipt = tick_workflow(manager, workflow_id).await.unwrap();
             // ...Then initialize the child.
-            tick_workflow(manager, workflow_id).await.unwrap();
+            let child_receipt = tick_workflow(manager, workflow_id).await.unwrap();
+            (channels_receipt, child_receipt)
         })
-        .await;
+        .await
 }
 
 #[async_std::test]
@@ -89,7 +93,46 @@ async fn spawning_child_workflow() {
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
 
-    initialize_child(&manager, workflow_id, &mut poll_fn_sx).await;
+    let (channels_receipt, child_receipt) =
+        initialize_child(&manager, workflow_id, &mut poll_fn_sx).await;
+    let executions = channels_receipt.executions().iter();
+    let init_count = executions
+        .filter(|execution| execution.function.is_stub_initialization())
+        .count();
+    assert_eq!(init_count, 1);
+
+    let stub_events = channels_receipt.events().filter_map(|event| match event {
+        Event::Stub(StubEvent { stub_id, kind }) => Some((*stub_id, kind)),
+        _ => None,
+    });
+    let stub_events: HashMap<_, _> = stub_events.collect();
+    assert_eq!(stub_events.len(), 3, "{stub_events:?}");
+    for id in 1..=3 {
+        assert_matches!(
+            stub_events[&StubId::Channel(id)],
+            StubEventKind::Mapped(Ok(_))
+        );
+    }
+
+    let child_stub_events = child_receipt.events().filter_map(|event| match event {
+        Event::Stub(event) => Some(event),
+        _ => None,
+    });
+    let child_stub_events: Vec<_> = child_stub_events.collect();
+    assert_matches!(
+        child_stub_events.as_slice(),
+        [
+            StubEvent {
+                stub_id: StubId::Workflow(CHILD_ID),
+                kind: StubEventKind::Created,
+            },
+            StubEvent {
+                stub_id: StubId::Workflow(CHILD_ID),
+                kind: StubEventKind::Mapped(Ok(CHILD_ID)),
+            },
+        ]
+    );
+
     workflow.update().await.unwrap();
     let persisted = workflow.persisted();
     let wakeup_causes: Vec<_> = persisted.pending_wakeup_causes().collect();
@@ -121,10 +164,20 @@ async fn spawning_child_workflow() {
         assert!(!traces.has_external_sender);
     }
 
+    send_message_from_child(&manager, traces_id, &mut poll_fn_sx).await;
+}
+
+async fn send_message_from_child(
+    manager: &LocalManager,
+    traces_id: ChannelId,
+    poll_fn_sx: &mut AnswersSender<MockPollFn>,
+) {
+    let workflow_id = 0;
+
     // Emulate the child workflow putting a message to the `traces` channel.
     poll_fn_sx
         .send(|_| Ok(Poll::Pending))
-        .async_scope(tick_workflow(&manager, child_id))
+        .async_scope(tick_workflow(manager, CHILD_ID))
         .await
         .unwrap();
     manager
@@ -148,7 +201,7 @@ async fn spawning_child_workflow() {
     };
     let receipt = poll_fn_sx
         .send(receive_child_trace)
-        .async_scope(feed_message(&manager, workflow_id, traces_id))
+        .async_scope(feed_message(manager, workflow_id, traces_id))
         .await
         .unwrap();
 
@@ -161,7 +214,7 @@ async fn spawning_child_workflow() {
     );
 
     // Check channel handles for child workflow
-    let handle = manager.workflow(child_id).await.unwrap().handle();
+    let handle = manager.workflow(CHILD_ID).await.unwrap().handle();
     let mut handle = handle.with_indexing();
     let mut child_orders = handle.remove(ReceiverAt("orders")).unwrap();
     let child_orders_id = child_orders.channel_id();

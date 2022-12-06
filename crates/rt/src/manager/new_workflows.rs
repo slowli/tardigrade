@@ -18,6 +18,7 @@ use super::{
 use crate::{
     data::WorkflowData,
     engine::{DefineWorkflow, RunWorkflow, WorkflowEngine},
+    receipt::Receipt,
     storage::{
         ActiveWorkflowState, ChannelRecord, Storage, StorageTransaction, WorkflowRecord,
         WorkflowWaker,
@@ -114,8 +115,12 @@ impl<S: DefineWorkflow> NewWorkflows<S> {
         }
     }
 
-    pub async fn commit<T, E>(self, transaction: &mut T, parent: &mut Workflow<E>)
-    where
+    pub async fn commit<T, E>(
+        self,
+        transaction: &mut T,
+        parent: &mut Workflow<E>,
+        receipt: &mut Receipt,
+    ) where
         T: StorageTransaction,
         E: RunWorkflow,
     {
@@ -123,7 +128,7 @@ impl<S: DefineWorkflow> NewWorkflows<S> {
 
         for local_id in self.new_channels {
             let channel_id = commit_channel(executed_workflow_id, transaction).await;
-            parent.notify_on_channel_init(local_id, channel_id);
+            parent.notify_on_channel_init(local_id, channel_id, receipt);
         }
 
         for (stub_id, mut child_stub) in self.new_workflows {
@@ -134,7 +139,7 @@ impl<S: DefineWorkflow> NewWorkflows<S> {
                 &mut child_stub,
             );
             let result = result.await.map_err(|err| HostError::new(err.to_string()));
-            parent.notify_on_child_init(stub_id, result);
+            parent.notify_on_child_init(stub_id, result, receipt);
         }
     }
 

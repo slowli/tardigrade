@@ -5,16 +5,18 @@ use serde::{Deserialize, Serialize};
 
 use std::{borrow::Cow, collections::HashSet, fmt, mem, task::Poll};
 
+use crate::workflow::WorkflowAndChannelIds;
 use crate::{
     data::{
         channel::{ChannelStates, Channels},
         helpers::{WakerPlacement, WorkflowPoll},
         PersistedWorkflowData, WorkflowData,
     },
-    receipt::{ResourceEventKind, ResourceId, WakeUpCause},
+    receipt::{ResourceEventKind, ResourceId, StubEventKind, StubId, WakeUpCause},
     utils,
     workflow::ChannelIds,
 };
+use tardigrade::spawn::HostError;
 use tardigrade::{
     interface::{Handle, HandleMapKey, Interface, ReceiverAt, SenderAt},
     task::JoinError,
@@ -98,17 +100,6 @@ impl PersistedWorkflowData {
     pub fn child_workflow(&self, id: WorkflowId) -> Option<ChildWorkflow<'_>> {
         let state = self.child_workflows.get(&id)?;
         Some(ChildWorkflow::new(state, &self.channels))
-    }
-
-    pub fn notify_on_child_init(&mut self, workflow_id: WorkflowId, mut channel_ids: ChannelIds) {
-        for spec in channel_ids.values_mut() {
-            *spec = match spec {
-                Handle::Sender(id) => Handle::Receiver(*id),
-                Handle::Receiver(id) => Handle::Sender(*id),
-            };
-        }
-        let child_state = ChildWorkflowState::new(channel_ids);
-        self.child_workflows.insert(workflow_id, child_state);
     }
 
     pub fn notify_on_child_completion(&mut self, id: WorkflowId, result: Result<(), JoinError>) {
@@ -233,11 +224,32 @@ impl WorkflowData {
             .ok_or_else(|| anyhow!("no capability to spawn workflows"))?;
         workflows.stash_workflow(stub_id, definition_id, args, channels);
 
-        self.current_execution().push_resource_event(
-            ResourceId::WorkflowStub(stub_id),
-            ResourceEventKind::Created,
-        );
+        self.current_execution()
+            .push_stub_event(StubId::Workflow(stub_id), StubEventKind::Created);
         Ok(())
+    }
+
+    pub(crate) fn notify_on_child_init(
+        &mut self,
+        local_id: WorkflowId,
+        result: Result<WorkflowAndChannelIds, HostError>,
+    ) {
+        let result = result.map(|mut ids| {
+            for spec in ids.channel_ids.values_mut() {
+                *spec = match spec {
+                    Handle::Sender(id) => Handle::Receiver(*id),
+                    Handle::Receiver(id) => Handle::Sender(*id),
+                };
+            }
+            let child_state = ChildWorkflowState::new(ids.channel_ids);
+            self.persisted
+                .child_workflows
+                .insert(ids.workflow_id, child_state);
+            ids.workflow_id
+        });
+
+        self.current_execution()
+            .push_stub_event(StubId::Workflow(local_id), StubEventKind::Mapped(result));
     }
 
     /// Returns an action handle for the child workflow with the specified ID.

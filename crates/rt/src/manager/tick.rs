@@ -272,8 +272,8 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         let children = NewWorkflows::new(Some(workflow_id), self.shared());
         let mut workflow = template.restore(children, tracer);
 
-        let result = workflow.tick();
-        if let Ok(receipt) = &result {
+        let mut result = workflow.tick();
+        if let Ok(receipt) = &mut result {
             if let Some(pending) = &pending_channel {
                 pending.take_pending_message::<E>(&mut workflow);
             }
@@ -284,7 +284,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
             let (children, tracer) =
                 WorkflowSeed::<E::Definition>::extract_services(workflow.take_services());
             let messages = workflow.drain_messages();
-            children.commit(transaction, &mut workflow).await;
+            children.commit(transaction, &mut workflow, receipt).await;
             let tracing_metadata = tracer.persist_metadata();
             let (spans, local_spans) = tracer.persist();
 

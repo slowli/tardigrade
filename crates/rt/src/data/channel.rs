@@ -14,7 +14,11 @@ use super::{
     helpers::{WakerPlacement, Wakers, WorkflowPoll},
     PersistedWorkflowData, WorkflowData,
 };
-use crate::{receipt::WakeUpCause, utils::Message, workflow::ChannelIds};
+use crate::{
+    receipt::{StubEventKind, StubId, WakeUpCause},
+    utils::Message,
+    workflow::ChannelIds,
+};
 use tardigrade::{
     channel::SendError,
     interface::{
@@ -275,12 +279,6 @@ impl<'a> Channels<'a> {
 }
 
 impl PersistedWorkflowData {
-    pub(crate) fn notify_on_channel_init(&mut self, channel_id: ChannelId) {
-        self.channels.insert_receiver(channel_id);
-        self.channels.insert_sender(channel_id, Some(1));
-        // TODO: what is the appropriate capacity?
-    }
-
     pub(crate) fn push_message_for_receiver(
         &mut self,
         channel_id: ChannelId,
@@ -528,6 +526,15 @@ impl SenderActions<'_> {
 
 /// Channel-related functionality.
 impl WorkflowData {
+    pub(crate) fn notify_on_channel_init(&mut self, local_id: ChannelId, id: ChannelId) {
+        self.persisted.channels.insert_receiver(id);
+        self.persisted.channels.insert_sender(id, Some(1));
+        // TODO: what is the appropriate capacity?
+
+        self.current_execution()
+            .push_stub_event(StubId::Channel(local_id), StubEventKind::Mapped(Ok(id)));
+    }
+
     /// Starts creating a channel.
     ///
     /// # Errors
@@ -537,6 +544,8 @@ impl WorkflowData {
         let workflows = self.services_mut().workflows.as_deref_mut();
         let workflows = workflows.ok_or_else(|| anyhow!("cannot create new channel"))?;
         workflows.stash_channel(id);
+        self.current_execution()
+            .push_stub_event(StubId::Channel(id), StubEventKind::Created);
         Ok(())
     }
 
