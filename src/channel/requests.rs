@@ -9,20 +9,45 @@ use futures::{
     },
     future,
     stream::{self, FusedStream},
-    FutureExt, Sink, SinkExt, Stream, StreamExt,
+    FutureExt, SinkExt, StreamExt,
 };
 use serde::{Deserialize, Serialize};
 
 use std::{collections::HashMap, future::Future, marker::PhantomData};
 
 use crate::{
-    channel::SendError,
+    channel::{Receiver, Sender},
     task::{self, JoinHandle},
+    workflow::{InEnv, TakeHandle, Wasm, WorkflowEnv},
+    ChannelId, Codec,
 };
 
-/// Container for a value together with a numeric ID.
+/// Container for a request.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct WithId<T> {
+#[serde(rename_all = "snake_case")]
+pub enum Request<T> {
+    /// New request.
+    New {
+        /// Identifier associated with the value.
+        #[serde(rename = "@id")]
+        id: u64,
+        /// Payload of the request.
+        data: T,
+        /// ID of the response channel.
+        #[serde(rename = "rx")]
+        response_channel_id: ChannelId,
+    },
+    /// Request cancellation.
+    Cancel {
+        /// Identifier associated with the value.
+        #[serde(rename = "@id")]
+        id: u64,
+    },
+}
+
+/// Container for a response to the request.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Response<T> {
     /// Identifier associated with the value.
     #[serde(rename = "@id")]
     pub id: u64,
@@ -41,15 +66,21 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
         feature = "tracing",
         tracing::instrument(name = "run_requests", skip_all, fields(self.capacity = self.capacity))
     )]
-    async fn run(
+    async fn run<C>(
         mut self,
-        mut requests_sx: impl Sink<WithId<Req>, Error = SendError> + Unpin,
-        responses_rx: impl Stream<Item = WithId<Resp>> + Unpin,
-    ) {
+        mut requests_sx: Sender<Request<Req>, C>,
+        responses_rx: Receiver<Response<Resp>, C>,
+    ) where
+        C: Codec<Request<Req>> + Codec<Response<Resp>>,
+    {
+        const MAX_ALLOC_CAPACITY: usize = 16;
+
+        let response_channel_id = responses_rx.channel_id();
         let mut responses_rx = responses_rx.fuse();
         let mut requests_rx = self.requests_rx.by_ref().left_stream();
+        let allocated_capacity = self.capacity.min(MAX_ALLOC_CAPACITY);
         let mut pending_requests =
-            HashMap::<u64, oneshot::Sender<Resp>>::with_capacity(self.capacity);
+            HashMap::<u64, oneshot::Sender<Resp>>::with_capacity(allocated_capacity);
         let mut next_id = 0_u64;
 
         loop {
@@ -64,7 +95,7 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 
             futures::select! {
                 maybe_resp = responses_rx.next() => {
-                    if let Some(WithId { id, data }) = maybe_resp {
+                    if let Some(Response { id, data }) = maybe_resp {
                         #[cfg(feature = "tracing")]
                         tracing::debug!(id, "received response");
 
@@ -88,9 +119,10 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
                         #[cfg(feature = "tracing")]
                         tracing::debug!(id = next_id, "received new request");
 
-                        let data_to_send = WithId {
+                        let data_to_send = Request::New {
                             id: next_id,
                             data: req,
+                            response_channel_id,
                         };
                         pending_requests.insert(next_id, sx);
                         next_id += 1;
@@ -111,12 +143,27 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
             }
 
             // Free up space for pending requests.
-            pending_requests.retain(|_, sx| !sx.is_canceled());
+            let mut canceled_ids = vec![];
+            pending_requests.retain(|&id, sx| {
+                let is_canceled = sx.is_canceled();
+                if is_canceled {
+                    canceled_ids.push(id);
+                }
+                !is_canceled
+            });
+
             #[cfg(feature = "tracing")]
             tracing::debug!(
                 requests = pending_requests.len(),
                 "removed cancelled pending requests"
             );
+            let canceled_ids = canceled_ids
+                .into_iter()
+                .map(|id| Ok(Request::Cancel { id }));
+            requests_sx
+                .send_all(&mut stream::iter(canceled_ids))
+                .await
+                .ok();
 
             if self.requests_rx.is_terminated() && pending_requests.is_empty() {
                 break;
@@ -146,20 +193,20 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 /// # use serde::{Deserialize, Serialize};
 /// #
 /// # use tardigrade::{
-/// #     channel::{Requests, Sender, Receiver, WithId},
+/// #     channel::{Request, Requests, Response, Sender, Receiver},
 /// #     task::{TaskResult, ErrorContextExt},
 /// #     workflow::{
-/// #         GetInterface, Handle, SpawnWorkflow, TaskHandle, TakeHandle, Wasm, WorkflowEnv,
+/// #         GetInterface, InEnv, SpawnWorkflow, TaskHandle, TakeHandle, Wasm, WorkflowEnv,
 /// #         WorkflowFn,
 /// #     },
 /// #     Json,
 /// # };
 /// #[derive(Debug, Serialize, Deserialize)]
-/// pub struct Request {
+/// pub struct MyRequest {
 ///     // request fields...
 /// }
 /// #[derive(Debug, Serialize, Deserialize)]
-/// pub struct Response {
+/// pub struct MyResponse {
 ///     // response fields...
 /// }
 ///
@@ -167,11 +214,11 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 /// # #[tardigrade(handle = "MyHandle", auto_interface)]
 /// pub struct MyWorkflow(());
 ///
-/// #[tardigrade::handle]
-/// #[derive(Debug)]
+/// #[derive(TakeHandle)]
+/// #[tardigrade(derive(Debug))]
 /// pub struct MyHandle<Env: WorkflowEnv> {
-///     pub requests: Handle<Sender<WithId<Request>, Json>, Env>,
-///     pub responses: Handle<Receiver<WithId<Response>, Json>, Env>,
+///     pub requests: InEnv<Sender<Request<MyRequest>, Json>, Env>,
+///     pub responses: InEnv<Receiver<Response<MyResponse>, Json>, Env>,
 /// }
 /// # impl WorkflowFn for MyWorkflow {
 /// #     type Args = ();
@@ -186,7 +233,7 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 ///             .with_task_name("handling_requests")
 ///             .build();
 ///         let response = requests
-///             .request(Request { /* ... */ })
+///             .request(MyRequest { /* ... */ })
 ///             .await
 ///             .context("request cancelled")?;
 ///         // Do something with the response...
@@ -194,6 +241,8 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 ///     }
 /// }
 /// ```
+///
+/// See [`RequestHandles`] docs for a higher-level alternative way to build `Requests`.
 #[derive(Debug)]
 pub struct Requests<Req, Resp> {
     requests_sx: mpsc::Sender<(Req, oneshot::Sender<Resp>)>,
@@ -201,13 +250,12 @@ pub struct Requests<Req, Resp> {
 
 impl<Req: 'static, Resp: 'static> Requests<Req, Resp> {
     /// Creates a new sender based on the specified channels.
-    pub fn builder<Sx, Rx>(
-        requests_sx: Sx,
-        responses_rx: Rx,
-    ) -> RequestsBuilder<'static, Req, Sx, Rx>
+    pub fn builder<C>(
+        requests_sx: Sender<Request<Req>, C>,
+        responses_rx: Receiver<Response<Resp>, C>,
+    ) -> RequestsBuilder<'static, Req, Resp, C>
     where
-        Sx: Sink<WithId<Req>, Error = SendError> + Unpin + 'static,
-        Rx: Stream<Item = WithId<Resp>> + Unpin + 'static,
+        C: Codec<Request<Req>> + Codec<Response<Resp>>,
     {
         RequestsBuilder {
             requests_sx,
@@ -239,20 +287,19 @@ impl<Req: 'static, Resp: 'static> Requests<Req, Resp> {
 
 /// Builder for [`Requests`].
 #[derive(Debug)]
-pub struct RequestsBuilder<'a, Req, Sx, Rx> {
-    requests_sx: Sx,
-    responses_rx: Rx,
+pub struct RequestsBuilder<'a, Req, Resp, C> {
+    requests_sx: Sender<Request<Req>, C>,
+    responses_rx: Receiver<Response<Resp>, C>,
     capacity: usize,
     task_name: &'a str,
     _req: PhantomData<Req>,
 }
 
-impl<'a, Req, Resp, Sx, Rx> RequestsBuilder<'a, Req, Sx, Rx>
+impl<'a, Req, Resp, C> RequestsBuilder<'a, Req, Resp, C>
 where
     Req: 'static,
     Resp: 'static,
-    Sx: Sink<WithId<Req>, Error = SendError> + Unpin + 'static,
-    Rx: Stream<Item = WithId<Resp>> + Unpin + 'static,
+    C: Codec<Request<Req>> + Codec<Response<Resp>>,
 {
     /// Specifies the capacity (max number of concurrently processed requests).
     /// The default requests capacity is 1.
@@ -294,5 +341,61 @@ where
             requests_sx: inner_sx,
         };
         (requests, task)
+    }
+}
+
+/// A pair consisting of a sender and a receiver that can be used to handle requests.
+///
+/// # Examples
+///
+/// `RequestHandles` can be used as a higher-level alternative to manually creating [`Requests`].
+///
+/// ```
+/// # use serde::{Deserialize, Serialize};
+/// # use std::error::Error;
+/// # use tardigrade::{
+/// #     channel::{SendError, RequestHandles}, workflow::{TakeHandle, Wasm, WorkflowEnv}, Json,
+/// # };
+/// #[derive(Serialize, Deserialize)]
+/// pub struct MyRequest {
+///     // request fields...
+/// }
+///
+/// #[derive(TakeHandle)]
+/// #[tardigrade(derive(Debug))]
+/// pub struct MyHandle<Env: WorkflowEnv = Wasm> {
+///     pub task: RequestHandles<MyRequest, (), Json, Env>,
+///     // other handles...
+/// }
+///
+/// // Usage in workflow code:
+/// # async fn workflow_code(handle: MyHandle) -> Result<(), Box<dyn Error>> {
+/// let handle: MyHandle = // ...
+/// # handle;
+/// let (requests, _) =
+///     handle.task.process_requests().with_capacity(4).build();
+/// requests.request(MyRequest { /* .. */ }).await?;
+/// # Ok(())
+/// # }
+/// ```
+#[derive(TakeHandle)]
+#[tardigrade(crate = "crate", derive(Debug, Clone))]
+pub struct RequestHandles<Req, Resp, C, Env: WorkflowEnv = Wasm>
+where
+    C: Codec<Request<Req>> + Codec<Response<Resp>>,
+{
+    /// Requests sender.
+    pub requests: InEnv<Sender<Request<Req>, C>, Env>,
+    /// Responses receiver.
+    pub responses: InEnv<Receiver<Response<Resp>, C>, Env>,
+}
+
+impl<Req: 'static, Resp: 'static, C> RequestHandles<Req, Resp, C>
+where
+    C: Codec<Request<Req>> + Codec<Response<Resp>>,
+{
+    /// Starts building a [`Requests`] processor based on the contained sender-receiver pair.
+    pub fn process_requests(self) -> RequestsBuilder<'static, Req, Resp, C> {
+        Requests::builder(self.requests, self.responses)
     }
 }

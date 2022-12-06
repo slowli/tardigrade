@@ -1,6 +1,5 @@
 //! Persistence for `State`.
 
-use anyhow::anyhow;
 use chrono::{DateTime, Utc};
 
 use std::{collections::HashMap, error, fmt};
@@ -14,7 +13,7 @@ use super::{
 };
 use crate::{manager::Services, workflow::ChannelIds};
 use tardigrade::{
-    interface::{ChannelHalf, Interface},
+    interface::{ChannelHalf, HandlePath, Interface, ReceiverAt, SenderAt},
     ChannelId,
 };
 
@@ -54,38 +53,27 @@ impl fmt::Display for PersistError {
 impl error::Error for PersistError {}
 
 impl ReceiverState {
-    fn check_on_restore(interface: &Interface, channel_name: &str) -> anyhow::Result<()> {
-        interface.receiver(channel_name).ok_or_else(|| {
-            anyhow!(
-                "receiver `{}` is present in persisted state, but not \
-                 in workflow interface",
-                channel_name
-            )
-        })?;
+    fn check_on_restore(interface: &Interface, path: HandlePath<'_>) -> anyhow::Result<()> {
+        interface.handle(ReceiverAt(path))?;
         Ok(())
     }
 }
 
 impl SenderState {
-    fn check_on_restore(interface: &Interface, channel_name: &str) -> anyhow::Result<()> {
-        interface.sender(channel_name).ok_or_else(|| {
-            anyhow!(
-                "sender `{}` is present in persisted state, but not \
-                 in workflow interface",
-                channel_name
-            )
-        })?;
+    fn check_on_restore(interface: &Interface, path: HandlePath<'_>) -> anyhow::Result<()> {
+        interface.handle(SenderAt(path))?;
         Ok(())
     }
 }
 
 impl ChannelStates {
     fn check_on_restore(&self, interface: &Interface) -> anyhow::Result<()> {
-        for name in self.mapping.receiver_names() {
-            ReceiverState::check_on_restore(interface, name)?;
-        }
-        for name in self.mapping.sender_names() {
-            SenderState::check_on_restore(interface, name)?;
+        for (path, spec) in &self.mapping {
+            let path = path.as_ref();
+            spec.as_ref()
+                .map_receiver(|_| ReceiverState::check_on_restore(interface, path))
+                .map_sender(|_| SenderState::check_on_restore(interface, path))
+                .factor()?;
         }
         Ok(())
     }

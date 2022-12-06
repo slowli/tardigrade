@@ -1,16 +1,90 @@
 //! Types related to workflow interface definition.
 
+use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 
-use std::{collections::HashMap, error, fmt, ops};
+use std::{error, fmt, ops};
+
+pub use crate::path::{HandlePath, HandlePathBuf, ReceiverAt, SenderAt};
+
+/// Generic handle to a building block of a workflow interface (channel sender or receiver).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Handle<Rx, Sx = Rx> {
+    /// Receiver handle.
+    Receiver(Rx),
+    /// Sender handle.
+    Sender(Sx),
+}
+
+impl<Rx, Sx> Handle<Rx, Sx> {
+    /// Converts a shared reference to this handle to a `Handle` containing the shared reference.
+    #[inline]
+    pub fn as_ref(&self) -> Handle<&Rx, &Sx> {
+        match self {
+            Self::Receiver(rx) => Handle::Receiver(rx),
+            Self::Sender(sx) => Handle::Sender(sx),
+        }
+    }
+
+    /// Converts an exclusive reference to this handle to a `Handle` containing
+    /// the exclusive reference.
+    #[inline]
+    pub fn as_mut(&mut self) -> Handle<&mut Rx, &mut Sx> {
+        match self {
+            Self::Receiver(rx) => Handle::Receiver(rx),
+            Self::Sender(sx) => Handle::Sender(sx),
+        }
+    }
+
+    /// Maps the receiver type in this handle.
+    #[inline]
+    pub fn map_receiver<U>(self, mapping: impl FnOnce(Rx) -> U) -> Handle<U, Sx> {
+        match self {
+            Self::Receiver(rx) => Handle::Receiver(mapping(rx)),
+            Self::Sender(sx) => Handle::Sender(sx),
+        }
+    }
+
+    /// Maps the sender type of this handle.
+    #[inline]
+    pub fn map_sender<U>(self, mapping: impl FnOnce(Sx) -> U) -> Handle<Rx, U> {
+        match self {
+            Self::Receiver(rx) => Handle::Receiver(rx),
+            Self::Sender(sx) => Handle::Sender(mapping(sx)),
+        }
+    }
+}
+
+impl<T> Handle<T> {
+    /// Maps both types of this handle provided that they coincide.
+    #[inline]
+    pub fn map<U>(self, mapping: impl FnOnce(T) -> U) -> Handle<U> {
+        match self {
+            Self::Receiver(rx) => Handle::Receiver(mapping(rx)),
+            Self::Sender(sx) => Handle::Sender(mapping(sx)),
+        }
+    }
+
+    /// Factors the underlying type from this handle.
+    #[inline]
+    pub fn factor(self) -> T {
+        match self {
+            Self::Receiver(value) | Self::Sender(value) => value,
+        }
+    }
+}
+
+/// Map of handles keyed by [owned handle paths](HandlePathBuf).
+pub type HandleMap<Rx, Sx = Rx> = HashMap<HandlePathBuf, Handle<Rx, Sx>>;
 
 /// Kind of a channel half (sender or receiver) in a workflow interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChannelHalf {
     /// Receiver.
-    Receiver = 0,
+    Receiver,
     /// Sender.
-    Sender = 1,
+    Sender,
 }
 
 impl fmt::Display for ChannelHalf {
@@ -28,6 +102,8 @@ impl fmt::Display for ChannelHalf {
 pub enum AccessErrorKind {
     /// Channel was not registered in the workflow interface.
     Unknown,
+    /// Mismatch between expected anc actual kind of a handle.
+    KindMismatch,
     /// Custom error.
     Custom(Box<dyn error::Error + Send + Sync>),
 }
@@ -36,6 +112,9 @@ impl fmt::Display for AccessErrorKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unknown => formatter.write_str("not registered in the workflow interface"),
+            Self::KindMismatch => {
+                formatter.write_str("mismatch between expected anc actual kind of a handle")
+            }
             Self::Custom(err) => fmt::Display::fmt(err, formatter),
         }
     }
@@ -60,12 +139,12 @@ impl AccessErrorKind {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum InterfaceLocation {
-    /// Channel in the workflow interface.
+    /// Channel handle in the workflow interface.
     Channel {
-        /// Channel kind.
-        kind: ChannelHalf,
-        /// Channel name.
-        name: String,
+        /// Channel handle kind (sender or receiver).
+        kind: Option<ChannelHalf>,
+        /// Path to the channel handle.
+        path: HandlePathBuf,
     },
     /// Arguments supplied to the workflow on creation.
     Args,
@@ -74,10 +153,41 @@ pub enum InterfaceLocation {
 impl fmt::Display for InterfaceLocation {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Channel { kind, name } => {
-                write!(formatter, "{} channel `{}`", kind, name)
+            Self::Channel { kind, path } => {
+                if let Some(kind) = kind {
+                    write!(formatter, "{kind} channel `{path}`")
+                } else {
+                    write!(formatter, "channel `{path}`")
+                }
             }
             Self::Args => write!(formatter, "arguments"),
+        }
+    }
+}
+
+impl<'p, P: Into<HandlePath<'p>>> From<P> for InterfaceLocation {
+    fn from(path: P) -> Self {
+        Self::Channel {
+            kind: None,
+            path: path.into().to_owned(),
+        }
+    }
+}
+
+impl<'p, P: Into<HandlePath<'p>>> From<ReceiverAt<P>> for InterfaceLocation {
+    fn from(path: ReceiverAt<P>) -> Self {
+        Self::Channel {
+            kind: Some(ChannelHalf::Receiver),
+            path: path.0.into().to_owned(),
+        }
+    }
+}
+
+impl<'p, P: Into<HandlePath<'p>>> From<SenderAt<P>> for InterfaceLocation {
+    fn from(path: SenderAt<P>) -> Self {
+        Self::Channel {
+            kind: Some(ChannelHalf::Sender),
+            path: path.0.into().to_owned(),
         }
     }
 }
@@ -127,9 +237,174 @@ impl AccessError {
         &self.kind
     }
 
+    #[doc(hidden)]
+    pub fn into_kind(self) -> AccessErrorKind {
+        self.kind
+    }
+
     /// Returns location of this error.
     pub fn location(&self) -> Option<&InterfaceLocation> {
         self.location.as_ref()
+    }
+}
+
+/// Key type for accessing handles in a named collections, such as a [`HandleMap`]
+/// or an [`Interface`].
+pub trait HandleMapKey: Into<InterfaceLocation> + Copy + fmt::Debug {
+    /// Output of the access operation. Parameterized by receiver and sender types
+    /// (e.g., the corresponding specifications for [`Interface`]).
+    type Output<Rx, Sx>;
+
+    // This is quite ugly, but we cannot return `HandlePath<'_>` from a method
+    // even if we introduce a surrogate lifetime by using the `&self` receiver.
+    #[doc(hidden)]
+    fn with_path<R>(self, action: impl FnOnce(HandlePath<'_>) -> R) -> R;
+
+    #[doc(hidden)]
+    fn from_handle<Rx, Sx>(handle: Handle<Rx, Sx>) -> Option<Self::Output<Rx, Sx>>;
+
+    // We cannot only use `Self::from_handle()` with `<&Rx, &Sx>` type args because
+    // we need a reference to be returned in some cases (e.g., for indexing).
+    #[doc(hidden)]
+    fn from_handle_ref<Rx, Sx>(handle: &Handle<Rx, Sx>) -> Option<&Self::Output<Rx, Sx>>;
+
+    #[doc(hidden)]
+    fn from_handle_mut<Rx, Sx>(handle: &mut Handle<Rx, Sx>) -> Option<&mut Self::Output<Rx, Sx>>;
+
+    /// Returns a shared reference from the provided `map` using this key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a value with the specified key doesn't exist in the map,
+    /// or if it has an unexpected type.
+    fn get<Rx, Sx>(self, map: &HandleMap<Rx, Sx>) -> Result<&Self::Output<Rx, Sx>, AccessError> {
+        let result = self
+            .with_path(|path| map.get(&path))
+            .ok_or(AccessErrorKind::Unknown);
+        result
+            .and_then(|handle| Self::from_handle_ref(handle).ok_or(AccessErrorKind::KindMismatch))
+            .map_err(|err| err.with_location(self))
+    }
+
+    /// Returns an exclusive reference from the provided `map` using this key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a value with the specified key doesn't exist in the map,
+    /// or if it has an unexpected type.
+    fn get_mut<Rx, Sx>(
+        self,
+        map: &mut HandleMap<Rx, Sx>,
+    ) -> Result<&mut Self::Output<Rx, Sx>, AccessError> {
+        let result = self
+            .with_path(|path| map.get_mut(&path))
+            .ok_or(AccessErrorKind::Unknown);
+        result
+            .and_then(|handle| Self::from_handle_mut(handle).ok_or(AccessErrorKind::KindMismatch))
+            .map_err(|err| err.with_location(self))
+    }
+
+    /// Removes a value from the provided `map` using this key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a value with the specified key doesn't exist in the map,
+    /// or if it has an unexpected type. In the latter case, the value is *not* removed
+    /// from the map (i.e., the type check is performed before any modifications).
+    fn remove<Rx, Sx>(
+        self,
+        map: &mut HandleMap<Rx, Sx>,
+    ) -> Result<Self::Output<Rx, Sx>, AccessError> {
+        self.get(map)?;
+        let handle = self.with_path(|path| map.remove(&path)).unwrap();
+        Ok(Self::from_handle(handle).unwrap())
+    }
+}
+
+impl<'p, P> HandleMapKey for P
+where
+    P: Into<HandlePath<'p>> + Copy + fmt::Debug,
+{
+    type Output<Rx, Sx> = Handle<Rx, Sx>;
+
+    fn with_path<R>(self, action: impl FnOnce(HandlePath<'_>) -> R) -> R {
+        action(self.into())
+    }
+
+    fn from_handle<Rx, Sx>(handle: Handle<Rx, Sx>) -> Option<Self::Output<Rx, Sx>> {
+        Some(handle)
+    }
+
+    fn from_handle_ref<Rx, Sx>(handle: &Handle<Rx, Sx>) -> Option<&Self::Output<Rx, Sx>> {
+        Some(handle)
+    }
+
+    fn from_handle_mut<Rx, Sx>(handle: &mut Handle<Rx, Sx>) -> Option<&mut Self::Output<Rx, Sx>> {
+        Some(handle)
+    }
+}
+
+impl<'p, P> HandleMapKey for ReceiverAt<P>
+where
+    P: 'p + Into<HandlePath<'p>> + Copy + fmt::Debug,
+{
+    type Output<Rx, Sx> = Rx;
+
+    fn with_path<R>(self, action: impl FnOnce(HandlePath<'_>) -> R) -> R {
+        action(self.0.into())
+    }
+
+    fn from_handle<Rx, Sx>(handle: Handle<Rx, Sx>) -> Option<Rx> {
+        match handle {
+            Handle::Receiver(rx) => Some(rx),
+            Handle::Sender(_) => None,
+        }
+    }
+
+    fn from_handle_ref<Rx, Sx>(handle: &Handle<Rx, Sx>) -> Option<&Rx> {
+        match handle {
+            Handle::Receiver(rx) => Some(rx),
+            Handle::Sender(_) => None,
+        }
+    }
+
+    fn from_handle_mut<Rx, Sx>(handle: &mut Handle<Rx, Sx>) -> Option<&mut Rx> {
+        match handle {
+            Handle::Receiver(rx) => Some(rx),
+            Handle::Sender(_) => None,
+        }
+    }
+}
+
+impl<'p, P> HandleMapKey for SenderAt<P>
+where
+    P: 'p + Into<HandlePath<'p>> + Copy + fmt::Debug,
+{
+    type Output<Rx, Sx> = Sx;
+
+    fn with_path<R>(self, action: impl FnOnce(HandlePath<'_>) -> R) -> R {
+        action(self.0.into())
+    }
+
+    fn from_handle<Rx, Sx>(handle: Handle<Rx, Sx>) -> Option<Sx> {
+        match handle {
+            Handle::Sender(sx) => Some(sx),
+            Handle::Receiver(_) => None,
+        }
+    }
+
+    fn from_handle_ref<Rx, Sx>(handle: &Handle<Rx, Sx>) -> Option<&Sx> {
+        match handle {
+            Handle::Sender(sx) => Some(sx),
+            Handle::Receiver(_) => None,
+        }
+    }
+
+    fn from_handle_mut<Rx, Sx>(handle: &mut Handle<Rx, Sx>) -> Option<&mut Sx> {
+        match handle {
+            Handle::Sender(sx) => Some(sx),
+            Handle::Receiver(_) => None,
+        }
     }
 }
 
@@ -193,43 +468,8 @@ pub struct ArgsSpec {
     pub description: String,
 }
 
-/// Newtype for indexing channel receivers, e.g., in an [`Interface`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ReceiverName<'a>(pub &'a str);
-
-impl fmt::Display for ReceiverName<'_> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "channel receiver `{}`", self.0)
-    }
-}
-
-impl From<ReceiverName<'_>> for InterfaceLocation {
-    fn from(channel: ReceiverName<'_>) -> Self {
-        Self::Channel {
-            kind: ChannelHalf::Receiver,
-            name: channel.0.to_owned(),
-        }
-    }
-}
-
-/// Newtype for indexing channel senders, e.g., in an [`Interface`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SenderName<'a>(pub &'a str);
-
-impl fmt::Display for SenderName<'_> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "channel sender `{}`", self.0)
-    }
-}
-
-impl From<SenderName<'_>> for InterfaceLocation {
-    fn from(channel: SenderName<'_>) -> Self {
-        Self::Channel {
-            kind: ChannelHalf::Sender,
-            name: channel.0.to_owned(),
-        }
-    }
-}
+/// Specification for a handle in a workflow [`Interface`].
+pub type HandleSpec = Handle<ReceiverSpec, SenderSpec>;
 
 /// Specification of a workflow interface. Contains info about channel senders / receivers,
 /// arguments etc.
@@ -240,30 +480,31 @@ impl From<SenderName<'_>> for InterfaceLocation {
 /// # use tardigrade_shared::interface::*;
 /// # const INTERFACE_BYTES: &[u8] = br#"{
 /// #     "v": 0,
-/// #     "in": { "commands": {} },
-/// #     "out": { "events": {} }
+/// #     "handles": { "commands": { "receiver": {} } }
 /// # }"#;
 /// let interface: Interface = // ...
 /// #     Interface::from_bytes(INTERFACE_BYTES);
 ///
-/// let spec = interface.receiver("commands").unwrap();
-/// println!("{}", spec.description);
+/// let spec = interface.handle("commands").unwrap();
+/// println!("{spec:?}");
 ///
-/// assert!(interface
-///     .senders()
-///     .all(|(_, spec)| spec.capacity == Some(1)));
+/// for (path, spec) in interface.handles() {
+///     println!("{path}: {spec:?}");
+/// }
 /// // Indexing is also possible using newtype wrappers from the module
-/// let commands = &interface[ReceiverName("commands")];
+/// let commands = &interface[ReceiverAt("commands")];
 /// println!("{}", commands.description);
 /// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Interface {
     #[serde(rename = "v")]
     version: u32,
-    #[serde(rename = "in", default, skip_serializing_if = "HashMap::is_empty")]
-    receivers: HashMap<String, ReceiverSpec>,
-    #[serde(rename = "out", default, skip_serializing_if = "HashMap::is_empty")]
-    senders: HashMap<String, SenderSpec>,
+    #[serde(
+        rename = "handles",
+        default,
+        skip_serializing_if = "HandleMap::is_empty"
+    )]
+    handles: HandleMap<ReceiverSpec, SenderSpec>,
     #[serde(rename = "args", default)]
     args: ArgsSpec,
 }
@@ -301,30 +542,24 @@ impl Interface {
         self.version
     }
 
-    /// Returns spec for a channel receiver, or `None` if a receiver with the specified `name`
-    /// is not present in this interface.
-    pub fn receiver(&self, name: &str) -> Option<&ReceiverSpec> {
-        self.receivers.get(name)
+    /// Returns spec for a handle defined in this interface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a spec with the specified key doesn't exist in the interfaces,
+    /// or if it has an unexpected type.
+    pub fn handle<K: HandleMapKey>(
+        &self,
+        key: K,
+    ) -> Result<&K::Output<ReceiverSpec, SenderSpec>, AccessError> {
+        key.get(&self.handles)
     }
 
-    /// Lists all channel receivers in this interface.
-    pub fn receivers(&self) -> impl ExactSizeIterator<Item = (&str, &ReceiverSpec)> + '_ {
-        self.receivers
+    /// Lists all handle specifications in this interface.
+    pub fn handles(&self) -> impl ExactSizeIterator<Item = (HandlePath<'_>, &HandleSpec)> + '_ {
+        self.handles
             .iter()
-            .map(|(name, spec)| (name.as_str(), spec))
-    }
-
-    /// Returns spec for a channel sender, or `None` if a sender with the specified `name`
-    /// is not present in this interface.
-    pub fn sender(&self, name: &str) -> Option<&SenderSpec> {
-        self.senders.get(name)
-    }
-
-    /// Lists all channel senders in this interface.
-    pub fn senders(&self) -> impl ExactSizeIterator<Item = (&str, &SenderSpec)> + '_ {
-        self.senders
-            .iter()
-            .map(|(name, spec)| (name.as_str(), spec))
+            .map(|(path, spec)| (path.as_ref(), spec))
     }
 
     /// Returns spec for the arguments.
@@ -340,41 +575,37 @@ impl Interface {
     ///
     /// Returns an error if the provided interface does not match expectations.
     pub fn check_compatibility(&self, provided: &Self) -> Result<(), AccessError> {
-        self.receivers.keys().try_fold((), |(), name| {
-            provided
-                .receivers
-                .get(name)
-                .map(drop)
-                .ok_or_else(|| AccessErrorKind::Unknown.with_location(ReceiverName(name)))
-        })?;
-        self.senders.iter().try_fold((), |(), (name, spec)| {
-            let other_spec = provided
-                .senders
-                .get(name)
-                .ok_or_else(|| AccessErrorKind::Unknown.with_location(SenderName(name)))?;
-            spec.check_compatibility(other_spec)
-                .map_err(|err| err.with_location(SenderName(name)))
-        })?;
+        self.handles.iter().try_fold((), |(), (path, spec)| {
+            let provided = provided.handle(path)?;
+            Self::check_spec_compatibility(spec, provided).map_err(|err| {
+                let location: InterfaceLocation = match spec {
+                    Handle::Receiver(_) => ReceiverAt(path).into(),
+                    Handle::Sender(_) => SenderAt(path).into(),
+                };
+                err.with_location(location)
+            })
+        })
+    }
 
-        Ok(())
+    fn check_spec_compatibility(
+        expected: &HandleSpec,
+        provided: &HandleSpec,
+    ) -> Result<(), AccessErrorKind> {
+        match (expected, provided) {
+            (Handle::Receiver(_), Handle::Receiver(_)) => Ok(()),
+            (Handle::Sender(expected), Handle::Sender(provided)) => {
+                expected.check_compatibility(provided)
+            }
+            _ => Err(AccessErrorKind::KindMismatch),
+        }
     }
 }
 
-impl ops::Index<ReceiverName<'_>> for Interface {
-    type Output = ReceiverSpec;
+impl<K: HandleMapKey> ops::Index<K> for Interface {
+    type Output = K::Output<ReceiverSpec, SenderSpec>;
 
-    fn index(&self, index: ReceiverName<'_>) -> &Self::Output {
-        self.receiver(index.0)
-            .unwrap_or_else(|| panic!("{} is not defined", index))
-    }
-}
-
-impl ops::Index<SenderName<'_>> for Interface {
-    type Output = SenderSpec;
-
-    fn index(&self, index: SenderName<'_>) -> &Self::Output {
-        self.sender(index.0)
-            .unwrap_or_else(|| panic!("{} is not defined", index))
+    fn index(&self, index: K) -> &Self::Output {
+        self.handle(index).unwrap_or_else(|err| panic!("{err}"))
     }
 }
 
@@ -396,13 +627,17 @@ impl InterfaceBuilder {
     }
 
     /// Adds a channel receiver spec to this builder.
-    pub fn insert_receiver(&mut self, name: impl Into<String>, spec: ReceiverSpec) {
-        self.interface.receivers.insert(name.into(), spec);
+    pub fn insert_receiver(&mut self, path: impl Into<HandlePathBuf>, spec: ReceiverSpec) {
+        self.interface
+            .handles
+            .insert(path.into(), Handle::Receiver(spec));
     }
 
     /// Adds a channel sender spec to this builder.
-    pub fn insert_sender(&mut self, name: impl Into<String>, spec: SenderSpec) {
-        self.interface.senders.insert(name.into(), spec);
+    pub fn insert_sender(&mut self, path: impl Into<HandlePathBuf>, spec: SenderSpec) {
+        self.interface
+            .handles
+            .insert(path.into(), Handle::Sender(spec));
     }
 
     /// Builds an interface from this builder.

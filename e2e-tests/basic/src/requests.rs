@@ -7,20 +7,19 @@ use serde::{Deserialize, Serialize};
 
 use crate::{DomainEvent, PizzaOrder, SharedHandle};
 use tardigrade::{
-    channel::{Receiver, Requests, Sender, WithId},
+    channel::{Receiver, RequestHandles, Requests},
     task::TaskResult,
-    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
+    workflow::{GetInterface, InEnv, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
     Json,
 };
 
-#[tardigrade::handle]
-#[derive(Debug)]
+#[derive(TakeHandle)]
+#[tardigrade(derive(Debug))]
 pub struct WorkflowHandle<Env: WorkflowEnv> {
-    pub orders: Handle<Receiver<PizzaOrder, Json>, Env>,
+    pub orders: InEnv<Receiver<PizzaOrder, Json>, Env>,
     #[tardigrade(flatten)]
-    pub shared: Handle<SharedHandle<Wasm>, Env>,
-    pub baking_tasks: Handle<Sender<WithId<PizzaOrder>, Json>, Env>,
-    pub baking_responses: Handle<Receiver<WithId<()>, Json>, Env>,
+    pub shared: SharedHandle<Env>,
+    pub baking: RequestHandles<PizzaOrder, (), Json, Env>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,9 +53,11 @@ tardigrade::workflow_entry!(PizzaDeliveryWithRequests);
 
 impl WorkflowHandle<Wasm> {
     fn spawn(self, args: Args) -> impl Future<Output = ()> {
-        let (requests, requests_task) = Requests::builder(self.baking_tasks, self.baking_responses)
+        let (requests, requests_task) = self
+            .baking
+            .process_requests()
             .with_capacity(args.oven_count)
-            .with_task_name("baking_requests")
+            .with_task_name("baking")
             .build();
         let shared = self.shared;
 

@@ -14,7 +14,7 @@ use super::*;
 use tardigrade::{
     spawn::RemoteWorkflow,
     test::{TestInstance, Timers},
-    workflow::Handle,
+    workflow::InEnv,
 };
 
 fn create_fmt_subscriber() -> impl Subscriber + for<'a> LookupSpan<'a> {
@@ -37,7 +37,7 @@ fn enable_tracing_assertions() -> (DefaultGuard, SharedStorage) {
 }
 
 async fn test_workflow_basics(
-    mut api: Handle<PizzaDelivery, RemoteWorkflow>,
+    mut api: InEnv<PizzaDelivery, RemoteWorkflow>,
     storage: SharedStorage,
 ) {
     let order = PizzaOrder {
@@ -95,7 +95,7 @@ fn workflow_basics() {
         .run(|handle| test_workflow_basics(handle, tracing_storage));
 }
 
-async fn test_concurrency_in_workflow(mut api: Handle<PizzaDelivery, RemoteWorkflow>) {
+async fn test_concurrency_in_workflow(mut api: InEnv<PizzaDelivery, RemoteWorkflow>) {
     let orders_array = [
         PizzaOrder {
             kind: PizzaKind::Pepperoni,

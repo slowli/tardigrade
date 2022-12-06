@@ -1,134 +1,94 @@
 //! Untyped workflow handle.
 
-use std::{collections::HashMap, fmt, ops};
+use std::{fmt, ops};
 
-use super::{Handle, TakeHandle, WorkflowEnv};
-use crate::workflow::{DescribeEnv, WithHandle};
+use super::{DescribeEnv, InEnv, TakeHandle, WithHandle, WorkflowEnv};
 use crate::{
     channel::{RawReceiver, RawSender},
-    interface::{AccessError, ReceiverName, SenderName},
+    interface::{AccessError, AccessErrorKind, Handle, HandleMap, HandleMapKey, HandlePath},
 };
 
 /// Dynamically-typed handle to a workflow containing handles to its channels.
 pub struct UntypedHandle<Env: WorkflowEnv> {
-    pub(crate) receivers: HashMap<String, Handle<RawReceiver, Env>>,
-    pub(crate) senders: HashMap<String, Handle<RawSender, Env>>,
+    pub(crate) handles: HandleMap<InEnv<RawReceiver, Env>, InEnv<RawSender, Env>>,
 }
 
 impl<Env: WorkflowEnv> Default for UntypedHandle<Env> {
     fn default() -> Self {
         Self {
-            receivers: HashMap::new(),
-            senders: HashMap::new(),
+            handles: HandleMap::new(),
         }
     }
 }
 
 impl<Env: WorkflowEnv> fmt::Debug for UntypedHandle<Env>
 where
-    Handle<RawReceiver, Env>: fmt::Debug,
-    Handle<RawSender, Env>: fmt::Debug,
+    InEnv<RawReceiver, Env>: fmt::Debug,
+    InEnv<RawSender, Env>: fmt::Debug,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("UntypedHandle")
-            .field("receivers", &self.receivers)
-            .field("senders", &self.senders)
-            .finish()
+        fmt::Debug::fmt(&self.handles, formatter)
     }
 }
 
+type KeyHandle<K, Env> =
+    <K as HandleMapKey>::Output<InEnv<RawReceiver, Env>, InEnv<RawSender, Env>>;
+
 impl<Env: WorkflowEnv> UntypedHandle<Env> {
-    /// Removes an element with the specified index from this handle. Returns `None` if
-    /// the element is not present in the handle.
-    pub fn remove<I>(&mut self, index: I) -> Option<I::Output>
-    where
-        I: UntypedHandleIndex<Env>,
-    {
-        index.remove_from(self)
+    /// Removes an element with the specified index from this handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the element is not present in the handle, or if it has an unexpected
+    /// type (e.g., a sender instead of a receiver).
+    pub fn remove<K: HandleMapKey>(&mut self, key: K) -> Result<KeyHandle<K, Env>, AccessError> {
+        key.remove(&mut self.handles)
     }
 }
 
 impl WithHandle for () {
-    type Id = ();
     type Handle<Env: WorkflowEnv> = UntypedHandle<Env>;
 }
 
 impl<Env: DescribeEnv> TakeHandle<Env> for () {
-    fn take_handle(env: &mut Env, _id: &()) -> Result<UntypedHandle<Env>, AccessError> {
+    fn take_handle(env: &mut Env, path: HandlePath<'_>) -> Result<UntypedHandle<Env>, AccessError> {
+        if !path.is_empty() {
+            let message = "untyped handle can only obtained from an empty path";
+            return Err(AccessErrorKind::custom(message).with_location(path));
+        }
         let interface = env.interface().into_owned();
 
-        let receivers = interface
-            .receivers()
-            .map(|(name, _)| Ok((name.to_owned(), RawReceiver::take_handle(&mut *env, name)?)))
-            .collect::<Result<_, AccessError>>()?;
-        let senders = interface
-            .senders()
-            .map(|(name, _)| Ok((name.to_owned(), RawSender::take_handle(&mut *env, name)?)))
+        let handles = interface
+            .handles()
+            .map(|(path, spec)| {
+                let handle = match spec {
+                    Handle::Receiver(_) => {
+                        Handle::Receiver(RawReceiver::take_handle(&mut *env, path)?)
+                    }
+                    Handle::Sender(_) => Handle::Sender(RawSender::take_handle(&mut *env, path)?),
+                };
+                Ok((path.to_owned(), handle))
+            })
             .collect::<Result<_, AccessError>>()?;
 
-        Ok(UntypedHandle { receivers, senders })
+        Ok(UntypedHandle { handles })
     }
 }
 
-/// Types that can be used for indexing [`UntypedHandle`].
-pub trait UntypedHandleIndex<Env: WorkflowEnv>: Copy + fmt::Display {
-    /// Output type for the indexing operation.
-    type Output;
+impl<Env: WorkflowEnv, K: HandleMapKey> ops::Index<K> for UntypedHandle<Env> {
+    type Output = KeyHandle<K, Env>;
 
-    #[doc(hidden)]
-    fn get_from(self, handle: &UntypedHandle<Env>) -> Option<&Self::Output>;
-
-    #[doc(hidden)]
-    fn get_mut_from(self, handle: &mut UntypedHandle<Env>) -> Option<&mut Self::Output>;
-
-    #[doc(hidden)]
-    fn remove_from(self, handle: &mut UntypedHandle<Env>) -> Option<Self::Output>;
-}
-
-macro_rules! impl_index {
-    ($target:ty => $raw:ty, $field:ident) => {
-        impl<Env: WorkflowEnv> UntypedHandleIndex<Env> for $target {
-            type Output = Handle<$raw, Env>;
-
-            fn get_from(self, handle: &UntypedHandle<Env>) -> Option<&Self::Output> {
-                handle.$field.get(self.0)
-            }
-
-            fn get_mut_from(self, handle: &mut UntypedHandle<Env>) -> Option<&mut Self::Output> {
-                handle.$field.get_mut(self.0)
-            }
-
-            fn remove_from(self, handle: &mut UntypedHandle<Env>) -> Option<Self::Output> {
-                handle.$field.remove(self.0)
-            }
-        }
-    };
-}
-
-impl_index!(ReceiverName<'_> => RawReceiver, receivers);
-impl_index!(SenderName<'_> => RawSender, senders);
-
-impl<Env: WorkflowEnv, I> ops::Index<I> for UntypedHandle<Env>
-where
-    I: UntypedHandleIndex<Env>,
-{
-    type Output = I::Output;
-
-    fn index(&self, index: I) -> &Self::Output {
+    fn index(&self, index: K) -> &Self::Output {
         index
-            .get_from(self)
-            .unwrap_or_else(|| panic!("{} is not defined", index))
+            .get(&self.handles)
+            .unwrap_or_else(|err| panic!("{err}"))
     }
 }
 
-impl<Env: WorkflowEnv, I> ops::IndexMut<I> for UntypedHandle<Env>
-where
-    I: UntypedHandleIndex<Env>,
-{
-    fn index_mut(&mut self, index: I) -> &mut Self::Output {
+impl<Env: WorkflowEnv, K: HandleMapKey> ops::IndexMut<K> for UntypedHandle<Env> {
+    fn index_mut(&mut self, index: K) -> &mut Self::Output {
         index
-            .get_mut_from(self)
-            .unwrap_or_else(|| panic!("{} is not defined", index))
+            .get_mut(&mut self.handles)
+            .unwrap_or_else(|err| panic!("{err}"))
     }
 }

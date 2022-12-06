@@ -24,7 +24,7 @@ mod mock {
     /// ```
     /// # use async_std::task;
     /// # use futures::TryStreamExt;
-    /// # use tardigrade::{interface::SenderName, spawn::ManageWorkflowsExt};
+    /// # use tardigrade::{interface::SenderAt, spawn::ManageWorkflowsExt};
     /// # use tardigrade_rt::{
     /// #     driver::Driver, engine::{Wasmtime, WasmtimeModule},
     /// #     manager::{WorkflowHandle, WorkflowManager}, storage::LocalStorage, test::MockScheduler,
@@ -47,9 +47,10 @@ mod mock {
     /// // Spin up the driver to execute the `workflow`.
     /// let mut driver = Driver::new();
     /// let mut handle = workflow.handle();
-    /// let mut events_rx = handle.remove(SenderName("events"))
+    /// let mut events_rx = handle.remove(SenderAt("events"))
     ///     .unwrap()
     ///     .into_stream(&mut driver);
+    /// drop(handle);
     /// task::spawn(async move { driver.drive(&mut manager).await });
     ///
     /// // Advance mocked wall clock.

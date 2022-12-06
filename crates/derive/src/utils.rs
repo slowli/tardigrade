@@ -4,76 +4,17 @@ use darling::{ast::Style, FromMeta};
 use proc_macro2::{Ident, Span};
 use quote::{quote, ToTokens};
 use syn::{
-    parse_quote, punctuated::Punctuated, spanned::Spanned, Attribute, Data, DataStruct,
-    DeriveInput, Generics, Meta, NestedMeta, Path, Token, Type,
+    parse_quote, spanned::Spanned, Attribute, Data, DataStruct, DeriveInput, Generics, NestedMeta,
+    Path, Type, TypePath,
 };
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub(crate) fn find_meta_attrs(name: &str, args: &[Attribute]) -> Option<NestedMeta> {
     args.iter()
         .filter_map(|attr| attr.parse_meta().ok())
         .find(|meta| meta.path().is_ident(name))
         .map(NestedMeta::from)
-}
-
-fn take_meta_attr(name: &str, attrs: &mut Vec<Attribute>) -> Option<NestedMeta> {
-    let (i, meta) = attrs.iter().enumerate().find_map(|(i, attr)| {
-        if let Ok(meta) = attr.parse_meta() {
-            if meta.path().is_ident(name) {
-                return Some((i, NestedMeta::from(meta)));
-            }
-        }
-        None
-    })?;
-    attrs.remove(i);
-    Some(meta)
-}
-
-pub(crate) fn take_derive(attrs: &mut Vec<Attribute>, name: &str) -> bool {
-    let idx = attrs.iter_mut().enumerate().find_map(|(i, attr)| {
-        if attr.path.is_ident("derive") {
-            if let Ok(Meta::List(mut list)) = attr.parse_meta() {
-                let trait_pos = list.nested.iter().position(|tr| {
-                    if let NestedMeta::Meta(Meta::Path(path)) = tr {
-                        path.is_ident(name)
-                    } else {
-                        false
-                    }
-                });
-
-                if let Some(trait_pos) = trait_pos {
-                    remove_nested(&mut list.nested, trait_pos);
-                    *attr = parse_quote!(#[ #list ]);
-                    return Some((i, list.nested.is_empty()));
-                }
-            }
-        }
-        None
-    });
-
-    if let Some((idx, needs_removal)) = idx {
-        if needs_removal {
-            attrs.remove(idx);
-        }
-        true
-    } else {
-        false
-    }
-}
-
-fn remove_nested(list: &mut Punctuated<NestedMeta, Token![,]>, idx: usize) {
-    debug_assert!(idx < list.len());
-    let tail_len = list.len() - idx - 1;
-    let mut popped_items: Vec<_> = (0..tail_len)
-        .map(|_| list.pop().unwrap().into_value())
-        .collect();
-    popped_items.reverse();
-
-    list.pop(); // Remove the target item
-    for item in popped_items {
-        list.push(item);
-    }
 }
 
 #[derive(Debug, Default, FromMeta)]
@@ -84,45 +25,11 @@ pub(crate) struct DeriveAttrs {
     pub handle: Option<Path>,
     #[darling(default)]
     pub auto_interface: Option<()>,
-}
-
-#[derive(Debug)]
-pub(crate) struct FieldWrapper {
-    pub ident: Ident,
-    pub inner_types: Vec<Type>,
-}
-
-impl FieldWrapper {
-    const MAX_INNER_TYPES: usize = 2;
-
-    fn new(ty: &Type) -> Option<Self> {
-        if let Type::Path(syn::TypePath { path, .. }) = ty {
-            let last_segment = path.segments.last().unwrap();
-            let args = match &last_segment.arguments {
-                syn::PathArguments::AngleBracketed(args) => &args.args,
-                _ => return None,
-            };
-
-            if args.is_empty() || args.len() > Self::MAX_INNER_TYPES {
-                return None;
-            }
-            let inner_types = args.iter().filter_map(|arg| match arg {
-                syn::GenericArgument::Type(ty) => Some(ty.clone()),
-                _ => None,
-            });
-            let inner_types: Vec<_> = inner_types.collect();
-            if inner_types.len() == args.len() {
-                Some(Self {
-                    ident: last_segment.ident.clone(),
-                    inner_types,
-                })
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
+    #[darling(rename = "crate", default)]
+    pub crate_path: Option<Path>,
+    #[darling(default)]
+    #[allow(clippy::zero_sized_map_values)] // required for `derive(FromMeta)`
+    pub derive: HashMap<String, ()>,
 }
 
 /// Field of a struct for which one of traits needs to be derived.
@@ -132,16 +39,14 @@ pub(crate) struct TargetField {
     pub ident: Option<Ident>,
     /// Name of the field considering a potential `#[_(rename = "...")]` override.
     pub name: Option<String>,
-    pub ty: Type,
+    pub ty: Path,
     pub flatten: bool,
-    pub wrapper: Option<FieldWrapper>,
 }
 
 impl TargetField {
-    fn new(field: &mut syn::Field) -> darling::Result<Self> {
+    fn new(field: &syn::Field) -> darling::Result<Self> {
         let ident = field.ident.clone();
-
-        let attrs = take_meta_attr("tardigrade", &mut field.attrs).map_or_else(
+        let attrs = find_meta_attrs("tardigrade", &field.attrs).map_or_else(
             || Ok(TargetFieldAttrs::default()),
             |meta| TargetFieldAttrs::from_nested_meta(&meta),
         )?;
@@ -149,14 +54,16 @@ impl TargetField {
         let name = attrs
             .rename
             .or_else(|| ident.as_ref().map(ToString::to_string));
+        let Type::Path(TypePath { path, .. }) = &field.ty else {
+            return Err(darling::Error::custom("unsupported field shape"));
+        };
 
         Ok(Self {
             span: field.span(),
             ident,
             name,
-            ty: field.ty.clone(),
+            ty: path.clone(),
             flatten: attrs.flatten,
-            wrapper: FieldWrapper::new(&field.ty),
         })
     }
 
@@ -169,12 +76,12 @@ impl TargetField {
         }
     }
 
-    pub(crate) fn id(&self) -> impl ToTokens {
+    pub(crate) fn path(&self) -> impl ToTokens {
         if self.flatten {
-            quote!(&())
+            quote!(path)
         } else {
             let name = self.name.as_ref().unwrap(); // Safe because of previous validation
-            quote!(#name)
+            quote!(path.join(#name))
         }
     }
 
@@ -213,8 +120,8 @@ pub(crate) struct TargetStruct {
 }
 
 impl TargetStruct {
-    pub fn new(input: &mut DeriveInput) -> darling::Result<Self> {
-        let fields = match &mut input.data {
+    pub fn new(input: &DeriveInput) -> darling::Result<Self> {
+        let fields = match &input.data {
             Data::Struct(DataStruct { fields, .. }) => fields,
             _ => {
                 return Err(darling::Error::unsupported_shape(
@@ -222,9 +129,9 @@ impl TargetStruct {
                 ))
             }
         };
-        let style = Style::from(&*fields);
+        let style = Style::from(fields);
         let fields = fields
-            .iter_mut()
+            .iter()
             .map(TargetField::new)
             .collect::<Result<_, _>>()?;
 
@@ -297,35 +204,5 @@ impl TargetStruct {
             }
         };
         self.impl_std_trait(quote!(core::fmt::Debug), methods)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn taking_derive() {
-        let mut input: DeriveInput = parse_quote! {
-            #[derive(Debug, PartialEq)]
-            #[derive(Clone)]
-            struct Foo;
-        };
-        take_derive(&mut input.attrs, "Debug");
-
-        let expected: DeriveInput = parse_quote! {
-            #[derive(PartialEq)]
-            #[derive(Clone)]
-            struct Foo;
-        };
-        assert_eq!(input, expected);
-
-        take_derive(&mut input.attrs, "Clone");
-
-        let expected: DeriveInput = parse_quote! {
-            #[derive(PartialEq)]
-            struct Foo;
-        };
-        assert_eq!(input, expected);
     }
 }

@@ -18,6 +18,7 @@ use crate::{
     workflow::{ChannelIds, Workflow},
 };
 use tardigrade::{
+    interface::Handle,
     spawn::{ChannelsConfig, HostError},
     task::JoinError,
     ChannelId, TaskId, TimerId, WorkflowId,
@@ -80,13 +81,11 @@ impl PersistedWorkflow {
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
-    pub(crate) fn close_receiver(&mut self, channel_id: ChannelId) {
-        self.data.close_receiver(channel_id);
-    }
-
-    #[tracing::instrument(level = "debug", skip(self))]
-    pub(crate) fn close_sender(&mut self, channel_id: ChannelId) {
-        self.data.close_sender(channel_id);
+    pub(crate) fn close_channel(&mut self, channel_id: Handle<ChannelId>) {
+        match channel_id {
+            Handle::Receiver(id) => self.data.close_receiver(id),
+            Handle::Sender(id) => self.data.close_sender(id),
+        }
     }
 
     /// Returns the current state of a task with the specified ID.

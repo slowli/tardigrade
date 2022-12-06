@@ -12,7 +12,10 @@ use std::{
 
 use crate::{
     data::{
-        channel::{ChannelMapping, ChannelStates, Channels},
+        channel::{
+            acquire_non_captured_channels, new_channel_mapping, ChannelMapping, ChannelStates,
+            Channels,
+        },
         helpers::{WakerPlacement, WorkflowPoll},
         PersistedWorkflowData, WorkflowData,
     },
@@ -21,7 +24,7 @@ use crate::{
     workflow::ChannelIds,
 };
 use tardigrade::{
-    interface::{ChannelHalf, Interface},
+    interface::{Handle, HandleMapKey, Interface, ReceiverAt, SenderAt},
     spawn::{ChannelsConfig, HostError},
     task::JoinError,
     ChannelId, WakerId, WorkflowId,
@@ -88,7 +91,7 @@ impl Clone for ChildWorkflowState {
 impl ChildWorkflowState {
     fn new(channel_ids: ChannelIds) -> Self {
         Self {
-            channels: ChannelMapping::new(channel_ids),
+            channels: new_channel_mapping(channel_ids),
             completion_result: Poll::Pending,
             wakes_on_completion: HashSet::new(),
         }
@@ -160,12 +163,17 @@ impl PersistedWorkflowData {
         stub.result = Poll::Ready(Ok(workflow_id));
         let wakers = mem::take(&mut stub.wakes_on_init);
         self.schedule_wakers(wakers, WakeUpCause::InitWorkflow { stub_id });
-        mem::swap(&mut channel_ids.receivers, &mut channel_ids.senders);
+        for spec in channel_ids.values_mut() {
+            *spec = match spec {
+                Handle::Sender(id) => Handle::Receiver(*id),
+                Handle::Receiver(id) => Handle::Sender(*id),
+            };
+        }
 
         // TODO: what is the appropriate capacity?
         self.channels.insert_channels(&channel_ids, |_| Some(1));
         let mut child_state = ChildWorkflowState::new(channel_ids);
-        child_state.channels.acquire_non_captured_channels(config);
+        acquire_non_captured_channels(&mut child_state.channels, config);
         self.child_workflows.insert(workflow_id, child_state);
     }
 
@@ -304,25 +312,15 @@ impl WorkflowData {
         let workflows = self.services().workflows.as_deref();
         let interface = workflows.and_then(|workflows| workflows.interface(definition_id));
         if let Some(interface) = interface {
-            for (name, _) in interface.receivers() {
-                if !channels.receivers.contains_key(name) {
-                    let err = anyhow!("missing handle for channel receiver `{name}`");
-                    return Err(err);
-                }
-            }
-            for (name, _) in interface.senders() {
-                if !channels.senders.contains_key(name) {
-                    let err = anyhow!("missing handle for channel sender `{name}`");
-                    return Err(err);
-                }
+            for (path, spec) in interface.handles() {
+                match spec {
+                    Handle::Receiver(_) => ReceiverAt(path).get(channels)?,
+                    Handle::Sender(_) => SenderAt(path).get(channels)?,
+                };
             }
 
-            if channels.receivers.len() != interface.receivers().len() {
-                let err = Self::extra_handles_error(&interface, channels, ChannelHalf::Receiver);
-                return Err(err);
-            }
-            if channels.senders.len() != interface.senders().len() {
-                let err = Self::extra_handles_error(&interface, channels, ChannelHalf::Sender);
+            if channels.len() != interface.handles().len() {
+                let err = Self::extra_handles_error(&interface, channels);
                 return Err(err);
             }
             Ok(())
@@ -334,31 +332,19 @@ impl WorkflowData {
     fn extra_handles_error(
         interface: &Interface,
         channels: &ChannelsConfig<ChannelId>,
-        channel_kind: ChannelHalf,
     ) -> anyhow::Error {
         use std::fmt::Write as _;
 
-        let (closure_in, closure_out);
-        let (handle_keys, channel_filter) = match channel_kind {
-            ChannelHalf::Receiver => {
-                closure_in = |name| interface.receiver(name).is_none();
-                (channels.receivers.keys(), &closure_in as &dyn Fn(_) -> _)
-            }
-            ChannelHalf::Sender => {
-                closure_out = |name| interface.sender(name).is_none();
-                (channels.senders.keys(), &closure_out as &dyn Fn(_) -> _)
-            }
-        };
-
-        let mut extra_handles = handle_keys
-            .filter(|name| channel_filter(name.as_str()))
+        let mut extra_handles = channels
+            .keys()
+            .filter(|path| interface.handle(path.as_ref()).is_err())
             .fold(String::new(), |mut acc, name| {
                 write!(acc, "`{}`, ", name).unwrap();
                 acc
             });
         debug_assert!(!extra_handles.is_empty());
-        extra_handles.truncate(extra_handles.len() - 2);
-        anyhow!("extra {channel_kind} handles: {extra_handles}")
+        extra_handles.truncate(extra_handles.len() - 2); // remove trailing ", "
+        anyhow!("extra handles: {extra_handles}")
     }
 
     /// Creates a workflow stub with the specified parameters.

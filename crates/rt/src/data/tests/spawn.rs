@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use super::*;
 use crate::{engine::DefineWorkflow, manager::StashWorkflow};
 use tardigrade::{
-    interface::Interface,
+    interface::{Handle, Interface, ReceiverAt, SenderAt},
     spawn::{ChannelSpawnConfig, HostError, ManageInterfaces},
     ChannelId,
 };
@@ -24,7 +24,13 @@ struct MockWorkflowManager {
 }
 
 impl MockWorkflowManager {
-    const INTERFACE_BYTES: &'static [u8] = br#"{"v":0,"in":{"commands":{}},"out":{"traces":{}}}"#;
+    const INTERFACE_BYTES: &'static [u8] = br#"{
+        "v": 0,
+        "handles": {
+            "commands": { "receiver": {} },
+            "traces": { "sender": {} }
+        }
+    }"#;
 
     fn new() -> Self {
         Self {
@@ -74,8 +80,7 @@ impl StashWorkflow for MockWorkflowManager {
         channels: ChannelsConfig<ChannelId>,
     ) {
         assert_eq!(id, "test:latest");
-        assert_eq!(channels.receivers.len(), 1);
-        assert_eq!(channels.senders.len(), 1);
+        assert_eq!(channels.len(), 2);
         self.calls.push(NewWorkflowCall {
             stub_id,
             args,
@@ -102,10 +107,9 @@ fn create_workflow_with_manager(poll_fns: MockAnswers) -> Workflow<MockInstance>
 fn spawn_child_workflow(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     // Emulate getting interface.
     let interface = ctx.data().workflow_interface("test:latest").unwrap();
-    assert_eq!(interface.receivers().len(), 1);
-    assert!(interface.receiver("commands").is_some());
-    assert_eq!(interface.senders().len(), 1);
-    assert!(interface.sender("traces").is_some());
+    assert_eq!(interface.handles().len(), 2);
+    assert!(interface.handle(ReceiverAt("commands")).is_ok());
+    assert!(interface.handle(SenderAt("traces")).is_ok());
 
     // Emulate creating a workflow.
     let stub_id = ctx.data_mut().create_workflow_stub(
@@ -130,7 +134,7 @@ fn get_child_workflow_channel(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>
     // Emulate getting a receiver for the workflow.
     let traces_id = ctx
         .data_mut()
-        .acquire_receiver(Some(child_id), "traces")
+        .acquire_receiver(Some(child_id), "traces".into())
         .unwrap()
         .unwrap();
 
@@ -144,12 +148,8 @@ fn get_child_workflow_channel(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>
 
 fn configure_handles() -> ChannelsConfig<ChannelId> {
     let mut config = ChannelsConfig::default();
-    config
-        .receivers
-        .insert("commands".to_owned(), ChannelSpawnConfig::New);
-    config
-        .senders
-        .insert("traces".to_owned(), ChannelSpawnConfig::New);
+    config.insert("commands".into(), Handle::Receiver(ChannelSpawnConfig::New));
+    config.insert("traces".into(), Handle::Sender(ChannelSpawnConfig::New));
     config
 }
 
@@ -172,8 +172,8 @@ fn spawning_child_workflow() {
     let mut children: Vec<_> = workflow.data().persisted.child_workflows().collect();
     assert_eq!(children.len(), 1);
     let (_, child) = children.pop().unwrap();
-    let commands_id = child.channels().sender_id("commands").unwrap();
-    let traces_id = child.channels().receiver_id("traces").unwrap();
+    let commands_id = child.channels().channel_id("commands").unwrap();
+    let traces_id = child.channels().channel_id("traces").unwrap();
     assert_ne!(commands_id, traces_id);
 }
 
@@ -207,9 +207,7 @@ fn spawning_child_workflow_with_extra_channel() {
         let id = "test:latest";
         let args = b"child_input".to_vec();
         let mut handles = configure_handles();
-        handles
-            .receivers
-            .insert(id.to_owned(), ChannelSpawnConfig::New);
+        handles.insert(id.into(), Handle::Receiver(ChannelSpawnConfig::New));
 
         let err = ctx
             .data_mut()
@@ -217,7 +215,7 @@ fn spawning_child_workflow_with_extra_channel() {
             .unwrap_err()
             .to_string();
 
-        assert_eq!(err, "extra receiver handles: `test:latest`");
+        assert_eq!(err, "extra handles: `test:latest`");
         Ok(Poll::Pending)
     };
     let poll_fns = MockAnswers::from_value(spawn_with_extra_channel);
@@ -259,8 +257,8 @@ fn spawning_child_workflow_with_host_error() {
 
 fn consume_message_from_child(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     let child_channels = ctx.data().persisted.child_workflow(1).unwrap().channels();
-    let traces_id = child_channels.receiver_id("traces").unwrap();
-    let commands_id = child_channels.sender_id("commands").unwrap();
+    let traces_id = child_channels.channel_id("traces").unwrap();
+    let commands_id = child_channels.channel_id("commands").unwrap();
 
     let mut traces = ctx.data_mut().receiver(traces_id);
     let poll_res = traces.poll_next().into_inner(ctx)?;
@@ -294,8 +292,8 @@ fn consuming_message_from_child_workflow() {
 
     let persisted = &workflow.data().persisted;
     let child = persisted.child_workflow(1).unwrap();
-    let child_commands_id = child.channels().sender_id("commands").unwrap();
-    let child_traces_id = child.channels().receiver_id("traces").unwrap();
+    let child_commands_id = child.channels().channel_id("commands").unwrap();
+    let child_traces_id = child.channels().channel_id("traces").unwrap();
 
     workflow
         .data_mut()
@@ -322,8 +320,8 @@ fn consuming_message_from_child_workflow() {
 fn assert_child_inbound_message_receipt(workflow: &Workflow<MockInstance>, receipt: &Receipt) {
     let mut children = workflow.data().persisted.child_workflows();
     let (_, child) = children.next().unwrap();
-    let child_commands_id = child.channels().sender_id("commands").unwrap();
-    let child_traces_id = child.channels().receiver_id("traces").unwrap();
+    let child_commands_id = child.channels().channel_id("commands").unwrap();
+    let child_traces_id = child.channels().channel_id("traces").unwrap();
 
     assert_matches!(
         &receipt.executions()[0],

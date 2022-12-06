@@ -1,7 +1,6 @@
 //! `Workflow` and tightly related types.
 
 use anyhow::Context;
-use serde::{Deserialize, Serialize};
 
 use std::{collections::HashMap, mem};
 
@@ -19,7 +18,7 @@ use crate::{
     },
     utils::Message,
 };
-use tardigrade::{task::TaskResult, ChannelId, TaskId};
+use tardigrade::{interface::HandleMap, task::TaskResult, ChannelId, TaskId};
 
 #[derive(Debug, Default)]
 struct ExecutionOutput {
@@ -27,12 +26,7 @@ struct ExecutionOutput {
     task_result: Option<TaskResult>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[allow(clippy::unsafe_derive_deserialize)] // false positive
-pub(crate) struct ChannelIds {
-    pub receivers: HashMap<String, ChannelId>,
-    pub senders: HashMap<String, ChannelId>,
-}
+pub(crate) type ChannelIds = HandleMap<ChannelId>;
 
 /// Workflow instance.
 #[derive(Debug)]

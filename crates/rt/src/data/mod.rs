@@ -36,7 +36,11 @@ use crate::{
     receipt::{PanicInfo, WakeUpCause},
     workflow::ChannelIds,
 };
-use tardigrade::{interface::Interface, task::ErrorLocation, TaskId, WorkflowId};
+use tardigrade::{
+    interface::{HandlePathBuf, Interface},
+    task::ErrorLocation,
+    TaskId, WorkflowId,
+};
 
 /// Kinds of errors reported by workflows.
 #[derive(Debug, Clone, Copy)]
@@ -78,24 +82,12 @@ impl WorkflowData {
     pub(crate) fn new(interface: &Interface, channel_ids: ChannelIds, services: Services) -> Self {
         debug_assert_eq!(
             interface
-                .receivers()
-                .map(|(name, _)| name)
+                .handles()
+                .map(|(path, _)| path)
                 .collect::<HashSet<_>>(),
             channel_ids
-                .receivers
                 .keys()
-                .map(String::as_str)
-                .collect::<HashSet<_>>()
-        );
-        debug_assert_eq!(
-            interface
-                .senders()
-                .map(|(name, _)| name)
-                .collect::<HashSet<_>>(),
-            channel_ids
-                .senders
-                .keys()
-                .map(String::as_str)
+                .map(HandlePathBuf::as_ref)
                 .collect::<HashSet<_>>()
         );
 

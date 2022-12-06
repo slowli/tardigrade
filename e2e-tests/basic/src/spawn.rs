@@ -10,7 +10,7 @@ use tardigrade::{
     channel::Sender,
     spawn::{ManageWorkflowsExt, Workflows},
     task::{TaskError, TaskResult},
-    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
+    workflow::{GetInterface, InEnv, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
     Json,
 };
 
@@ -74,10 +74,10 @@ pub struct DurationMetric {
     duration_millis: u64,
 }
 
-#[tardigrade::handle]
+#[derive(TakeHandle)]
 pub struct BakingHandle<Env: WorkflowEnv = Wasm> {
-    pub events: Handle<Sender<DomainEvent, Json>, Env>,
-    pub duration: Handle<Sender<DurationMetric, Json>, Env>,
+    pub events: InEnv<Sender<DomainEvent, Json>, Env>,
+    pub duration: InEnv<Sender<DurationMetric, Json>, Env>,
 }
 
 #[derive(Debug, GetInterface, TakeHandle)]
@@ -102,7 +102,7 @@ impl SpawnWorkflow for Baking {
             index: idx,
             duration_millis: (tardigrade::now() - start).num_milliseconds() as u64,
         };
-        tracing::info!(?metric, "sending baking duration metric");
+        tracing::info!(?metric, "sent baking duration metric");
         handle.duration.send(metric).await.ok();
         Ok(())
     }

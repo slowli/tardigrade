@@ -22,8 +22,11 @@ use tardigrade::{interface::Interface, TaskId, WakerId};
 
 const INTERFACE: &[u8] = br#"{
     "v": 0,
-    "in": { "orders": {} },
-    "out": { "events": {}, "traces": { "capacity": null } }
+    "handles": {
+        "orders": { "receiver": {} },
+        "events": { "sender": {} },
+        "traces": { "sender": { "capacity": null } }
+    }
 }"#;
 
 pub type MockPollFn = fn(&mut MockInstance) -> anyhow::Result<Poll<()>>;

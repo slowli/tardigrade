@@ -12,7 +12,7 @@ use tardigrade::{
     channel::{Receiver, Sender},
     sleep,
     task::TaskResult,
-    workflow::{GetInterface, Handle, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
+    workflow::{GetInterface, InEnv, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
     Json,
 };
 
@@ -74,22 +74,26 @@ pub struct Args {
 }
 
 /// Cloneable part of the workflow handle consisting of its channel senders.
-#[tardigrade::handle]
+#[derive(TakeHandle)]
 // ^ Proc macro that derives some helper traits for the handle.
-#[derive(Debug, Clone)]
+#[tardigrade(derive(Debug, Clone))]
+// ^ Helps derive `Debug` and/or `Clone` for the handle. The standard derive logic
+// unfortunately doesn't work for these traits because of additional field constraints.
 pub struct SharedHandle<Env: WorkflowEnv> {
-    // For the proc macro to work, fields need to be defined as `Handle<T, Env>`, where
-    // `T` describes a workflow element (in this case, a receiver).
-    pub events: Handle<Sender<DomainEvent, Json>, Env>,
+    // For the derive macro to work, fields need to be defined as `Something<.., Env>`,
+    // where `Env` is the environment type param.
+    // In case of the fundamental building blocks (senders and receivers),
+    // this wrapper is `InEnv<T, Env>`, where `T` describes a workflow element.
+    pub events: InEnv<Sender<DomainEvent, Json>, Env>,
 }
 
 /// Handle for the workflow.
-#[tardigrade::handle]
-#[derive(Debug)]
+#[derive(TakeHandle)]
+#[tardigrade(derive(Debug))]
 pub struct PizzaDeliveryHandle<Env: WorkflowEnv = Wasm> {
-    pub orders: Handle<Receiver<PizzaOrder, Json>, Env>,
+    pub orders: InEnv<Receiver<PizzaOrder, Json>, Env>,
     #[tardigrade(flatten)]
-    pub shared: Handle<SharedHandle<Wasm>, Env>,
+    pub shared: SharedHandle<Env>,
 }
 
 /// Marker workflow type.

@@ -23,9 +23,10 @@ use std::{
 };
 
 use crate::{
-    codec::{Decode, Encode, Raw},
-    interface::AccessError,
+    codec::{Codec, Raw},
+    interface::{AccessError, HandlePath},
     workflow::{TakeHandle, WithHandle, WorkflowEnv},
+    ChannelId,
 };
 
 mod broadcast;
@@ -39,7 +40,7 @@ mod requests;
 
 pub use self::{
     broadcast::{BroadcastError, BroadcastPublisher, BroadcastSubscriber},
-    requests::{Requests, RequestsBuilder, WithId},
+    requests::{Request, RequestHandles, Requests, RequestsBuilder, Response},
 };
 pub use crate::error::SendError;
 
@@ -67,7 +68,7 @@ impl<T, C: fmt::Debug> fmt::Debug for Receiver<T, C> {
     }
 }
 
-impl<T, C: Decode<T>> Receiver<T, C> {
+impl<T, C: Codec<T>> Receiver<T, C> {
     pub(crate) fn new(raw: imp::MpscReceiver) -> Self {
         Self {
             raw,
@@ -76,8 +77,8 @@ impl<T, C: Decode<T>> Receiver<T, C> {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub(crate) fn from_env(name: &str) -> Result<Self, AccessError> {
-        imp::MpscReceiver::from_env(name).map(Self::new)
+    pub(crate) fn from_env(path: HandlePath<'_>) -> Result<Self, AccessError> {
+        imp::MpscReceiver::from_env(path).map(Self::new)
     }
 
     pub(crate) fn from_raw(raw: RawReceiver) -> Self {
@@ -85,6 +86,10 @@ impl<T, C: Decode<T>> Receiver<T, C> {
             raw: raw.raw,
             _ty: PhantomData,
         }
+    }
+
+    pub(crate) fn channel_id(&self) -> ChannelId {
+        self.raw.channel_id()
     }
 }
 
@@ -95,7 +100,7 @@ impl RawReceiver {
     }
 }
 
-impl<T, C: Decode<T>> Stream for Receiver<T, C> {
+impl<T, C: Codec<T>> Stream for Receiver<T, C> {
     type Item = T;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -111,20 +116,13 @@ impl<T, C: Decode<T>> Stream for Receiver<T, C> {
     }
 }
 
-impl<T, C> WithHandle for Receiver<T, C>
-where
-    C: Encode<T> + Decode<T>,
-{
-    type Id = str;
+impl<T, C: Codec<T>> WithHandle for Receiver<T, C> {
     type Handle<Env: WorkflowEnv> = Env::Receiver<T, C>;
 }
 
-impl<T, C, Env: WorkflowEnv> TakeHandle<Env> for Receiver<T, C>
-where
-    C: Encode<T> + Decode<T>,
-{
-    fn take_handle(env: &mut Env, id: &Self::Id) -> Result<Self::Handle<Env>, AccessError> {
-        env.take_receiver(id)
+impl<T, C: Codec<T>, Env: WorkflowEnv> TakeHandle<Env> for Receiver<T, C> {
+    fn take_handle(env: &mut Env, path: HandlePath<'_>) -> Result<Self::Handle<Env>, AccessError> {
+        env.take_receiver(path)
     }
 }
 
@@ -157,7 +155,7 @@ impl<T, C> fmt::Debug for Sender<T, C> {
     }
 }
 
-impl<T, C: Encode<T>> Clone for Sender<T, C> {
+impl<T, C: Codec<T>> Clone for Sender<T, C> {
     fn clone(&self) -> Self {
         Self {
             raw: self.raw.clone(),
@@ -166,7 +164,7 @@ impl<T, C: Encode<T>> Clone for Sender<T, C> {
     }
 }
 
-impl<T, C: Encode<T>> Sender<T, C> {
+impl<T, C: Codec<T>> Sender<T, C> {
     pub(crate) fn new(raw: imp::MpscSender) -> Self {
         Self {
             raw,
@@ -175,8 +173,8 @@ impl<T, C: Encode<T>> Sender<T, C> {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub(crate) fn from_env(name: &str) -> Result<Self, AccessError> {
-        imp::MpscSender::from_env(name).map(Self::new)
+    pub(crate) fn from_env(path: HandlePath<'_>) -> Result<Self, AccessError> {
+        imp::MpscSender::from_env(path).map(Self::new)
     }
 
     pub(crate) fn from_raw(raw: RawSender) -> Self {
@@ -206,24 +204,17 @@ impl RawSender {
     }
 }
 
-impl<T, C> WithHandle for Sender<T, C>
-where
-    C: Encode<T> + Decode<T>,
-{
-    type Id = str;
+impl<T, C: Codec<T>> WithHandle for Sender<T, C> {
     type Handle<Env: WorkflowEnv> = Env::Sender<T, C>;
 }
 
-impl<T, C, Env: WorkflowEnv> TakeHandle<Env> for Sender<T, C>
-where
-    C: Encode<T> + Decode<T>,
-{
-    fn take_handle(env: &mut Env, id: &Self::Id) -> Result<Self::Handle<Env>, AccessError> {
-        env.take_sender(id)
+impl<T, C: Codec<T>, Env: WorkflowEnv> TakeHandle<Env> for Sender<T, C> {
+    fn take_handle(env: &mut Env, path: HandlePath<'_>) -> Result<Self::Handle<Env>, AccessError> {
+        env.take_sender(path)
     }
 }
 
-impl<T, C: Encode<T>> Sink<T> for Sender<T, C> {
+impl<T, C: Codec<T>> Sink<T> for Sender<T, C> {
     type Error = SendError;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {

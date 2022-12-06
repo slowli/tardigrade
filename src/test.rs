@@ -17,7 +17,7 @@
 //! # use tardigrade::{
 //! #     channel::Sender,
 //! #     task::TaskResult,
-//! #     workflow::{Handle, GetInterface, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
+//! #     workflow::{InEnv, GetInterface, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
 //! #     Json,
 //! # };
 //! // Assume we want to test a workflow.
@@ -26,10 +26,10 @@
 //! pub struct MyWorkflow(());
 //!
 //! /// Workflow handle.
-//! #[tardigrade::handle]
-//! #[derive(Debug)]
+//! #[derive(TakeHandle)]
+//! #[tardigrade(derive(Debug))]
 //! pub struct MyHandle<Env: WorkflowEnv> {
-//!     pub events: Handle<Sender<Event, Json>, Env>,
+//!     pub events: InEnv<Sender<Event, Json>, Env>,
 //! }
 //!
 //! /// Arguments provided to the workflow on creation.
@@ -103,8 +103,8 @@ use crate::{
     interface::Interface,
     spawn::{ManageWorkflowsExt, RemoteWorkflow, Spawner, Workflows},
     task::{self, TaskResult},
-    workflow::{Handle, SpawnWorkflow, TakeHandle, TaskHandle, UntypedHandle, Wasm},
-    WorkflowId,
+    workflow::{InEnv, SpawnWorkflow, TakeHandle, TaskHandle, UntypedHandle, Wasm},
+    ChannelId, WorkflowId,
 };
 
 #[derive(Debug)]
@@ -343,6 +343,7 @@ pub struct Runtime {
     spawner: LocalSpawner,
     scheduler: MockScheduler,
     workflow_registry: WorkflowRegistry,
+    next_channel_id: ChannelId,
 }
 
 impl Default for Runtime {
@@ -353,6 +354,7 @@ impl Default for Runtime {
             local_pool: Some(local_pool),
             workflow_registry: WorkflowRegistry::default(),
             scheduler: MockScheduler::default(),
+            next_channel_id: 1, // 0th channel is the pre-closed one
         }
     }
 }
@@ -401,6 +403,12 @@ impl Runtime {
 
     pub(crate) fn workflow_registry(&self) -> &WorkflowRegistry {
         &self.workflow_registry
+    }
+
+    pub(crate) fn allocate_channel_id(&mut self) -> ChannelId {
+        let id = self.next_channel_id;
+        self.next_channel_id += 1;
+        id
     }
 
     /// Returns a mutable reference to the workflow registry.
@@ -458,7 +466,7 @@ impl Runtime {
     /// Tests the specified workflow definition in the context of this runtime.
     pub fn test<W>(self, args: W::Args) -> TestInstance<W>
     where
-        W: SpawnWorkflow + TakeHandle<Spawner, Id = ()> + TakeHandle<RemoteWorkflow, Id = ()>,
+        W: SpawnWorkflow + TakeHandle<Spawner> + TakeHandle<RemoteWorkflow>,
     {
         TestInstance {
             runtime: self,
@@ -489,7 +497,7 @@ where
 
 impl<W> TestInstance<W>
 where
-    W: SpawnWorkflow + TakeHandle<Spawner, Id = ()> + TakeHandle<RemoteWorkflow, Id = ()>,
+    W: SpawnWorkflow + TakeHandle<Spawner> + TakeHandle<RemoteWorkflow>,
 {
     /// Creates a test instance with the default [`Runtime`].
     pub fn new(args: W::Args) -> Self {
@@ -503,7 +511,7 @@ where
     #[allow(clippy::missing_panics_doc)] // false positive
     pub fn run<F, Fut>(mut self, test_fn: F)
     where
-        F: FnOnce(Handle<W, RemoteWorkflow>) -> Fut,
+        F: FnOnce(InEnv<W, RemoteWorkflow>) -> Fut,
         Fut: Future<Output = ()>,
     {
         const DEFINITION_ID: &str = "__tested_workflow";

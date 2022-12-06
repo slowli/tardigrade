@@ -272,7 +272,8 @@ impl ModuleImports {
             "timer::drop" => ensure_func_ty::<TimerId, ()>(ty, fn_name),
             "timer::poll" => ensure_func_ty::<(TimerId, WasmContextPtr), i64>(ty, fn_name),
 
-            "drop_ref" => ensure_func_ty::<Ref, ()>(ty, fn_name),
+            "resource::id" => ensure_func_ty::<Ref, u64>(ty, fn_name),
+            "resource::drop" => ensure_func_ty::<Ref, ()>(ty, fn_name),
             "task::report_error" | "report_panic" => {
                 ensure_func_ty::<(u32, u32, u32, u32, u32, u32), ()>(ty, fn_name)
             }
@@ -335,7 +336,8 @@ impl ExtendLinker for WorkflowFunctions {
             ("timer::drop", wrap1(&mut *store, Self::drop_timer)),
             ("timer::poll", wrap2(&mut *store, Self::poll_timer)),
             // Resource management
-            ("drop_ref", wrap1(&mut *store, Self::drop_ref)),
+            ("resource::id", Func::wrap(&mut *store, Self::resource_id)),
+            ("resource::drop", wrap1(&mut *store, Self::drop_resource)),
             // Panic hook
             ("report_panic", wrap6(&mut *store, Self::report_panic)),
         ]
