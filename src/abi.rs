@@ -354,6 +354,7 @@ impl IntoWasm for Result<(), HostError> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum ResourceKind {
+    None = 0,
     Receiver = 1,
     Sender = 2,
     Other = -1,

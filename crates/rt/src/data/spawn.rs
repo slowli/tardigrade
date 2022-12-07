@@ -248,6 +248,12 @@ impl WorkflowData {
             ids.workflow_id
         });
 
+        if let Ok(workflow_id) = &result {
+            self.current_execution().push_resource_event(
+                ResourceId::Workflow(*workflow_id),
+                ResourceEventKind::Created,
+            );
+        }
         self.current_execution()
             .push_stub_event(StubId::Workflow(local_id), StubEventKind::Mapped(result));
     }

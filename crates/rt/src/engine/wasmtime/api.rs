@@ -303,12 +303,6 @@ impl ModuleImports {
             "task::wake" | "task::abort" => ensure_func_ty::<TaskId, ()>(ty, fn_name),
 
             "channel::new" => ensure_func_ty::<ChannelId, ()>(ty, fn_name),
-            "mpsc_receiver::closed" | "mpsc_sender::closed" => {
-                ensure_func_ty::<(), Ref>(ty, fn_name)
-            }
-            "mpsc_receiver::get" | "mpsc_sender::get" => {
-                ensure_func_ty::<(Ref, u32, u32, u32), Ref>(ty, fn_name)
-            }
 
             "mpsc_receiver::poll_next" => ensure_func_ty::<(Ref, WasmContextPtr), i64>(ty, fn_name),
 
@@ -323,10 +317,11 @@ impl ModuleImports {
             "timer::poll" => ensure_func_ty::<(TimerId, WasmContextPtr), i64>(ty, fn_name),
 
             "handles::create" => ensure_func_ty::<(), Ref>(ty, fn_name),
-            "handles::insert" => ensure_func_ty::<(Ref, i32, i32, Ref), ()>(ty, fn_name),
-            "handles::remove" => ensure_func_ty::<(Ref, i32, i32), Ref>(ty, fn_name),
+            "handles::insert_sender" | "handles::insert_receiver" => {
+                ensure_func_ty::<(Ref, i32, i32, Ref), ()>(ty, fn_name)
+            }
+            "handles::remove" => ensure_func_ty::<(Ref, i32, i32, i32), Ref>(ty, fn_name),
             "resource::id" => ensure_func_ty::<Ref, u64>(ty, fn_name),
-            "resource::kind" => ensure_func_ty::<Ref, i32>(ty, fn_name),
             "resource::drop" => ensure_func_ty::<Ref, ()>(ty, fn_name),
             "task::report_error" | "report_panic" => {
                 ensure_func_ty::<(u32, u32, u32, u32, u32, u32), ()>(ty, fn_name)
@@ -368,16 +363,8 @@ impl ExtendLinker for WorkflowFunctions {
             // Channel functions
             ("channel::new", wrap1(&mut *store, Self::new_channel)),
             (
-                "mpsc_receiver::closed",
-                Func::wrap(&mut *store, Self::closed_receiver),
-            ),
-            (
                 "mpsc_receiver::poll_next",
                 wrap2(&mut *store, Self::poll_next_for_receiver),
-            ),
-            (
-                "mpsc_sender::closed",
-                Func::wrap(&mut *store, Self::closed_sender),
             ),
             (
                 "mpsc_sender::poll_ready",
@@ -398,22 +385,22 @@ impl ExtendLinker for WorkflowFunctions {
             ("timer::poll", wrap2(&mut *store, Self::poll_timer)),
             // Resource management
             ("resource::id", Func::wrap(&mut *store, Self::resource_id)),
-            (
-                "resource::kind",
-                Func::wrap(&mut *store, Self::resource_kind),
-            ),
             ("resource::drop", wrap1(&mut *store, Self::drop_resource)),
             (
                 "handles::create",
                 Func::wrap(&mut *store, Self::create_handles),
             ),
             (
-                "handles::insert",
-                wrap4(&mut *store, Self::insert_into_handles),
+                "handles::insert_sender",
+                wrap4(&mut *store, Self::insert_sender_into_handles),
+            ),
+            (
+                "handles::insert_receiver",
+                wrap4(&mut *store, Self::insert_receiver_into_handles),
             ),
             (
                 "handles::remove",
-                wrap3(&mut *store, Self::remove_from_handles),
+                wrap4(&mut *store, Self::remove_from_handles),
             ),
             // Panic hook
             ("report_panic", wrap6(&mut *store, Self::report_panic)),

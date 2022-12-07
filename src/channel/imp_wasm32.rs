@@ -21,26 +21,18 @@ use crate::{
 
 #[derive(Debug)]
 pub struct MpscReceiver {
-    resource: Resource<Self>,
+    resource: Option<Resource<Self>>,
 }
 
-impl From<Resource<Self>> for MpscReceiver {
-    fn from(resource: Resource<Self>) -> Self {
+impl From<Option<Resource<Self>>> for MpscReceiver {
+    fn from(resource: Option<Resource<Self>>) -> Self {
         Self { resource }
     }
 }
 
 impl MpscReceiver {
     pub(super) fn closed() -> Self {
-        #[externref]
-        #[link(wasm_import_module = "tardigrade_rt")]
-        extern "C" {
-            #[link_name = "mpsc_receiver::closed"]
-            fn closed_mpsc_receiver() -> Resource<MpscReceiver>;
-        }
-
-        let resource = unsafe { closed_mpsc_receiver() };
-        Self { resource }
+        Self { resource: None }
     }
 
     pub(super) fn channel_id(&self) -> ChannelId {
@@ -51,10 +43,12 @@ impl MpscReceiver {
             fn mpsc_receiver_id(receiver: &Resource<MpscReceiver>) -> ChannelId;
         }
 
-        unsafe { mpsc_receiver_id(&self.resource) }
+        self.resource
+            .as_ref()
+            .map_or(0, |rx| unsafe { mpsc_receiver_id(rx) })
     }
 
-    pub(super) fn into_resource(self) -> Resource<Self> {
+    pub(super) fn into_resource(self) -> Option<Resource<Self>> {
         self.resource
     }
 }
@@ -74,44 +68,36 @@ impl Stream for MpscReceiver {
             ) -> i64;
         }
 
-        unsafe {
-            let result = mpsc_receiver_poll_next(&self.resource, cx);
-            IntoWasm::from_abi_in_wasm(result)
-        }
+        self.resource
+            .as_ref()
+            .map_or(Poll::Ready(None), |rx| unsafe {
+                let result = mpsc_receiver_poll_next(rx, cx);
+                IntoWasm::from_abi_in_wasm(result)
+            })
     }
 }
 
 /// Unbounded sender end of an MPSC channel.
 #[derive(Debug, Clone)]
 pub struct MpscSender {
-    resource: Arc<Resource<Self>>,
+    resource: Option<Arc<Resource<Self>>>,
 }
 
-impl From<Resource<Self>> for MpscSender {
-    fn from(resource: Resource<Self>) -> Self {
+impl From<Option<Resource<Self>>> for MpscSender {
+    fn from(resource: Option<Resource<Self>>) -> Self {
         Self {
-            resource: Arc::new(resource),
+            resource: resource.map(Arc::new),
         }
     }
 }
 
 impl MpscSender {
     pub(super) fn closed() -> Self {
-        #[externref]
-        #[link(wasm_import_module = "tardigrade_rt")]
-        extern "C" {
-            #[link_name = "mpsc_sender::closed"]
-            fn closed_mpsc_sender() -> Resource<MpscSender>;
-        }
-
-        let resource = unsafe { closed_mpsc_sender() };
-        Self {
-            resource: Arc::new(resource),
-        }
+        Self { resource: None }
     }
 
-    pub(super) fn as_resource(&self) -> &Resource<Self> {
-        &self.resource
+    pub(super) fn as_resource(&self) -> Option<&Resource<Self>> {
+        self.resource.as_deref()
     }
 }
 
@@ -127,10 +113,12 @@ impl Sink<&[u8]> for MpscSender {
             fn mpsc_sender_poll_ready(sender: &Resource<MpscSender>, cx: *mut Context<'_>) -> i32;
         }
 
-        unsafe {
-            let poll_result = mpsc_sender_poll_ready(&self.resource, cx);
-            Poll::<Result<(), SendError>>::from_abi_in_wasm(poll_result)
-        }
+        self.resource
+            .as_deref()
+            .map_or(Poll::Ready(Err(SendError::Closed)), |sx| unsafe {
+                let poll_result = mpsc_sender_poll_ready(sx, cx);
+                Poll::<Result<(), SendError>>::from_abi_in_wasm(poll_result)
+            })
     }
 
     fn start_send(self: Pin<&mut Self>, item: &[u8]) -> Result<(), Self::Error> {
@@ -145,10 +133,12 @@ impl Sink<&[u8]> for MpscSender {
             ) -> i32;
         }
 
-        unsafe {
-            let result = mpsc_sender_start_send(&self.resource, item.as_ptr(), item.len());
-            Result::<(), SendError>::from_abi_in_wasm(result)
-        }
+        self.resource
+            .as_deref()
+            .map_or(Err(SendError::Closed), |sx| unsafe {
+                let result = mpsc_sender_start_send(sx, item.as_ptr(), item.len());
+                Result::<(), SendError>::from_abi_in_wasm(result)
+            })
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -160,10 +150,12 @@ impl Sink<&[u8]> for MpscSender {
             fn mpsc_sender_poll_flush(sender: &Resource<MpscSender>, cx: *mut Context<'_>) -> i32;
         }
 
-        unsafe {
-            let poll_result = mpsc_sender_poll_flush(&self.resource, cx);
-            Poll::<Result<(), SendError>>::from_abi_in_wasm(poll_result)
-        }
+        self.resource
+            .as_deref()
+            .map_or(Poll::Ready(Err(SendError::Closed)), |sx| unsafe {
+                let poll_result = mpsc_sender_poll_flush(sx, cx);
+                Poll::<Result<(), SendError>>::from_abi_in_wasm(poll_result)
+            })
     }
 
     fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -227,10 +219,8 @@ pub unsafe extern "C" fn __tardigrade_rt_init_channel(
     sender: Resource<MpscSender>,
     receiver: Resource<MpscReceiver>,
 ) {
-    let sender = MpscSender {
-        resource: Arc::new(sender),
-    };
-    let receiver = MpscReceiver { resource: receiver };
+    let sender = MpscSender::from(Some(sender));
+    let receiver = MpscReceiver::from(Some(receiver));
     CHANNELS.get_mut(stub_id).set_value((sender, receiver));
 }
 

@@ -115,19 +115,19 @@ impl From<UntypedHandles<Wasm>> for HostHandles {
             let path = path.to_string();
             match handle {
                 Handle::Sender(sender) => unsafe {
-                    insert_handle(
+                    insert_sender(
                         &resource,
                         path.as_ptr(),
                         path.len(),
-                        sender.as_resource().upcast_ref(),
+                        sender.as_resource().map(Resource::upcast_ref),
                     );
                 },
                 Handle::Receiver(receiver) => unsafe {
-                    insert_handle(
+                    insert_receiver(
                         &resource,
                         path.as_ptr(),
                         path.len(),
-                        &receiver.into_resource().upcast(),
+                        receiver.into_resource().map(Resource::upcast),
                     );
                 },
             }
@@ -139,31 +139,33 @@ impl From<UntypedHandles<Wasm>> for HostHandles {
 impl TakeHandles<Wasm> for HostHandles {
     fn take_receiver(&mut self, path: HandlePath<'_>) -> Result<RawReceiver, AccessError> {
         let path_str = path.to_cow_string();
-        let handle = unsafe { remove_handle(&self.resource, path_str.as_ptr(), path_str.len()) };
+        let mut kind = ResourceKind::None;
         let handle =
-            handle.ok_or_else(|| AccessErrorKind::Missing.with_location(ReceiverAt(path)))?;
+            unsafe { remove_handle(&self.resource, path_str.as_ptr(), path_str.len(), &mut kind) };
 
-        let handle_kind = unsafe { resource_kind(&handle) };
-        if handle_kind == ResourceKind::Receiver {
-            let handle = unsafe { handle.downcast_unchecked() };
-            Ok(RawReceiver::from_resource(handle))
-        } else {
-            Err(AccessErrorKind::KindMismatch.with_location(ReceiverAt(path)))
+        match kind {
+            ResourceKind::None => Err(AccessErrorKind::Missing.with_location(ReceiverAt(path))),
+            ResourceKind::Receiver => {
+                let handle = handle.map(|generic| unsafe { generic.downcast_unchecked() });
+                Ok(RawReceiver::from_resource(handle))
+            }
+            _ => Err(AccessErrorKind::KindMismatch.with_location(ReceiverAt(path))),
         }
     }
 
     fn take_sender(&mut self, path: HandlePath<'_>) -> Result<RawSender, AccessError> {
         let path_str = path.to_cow_string();
-        let handle = unsafe { remove_handle(&self.resource, path_str.as_ptr(), path_str.len()) };
+        let mut kind = ResourceKind::None;
         let handle =
-            handle.ok_or_else(|| AccessErrorKind::Missing.with_location(SenderAt(path)))?;
+            unsafe { remove_handle(&self.resource, path_str.as_ptr(), path_str.len(), &mut kind) };
 
-        let handle_kind = unsafe { resource_kind(&handle) };
-        if handle_kind == ResourceKind::Sender {
-            let handle = unsafe { handle.downcast_unchecked() };
-            Ok(RawSender::from_resource(handle))
-        } else {
-            Err(AccessErrorKind::KindMismatch.with_location(SenderAt(path)))
+        match kind {
+            ResourceKind::None => Err(AccessErrorKind::Missing.with_location(SenderAt(path))),
+            ResourceKind::Sender => {
+                let handle = handle.map(|generic| unsafe { generic.downcast_unchecked() });
+                Ok(RawSender::from_resource(handle))
+            }
+            _ => Err(AccessErrorKind::KindMismatch.with_location(SenderAt(path))),
         }
     }
 
@@ -180,12 +182,20 @@ extern "C" {
     #[link_name = "handles::create"]
     fn create_handles() -> Resource<HostHandles>;
 
-    #[link_name = "handles::insert"]
-    fn insert_handle(
+    #[link_name = "handles::insert_sender"]
+    fn insert_sender(
         handles: &Resource<HostHandles>,
         name_ptr: *const u8,
         name_len: usize,
-        sender: &Resource<()>,
+        sender: Option<&Resource<()>>,
+    );
+
+    #[link_name = "handles::insert_receiver"]
+    fn insert_receiver(
+        handles: &Resource<HostHandles>,
+        name_ptr: *const u8,
+        name_len: usize,
+        sender: Option<Resource<()>>,
     );
 
     #[link_name = "handles::remove"]
@@ -193,8 +203,6 @@ extern "C" {
         handles: &Resource<HostHandles>,
         name_ptr: *const u8,
         name_len: usize,
+        kind: *mut ResourceKind,
     ) -> Option<Resource<()>>;
-
-    #[link_name = "resource::kind"]
-    fn resource_kind(handle: &Resource<()>) -> ResourceKind;
 }

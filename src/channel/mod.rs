@@ -114,12 +114,12 @@ impl<T, C: Codec<T>> Receiver<T, C> {
 
 impl RawReceiver {
     #[cfg(target_arch = "wasm32")]
-    pub(crate) fn from_resource(resource: externref::Resource<imp::MpscReceiver>) -> Self {
+    pub(crate) fn from_resource(resource: Option<externref::Resource<imp::MpscReceiver>>) -> Self {
         Self::new(resource.into())
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub(crate) fn into_resource(self) -> externref::Resource<imp::MpscReceiver> {
+    pub(crate) fn into_resource(self) -> Option<externref::Resource<imp::MpscReceiver>> {
         self.raw.into_resource()
     }
 }
@@ -241,12 +241,12 @@ impl<T, C: Codec<T>> Sender<T, C> {
 
 impl RawSender {
     #[cfg(target_arch = "wasm32")]
-    pub(crate) fn from_resource(resource: externref::Resource<imp::MpscSender>) -> Self {
+    pub(crate) fn from_resource(resource: Option<externref::Resource<imp::MpscSender>>) -> Self {
         Self::new(resource.into())
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub(crate) fn as_resource(&self) -> &externref::Resource<imp::MpscSender> {
+    pub(crate) fn as_resource(&self) -> Option<&externref::Resource<imp::MpscSender>> {
         self.raw.as_resource()
     }
 }

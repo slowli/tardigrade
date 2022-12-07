@@ -75,19 +75,6 @@ impl WorkflowFunctions {
         }
     }
 
-    #[tracing::instrument(level = "debug", skip_all, err, fields(resource))]
-    pub fn resource_kind(resource: Option<ExternRef>) -> anyhow::Result<i32> {
-        let resource = HostResource::from_ref(resource.as_ref())?;
-        tracing::Span::current().record("resource", field::debug(resource));
-
-        let kind = match resource {
-            HostResource::Receiver(_) => ResourceKind::Receiver,
-            HostResource::Sender(_) => ResourceKind::Sender,
-            _ => ResourceKind::Other,
-        };
-        Ok(kind as i32)
-    }
-
     #[allow(clippy::needless_pass_by_value)] // required by wasmtime
     pub fn drop_resource(
         mut ctx: StoreContextMut<'_, InstanceData>,
@@ -117,29 +104,57 @@ impl WorkflowFunctions {
     }
 
     #[tracing::instrument(level = "debug", skip_all, err, fields(path, channel))]
-    pub fn insert_into_handles(
+    pub fn insert_sender_into_handles(
         ctx: StoreContextMut<'_, InstanceData>,
         handles: Option<ExternRef>,
         path_ptr: u32,
         path_len: u32,
-        channel_half: Option<ExternRef>,
+        sender: Option<ExternRef>,
     ) -> anyhow::Result<()> {
-        let channel_id = match HostResource::from_ref(channel_half.as_ref())? {
-            HostResource::Receiver(id) => Handle::Receiver(*id),
-            HostResource::Sender(id) => Handle::Sender(*id),
-            other => return Err(anyhow!("unexpected handle supplied: {other:?}")),
-        };
+        let channel_id = sender
+            .as_ref()
+            .map(|half| HostResource::from_ref(Some(half)).and_then(HostResource::as_sender));
+        let channel_id = channel_id.transpose()?.unwrap_or(0);
+        let channel_half = Handle::Sender(channel_id);
+
+        Self::insert_into_handles(&ctx, handles.as_ref(), path_ptr, path_len, channel_half)
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, err, fields(path, channel))]
+    pub fn insert_receiver_into_handles(
+        ctx: StoreContextMut<'_, InstanceData>,
+        handles: Option<ExternRef>,
+        path_ptr: u32,
+        path_len: u32,
+        receiver: Option<ExternRef>,
+    ) -> anyhow::Result<()> {
+        let channel_id = receiver
+            .as_ref()
+            .map(|half| HostResource::from_ref(Some(half)).and_then(HostResource::as_receiver));
+        let channel_id = channel_id.transpose()?.unwrap_or(0);
+        let channel_half = Handle::Receiver(channel_id);
+
+        Self::insert_into_handles(&ctx, handles.as_ref(), path_ptr, path_len, channel_half)
+    }
+
+    fn insert_into_handles(
+        ctx: &StoreContextMut<'_, InstanceData>,
+        handles: Option<&ExternRef>,
+        path_ptr: u32,
+        path_len: u32,
+        channel_half: Handle<ChannelId>,
+    ) -> anyhow::Result<()> {
         let memory = ctx.data().exports().memory;
-        let path = copy_string_from_wasm(&ctx, &memory, path_ptr, path_len)?;
+        let path = copy_string_from_wasm(ctx, &memory, path_ptr, path_len)?;
         let path = HandlePathBuf::from(path.as_str());
 
         tracing::Span::current()
             .record("path", field::debug(&path))
-            .record("channel", field::debug(&channel_id));
+            .record("channel", field::debug(&channel_half));
 
-        let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
+        let handles = HostResource::from_ref(handles)?.as_channel_handles()?;
         let mut handles = handles.inner.lock().unwrap();
-        handles.insert(path, channel_id);
+        handles.insert(path, channel_half);
         tracing::debug!(?handles, "inserted channel handle");
         Ok(())
     }
@@ -150,6 +165,7 @@ impl WorkflowFunctions {
         handles: Option<ExternRef>,
         path_ptr: u32,
         path_len: u32,
+        kind_ptr: u32,
     ) -> anyhow::Result<Option<ExternRef>> {
         let memory = ctx.data().exports().memory;
         let path = copy_string_from_wasm(&ctx, &memory, path_ptr, path_len)?;
@@ -159,10 +175,20 @@ impl WorkflowFunctions {
 
         let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
         let mut handles = handles.inner.lock().unwrap();
-        let removed = handles.remove(&path).map(|handle| match handle {
-            Handle::Receiver(id) => HostResource::Receiver(id).into_ref(),
-            Handle::Sender(id) => HostResource::Sender(id).into_ref(),
+        let mut kind = ResourceKind::None;
+        let removed = handles.remove(&path).and_then(|handle| match handle {
+            Handle::Receiver(id) => {
+                kind = ResourceKind::Receiver;
+                (id != 0).then(|| HostResource::Receiver(id).into_ref())
+            }
+            Handle::Sender(id) => {
+                kind = ResourceKind::Sender;
+                (id != 0).then(|| HostResource::Sender(id).into_ref())
+            }
         });
+
+        let kind_bytes = (kind as i32).to_le_bytes();
+        memory.write(ctx, kind_ptr as usize, &kind_bytes)?;
         Ok(removed)
     }
 
@@ -238,10 +264,6 @@ impl WorkflowFunctions {
         ctx.data_mut().inner.create_channel_stub(stub_id)
     }
 
-    pub fn closed_receiver() -> Option<ExternRef> {
-        Some(HostResource::Receiver(0).into_ref())
-    }
-
     pub fn poll_next_for_receiver(
         mut ctx: StoreContextMut<'_, InstanceData>,
         channel_ref: Option<ExternRef>,
@@ -254,10 +276,6 @@ impl WorkflowFunctions {
         let mut poll_cx = WasmContext::new(ctx.as_context_mut(), poll_cx);
         let poll_result = poll_result.into_inner(&mut poll_cx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))
-    }
-
-    pub fn closed_sender() -> Option<ExternRef> {
-        Some(HostResource::Sender(0).into_ref())
     }
 
     pub fn poll_ready_for_sender(
