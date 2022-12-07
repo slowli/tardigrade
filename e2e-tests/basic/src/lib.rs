@@ -12,7 +12,10 @@ use tardigrade::{
     channel::{Receiver, Sender},
     sleep,
     task::TaskResult,
-    workflow::{GetInterface, InEnv, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
+    workflow::{
+        GetInterface, HandleFormat, InEnv, SpawnWorkflow, Wasm, WithHandle, WorkflowEntry,
+        WorkflowFn,
+    },
     Json,
 };
 
@@ -74,23 +77,23 @@ pub struct Args {
 }
 
 /// Cloneable part of the workflow handle consisting of its channel senders.
-#[derive(TakeHandle)]
+#[derive(WithHandle)]
 // ^ Proc macro that derives some helper traits for the handle.
 #[tardigrade(derive(Debug, Clone))]
 // ^ Helps derive `Debug` and/or `Clone` for the handle. The standard derive logic
 // unfortunately doesn't work for these traits because of additional field constraints.
-pub struct SharedHandle<Env: WorkflowEnv> {
+pub struct SharedHandle<Fmt: HandleFormat> {
     // For the derive macro to work, fields need to be defined as `Something<.., Env>`,
     // where `Env` is the environment type param.
     // In case of the fundamental building blocks (senders and receivers),
     // this wrapper is `InEnv<T, Env>`, where `T` describes a workflow element.
-    pub events: InEnv<Sender<DomainEvent, Json>, Env>,
+    pub events: InEnv<Sender<DomainEvent, Json>, Fmt>,
 }
 
 /// Handle for the workflow.
-#[derive(TakeHandle)]
+#[derive(WithHandle)]
 #[tardigrade(derive(Debug))]
-pub struct PizzaDeliveryHandle<Env: WorkflowEnv = Wasm> {
+pub struct PizzaDeliveryHandle<Env: HandleFormat = Wasm> {
     pub orders: InEnv<Receiver<PizzaOrder, Json>, Env>,
     #[tardigrade(flatten)]
     pub shared: SharedHandle<Env>,
@@ -100,7 +103,7 @@ pub struct PizzaDeliveryHandle<Env: WorkflowEnv = Wasm> {
 // `GetInterface` derive macro picks up the workflow interface definition at `tardigrade.json`
 // and implements the corresponding trait based on it. It also exposes the interface definition
 // in a custom WASM section, so that it is available to the workflow runtime.
-#[derive(Debug, GetInterface, TakeHandle)]
+#[derive(Debug, GetInterface, WithHandle, WorkflowEntry)]
 #[tardigrade(handle = "PizzaDeliveryHandle")]
 pub struct PizzaDelivery(());
 
@@ -125,9 +128,6 @@ impl SpawnWorkflow for PizzaDelivery {
         Ok(())
     }
 }
-
-// Defines the entry point for the workflow.
-tardigrade::workflow_entry!(PizzaDelivery);
 
 impl PizzaDeliveryHandle {
     /// This is where the actual workflow logic is contained. We pass incoming orders

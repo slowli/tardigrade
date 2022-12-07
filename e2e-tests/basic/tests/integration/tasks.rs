@@ -10,7 +10,7 @@ use std::{
     task::Poll,
 };
 
-use tardigrade::{spawn::ManageWorkflowsExt, Json, TaskId};
+use tardigrade::{Json, TaskId};
 use tardigrade_rt::{
     driver::{Driver, MessageSender, Termination},
     receipt::{
@@ -18,12 +18,14 @@ use tardigrade_rt::{
     },
     test::MockScheduler,
 };
+
+use crate::{create_manager, spawn_workflow, TestResult};
 use tardigrade_test_basic::{
     tasks::{Args, PizzaDeliveryWithTasks},
     DomainEvent, PizzaKind, PizzaOrder,
 };
 
-use crate::{create_manager, TestResult};
+const DEFINITION_ID: &str = "test::PizzaDeliveryWithTasks";
 
 pub(crate) async fn send_orders(
     mut orders_sx: MessageSender<PizzaOrder, Json>,
@@ -111,11 +113,8 @@ async fn setup_workflow(
     let (scheduler, mut expirations) = MockScheduler::with_expirations();
     let mut manager = create_manager(scheduler.clone()).await?;
 
-    let mut workflow = manager
-        .new_workflow::<PizzaDeliveryWithTasks>("test::PizzaDeliveryWithTasks", args)?
-        .build()
-        .await?;
-    let handle = workflow.handle();
+    let (_, handle) =
+        spawn_workflow::<_, PizzaDeliveryWithTasks>(&manager, DEFINITION_ID, args).await?;
     let mut driver = Driver::new();
     let orders_sx = handle.orders.into_sink(&mut driver);
     let events_rx = handle.shared.events.into_stream(&mut driver);

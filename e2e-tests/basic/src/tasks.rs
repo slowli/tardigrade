@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use crate::{DomainEvent, PizzaDeliveryHandle, PizzaKind};
 use tardigrade::{
     task::{self, ErrorContextExt, JoinError, TaskError, TaskResult},
-    workflow::{GetInterface, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
+    workflow::{GetInterface, SpawnWorkflow, Wasm, WithHandle, WorkflowEntry, WorkflowFn},
     Json,
 };
 
@@ -20,7 +20,7 @@ pub struct Args {
     pub propagate_errors: bool,
 }
 
-#[derive(Debug, GetInterface, TakeHandle)]
+#[derive(Debug, GetInterface, WithHandle, WorkflowEntry)]
 #[tardigrade(handle = "PizzaDeliveryHandle")]
 pub struct PizzaDeliveryWithTasks(());
 
@@ -87,5 +87,3 @@ impl SpawnWorkflow for PizzaDeliveryWithTasks {
         }
     }
 }
-
-tardigrade::workflow_entry!(PizzaDeliveryWithTasks);

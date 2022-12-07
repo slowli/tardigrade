@@ -9,17 +9,20 @@ use crate::{DomainEvent, PizzaOrder, SharedHandle};
 use tardigrade::{
     channel::{Receiver, RequestHandles, Requests},
     task::TaskResult,
-    workflow::{GetInterface, InEnv, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
+    workflow::{
+        GetInterface, HandleFormat, InEnv, SpawnWorkflow, Wasm, WithHandle, WorkflowEntry,
+        WorkflowFn,
+    },
     Json,
 };
 
-#[derive(TakeHandle)]
+#[derive(WithHandle)]
 #[tardigrade(derive(Debug))]
-pub struct WorkflowHandle<Env: WorkflowEnv> {
-    pub orders: InEnv<Receiver<PizzaOrder, Json>, Env>,
+pub struct WorkflowHandle<Fmt: HandleFormat> {
+    pub orders: InEnv<Receiver<PizzaOrder, Json>, Fmt>,
     #[tardigrade(flatten)]
-    pub shared: SharedHandle<Env>,
-    pub baking: RequestHandles<PizzaOrder, (), Json, Env>,
+    pub shared: SharedHandle<Fmt>,
+    pub baking: RequestHandles<PizzaOrder, (), Json, Fmt>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,7 +30,7 @@ pub struct Args {
     pub oven_count: usize,
 }
 
-#[derive(Debug, GetInterface, TakeHandle)]
+#[derive(Debug, GetInterface, WithHandle, WorkflowEntry)]
 #[tardigrade(handle = "WorkflowHandle", interface = "src/tardigrade-req.json")]
 pub struct PizzaDeliveryWithRequests(());
 
@@ -48,8 +51,6 @@ impl SpawnWorkflow for PizzaDeliveryWithRequests {
         Ok(())
     }
 }
-
-tardigrade::workflow_entry!(PizzaDeliveryWithRequests);
 
 impl WorkflowHandle<Wasm> {
     fn spawn(self, args: Args) -> impl Future<Output = ()> {

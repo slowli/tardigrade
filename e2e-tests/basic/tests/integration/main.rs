@@ -10,10 +10,14 @@ use tracing_subscriber::{
 
 use std::{collections::HashMap, error};
 
-use tardigrade::interface::ReceiverAt;
+use tardigrade::{
+    interface::ReceiverAt,
+    spawn::ManageWorkflows,
+    workflow::{GetInterface, WorkflowFn},
+};
 use tardigrade_rt::{
     engine::{Wasmtime, WasmtimeModule},
-    manager::WorkflowManager,
+    manager::{ManagerHandles, WorkflowHandle, WorkflowManager},
     storage::LocalStorage,
     test::{ModuleCompiler, WasmOpt},
     Clock,
@@ -55,6 +59,27 @@ async fn create_manager<C: Clock>(clock: C) -> TestResult<LocalManager<C>> {
         .await?;
     manager.insert_module("test", module).await;
     Ok(manager)
+}
+
+type WorkflowAndHandles<'m, C, W> = (
+    WorkflowHandle<'m, W, LocalManager<C>>,
+    ManagerHandles<'m, W, LocalManager<C>>,
+);
+
+async fn spawn_workflow<'m, C, W>(
+    manager: &'m LocalManager<C>,
+    definition_id: &str,
+    args: W::Args,
+) -> TestResult<WorkflowAndHandles<'m, C, W>>
+where
+    C: Clock,
+    W: WorkflowFn + GetInterface,
+{
+    let manager = manager.as_ref();
+    let builder = manager.new_workflow(definition_id)?;
+    let (child_handles, self_handles) = builder.handles(|_| { /* use default config */ }).await;
+    let workflow = builder.build(args, child_handles).await?;
+    Ok((workflow, self_handles))
 }
 
 fn create_fmt_subscriber() -> impl Subscriber + for<'a> LookupSpan<'a> {

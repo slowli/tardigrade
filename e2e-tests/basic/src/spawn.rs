@@ -8,9 +8,12 @@ use serde::{Deserialize, Serialize};
 use crate::{DomainEvent, PizzaDeliveryHandle, PizzaOrder, SharedHandle};
 use tardigrade::{
     channel::Sender,
-    spawn::{ManageWorkflowsExt, Workflows},
+    spawn::{ManageWorkflows, Workflows},
     task::{TaskError, TaskResult},
-    workflow::{GetInterface, InEnv, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
+    workflow::{
+        GetInterface, HandleFormat, InEnv, SpawnWorkflow, Wasm, WithHandle, WorkflowEntry,
+        WorkflowFn,
+    },
     Json,
 };
 
@@ -20,7 +23,7 @@ pub struct Args {
     pub collect_metrics: bool,
 }
 
-#[derive(Debug, GetInterface, TakeHandle)]
+#[derive(Debug, GetInterface, WithHandle, WorkflowEntry)]
 #[tardigrade(handle = "PizzaDeliveryHandle")]
 pub struct PizzaDeliveryWithSpawning(());
 
@@ -31,31 +34,39 @@ impl WorkflowFn for PizzaDeliveryWithSpawning {
 
 impl PizzaDeliveryHandle {
     async fn spawn_with_child_workflows(self, args: Args) -> TaskResult {
-        const DEFINITION_ID: &str = "test::Baking";
-
         let mut counter = 0;
         self.orders
             .map(Ok)
             .try_for_each_concurrent(args.oven_count, |order| {
                 counter += 1;
                 let events = self.shared.events.clone();
-                async move {
-                    let builder =
-                        Workflows.new_workflow::<Baking>(DEFINITION_ID, (counter, order))?;
-                    builder.handle().events.copy_from(events);
-                    if !args.collect_metrics {
-                        builder.handle().duration.close();
-                    }
-
-                    let mut handle = builder.build().await?;
-                    handle.workflow.await.map_err(TaskError::from)?;
-                    if let Some(metric) = handle.api.duration.next().await {
-                        tracing::info!(duration = metric.duration_millis, "received child metrics");
-                    }
-                    Ok(())
-                }
+                Self::spawn_child(counter, order, args.collect_metrics, events)
             })
             .await
+    }
+
+    async fn spawn_child(
+        counter: usize,
+        order: PizzaOrder,
+        collect_metrics: bool,
+        events: Sender<DomainEvent, Json>,
+    ) -> TaskResult {
+        const DEFINITION_ID: &str = "test::Baking";
+
+        let builder = Workflows.new_workflow::<Baking>(DEFINITION_ID)?;
+        let handles = builder.handles(|config| {
+            config.events.copy_from(events);
+            if !collect_metrics {
+                config.duration.close();
+            }
+        });
+        let (child_handles, mut self_handles) = handles.await;
+        let child = builder.build((counter, order), child_handles).await?;
+        child.await.map_err(TaskError::from)?;
+        if let Some(metric) = self_handles.duration.next().await {
+            tracing::info!(duration = metric.duration_millis, "received child metrics");
+        }
+        Ok(())
     }
 }
 
@@ -66,21 +77,19 @@ impl SpawnWorkflow for PizzaDeliveryWithSpawning {
     }
 }
 
-tardigrade::workflow_entry!(PizzaDeliveryWithSpawning);
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DurationMetric {
     index: usize,
     duration_millis: u64,
 }
 
-#[derive(TakeHandle)]
-pub struct BakingHandle<Env: WorkflowEnv = Wasm> {
-    pub events: InEnv<Sender<DomainEvent, Json>, Env>,
-    pub duration: InEnv<Sender<DurationMetric, Json>, Env>,
+#[derive(WithHandle)]
+pub struct BakingHandle<Fmt: HandleFormat = Wasm> {
+    pub events: InEnv<Sender<DomainEvent, Json>, Fmt>,
+    pub duration: InEnv<Sender<DurationMetric, Json>, Fmt>,
 }
 
-#[derive(Debug, GetInterface, TakeHandle)]
+#[derive(Debug, GetInterface, WithHandle, WorkflowEntry)]
 #[tardigrade(handle = "BakingHandle", interface = "src/tardigrade-baking.json")]
 pub struct Baking(());
 
@@ -107,5 +116,3 @@ impl SpawnWorkflow for Baking {
         Ok(())
     }
 }
-
-tardigrade::workflow_entry!(Baking);
