@@ -130,10 +130,11 @@ impl RunWorkflow for WasmtimeInstance {
         }
     }
 
-    fn initialize_channel(&mut self, local_id: ChannelId, result: Result<ChannelId, HostError>) {
+    fn initialize_channel(&mut self, local_id: ChannelId, channel_id: ChannelId) {
         let exports = self.store.data().exports();
-        if let Err(err) = exports.initialize_channel(self.store.as_context_mut(), local_id, result)
-        {
+        let init_result =
+            exports.initialize_channel(self.store.as_context_mut(), local_id, channel_id);
+        if let Err(err) = init_result {
             tracing::warn!(%err, "failed initializing channel");
         }
     }
@@ -234,9 +235,7 @@ mod serde_compress {
         let mut output = vec![];
         DeflateDecoder::new(reader)
             .read_to_end(&mut output)
-            .map_err(|err| {
-                D::Error::custom(format!("cannot decompress memory snapshot: {}", err))
-            })?;
+            .map_err(|err| D::Error::custom(format!("cannot decompress memory snapshot: {err}")))?;
         Ok(output)
     }
 }
@@ -296,6 +295,14 @@ pub(super) struct SharedChannelHandles {
     pub inner: Arc<Mutex<ChannelIds>>,
 }
 
+impl SharedChannelHandles {
+    fn new(ids: ChannelIds) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(ids)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum HostResource {
@@ -317,6 +324,11 @@ impl HostResource {
 
     pub(crate) fn into_ref(self) -> ExternRef {
         ExternRef::new(self)
+    }
+
+    pub(crate) fn channel_handles(ids: ChannelIds) -> Self {
+        let handles = SharedChannelHandles::new(ids);
+        Self::ChannelHandles(handles)
     }
 
     pub(crate) fn as_receiver(&self) -> anyhow::Result<ChannelId> {

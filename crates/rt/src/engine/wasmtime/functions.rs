@@ -19,10 +19,10 @@ use crate::{
     utils,
 };
 use tardigrade::{
-    abi::IntoWasm,
-    interface::{Handle, HandlePathBuf},
+    abi::{IntoWasm, ResourceKind},
+    interface::{Handle, HandlePath, HandlePathBuf},
     task::{JoinError, TaskError},
-    TaskId, TimerDefinition, TimerId, WakerId, WorkflowId,
+    ChannelId, TaskId, TimerDefinition, TimerId, WakerId, WorkflowId,
 };
 
 pub(super) type WasmContextPtr = u32;
@@ -75,6 +75,19 @@ impl WorkflowFunctions {
         }
     }
 
+    #[tracing::instrument(level = "debug", skip_all, err, fields(resource))]
+    pub fn resource_kind(resource: Option<ExternRef>) -> anyhow::Result<i32> {
+        let resource = HostResource::from_ref(resource.as_ref())?;
+        tracing::Span::current().record("resource", field::debug(resource));
+
+        let kind = match resource {
+            HostResource::Receiver(_) => ResourceKind::Receiver,
+            HostResource::Sender(_) => ResourceKind::Sender,
+            _ => ResourceKind::Other,
+        };
+        Ok(kind as i32)
+    }
+
     #[allow(clippy::needless_pass_by_value)] // required by wasmtime
     pub fn drop_resource(
         mut ctx: StoreContextMut<'_, InstanceData>,
@@ -94,6 +107,63 @@ impl WorkflowFunctions {
             exports.drop_waker(ctx.as_context_mut(), waker_id).ok();
         }
         Ok(())
+    }
+
+    #[tracing::instrument(level = "debug", skip_all)]
+    #[allow(clippy::unnecessary_wraps)] // required by wasmtime
+    pub fn create_handles() -> Option<ExternRef> {
+        let resource = HostResource::ChannelHandles(SharedChannelHandles::default());
+        Some(resource.into_ref())
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, err, fields(path, channel))]
+    pub fn insert_into_handles(
+        ctx: StoreContextMut<'_, InstanceData>,
+        handles: Option<ExternRef>,
+        path_ptr: u32,
+        path_len: u32,
+        channel_half: Option<ExternRef>,
+    ) -> anyhow::Result<()> {
+        let channel_id = match HostResource::from_ref(channel_half.as_ref())? {
+            HostResource::Receiver(id) => Handle::Receiver(*id),
+            HostResource::Sender(id) => Handle::Sender(*id),
+            other => return Err(anyhow!("unexpected handle supplied: {other:?}")),
+        };
+        let memory = ctx.data().exports().memory;
+        let path = copy_string_from_wasm(&ctx, &memory, path_ptr, path_len)?;
+        let path = HandlePathBuf::from(path.as_str());
+
+        tracing::Span::current()
+            .record("path", field::debug(&path))
+            .record("channel", field::debug(&channel_id));
+
+        let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
+        let mut handles = handles.inner.lock().unwrap();
+        handles.insert(path, channel_id);
+        tracing::debug!(?handles, "inserted channel handle");
+        Ok(())
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, err, fields(path))]
+    pub fn remove_from_handles(
+        ctx: StoreContextMut<'_, InstanceData>,
+        handles: Option<ExternRef>,
+        path_ptr: u32,
+        path_len: u32,
+    ) -> anyhow::Result<Option<ExternRef>> {
+        let memory = ctx.data().exports().memory;
+        let path = copy_string_from_wasm(&ctx, &memory, path_ptr, path_len)?;
+        let path = HandlePath::new(&path);
+
+        tracing::Span::current().record("path", field::debug(path));
+
+        let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
+        let mut handles = handles.inner.lock().unwrap();
+        let removed = handles.remove(&path).map(|handle| match handle {
+            Handle::Receiver(id) => HostResource::Receiver(id).into_ref(),
+            Handle::Sender(id) => HostResource::Sender(id).into_ref(),
+        });
+        Ok(removed)
     }
 
     pub fn report_panic(
@@ -158,8 +228,20 @@ impl WorkflowFunctions {
 }
 
 /// Channel-related functions.
-#[allow(clippy::needless_pass_by_value)] // required for WASM function wrappers
+#[allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
+// ^ Required for WASM function wrappers
 impl WorkflowFunctions {
+    pub fn new_channel(
+        mut ctx: StoreContextMut<'_, InstanceData>,
+        stub_id: ChannelId,
+    ) -> anyhow::Result<()> {
+        ctx.data_mut().inner.create_channel_stub(stub_id)
+    }
+
+    pub fn closed_receiver() -> Option<ExternRef> {
+        Some(HostResource::Receiver(0).into_ref())
+    }
+
     pub fn poll_next_for_receiver(
         mut ctx: StoreContextMut<'_, InstanceData>,
         channel_ref: Option<ExternRef>,
@@ -172,6 +254,10 @@ impl WorkflowFunctions {
         let mut poll_cx = WasmContext::new(ctx.as_context_mut(), poll_cx);
         let poll_result = poll_result.into_inner(&mut poll_cx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))
+    }
+
+    pub fn closed_sender() -> Option<ExternRef> {
+        Some(HostResource::Sender(0).into_ref())
     }
 
     pub fn poll_ready_for_sender(
@@ -389,41 +475,6 @@ impl SpawnFunctions {
         let interface = ctx.data().inner.workflow_interface(&id);
         let interface = interface.map(|interface| interface.to_bytes());
         interface.into_wasm(&mut WasmAllocator::new(ctx))
-    }
-
-    #[tracing::instrument(level = "debug", skip_all)]
-    #[allow(clippy::unnecessary_wraps)] // required by wasmtime
-    pub fn create_channel_handles() -> Option<ExternRef> {
-        let resource = HostResource::ChannelHandles(SharedChannelHandles::default());
-        Some(resource.into_ref())
-    }
-
-    #[tracing::instrument(level = "debug", skip_all, err, fields(name, channel))]
-    pub fn set_channel_handle(
-        ctx: StoreContextMut<'_, InstanceData>,
-        handles: Option<ExternRef>,
-        path_ptr: u32,
-        path_len: u32,
-        channel_half: Option<ExternRef>,
-    ) -> anyhow::Result<()> {
-        let channel_id = match HostResource::from_ref(channel_half.as_ref())? {
-            HostResource::Receiver(id) => Handle::Receiver(*id),
-            HostResource::Sender(id) => Handle::Sender(*id),
-            other => return Err(anyhow!("unexpected handle supplied: {other:?}")),
-        };
-        let memory = ctx.data().exports().memory;
-        let path = copy_string_from_wasm(&ctx, &memory, path_ptr, path_len)?;
-        let path: HandlePathBuf = path.parse()?;
-
-        tracing::Span::current()
-            .record("path", field::debug(&path))
-            .record("channel", field::debug(&channel_id));
-
-        let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
-        let mut handles = handles.inner.lock().unwrap();
-        handles.insert(path, channel_id);
-        tracing::debug!(?handles, "inserted channel handle");
-        Ok(())
     }
 
     pub fn spawn(

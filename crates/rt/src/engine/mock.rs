@@ -249,9 +249,8 @@ impl RunWorkflow for MockInstance {
         }
     }
 
-    fn initialize_channel(&mut self, local_id: ChannelId, result: Result<ChannelId, HostError>) {
-        let id = result.unwrap();
-        self.persisted.channel_mapping.insert(local_id, id);
+    fn initialize_channel(&mut self, local_id: ChannelId, channel_id: ChannelId) {
+        self.persisted.channel_mapping.insert(local_id, channel_id);
         // Assume that the manually created stub was created from the main (0th) task.
         self.inner.task(0).schedule_wakeup();
     }

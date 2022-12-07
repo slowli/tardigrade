@@ -141,7 +141,7 @@ impl<T: RunWorkflow> Workflow<T> {
                     ExecutedFunctionArgs::NewChannel { local_id, id } => {
                         self.inner.data_mut().notify_on_channel_init(local_id, id);
                         WorkflowData::wake(&mut self.inner, cause, |workflow| {
-                            workflow.initialize_channel(local_id, Ok(id));
+                            workflow.initialize_channel(local_id, id);
                         });
                     }
                     ExecutedFunctionArgs::NewChild { local_id, result } => {

@@ -124,7 +124,7 @@ pub trait RunWorkflow: AsWorkflowData {
 
     /// Notifies that the channel with the specified `local_id` has been created
     /// and was allocated the provided `id`.
-    fn initialize_channel(&mut self, local_id: ChannelId, result: Result<ChannelId, HostError>);
+    fn initialize_channel(&mut self, local_id: ChannelId, channel_id: ChannelId);
 }
 
 /// Creating wakers in workflows. This is used in [`WorkflowPoll`] to unwrap the contained

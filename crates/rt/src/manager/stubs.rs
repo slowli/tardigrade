@@ -29,7 +29,7 @@ use crate::{
 use tardigrade::{
     interface::{Handle, HandlePathBuf, Interface},
     spawn::{HostError, ManageChannels, ManageInterfaces, ManageWorkflows},
-    workflow::{GetInterface, UntypedHandles, WorkflowFn},
+    workflow::{UntypedHandles, WithHandle, WorkflowFn},
     ChannelId, WorkflowId,
 };
 
@@ -350,7 +350,7 @@ impl<'a, M: AsManager> ManageChannels for WorkflowManagerRef<'a, M> {
 
 #[async_trait]
 impl<'a, M: AsManager> ManageWorkflows for WorkflowManagerRef<'a, M> {
-    type Spawned<W: WorkflowFn + GetInterface> =
+    type Spawned<W: WorkflowFn + WithHandle> =
         WorkflowHandle<'a, W, WorkflowManager<M::Engine, M::Clock, M::Storage>>;
     type Error = anyhow::Error;
 
@@ -375,10 +375,7 @@ impl<'a, M: AsManager> ManageWorkflows for WorkflowManagerRef<'a, M> {
         Ok(manager.workflow(workflow_id).await.unwrap())
     }
 
-    fn downcast<W: WorkflowFn + GetInterface>(
-        &self,
-        spawned: Self::Spawned<()>,
-    ) -> Self::Spawned<W> {
+    fn downcast<W: WorkflowFn + WithHandle>(&self, spawned: Self::Spawned<()>) -> Self::Spawned<W> {
         spawned.downcast_unchecked()
     }
 }
