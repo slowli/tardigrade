@@ -20,6 +20,7 @@ use proc_macro::TokenStream;
 mod interface;
 mod utils;
 mod with_handle;
+mod workflow_entry;
 
 #[proc_macro_derive(GetInterface, attributes(tardigrade))]
 pub fn get_interface(input: TokenStream) -> TokenStream {
@@ -29,4 +30,9 @@ pub fn get_interface(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(WithHandle, attributes(tardigrade))]
 pub fn with_handle(input: TokenStream) -> TokenStream {
     with_handle::impl_with_handle(input)
+}
+
+#[proc_macro_derive(WorkflowEntry, attributes(tardigrade))]
+pub fn workflow_entry(input: TokenStream) -> TokenStream {
+    workflow_entry::impl_workflow_entry(input)
 }
