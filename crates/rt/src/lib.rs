@@ -70,10 +70,11 @@
 //!     .build()
 //!     .await?;
 //! manager.insert_module("test", module).await;
+//! let manager = &manager; // simplifies creating a workflow below
 //!
 //! // Workflows are created within a manager that is responsible
 //! // for their persistence and managing channels, time, and child workflows.
-//!  let builder = manager.as_ref().new_workflow::<()>("test::Workflow")?;
+//!  let builder = manager.new_workflow::<()>("test::Workflow")?;
 //!  let (handles, self_handles) = builder.handles(|_| {}).await;
 //!  let new_workflow =
 //!     builder.build(b"data".to_vec(), handles).await?;

@@ -22,8 +22,8 @@ pub(crate) use self::services::{Services, StashStub};
 pub use self::{
     handle::{
         AnyWorkflowHandle, CompletedWorkflowHandle, ConcurrencyError, ErroneousMessage,
-        ErroredWorkflowHandle, ManagerHandles, MessageReceiver, MessageSender, RawMessageReceiver,
-        RawMessageSender, ReceivedMessage, WorkflowHandle, WorkflowManagerRef,
+        ErroredWorkflowHandle, HostHandles, ManagerHandles, MessageReceiver, MessageSender,
+        RawMessageReceiver, RawMessageSender, ReceivedMessage, WorkflowHandle,
     },
     services::{Clock, Schedule, TimerFuture},
     tick::{TickResult, WouldBlock},
@@ -143,11 +143,13 @@ enum ChannelSide {
 /// // After that, new workflows can be spawned using `ManageWorkflowsExt`
 /// // trait from the `tardigrade` crate:
 /// use tardigrade::spawn::ManageWorkflows;
+///
+/// let manager = &manager;
 /// let definition_id = "test::Workflow";
 /// // ^ The definition ID is the ID of the module and the name of a workflow
 /// //   within the module separated by `::`.
 /// let args = b"test_args".to_vec();
-/// let builder = manager.as_ref().new_workflow::<()>(definition_id)?;
+/// let builder = manager.new_workflow::<()>(definition_id)?;
 /// let (handles, self_handles) = builder.handles(|_| {}).await;
 /// let mut workflow = builder.build(args, handles).await?;
 /// // Do something with `workflow`, e.g., write something to its channels
@@ -203,11 +205,6 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
             storage,
             local_spans: Mutex::default(),
         })
-    }
-
-    /// Returns a wrapped reference to this manager.
-    pub fn as_ref(&self) -> WorkflowManagerRef<'_, Self> {
-        WorkflowManagerRef(self)
     }
 
     /// Inserts the specified module into the manager.

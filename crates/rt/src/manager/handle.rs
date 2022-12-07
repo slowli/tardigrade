@@ -202,7 +202,7 @@ impl<'a, W: WithHandle, M: AsManager> WorkflowHandle<'a, W, M> {
 
     /// Returns a handle for the workflow that allows interacting with its channels.
     #[allow(clippy::missing_panics_doc)] // false positive
-    pub async fn handle(&self) -> ManagerHandles<'a, W, M> {
+    pub async fn handle(&self) -> HostHandles<'a, W, M> {
         let transaction = self
             .manager
             .as_manager()
@@ -230,19 +230,11 @@ impl<'a, W: WithHandle, M: AsManager> WorkflowHandle<'a, W, M> {
     }
 }
 
-/// Reference to a [`WorkflowManager`] implementing [`HandleFormat`].
+/// [`HandleFormat`] for handles returned by a [`WorkflowManager`].
 #[derive(Debug)]
-pub struct WorkflowManagerRef<'a, M>(pub(super) &'a M);
+pub struct ManagerHandles<'a, M>(PhantomData<&'a M>);
 
-impl<M: AsManager> Clone for WorkflowManagerRef<'_, M> {
-    fn clone(&self) -> Self {
-        Self(self.0)
-    }
-}
-
-impl<M: AsManager> Copy for WorkflowManagerRef<'_, M> {}
-
-impl<'a, M: AsManager> HandleFormat for WorkflowManagerRef<'a, M> {
+impl<'a, M: AsManager> HandleFormat for ManagerHandles<'a, M> {
     type RawReceiver = RawMessageReceiver<'a, M>;
     type Receiver<T, C: Codec<T>> = MessageReceiver<'a, T, C, M>;
     type RawSender = RawMessageSender<'a, M>;
@@ -251,7 +243,7 @@ impl<'a, M: AsManager> HandleFormat for WorkflowManagerRef<'a, M> {
 
 /// Host handles of a shape specified by a workflow [`Interface`] and provided
 /// by a [`WorkflowManager`].
-pub type ManagerHandles<'a, W, M> = InEnv<W, Inverse<WorkflowManagerRef<'a, M>>>;
+pub type HostHandles<'a, W, M> = InEnv<W, Inverse<ManagerHandles<'a, M>>>;
 
 /// Handle for a workflow channel [`Receiver`] that allows sending messages via the channel.
 ///

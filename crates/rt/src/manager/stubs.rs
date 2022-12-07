@@ -13,12 +13,12 @@ use std::{
 };
 
 use super::{
-    AsManager, RawMessageReceiver, RawMessageSender, Services, Shared, StashStub,
-    WorkflowDefinitions, WorkflowHandle, WorkflowManager, WorkflowManagerRef,
+    Clock, ManagerHandles, RawMessageReceiver, RawMessageSender, Services, Shared, StashStub,
+    WorkflowDefinitions, WorkflowHandle, WorkflowManager,
 };
 use crate::{
     data::WorkflowData,
-    engine::{DefineWorkflow, RunWorkflow},
+    engine::{DefineWorkflow, RunWorkflow, WorkflowEngine},
     receipt::Receipt,
     storage::{
         ActiveWorkflowState, ChannelRecord, Storage, StorageTransaction, WorkflowRecord,
@@ -319,61 +319,79 @@ impl<S: DefineWorkflow> StashStub for Stubs<S> {
     }
 }
 
-impl<M: AsManager> ManageInterfaces for WorkflowManagerRef<'_, M> {
+impl<E, C, S> ManageInterfaces for &WorkflowManager<E, C, S>
+where
+    E: WorkflowEngine,
+    C: Clock,
+    S: Storage,
+{
     fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
-        let definition = self.0.as_manager().definitions.for_full_id(definition_id)?;
+        let definition = self.definitions.for_full_id(definition_id)?;
         Some(Cow::Borrowed(definition.interface()))
     }
 }
 
 #[async_trait]
-impl<'a, M: AsManager> ManageChannels for WorkflowManagerRef<'a, M> {
-    type Fmt = Self;
+impl<'a, E, C, S> ManageChannels for &'a WorkflowManager<E, C, S>
+where
+    E: WorkflowEngine,
+    C: Clock,
+    S: Storage,
+{
+    type Fmt = ManagerHandles<'a, WorkflowManager<E, C, S>>;
 
-    fn closed_receiver(&self) -> RawMessageReceiver<'a, M> {
-        RawMessageReceiver::closed(self.0)
+    fn closed_receiver(&self) -> RawMessageReceiver<'a, WorkflowManager<E, C, S>> {
+        RawMessageReceiver::closed(self)
     }
 
-    fn closed_sender(&self) -> RawMessageSender<'a, M> {
-        RawMessageSender::closed(self.0)
+    fn closed_sender(&self) -> RawMessageSender<'a, WorkflowManager<E, C, S>> {
+        RawMessageSender::closed(self)
     }
 
-    async fn create_channel(&self) -> (RawMessageSender<'a, M>, RawMessageReceiver<'a, M>) {
-        let mut transaction = self.0.as_manager().storage.transaction().await;
+    async fn create_channel(
+        &self,
+    ) -> (
+        RawMessageSender<'a, WorkflowManager<E, C, S>>,
+        RawMessageReceiver<'a, WorkflowManager<E, C, S>>,
+    ) {
+        let mut transaction = self.storage.transaction().await;
         let (channel_id, record) = commit_channel(None, &mut transaction).await;
         transaction.commit().await;
         (
-            RawMessageSender::new(self.0, channel_id, record.clone()),
-            RawMessageReceiver::new(self.0, channel_id, record),
+            RawMessageSender::new(self, channel_id, record.clone()),
+            RawMessageReceiver::new(self, channel_id, record),
         )
     }
 }
 
 #[async_trait]
-impl<'a, M: AsManager> ManageWorkflows for WorkflowManagerRef<'a, M> {
-    type Spawned<W: WorkflowFn + WithHandle> =
-        WorkflowHandle<'a, W, WorkflowManager<M::Engine, M::Clock, M::Storage>>;
+impl<'a, E, C, S> ManageWorkflows for &'a WorkflowManager<E, C, S>
+where
+    E: WorkflowEngine,
+    C: Clock,
+    S: Storage,
+{
+    type Spawned<W: WorkflowFn + WithHandle> = WorkflowHandle<'a, W, WorkflowManager<E, C, S>>;
     type Error = anyhow::Error;
 
     async fn new_workflow_raw(
         &self,
         definition_id: &str,
         args: Vec<u8>,
-        handles: UntypedHandles<Self>,
+        handles: UntypedHandles<Self::Fmt>,
     ) -> Result<Self::Spawned<()>, Self::Error> {
-        let manager = self.0.as_manager();
         let channel_ids = handles.into_iter().map(|(path, handle)| {
             let id = handle
                 .map_receiver(|handle| handle.channel_id())
                 .map_sender(|handle| handle.channel_id());
             (path, id)
         });
-        let mut stubs = Stubs::new(None, manager.shared());
+        let mut stubs = Stubs::new(None, self.shared());
         stubs.stash_workflow(0, definition_id, args, channel_ids.collect())?;
-        let mut transaction = manager.storage.transaction().await;
+        let mut transaction = self.storage.transaction().await;
         let workflow_id = stubs.commit_external(&mut transaction).await?;
         transaction.commit().await;
-        Ok(manager.workflow(workflow_id).await.unwrap())
+        Ok(self.workflow(workflow_id).await.unwrap())
     }
 
     fn downcast<W: WorkflowFn + WithHandle>(&self, spawned: Self::Spawned<()>) -> Self::Spawned<W> {

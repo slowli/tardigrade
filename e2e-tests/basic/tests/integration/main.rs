@@ -17,7 +17,7 @@ use tardigrade::{
 };
 use tardigrade_rt::{
     engine::{Wasmtime, WasmtimeModule},
-    manager::{ManagerHandles, WorkflowHandle, WorkflowManager},
+    manager::{HostHandles, WorkflowHandle, WorkflowManager},
     storage::LocalStorage,
     test::{ModuleCompiler, WasmOpt},
     Clock,
@@ -63,7 +63,7 @@ async fn create_manager<C: Clock>(clock: C) -> TestResult<LocalManager<C>> {
 
 type WorkflowAndHandles<'m, C, W> = (
     WorkflowHandle<'m, W, LocalManager<C>>,
-    ManagerHandles<'m, W, LocalManager<C>>,
+    HostHandles<'m, W, LocalManager<C>>,
 );
 
 async fn spawn_workflow<'m, C, W>(
@@ -75,7 +75,6 @@ where
     C: Clock,
     W: WorkflowFn + GetInterface,
 {
-    let manager = manager.as_ref();
     let builder = manager.new_workflow(definition_id)?;
     let (child_handles, self_handles) = builder.handles(|_| { /* use default config */ }).await;
     let workflow = builder.build(args, child_handles).await?;

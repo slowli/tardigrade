@@ -24,7 +24,7 @@ mod mock {
     /// ```
     /// # use async_std::task;
     /// # use futures::TryStreamExt;
-    /// # use tardigrade::{interface::SenderAt, spawn::ManageWorkflows};
+    /// # use tardigrade::{handle::{SenderAt, WithIndexing}, spawn::ManageWorkflows};
     /// # use tardigrade_rt::{
     /// #     driver::Driver, engine::{Wasmtime, WasmtimeModule},
     /// #     manager::{WorkflowHandle, WorkflowManager}, storage::LocalStorage, test::MockScheduler,
@@ -37,18 +37,21 @@ mod mock {
     ///     .with_clock(scheduler.clone())
     ///     .build()
     ///     .await?;
+    /// let manager_ref = &manager;
+    ///
     /// let inputs: Vec<u8> = // ...
     /// #   vec![];
-    /// let builder = manager.as_ref().new_workflow::<()>("test::Workflow")?;
-    /// let (handles, mut self_handles) = builder.handles(|_| {}).await;
+    /// let builder = manager_ref.new_workflow::<()>("test::Workflow")?;
+    /// let (handles, self_handles) = builder.handles(|_| {}).await;
     /// builder.build(inputs, handles).await?;
     ///
     /// // Spin up the driver to execute the `workflow`.
     /// let mut driver = Driver::new();
+    /// let mut self_handles = self_handles.with_indexing();
     /// let mut events_rx = self_handles.remove(SenderAt("events"))
     ///     .unwrap()
     ///     .into_stream(&mut driver);
-    /// drop(handle);
+    /// drop(self_handles);
     /// task::spawn(async move { driver.drive(&mut manager).await });
     ///
     /// // Advance mocked wall clock.
