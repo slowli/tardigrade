@@ -22,7 +22,7 @@ pub(crate) use self::services::{Services, StashStub};
 pub use self::{
     handle::{
         AnyWorkflowHandle, CompletedWorkflowHandle, ConcurrencyError, ErroneousMessage,
-        ErroredWorkflowHandle, MessageReceiver, MessageSender, RawMessageReceiver,
+        ErroredWorkflowHandle, ManagerHandles, MessageReceiver, MessageSender, RawMessageReceiver,
         RawMessageSender, ReceivedMessage, WorkflowHandle, WorkflowManagerRef,
     },
     services::{Clock, Schedule, TimerFuture},
@@ -336,14 +336,6 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
 
     pub(crate) async fn close_host_receiver(&self, channel_id: ChannelId) {
         let mut transaction = self.storage.transaction().await;
-        if cfg!(debug_assertions) {
-            let channel = transaction.channel(channel_id).await.unwrap();
-            debug_assert!(
-                channel.receiver_workflow_id.is_none(),
-                "Attempted to close channel {} for which the host doesn't hold receiver",
-                channel_id
-            );
-        }
         StorageHelper::new(&mut transaction)
             .close_channel_side(channel_id, ChannelSide::HostReceiver)
             .await;

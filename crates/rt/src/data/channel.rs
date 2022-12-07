@@ -22,8 +22,7 @@ use crate::{
 use tardigrade::{
     channel::SendError,
     interface::{
-        AccessError, AccessErrorKind, ChannelHalf, Handle, HandleMapKey, HandlePath, Interface,
-        SenderAt,
+        AccessError, AccessErrorKind, Handle, HandleMapKey, HandlePath, Interface, SenderAt,
     },
     ChannelId, WakerId,
 };
@@ -430,7 +429,7 @@ impl ReceiverActions<'_> {
             channel_state.is_closed = true;
             self.data
                 .current_execution()
-                .push_channel_closure(ChannelHalf::Receiver, self.id);
+                .push_channel_closure(Handle::Receiver(self.id));
         }
         wakers
     }
@@ -485,7 +484,7 @@ impl SenderActions<'_> {
             let wakers = mem::take(&mut state.wakes_on_flush);
             self.data
                 .current_execution()
-                .push_channel_closure(ChannelHalf::Sender, self.id);
+                .push_channel_closure(Handle::Sender(self.id));
             wakers
         } else {
             HashSet::new()

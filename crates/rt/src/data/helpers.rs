@@ -15,7 +15,7 @@ use crate::{
 use tardigrade::{
     abi::PollMessage,
     channel::SendError,
-    interface::ChannelHalf,
+    interface::Handle,
     task::{JoinError, TaskError},
     ChannelId, TaskId, TimerId, WakerId, WorkflowId,
 };
@@ -181,13 +181,13 @@ impl CurrentExecution {
         });
     }
 
-    pub fn push_channel_closure(&mut self, kind: ChannelHalf, channel_id: ChannelId) {
+    pub fn push_channel_closure(&mut self, id_handle: Handle<ChannelId>) {
         self.push_event(ChannelEvent {
-            kind: match kind {
-                ChannelHalf::Receiver => ChannelEventKind::ReceiverClosed,
-                ChannelHalf::Sender => ChannelEventKind::SenderClosed,
+            kind: match id_handle {
+                Handle::Receiver(_) => ChannelEventKind::ReceiverClosed,
+                Handle::Sender(_) => ChannelEventKind::SenderClosed,
             },
-            channel_id,
+            channel_id: id_handle.factor(),
         });
     }
 

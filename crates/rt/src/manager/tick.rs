@@ -252,7 +252,14 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         (template, tracer)
     }
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(
+        skip_all,
+        fields(
+            workflow.id = workflow.id,
+            workflow.module_id = workflow.module_id,
+            workflow.name_in_module = workflow.name_in_module
+        )
+    )]
     async fn tick_workflow<'a>(
         &'a self,
         transaction: &mut S::Transaction<'a>,

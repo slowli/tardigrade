@@ -12,7 +12,7 @@ use super::{
 };
 use crate::{manager::Services, workflow::ChannelIds};
 use tardigrade::{
-    interface::{ChannelHalf, HandlePath, Interface, ReceiverAt, SenderAt},
+    interface::{Handle, HandlePath, Interface, ReceiverAt, SenderAt},
     ChannelId,
 };
 
@@ -23,10 +23,8 @@ pub(crate) enum PersistError {
     PendingTask,
     /// There is an non-flushed / non-consumed message.
     PendingMessage {
-        /// Kind of the channel involved.
-        channel_kind: ChannelHalf,
-        /// ID of the channel with the message.
-        channel_id: ChannelId,
+        /// ID of the channel involved.
+        channel_id: Handle<ChannelId>,
     },
 }
 
@@ -36,13 +34,10 @@ impl fmt::Display for PersistError {
         match self {
             Self::PendingTask => formatter.write_str("there is a pending task"),
 
-            Self::PendingMessage {
-                channel_kind,
-                channel_id,
-            } => {
+            Self::PendingMessage { channel_id } => {
                 write!(
                     formatter,
-                    "there is an non-flushed {channel_kind} message on channel {channel_id}"
+                    "there is an non-flushed message in {channel_id:?}"
                 )
             }
         }
@@ -115,16 +110,14 @@ impl WorkflowData {
         for (channel_id, state) in self.persisted.receivers() {
             if state.pending_message.is_some() {
                 return Err(PersistError::PendingMessage {
-                    channel_kind: ChannelHalf::Receiver,
-                    channel_id,
+                    channel_id: Handle::Receiver(channel_id),
                 });
             }
         }
         for (channel_id, state) in self.persisted.senders() {
             if !state.messages.is_empty() {
                 return Err(PersistError::PendingMessage {
-                    channel_kind: ChannelHalf::Sender,
-                    channel_id,
+                    channel_id: Handle::Sender(channel_id),
                 });
             }
         }

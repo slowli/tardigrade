@@ -15,7 +15,7 @@ use crate::{
     utils::{clone_join_error, Message},
     PersistedWorkflow,
 };
-use tardigrade::{interface::ChannelHalf, ChannelId, WorkflowId};
+use tardigrade::{interface::Handle, ChannelId, WorkflowId};
 
 impl ChannelRecord {
     fn close_side(&mut self, side: ChannelSide) {
@@ -133,12 +133,12 @@ impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
 
     #[tracing::instrument(skip(self, receipt))]
     pub async fn close_channels(&mut self, workflow_id: WorkflowId, receipt: &Receipt) {
-        for (channel_half, channel_id) in receipt.closed_channel_ids() {
-            let side = match channel_half {
-                ChannelHalf::Receiver => ChannelSide::Receiver(workflow_id),
-                ChannelHalf::Sender => ChannelSide::WorkflowSender(workflow_id),
+        for id_handle in receipt.closed_channel_ids() {
+            let side = match id_handle {
+                Handle::Receiver(_) => ChannelSide::Receiver(workflow_id),
+                Handle::Sender(_) => ChannelSide::WorkflowSender(workflow_id),
             };
-            self.close_channel_side(channel_id, side).await;
+            self.close_channel_side(id_handle.factor(), side).await;
         }
     }
 
@@ -180,12 +180,12 @@ impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
 }
 
 impl Receipt {
-    fn closed_channel_ids(&self) -> impl Iterator<Item = (ChannelHalf, ChannelId)> + '_ {
+    fn closed_channel_ids(&self) -> impl Iterator<Item = Handle<ChannelId>> + '_ {
         self.events().filter_map(|event| {
             if let Some(ChannelEvent { kind, channel_id }) = event.as_channel_event() {
                 return match kind {
-                    ChannelEventKind::ReceiverClosed => Some((ChannelHalf::Receiver, *channel_id)),
-                    ChannelEventKind::SenderClosed => Some((ChannelHalf::Sender, *channel_id)),
+                    ChannelEventKind::ReceiverClosed => Some(Handle::Receiver(*channel_id)),
+                    ChannelEventKind::SenderClosed => Some(Handle::Sender(*channel_id)),
                     _ => None,
                 };
             }

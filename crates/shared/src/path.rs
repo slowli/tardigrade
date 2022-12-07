@@ -166,8 +166,8 @@ impl<'a> HandlePath<'a> {
 }
 
 impl<'a> From<&'a str> for HandlePath<'a> {
-    fn from(segment: &'a str) -> Self {
-        Self::new(segment)
+    fn from(path: &'a str) -> Self {
+        Self::new(path)
     }
 }
 

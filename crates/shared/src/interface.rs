@@ -80,6 +80,15 @@ impl<T> Handle<T> {
     }
 }
 
+impl fmt::Display for Handle<()> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Receiver(()) => "receiver",
+            Self::Sender(()) => "sender",
+        })
+    }
+}
+
 /// Map of handles keyed by [owned handle paths](HandlePathBuf).
 pub type HandleMap<Rx, Sx = Rx> = HashMap<HandlePathBuf, Handle<Rx, Sx>>;
 
@@ -147,24 +156,6 @@ where
     }
 }
 
-/// Kind of a channel half (sender or receiver) in a workflow interface.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ChannelHalf {
-    /// Receiver.
-    Receiver,
-    /// Sender.
-    Sender,
-}
-
-impl fmt::Display for ChannelHalf {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::Receiver => "receiver",
-            Self::Sender => "sender",
-        })
-    }
-}
-
 /// Kind of an [`AccessError`].
 #[derive(Debug)]
 #[non_exhaustive]
@@ -211,7 +202,7 @@ pub enum InterfaceLocation {
     /// Channel handle in the workflow interface.
     Channel {
         /// Channel handle kind (sender or receiver).
-        kind: Option<ChannelHalf>,
+        kind: Option<Handle<()>>,
         /// Path to the channel handle.
         path: HandlePathBuf,
     },
@@ -246,7 +237,7 @@ impl<'p, P: Into<HandlePath<'p>>> From<P> for InterfaceLocation {
 impl<'p, P: Into<HandlePath<'p>>> From<ReceiverAt<P>> for InterfaceLocation {
     fn from(path: ReceiverAt<P>) -> Self {
         Self::Channel {
-            kind: Some(ChannelHalf::Receiver),
+            kind: Some(Handle::Receiver(())),
             path: path.0.into().to_owned(),
         }
     }
@@ -255,7 +246,7 @@ impl<'p, P: Into<HandlePath<'p>>> From<ReceiverAt<P>> for InterfaceLocation {
 impl<'p, P: Into<HandlePath<'p>>> From<SenderAt<P>> for InterfaceLocation {
     fn from(path: SenderAt<P>) -> Self {
         Self::Channel {
-            kind: Some(ChannelHalf::Sender),
+            kind: Some(Handle::Sender(())),
             path: path.0.into().to_owned(),
         }
     }

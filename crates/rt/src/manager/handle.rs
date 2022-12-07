@@ -201,7 +201,7 @@ impl<'a, W: WithHandle, M: AsManager> WorkflowHandle<'a, W, M> {
 
     /// Returns a handle for the workflow that allows interacting with its channels.
     #[allow(clippy::missing_panics_doc)] // false positive
-    pub async fn handle(&self) -> InEnv<W, Inverse<WorkflowManagerRef<'a, M>>> {
+    pub async fn handle(&self) -> ManagerHandles<'a, W, M> {
         let transaction = self
             .manager
             .as_manager()
@@ -229,7 +229,7 @@ impl<'a, W: WithHandle, M: AsManager> WorkflowHandle<'a, W, M> {
     }
 }
 
-/// Reference to a [`WorkflowManager`].
+/// Reference to a [`WorkflowManager`] implementing [`HandleFormat`].
 #[derive(Debug)]
 pub struct WorkflowManagerRef<'a, M>(pub(super) &'a M);
 
@@ -247,6 +247,10 @@ impl<'a, M: AsManager> HandleFormat for WorkflowManagerRef<'a, M> {
     type RawSender = RawMessageSender<'a, M>;
     type Sender<T, C: Codec<T>> = MessageSender<'a, T, C, M>;
 }
+
+/// Host handles of a shape specified by a workflow [`Interface`] and provided
+/// by a [`WorkflowManager`].
+pub type ManagerHandles<'a, W, M> = InEnv<W, Inverse<WorkflowManagerRef<'a, M>>>;
 
 /// Handle for a workflow channel [`Receiver`] that allows sending messages via the channel.
 ///
@@ -490,6 +494,9 @@ impl<'a, T, C: Codec<T>, M: AsManager> MessageReceiver<'a, T, C, M> {
 
     /// Checks whether this receiver can be used to manipulate the channel (e.g., close it).
     /// This is possible if the channel receiver is not held by a workflow.
+    ///
+    /// This check is based on the local [snapshot](Self::channel_info()) of the channel state
+    /// and thus can be outdated.
     pub fn can_manipulate(&self) -> bool {
         self.record.receiver_workflow_id.is_none()
     }
@@ -507,7 +514,7 @@ impl<'a, T, C: Codec<T>, M: AsManager> MessageReceiver<'a, T, C, M> {
         }
     }
 
-    /// Closes this channel from the host side. If [`Self::can_manipulate()`] returns `false`,
+    /// Closes this channel from the host side. If the receiver is not held by the host,
     /// this is a no-op.
     pub async fn close(self) {
         if self.can_manipulate() {
