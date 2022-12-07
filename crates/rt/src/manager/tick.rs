@@ -20,7 +20,7 @@ use crate::{
     workflow::Workflow,
     PersistedWorkflow,
 };
-use tardigrade::{interface::Handle, ChannelId, WorkflowId};
+use tardigrade::{handle::Handle, ChannelId, WorkflowId};
 
 /// Result of [ticking](WorkflowManager::tick()) a [`WorkflowManager`].
 #[derive(Debug)]

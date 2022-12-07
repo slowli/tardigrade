@@ -19,7 +19,7 @@ use crate::{
     utils::Message,
 };
 use tardigrade::{
-    interface::HandleMap, spawn::HostError, task::TaskResult, ChannelId, TaskId, WorkflowId,
+    handle::HandleMap, spawn::HostError, task::TaskResult, ChannelId, TaskId, WorkflowId,
 };
 
 #[derive(Debug, Default)]

@@ -8,7 +8,7 @@ use std::task::{Context, Poll, Waker};
 use crate::{
     abi::ResourceKind,
     channel::{RawReceiver, RawSender},
-    interface::{AccessError, AccessErrorKind, Handle, HandlePath, ReceiverAt, SenderAt},
+    handle::{AccessError, AccessErrorKind, Handle, HandlePath, ReceiverAt, SenderAt},
     workflow::{TakeHandles, UntypedHandles, Wasm},
 };
 

@@ -155,15 +155,15 @@ impl Handle {
 
                 fn take_from_untyped<#fmt: #fmt_tr>(
                     untyped: &mut dyn #cr::workflow::TakeHandles<#fmt>,
-                    path: #cr::interface::HandlePath<'_>,
-                ) -> core::result::Result<Self::Handle<#fmt>, #cr::interface::AccessError> {
+                    path: #cr::handle::HandlePath<'_>,
+                ) -> core::result::Result<Self::Handle<#fmt>, #cr::handle::AccessError> {
                     core::result::Result::Ok(#handle #take_fields)
                 }
 
                 fn insert_into_untyped<#fmt: #fmt_tr>(
                     handle: Self::Handle<#fmt>,
                     untyped: &mut dyn #cr::workflow::BuildHandles<#fmt>,
-                    path: #cr::interface::HandlePath<'_>,
+                    path: #cr::handle::HandlePath<'_>,
                 ) {
                     #(#insert_fields;)*
                 }
@@ -228,15 +228,15 @@ fn impl_with_handle_delegation(
 
             fn take_from_untyped<#fmt: #fmt_tr>(
                 untyped: &mut dyn #cr::workflow::TakeHandles<#fmt>,
-                path: #cr::interface::HandlePath<'_>,
-            ) -> core::result::Result<Self::Handle<#fmt>, #cr::interface::AccessError> {
+                path: #cr::handle::HandlePath<'_>,
+            ) -> core::result::Result<Self::Handle<#fmt>, #cr::handle::AccessError> {
                <#handle <#wasm> as #tr>::take_from_untyped(untyped, path)
             }
 
             fn insert_into_untyped<#fmt: #fmt_tr>(
                 handle: Self::Handle<#fmt>,
                 untyped: &mut dyn #cr::workflow::BuildHandles<#fmt>,
-                path: #cr::interface::HandlePath<'_>,
+                path: #cr::handle::HandlePath<'_>,
             ) {
                 <#handle <#wasm> as #tr>::insert_into_untyped(handle, untyped, path)
             }

@@ -3,7 +3,7 @@
 use std::mem;
 
 use super::{handle::default_insert_handles, BuildHandles, HandleFormat, TakeHandles, WithHandle};
-use crate::interface::{
+use crate::handle::{
     AccessError, AccessErrorKind, Handle, HandleMap, HandleMapKey, HandlePath, HandlePathBuf,
     ReceiverAt, SenderAt,
 };

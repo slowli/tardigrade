@@ -124,10 +124,8 @@ pub use crate::wasm_utils::HostHandles;
 
 use crate::{
     channel::{RawReceiver, RawSender, Receiver, Sender},
-    interface::{
-        AccessError, AccessErrorKind, ArgsSpec, HandlePath, Interface, InterfaceBuilder,
-        InterfaceLocation, ReceiverSpec, SenderSpec,
-    },
+    handle::{AccessError, AccessErrorKind, HandlePath},
+    interface::{ArgsSpec, Interface, InterfaceBuilder, ReceiverSpec, SenderSpec},
     task::TaskResult,
     Codec, Raw,
 };
@@ -417,9 +415,8 @@ impl TaskHandle {
         raw_args: Vec<u8>,
         mut raw_handles: HostHandles,
     ) -> Result<Self, AccessError> {
-        let args = <W::Codec>::try_decode_bytes(raw_args).map_err(|err| {
-            AccessErrorKind::Custom(Box::new(err)).with_location(InterfaceLocation::Args)
-        })?;
+        let args = <W::Codec>::try_decode_bytes(raw_args)
+            .map_err(|err| AccessErrorKind::Custom(Box::new(err)))?;
         let handle = W::take_from_untyped(&mut raw_handles, HandlePath::EMPTY)?;
         Ok(Self::new(W::spawn(args, handle)))
     }

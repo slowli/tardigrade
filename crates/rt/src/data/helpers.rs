@@ -15,7 +15,7 @@ use crate::{
 use tardigrade::{
     abi::PollMessage,
     channel::SendError,
-    interface::Handle,
+    handle::Handle,
     task::{JoinError, TaskError},
     ChannelId, TaskId, TimerId, WakerId, WorkflowId,
 };

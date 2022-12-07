@@ -86,7 +86,8 @@ pub use crate::error::HostError;
 use self::config::HandlesBuilder;
 use crate::{
     channel::{channel, RawReceiver, RawSender},
-    interface::{AccessError, AccessErrorKind, Interface},
+    handle::{AccessError, AccessErrorKind},
+    interface::Interface,
     task::JoinError,
     workflow::{
         GetInterface, HandleFormat, InEnv, Inverse, UntypedHandles, Wasm, WithHandle, WorkflowFn,

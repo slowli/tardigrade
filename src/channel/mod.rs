@@ -40,7 +40,7 @@ pub use crate::error::SendError;
 
 use crate::{
     codec::{Codec, Raw},
-    interface::{AccessError, AccessErrorKind, Handle, HandlePath, ReceiverAt, SenderAt},
+    handle::{AccessError, AccessErrorKind, Handle, HandlePath, ReceiverAt, SenderAt},
     workflow::{BuildHandles, HandleFormat, IntoRaw, TakeHandles, TryFromRaw, WithHandle},
     ChannelId,
 };

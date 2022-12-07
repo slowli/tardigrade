@@ -17,7 +17,7 @@ use crate::{
     utils::Message,
     workflow::Workflow,
 };
-use tardigrade::{interface::Handle, task::JoinError, ChannelId, TaskId, TimerId, WorkflowId};
+use tardigrade::{handle::Handle, task::JoinError, ChannelId, TaskId, TimerId, WorkflowId};
 
 /// Persisted version of a workflow containing the state of its external dependencies
 /// (channels and timers), and its linear WASM memory.

@@ -12,7 +12,7 @@ use crate::{
     engine::{AsWorkflowData, MockAnswers, MockInstance, MockPollFn},
     manager::tests::{create_test_manager, create_test_workflow, is_consumption},
 };
-use tardigrade::interface::{ReceiverAt, SenderAt, WithIndexing};
+use tardigrade::handle::{ReceiverAt, SenderAt, WithIndexing};
 
 fn poll_orders(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     let channels = ctx.data().persisted.channels();

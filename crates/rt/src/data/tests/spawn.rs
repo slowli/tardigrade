@@ -5,7 +5,8 @@ use std::borrow::Cow;
 use super::*;
 use crate::{engine::DefineWorkflow, manager::StashStub, workflow::WorkflowAndChannelIds};
 use tardigrade::{
-    interface::{Handle, Interface, ReceiverAt, SenderAt},
+    handle::{Handle, ReceiverAt, SenderAt},
+    interface::Interface,
     spawn::{HostError, ManageInterfaces},
 };
 

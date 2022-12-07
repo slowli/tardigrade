@@ -13,7 +13,7 @@ use std::{error, fmt, task::Poll};
 
 use crate::{
     error::{HostError, SendError, TaskError},
-    interface::AccessErrorKind,
+    handle::AccessErrorKind,
 };
 
 /// Result of polling a receiver end of a channel.

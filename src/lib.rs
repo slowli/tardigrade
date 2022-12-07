@@ -86,7 +86,7 @@ pub use crate::{
     time::{now, sleep, Timer, TimerDefinition},
 };
 
-pub use tardigrade_shared::interface;
+pub use tardigrade_shared::{handle, interface};
 
 #[doc(hidden)] // used by the derive macros; not public
 pub mod _reexports {

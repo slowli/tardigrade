@@ -7,7 +7,7 @@ use futures::{StreamExt, TryStreamExt};
 use std::{collections::HashSet, task::Poll};
 
 use tardigrade::{
-    interface::{ReceiverAt, SenderAt, WithIndexing},
+    handle::{ReceiverAt, SenderAt, WithIndexing},
     Codec, Json,
 };
 use tardigrade_rt::{

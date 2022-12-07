@@ -27,7 +27,8 @@ use crate::{
     workflow::{ChannelIds, PersistedWorkflow, Workflow, WorkflowAndChannelIds},
 };
 use tardigrade::{
-    interface::{Handle, HandlePathBuf, Interface},
+    handle::{Handle, HandlePathBuf},
+    interface::Interface,
     spawn::{HostError, ManageChannels, ManageInterfaces, ManageWorkflows},
     workflow::{UntypedHandles, WithHandle, WorkflowFn},
     ChannelId, WorkflowId,

@@ -14,7 +14,7 @@ use crate::{
     workflow::ChannelIds,
 };
 use tardigrade::{
-    interface::{Handle, WithIndexing},
+    handle::{Handle, WithIndexing},
     task::JoinError,
 };
 

@@ -12,7 +12,8 @@ use super::{
 };
 use crate::{manager::Services, workflow::ChannelIds};
 use tardigrade::{
-    interface::{Handle, HandlePath, Interface, ReceiverAt, SenderAt},
+    handle::{Handle, HandlePath, ReceiverAt, SenderAt},
+    interface::Interface,
     ChannelId,
 };
 

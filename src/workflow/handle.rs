@@ -4,7 +4,7 @@ use std::{convert::Infallible, marker::PhantomData};
 
 use super::untyped::UntypedHandles;
 use crate::{
-    interface::{AccessError, Handle, HandlePath, HandlePathBuf},
+    handle::{AccessError, Handle, HandlePath, HandlePathBuf},
     Codec,
 };
 

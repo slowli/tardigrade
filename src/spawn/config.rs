@@ -5,10 +5,11 @@ use futures::future;
 use std::{cell::RefCell, convert::Infallible, fmt, marker::PhantomData, mem, rc::Rc};
 
 use crate::{
-    interface::{
+    handle::{
         AccessError, AccessErrorKind, Handle, HandleMap, HandleMapKey, HandlePath, HandlePathBuf,
-        Interface, ReceiverAt, SenderAt,
+        ReceiverAt, SenderAt,
     },
+    interface::Interface,
     spawn::ManageChannels,
     workflow::{
         HandleFormat, InEnv, IntoRaw, Inverse, TakeHandles, TryFromRaw, UntypedHandles, Wasm,

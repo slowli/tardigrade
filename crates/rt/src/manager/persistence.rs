@@ -15,7 +15,7 @@ use crate::{
     utils::{clone_join_error, Message},
     PersistedWorkflow,
 };
-use tardigrade::{interface::Handle, ChannelId, WorkflowId};
+use tardigrade::{handle::Handle, ChannelId, WorkflowId};
 
 impl ChannelRecord {
     fn close_side(&mut self, side: ChannelSide) {

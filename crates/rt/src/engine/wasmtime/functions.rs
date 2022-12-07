@@ -20,7 +20,7 @@ use crate::{
 };
 use tardigrade::{
     abi::{IntoWasm, ResourceKind},
-    interface::{Handle, HandlePath, HandlePathBuf},
+    handle::{Handle, HandlePath, HandlePathBuf},
     task::{JoinError, TaskError},
     ChannelId, TaskId, TimerDefinition, TimerId, WakerId, WorkflowId,
 };

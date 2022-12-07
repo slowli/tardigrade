@@ -18,7 +18,8 @@ use crate::{
 };
 use tardigrade::{
     channel::SendError,
-    interface::{AccessError, Handle, HandleMap, Interface},
+    handle::{AccessError, Handle, HandleMap},
+    interface::Interface,
     task::JoinError,
     workflow::{GetInterface, HandleFormat, InEnv, IntoRaw, Inverse, TryFromRaw, WithHandle},
     ChannelId, Codec, Raw, WorkflowId,

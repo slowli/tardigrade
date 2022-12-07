@@ -17,7 +17,7 @@ use std::{
 };
 
 use tardigrade::{
-    interface::{ReceiverAt, SenderAt, WithIndexing},
+    handle::{ReceiverAt, SenderAt, WithIndexing},
     Codec, Json, TimerId,
 };
 use tardigrade_rt::{

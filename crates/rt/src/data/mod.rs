@@ -38,9 +38,7 @@ use crate::{
     workflow::ChannelIds,
 };
 use tardigrade::{
-    interface::{HandlePathBuf, Interface},
-    task::ErrorLocation,
-    TaskId, WorkflowId,
+    handle::HandlePathBuf, interface::Interface, task::ErrorLocation, TaskId, WorkflowId,
 };
 
 /// Kinds of errors reported by workflows.

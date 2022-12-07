@@ -7,5 +7,7 @@
 #![warn(clippy::all, clippy::pedantic)]
 #![allow(clippy::must_use_candidate, clippy::module_name_repetitions)]
 
+pub mod handle;
+mod helpers;
 pub mod interface;
 mod path;

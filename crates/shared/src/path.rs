@@ -337,30 +337,6 @@ impl<'de> Deserialize<'de> for HandlePathBuf {
     }
 }
 
-/// Newtype for indexing channel receivers, e.g., in an [`Interface`].
-///
-/// [`Interface`]: crate::interface::Interface
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ReceiverAt<T>(pub T);
-
-impl<T: fmt::Display> fmt::Display for ReceiverAt<T> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "channel receiver `{}`", self.0)
-    }
-}
-
-/// Newtype for indexing channel senders, e.g., in an [`Interface`].
-///
-/// [`Interface`]: crate::interface::Interface
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SenderAt<T>(pub T);
-
-impl<T: fmt::Display> fmt::Display for SenderAt<T> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "channel sender `{}`", self.0)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use hashbrown::HashMap;

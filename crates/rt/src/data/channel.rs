@@ -21,9 +21,8 @@ use crate::{
 };
 use tardigrade::{
     channel::SendError,
-    interface::{
-        AccessError, AccessErrorKind, Handle, HandleMapKey, HandlePath, Interface, SenderAt,
-    },
+    handle::{AccessError, AccessErrorKind, Handle, HandleMapKey, HandlePath, SenderAt},
+    interface::Interface,
     ChannelId, WakerId,
 };
 

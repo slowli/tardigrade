@@ -19,7 +19,7 @@ use crate::{
     workflow::WorkflowAndChannelIds,
 };
 use tardigrade::{
-    interface::{Handle, HandleMap, HandlePath, ReceiverAt, SenderAt, WithIndexing},
+    handle::{Handle, HandleMap, HandlePath, ReceiverAt, SenderAt, WithIndexing},
     spawn::{ManageChannels, ManageWorkflows},
 };
 

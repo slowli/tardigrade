@@ -11,7 +11,7 @@ use tracing_subscriber::{
 use std::{collections::HashMap, error};
 
 use tardigrade::{
-    interface::ReceiverAt,
+    handle::ReceiverAt,
     spawn::ManageWorkflows,
     workflow::{GetInterface, WorkflowFn},
 };

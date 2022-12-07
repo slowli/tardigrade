@@ -20,9 +20,7 @@ use crate::{
     workflow::ChannelIds,
 };
 use tardigrade::{
-    interface::{Handle, Interface},
-    spawn::HostError,
-    ChannelId, TaskId, WakerId, WorkflowId,
+    handle::Handle, interface::Interface, spawn::HostError, ChannelId, TaskId, WakerId, WorkflowId,
 };
 
 const INTERFACE: &[u8] = br#"{

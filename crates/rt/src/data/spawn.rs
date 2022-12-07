@@ -18,7 +18,8 @@ use crate::{
 };
 use tardigrade::spawn::HostError;
 use tardigrade::{
-    interface::{Handle, HandleMapKey, Interface, ReceiverAt, SenderAt},
+    handle::{Handle, HandleMapKey, ReceiverAt, SenderAt},
+    interface::Interface,
     task::JoinError,
     WakerId, WorkflowId,
 };
