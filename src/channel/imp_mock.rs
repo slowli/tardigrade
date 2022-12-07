@@ -100,7 +100,8 @@ fn convert_send_err(err: &mpsc::SendError) -> SendError {
     }
 }
 
-pub(crate) fn raw_channel() -> (MpscSender, MpscReceiver) {
+#[allow(clippy::unused_async)] // for uniformity with the WASM impl
+pub(super) async fn raw_channel() -> (MpscSender, MpscReceiver) {
     let channel_id = Runtime::with_mut(Runtime::allocate_channel_id);
     let (sx, rx) = mpsc::unbounded();
     let rx = MpscReceiver {

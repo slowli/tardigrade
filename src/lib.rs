@@ -75,6 +75,8 @@ pub mod test;
 mod time;
 #[cfg(feature = "tracing")]
 mod tracing;
+#[cfg(target_arch = "wasm32")]
+mod wasm_utils;
 pub mod workflow;
 
 #[cfg(feature = "serde_json")]
@@ -88,7 +90,10 @@ pub use tardigrade_shared::interface;
 
 #[doc(hidden)] // used by the derive macros; not public
 pub mod _reexports {
-    pub use once_cell::sync::Lazy;
+    #[cfg(target_arch = "wasm32")] // used by `WorkflowEntry` derive macro
+    pub use externref;
+
+    pub use once_cell::sync::Lazy; // used by `GetInterface` derive macro
 }
 
 /// ID of a [`Waker`](std::task::Waker) defined by a workflow.
@@ -103,36 +108,3 @@ pub type FutureId = u64;
 pub type WorkflowId = u64;
 /// ID of a channel.
 pub type ChannelId = u64;
-
-/// Creates an entry point for the specified workflow type.
-///
-/// An entry point must be specified for a workflow type in a workflow module in order
-/// for the module to properly function (i.e., being able to spawn workflow instances).
-/// The specified type must implement [`SpawnWorkflow`](workflow::SpawnWorkflow).
-///
-/// The macro will automatically implement [`NamedWorkflow`](workflow::NamedWorkflow).
-///
-/// # Examples
-///
-/// See the [`workflow`] module docs for an end-to-end example of usage.
-#[macro_export]
-macro_rules! workflow_entry {
-    ($workflow:ident) => {
-        const _: () = {
-            impl $crate::workflow::NamedWorkflow for $workflow {
-                const WORKFLOW_NAME: &'static str = stringify!($workflow);
-            }
-
-            #[no_mangle]
-            #[export_name = concat!("tardigrade_rt::spawn::", stringify!($workflow))]
-            #[doc(hidden)]
-            pub unsafe extern "C" fn __tardigrade_rt__main(
-                data_ptr: *mut u8,
-                data_len: usize,
-            ) -> $crate::workflow::TaskHandle {
-                let data = std::vec::Vec::from_raw_parts(data_ptr, data_len, data_len);
-                $crate::workflow::spawn_workflow::<$workflow>(data)
-            }
-        };
-    };
-}

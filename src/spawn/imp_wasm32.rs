@@ -1,7 +1,7 @@
 //! WASM bindings for spawning child workflows.
 
-use async_trait::async_trait;
 use externref::{externref, Resource};
+use once_cell::unsync::Lazy;
 
 use std::{
     borrow::Cow,
@@ -10,23 +10,15 @@ use std::{
     task::{Context, Poll},
 };
 
-use super::{
-    ChannelSpawnConfig, ChannelsConfig, ForSelf, HostError, ManageInterfaces, ManageWorkflows,
-    Workflows,
-};
+use super::{HostError, ManageInterfaces, Workflows};
 use crate::{
-    abi::{IntoWasm, PollTask, TryFromWasm},
-    channel::{
-        imp::{mpsc_receiver_get, mpsc_sender_get, MpscSender, ACCESS_ERROR_PAD},
-        RawReceiver, RawSender,
-    },
-    interface::{
-        AccessError, AccessErrorKind, ChannelHalf, HandlePath, Interface, ReceiverAt, SenderAt,
-    },
+    abi::{IntoWasm, PollTask},
+    interface::Interface,
     task::{JoinError, TaskError},
+    wasm_utils::{HostHandles, Registry, StubState},
+    workflow::{UntypedHandles, Wasm},
+    WorkflowId,
 };
-
-static mut HOST_ERROR_PAD: i64 = 0;
 
 impl ManageInterfaces for Workflows {
     fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
@@ -44,219 +36,80 @@ impl ManageInterfaces for Workflows {
     }
 }
 
-#[async_trait]
-impl ManageWorkflows<()> for Workflows {
-    type Handle<'s> = super::RemoteWorkflow;
-    type Error = HostError;
+type WorkflowStub = StubState<Result<RemoteWorkflow, HostError>>;
 
-    async fn create_workflow(
-        &self,
-        definition_id: &str,
-        args: Vec<u8>,
-        channels: ChannelsConfig<RawReceiver, RawSender>,
-    ) -> Result<Self::Handle<'_>, Self::Error> {
-        #[externref]
-        #[link(wasm_import_module = "tardigrade_rt")]
-        extern "C" {
-            #[link_name = "workflow::spawn"]
-            fn spawn(
-                id_ptr: *const u8,
-                id_len: usize,
-                args_ptr: *const u8,
-                args_len: usize,
-                handles: Resource<ChannelsConfig<RawReceiver, RawSender>>,
-            ) -> Resource<RemoteWorkflow>;
-        }
+static mut WORKFLOWS: Lazy<Registry<WorkflowStub>> = Lazy::new(|| Registry::with_capacity(1));
 
-        let stub = unsafe {
-            spawn(
-                definition_id.as_ptr(),
-                definition_id.len(),
-                args.as_ptr(),
-                args.len(),
-                config_into_resource(channels),
-            )
-        };
-        WorkflowInit { stub }.await
+pub(super) async fn new_workflow(
+    definition_id: &str,
+    args: Vec<u8>,
+    handles: UntypedHandles<Wasm>,
+) -> Result<super::RemoteWorkflow, HostError> {
+    #[externref]
+    #[link(wasm_import_module = "tardigrade_rt")]
+    extern "C" {
+        #[link_name = "workflow::spawn"]
+        fn spawn_workflow(
+            stub_id: WorkflowId,
+            definition_id_ptr: *const u8,
+            definition_id_len: usize,
+            args_ptr: *const u8,
+            args_len: usize,
+            handles: Resource<HostHandles>,
+        );
     }
+
+    let handles = HostHandles::from(handles);
+    let stub_id = unsafe { WORKFLOWS.insert(WorkflowStub::default()) };
+    unsafe {
+        spawn_workflow(
+            stub_id,
+            definition_id.as_ptr(),
+            definition_id.len(),
+            args.as_ptr(),
+            args.len(),
+            handles.into_resource(),
+        );
+    }
+    let inner = NewWorkflow { stub_id }.await?;
+    Ok(super::RemoteWorkflow { inner })
 }
 
 #[derive(Debug)]
-struct WorkflowInit {
-    stub: Resource<RemoteWorkflow>,
+struct NewWorkflow {
+    stub_id: WorkflowId,
 }
 
-impl Future for WorkflowInit {
-    type Output = Result<super::RemoteWorkflow, HostError>;
+impl Future for NewWorkflow {
+    type Output = Result<RemoteWorkflow, HostError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        #[externref]
-        #[link(wasm_import_module = "tardigrade_rt")]
-        #[allow(improper_ctypes)]
-        extern "C" {
-            #[link_name = "workflow::poll_init"]
-            fn poll_init(
-                stub: &Resource<RemoteWorkflow>,
-                cx: *mut Context<'_>,
-                error_ptr: *mut i64,
-            ) -> Option<Resource<RemoteWorkflow>>;
-        }
-
-        unsafe {
-            let poll_result = poll_init(&self.stub, cx, &mut HOST_ERROR_PAD);
-            if let Some(resource) = poll_result {
-                Poll::Ready(Ok(super::RemoteWorkflow {
-                    inner: RemoteWorkflow { resource },
-                }))
-            } else {
-                let host_result = Result::<(), HostError>::from_abi_in_wasm(HOST_ERROR_PAD);
-                match host_result {
-                    Ok(()) => Poll::Pending,
-                    Err(err) => Poll::Ready(Err(err)),
-                }
+        let poll_result = unsafe { WORKFLOWS.get_mut(self.stub_id).poll(cx) };
+        if poll_result.is_ready() {
+            unsafe {
+                WORKFLOWS.remove(self.stub_id);
             }
         }
+        poll_result
     }
 }
 
 #[externref]
-#[link(wasm_import_module = "tardigrade_rt")]
-extern "C" {
-    #[link_name = "workflow::create_handles"]
-    fn create_handles() -> Resource<ChannelsConfig<RawReceiver, RawSender>>;
-
-    #[link_name = "workflow::insert_handle"]
-    fn insert_handle(
-        spawner: &Resource<ChannelsConfig<RawReceiver, RawSender>>,
-        channel_kind: i32,
-        path_ptr: *const u8,
-        path_len: usize,
-        is_closed: bool,
-    );
-
-    #[link_name = "workflow::copy_sender_handle"]
-    fn copy_sender_handle(
-        spawner: &Resource<ChannelsConfig<RawReceiver, RawSender>>,
-        name_ptr: *const u8,
-        name_len: usize,
-        sender: &Resource<MpscSender>,
-    );
-}
-
-impl ChannelSpawnConfig<RawReceiver> {
-    unsafe fn configure(
-        self,
-        spawner: &Resource<ChannelsConfig<RawReceiver, RawSender>>,
-        path: HandlePath<'_>,
-    ) {
-        match self {
-            Self::New | Self::Closed => {
-                let path = path.to_cow_string();
-                insert_handle(
-                    spawner,
-                    ChannelHalf::Receiver.into_abi_in_wasm(),
-                    path.as_ptr(),
-                    path.len(),
-                    matches!(self, Self::Closed),
-                );
-            }
-            Self::Existing(_) => todo!(),
-        }
-    }
-}
-
-impl ChannelSpawnConfig<RawSender> {
-    unsafe fn configure(
-        self,
-        spawner: &Resource<ChannelsConfig<RawReceiver, RawSender>>,
-        path: HandlePath<'_>,
-    ) {
-        let path = path.to_cow_string();
-        match self {
-            Self::New | Self::Closed => {
-                insert_handle(
-                    spawner,
-                    ChannelHalf::Sender.into_abi_in_wasm(),
-                    path.as_ptr(),
-                    path.len(),
-                    matches!(self, Self::Closed),
-                );
-            }
-            Self::Existing(sender) => {
-                copy_sender_handle(spawner, path.as_ptr(), path.len(), sender.as_resource());
-            }
-        }
-    }
-}
-
-unsafe fn config_into_resource(
-    config: ChannelsConfig<RawReceiver, RawSender>,
-) -> Resource<ChannelsConfig<RawReceiver, RawSender>> {
-    let resource = create_handles();
-    for (path, config) in config {
-        let path = path.as_ref();
-        config
-            .map_receiver(|config| config.configure(&resource, path))
-            .map_sender(|config| config.configure(&resource, path));
-    }
-    resource
+#[export_name = "tardigrade_rt::init_child"]
+pub unsafe extern "C" fn __tardigrade_rt_init_child(
+    stub_id: WorkflowId,
+    child: Option<Resource<RemoteWorkflow>>,
+    error: i64,
+) {
+    let result = Result::<(), HostError>::from_abi_in_wasm(error).map(|()| RemoteWorkflow {
+        resource: child.unwrap(),
+    });
+    WORKFLOWS.get_mut(stub_id).set_value(result);
 }
 
 #[derive(Debug)]
-pub(crate) struct RemoteWorkflow {
+pub struct RemoteWorkflow {
     resource: Resource<Self>,
-}
-
-impl RemoteWorkflow {
-    pub fn take_receiver(
-        &mut self,
-        path: HandlePath<'_>,
-    ) -> Result<Remote<RawSender>, AccessError> {
-        let path_str = path.to_cow_string();
-        let channel = unsafe {
-            mpsc_sender_get(
-                Some(&self.resource),
-                path_str.as_ptr(),
-                path_str.len(),
-                &mut ACCESS_ERROR_PAD,
-            )
-        };
-
-        unsafe {
-            Result::<(), AccessErrorKind>::from_abi_in_wasm(ACCESS_ERROR_PAD)
-                .map_err(|kind| kind.with_location(ReceiverAt(path)))?;
-        }
-        if let Some(channel) = channel {
-            Ok(Remote::Some(RawSender::from_resource(channel)))
-        } else {
-            Ok(Remote::NotCaptured)
-        }
-    }
-
-    pub fn take_sender(
-        &mut self,
-        path: HandlePath<'_>,
-    ) -> Result<Remote<RawReceiver>, AccessError> {
-        let path_str = path.to_cow_string();
-        let channel = unsafe {
-            mpsc_receiver_get(
-                Some(&self.resource),
-                path_str.as_ptr(),
-                path_str.len(),
-                &mut ACCESS_ERROR_PAD,
-            )
-        };
-
-        unsafe {
-            Result::<(), AccessErrorKind>::from_abi_in_wasm(ACCESS_ERROR_PAD)
-                .map_err(|kind| kind.with_location(SenderAt(path)))?;
-        }
-        if let Some(channel) = channel {
-            Ok(Remote::Some(RawReceiver::from_resource(channel)))
-        } else {
-            Ok(Remote::NotCaptured)
-        }
-    }
 }
 
 impl Future for RemoteWorkflow {

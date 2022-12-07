@@ -103,6 +103,11 @@ pub use tardigrade_derive::GetInterface;
 /// [`WithHandle`]: trait@WithHandle
 pub use tardigrade_derive::WithHandle;
 
+/// Derives the [`WorkflowEntry`] trait for a workflow type.
+///
+/// [`WorkflowEntry`]: trait@WorkflowEntry
+pub use tardigrade_derive::WorkflowEntry;
+
 mod handle;
 mod untyped;
 
@@ -112,6 +117,10 @@ pub use self::{
     },
     untyped::UntypedHandles,
 };
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub use crate::wasm_utils::HostHandles;
 
 use crate::{
     channel::{RawReceiver, RawSender, Receiver, Sender},
@@ -201,6 +210,9 @@ mod imp {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+type HostHandles = UntypedHandles<Wasm>;
+
 /// Allows obtaining an [`Interface`] for a workflow.
 ///
 /// This trait should be derived for workflow types using the corresponding macro.
@@ -248,10 +260,13 @@ pub fn interface_by_handle<W: WithHandle>() -> Interface {
 
 /// Workflow that is accessible by its name from a module.
 ///
-/// This trait is automatically derived using the [`workflow_entry!`](crate::workflow_entry) macro.
-pub trait NamedWorkflow {
+/// This trait is automatically derived using the [corresponding derive macro](macro@WorkflowEntry).
+pub trait WorkflowEntry: SpawnWorkflow {
     /// Name of the workflow.
     const WORKFLOW_NAME: &'static str;
+
+    #[doc(hidden)]
+    fn you_should_use_derive_macro_to_implement_this_trait();
 }
 
 /// WASM environment.
@@ -400,12 +415,12 @@ impl TaskHandle {
     )]
     pub(crate) fn from_workflow<W: SpawnWorkflow>(
         raw_args: Vec<u8>,
-        raw_handles: UntypedHandles<Wasm>,
+        mut raw_handles: HostHandles,
     ) -> Result<Self, AccessError> {
         let args = <W::Codec>::try_decode_bytes(raw_args).map_err(|err| {
             AccessErrorKind::Custom(Box::new(err)).with_location(InterfaceLocation::Args)
         })?;
-        let handle = W::try_from_untyped(raw_handles)?;
+        let handle = W::take_from_untyped(&mut raw_handles, HandlePath::EMPTY)?;
         Ok(Self::new(W::spawn(args, handle)))
     }
 
@@ -416,10 +431,7 @@ impl TaskHandle {
 }
 
 #[doc(hidden)] // only used by `workflow_entry!` macro
-pub fn spawn_workflow<W: SpawnWorkflow>(
-    raw_args: Vec<u8>,
-    raw_handles: UntypedHandles<Wasm>,
-) -> TaskHandle {
+pub fn spawn_workflow<W: SpawnWorkflow>(raw_args: Vec<u8>, raw_handles: HostHandles) -> TaskHandle {
     Wasm::set_panic_hook();
 
     #[cfg(all(feature = "tracing", target_arch = "wasm32"))]

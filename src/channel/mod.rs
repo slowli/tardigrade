@@ -100,11 +100,6 @@ impl<T, C: Codec<T>> Receiver<T, C> {
         Self::new(imp::MpscReceiver::closed())
     }
 
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) fn from_env(path: HandlePath<'_>) -> Result<Self, AccessError> {
-        imp::MpscReceiver::from_env(path).map(Self::new)
-    }
-
     pub(crate) fn from_raw(raw: RawReceiver) -> Self {
         Self {
             raw: raw.raw,
@@ -121,6 +116,11 @@ impl RawReceiver {
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn from_resource(resource: externref::Resource<imp::MpscReceiver>) -> Self {
         Self::new(resource.into())
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn into_resource(self) -> externref::Resource<imp::MpscReceiver> {
+        self.raw.into_resource()
     }
 }
 
@@ -231,11 +231,6 @@ impl<T, C: Codec<T>> Sender<T, C> {
         Self::new(imp::MpscSender::closed())
     }
 
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) fn from_env(path: HandlePath<'_>) -> Result<Self, AccessError> {
-        imp::MpscSender::from_env(path).map(Self::new)
-    }
-
     pub(crate) fn from_raw(raw: RawSender) -> Self {
         Self {
             raw: raw.raw,
@@ -301,8 +296,7 @@ impl<T, C: Codec<T>> Sink<T> for Sender<T, C> {
 }
 
 /// Creates a new channel and returns its sender and receiver halves.
-#[allow(clippy::unused_async)]
 pub async fn channel<T, C: Codec<T>>() -> (Sender<T, C>, Receiver<T, C>) {
-    let (raw_sender, raw_receiver) = imp::raw_channel();
+    let (raw_sender, raw_receiver) = imp::raw_channel().await;
     (Sender::new(raw_sender), Receiver::new(raw_receiver))
 }

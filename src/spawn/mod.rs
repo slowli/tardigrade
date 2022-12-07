@@ -88,7 +88,9 @@ use crate::{
     channel::{channel, RawReceiver, RawSender},
     interface::{AccessError, AccessErrorKind, Interface},
     task::JoinError,
-    workflow::{GetInterface, HandleFormat, InEnv, Inverse, UntypedHandles, Wasm, WorkflowFn},
+    workflow::{
+        GetInterface, HandleFormat, InEnv, Inverse, UntypedHandles, Wasm, WithHandle, WorkflowFn,
+    },
     Codec,
 };
 
@@ -124,7 +126,7 @@ pub trait ManageChannels: ManageInterfaces {
 #[async_trait]
 pub trait ManageWorkflows: ManageChannels {
     /// Handle to an instantiated workflow.
-    type Spawned<W: WorkflowFn + GetInterface>;
+    type Spawned<W: WorkflowFn + WithHandle>;
     /// Error spawning a workflow.
     type Error: 'static + Send + Sync;
 
@@ -137,10 +139,7 @@ pub trait ManageWorkflows: ManageChannels {
     ) -> Result<Self::Spawned<()>, Self::Error>;
 
     #[doc(hidden)]
-    fn downcast<W: WorkflowFn + GetInterface>(
-        &self,
-        spawned: Self::Spawned<()>,
-    ) -> Self::Spawned<W>;
+    fn downcast<W: WorkflowFn + WithHandle>(&self, spawned: Self::Spawned<()>) -> Self::Spawned<W>;
 
     /// Initiates creating a new workflow and returns the corresponding builder.
     ///
@@ -190,7 +189,7 @@ impl<M: ManageWorkflows, W> fmt::Debug for WorkflowBuilder<'_, M, W> {
 impl<M, W> WorkflowBuilder<'_, M, W>
 where
     M: ManageWorkflows,
-    W: WorkflowFn + GetInterface,
+    W: WorkflowFn + WithHandle,
 {
     /// Creates a new workflow.
     ///
@@ -216,7 +215,7 @@ where
 impl<'a, M, W> WorkflowBuilder<'a, M, W>
 where
     M: ManageWorkflows,
-    W: WorkflowFn + GetInterface,
+    W: WorkflowFn + WithHandle,
 {
     /// Builds the handles pair allowing to configure handles in the process.
     pub async fn handles<F>(&self, config_fn: F) -> (InEnv<W, M::Fmt>, InEnv<W, Inverse<M::Fmt>>)
@@ -252,7 +251,7 @@ impl ManageChannels for Workflows {
 
 #[async_trait]
 impl ManageWorkflows for Workflows {
-    type Spawned<W: WorkflowFn + GetInterface> = RemoteWorkflow;
+    type Spawned<W: WorkflowFn + WithHandle> = RemoteWorkflow;
     type Error = HostError;
 
     async fn new_workflow_raw(
@@ -264,10 +263,7 @@ impl ManageWorkflows for Workflows {
         imp::new_workflow(definition_id, args, handles).await
     }
 
-    fn downcast<W: WorkflowFn + GetInterface>(
-        &self,
-        spawned: Self::Spawned<()>,
-    ) -> Self::Spawned<W> {
+    fn downcast<W: WorkflowFn + WithHandle>(&self, spawned: Self::Spawned<()>) -> Self::Spawned<W> {
         spawned
     }
 }

@@ -11,8 +11,8 @@ use crate::{
     },
     spawn::ManageChannels,
     workflow::{
-        GetInterface, HandleFormat, InEnv, IntoRaw, Inverse, TakeHandles, TryFromRaw,
-        UntypedHandles, Wasm, WithHandle,
+        HandleFormat, InEnv, IntoRaw, Inverse, TakeHandles, TryFromRaw, UntypedHandles, Wasm,
+        WithHandle,
     },
     Codec, Raw,
 };
@@ -283,7 +283,7 @@ where
 impl<W, Fmt> HandlesBuilder<W, Fmt>
 where
     Fmt: HandleFormat,
-    W: GetInterface + WithHandle,
+    W: WithHandle,
 {
     /// Creates a new builder based on the interface of `W`.
     #[allow(clippy::missing_panics_doc)] // false positive
