@@ -15,13 +15,13 @@
 //! };
 //!
 //! /// Handle for the workflow. Fields are public for integration testing.
-//! #[derive(TakeHandle)]
+//! #[derive(WithHandle)]
 //! #[tardigrade(derive(Debug))]
-//! pub struct MyHandle<Env: WorkflowEnv = Wasm> {
+//! pub struct MyHandle<Fmt: HandleFormat = Wasm> {
 //!     /// Receiver for commands.
-//!     pub commands: InEnv<Receiver<Command, Json>, Env>,
+//!     pub commands: InEnv<Receiver<Command, Json>, Fmt>,
 //!     /// Sender for events.
-//!     pub events: InEnv<Sender<Event, Json>, Env>,
+//!     pub events: InEnv<Sender<Event, Json>, Fmt>,
 //! }
 //!
 //! /// Args provided to the workflow on creation.
@@ -62,7 +62,7 @@
 //! }
 //!
 //! /// Workflow type. Usually, this should be a unit / empty struct.
-//! #[derive(Debug, GetInterface, TakeHandle)]
+//! #[derive(Debug, GetInterface, WithHandle, WorkflowEntry)]
 //! #[tardigrade(handle = "MyHandle", auto_interface)]
 //! pub struct MyWorkflow(());
 //!
@@ -85,8 +85,6 @@
 //!         Ok(())
 //!     }
 //! }
-//!
-//! tardigrade::workflow_entry!(MyWorkflow);
 //! ```
 
 use async_trait::async_trait;

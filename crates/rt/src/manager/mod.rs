@@ -142,16 +142,16 @@ enum ChannelSide {
 ///
 /// // After that, new workflows can be spawned using `ManageWorkflowsExt`
 /// // trait from the `tardigrade` crate:
-/// use tardigrade::spawn::ManageWorkflowsExt;
+/// use tardigrade::spawn::ManageWorkflows;
 /// let definition_id = "test::Workflow";
 /// // ^ The definition ID is the ID of the module and the name of a workflow
 /// //   within the module separated by `::`.
 /// let args = b"test_args".to_vec();
-/// let mut workflow = manager
-///     .new_workflow::<()>(definition_id, args)?
-///     .build()
-///     .await?;
-/// // Do something with `workflow`, e.g., write something to its channels...
+/// let builder = manager.as_ref().new_workflow::<()>(definition_id)?;
+/// let (handles, self_handles) = builder.handles(|_| {}).await;
+/// let mut workflow = builder.build(args, handles).await?;
+/// // Do something with `workflow`, e.g., write something to its channels
+/// // using `self_handles`...
 ///
 /// // Initialize the workflow:
 /// let receipt = manager.tick().await?.drop_handle().into_inner()?;

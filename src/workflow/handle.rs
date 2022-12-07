@@ -41,18 +41,24 @@ impl IntoRaw<()> for () {
     }
 }
 
-/// Format of handles (senders and receivers).
+/// Format of [`Handle`]s (senders and receivers).
+///
+/// The format specifies how receivers and senders are represented in terms of data types,
+/// and how they are converted to / from their raw representations.
 pub trait HandleFormat {
     /// Raw receiver handle.
     type RawReceiver;
-    /// Receiver handle in this format.
+    /// Receiver handle in this format. Type parameters in the handle is the received value
+    /// and its codec, respectively.
     type Receiver<T, C: Codec<T>>: IntoRaw<Self::RawReceiver> + TryFromRaw<Self::RawReceiver>;
     /// Raw sender handle.
     type RawSender;
-    /// Sender handle in this format.
+    /// Sender handle in this format. Type parameters in the handle is the received value
+    /// and its codec, respectively.
     type Sender<T, C: Codec<T>>: IntoRaw<Self::RawSender> + TryFromRaw<Self::RawSender>;
 }
 
+/// Empty handle format with all handles specified as the void type `()`.
 impl HandleFormat for () {
     type RawReceiver = ();
     type Receiver<T, C: Codec<T>> = ();
@@ -60,7 +66,9 @@ impl HandleFormat for () {
     type Sender<T, C: Codec<T>> = ();
 }
 
-/// Inverse wrapper for a [`HandleFormat`] that swaps handles for senders and receivers.
+/// Wrapper for a [`HandleFormat`] that swaps handles for senders and receivers.
+///
+/// This transform is used, e.g., when [`spawn`]ing child workflows.
 #[derive(Debug)]
 pub struct Inverse<Fmt>(PhantomData<Fmt>);
 

@@ -79,7 +79,7 @@ pub type HandleSpec = Handle<ReceiverSpec, SenderSpec>;
 /// # Examples
 ///
 /// ```
-/// # use tardigrade_shared::interface::*;
+/// # use tardigrade_shared::{handle::ReceiverAt, interface::Interface};
 /// # const INTERFACE_BYTES: &[u8] = br#"{
 /// #     "v": 0,
 /// #     "handles": { "commands": { "receiver": {} } }

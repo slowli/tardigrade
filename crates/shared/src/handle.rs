@@ -1,4 +1,28 @@
-//! [`Handle`] management.
+//! [`Handle`] management for workflows.
+//!
+//! # Overview
+//!
+//! A [`Handle`] represents a fundamental building block of a workflow [`Interface`],
+//! a receiver or a sender. Depending on the context, receivers and senders may be represented
+//! by differing data types (e.g., a channel ID in the host runtime, or a `Stream` / `Sink`
+//! implementation on the client). Hence, `Handle` is parameterized by receiver and sender types.
+//!
+//! Handles can be collected into a [`HandleMap`], in which they are keyed by a segmented
+//! [`HandlePath`]. A path is similar to to a path in a filesystem, and just like
+//! [`Path`](std::path::Path) from the standard library, it has an owned counterpart,
+//! [`HandlePathBuf`]. The segmented nature of paths makes interfaces more composable.
+//!
+//! Fallible random access to handles in `HandleMap`s and other collections is enabled
+//! via the [`HandleMapKey`] trait. The [`AccessError`] type contains detailed information about
+//! access errors, such as the path at which the error occurred and the error kind
+//! (missing handle, handle kind mismatch, etc.).
+//!
+//! `HandleMapKey` is implemented for a variety of types,
+//! including [`ReceiverAt`] / [`SenderAt`] wrappers that allow specifying
+//! the expected handle kind together with the path. The [`WithIndexing`] trait allows
+//! converting a `HandleMap` to the form in which it can be indexed by any `HandleMapKey` impl.
+//!
+//! [`Interface`]: crate::interface::Interface
 
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
@@ -12,7 +36,10 @@ pub use crate::{
 
 // region:Handle and HandleMap
 
-/// Generic handle to a building block of a workflow interface (channel sender or receiver).
+/// Generic handle to a fundamental building block of a workflow interface
+/// (channel sender or receiver).
+///
+/// See [module-level docs](index.html#overview) for an overview of handles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Handle<Rx, Sx = Rx> {

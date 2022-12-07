@@ -57,7 +57,7 @@ impl error::Error for ConcurrencyError {}
 /// # Examples
 ///
 /// ```
-/// use tardigrade::interface::{ReceiverAt, SenderAt};
+/// use tardigrade::handle::{ReceiverAt, SenderAt, WithIndexing};
 /// use tardigrade_rt::manager::WorkflowHandle;
 /// # use tardigrade_rt::manager::AsManager;
 ///
@@ -68,7 +68,7 @@ impl error::Error for ConcurrencyError {}
 /// let mut workflow: WorkflowHandle<(), _> = // ...
 /// #   workflow;
 /// // We can create a handle to manipulate the workflow.
-/// let mut handle = workflow.handle();
+/// let mut handle = workflow.handle().await.with_indexing();
 ///
 /// // Let's send a message via a channel.
 /// let message = b"hello".to_vec();

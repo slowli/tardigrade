@@ -41,7 +41,7 @@ impl Inner<'static> {
 ///
 /// ```
 /// # use hashbrown::HashMap;
-/// # use tardigrade_shared::interface::{HandlePath, HandlePathBuf};
+/// # use tardigrade_shared::handle::{HandlePath, HandlePathBuf};
 /// const PATH: HandlePath<'_> = HandlePath::new("some::test").join("path");
 /// assert_eq!(PATH.to_string(), "some::test::path");
 /// assert_eq!(PATH.segments().collect::<Vec<_>>(), ["some", "test", "path"]);

@@ -11,17 +11,17 @@
 //! # use tardigrade::{
 //! #     channel::{Sender, Receiver},
 //! #     task::TaskResult,
-//! #     workflow::{GetInterface, InEnv, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
+//! #     workflow::{GetInterface, InEnv, SpawnWorkflow, WithHandle, Wasm, HandleFormat, WorkflowFn},
 //! #     Json,
 //! # };
 //! // Assume we want to spawn a child workflow defined as follows:
-//! #[derive(Debug, GetInterface, TakeHandle)]
+//! #[derive(Debug, GetInterface, WithHandle)]
 //! #[tardigrade(handle = "ChildHandle", auto_interface)]
 //! pub struct ChildWorkflow(());
 //!
-//! #[derive(TakeHandle)]
+//! #[derive(WithHandle)]
 //! #[tardigrade(derive(Debug))]
-//! pub struct ChildHandle<Env: WorkflowEnv> {
+//! pub struct ChildHandle<Env: HandleFormat> {
 //!     pub commands: InEnv<Receiver<String, Json>, Env>,
 //!     pub events: InEnv<Sender<String, Json>, Env>,
 //! }
@@ -40,22 +40,26 @@
 //!
 //! // To spawn a workflow, we should use the following code
 //! // in the parent workflow:
-//! use tardigrade::spawn::{ManageWorkflowsExt, Workflows, WorkflowHandle};
+//! use tardigrade::spawn::{ManageWorkflows, Workflows};
 //! # use tardigrade::test::Runtime;
 //!
 //! # let mut runtime = Runtime::default();
 //! # runtime.workflow_registry_mut().insert::<ChildWorkflow>("child");
 //! # runtime.run(async {
-//! let builder = Workflows.new_workflow::<ChildWorkflow>("child", ())?;
-//! // It is possible to customize child workflow initialization via
-//! // `builder.handle()`, but zero config is fine as well.
-//! let mut child = builder.build().await?;
+//! let builder = Workflows.new_workflow::<ChildWorkflow>("child")?;
+//! let (child_handles, mut self_handles) = builder
+//!     .handles(|config| {
+//!         // It is possible to customize child workflow initialization via
+//!         // `builder.handle()`, but zero config is fine as well.
+//!     })
+//!     .await;
+//! let child = builder.build((), child_handles).await?;
 //! // `child` contains handles to the created channels.
-//! child.api.commands.send("ping".to_owned()).await?;
-//! # drop(child.api.commands);
-//! let event: String = child.api.events.next().await.unwrap();
+//! self_handles.commands.send("ping".to_owned()).await?;
+//! # drop(self_handles.commands);
+//! let event: String = self_handles.events.next().await.unwrap();
 //! # assert_eq!(event, "ping");
-//! child.workflow.await?;
+//! child.await?;
 //! # Ok::<_, Box<dyn error::Error>>(())
 //! # }).unwrap();
 //! ```
@@ -112,7 +116,7 @@ pub trait ManageChannels: ManageInterfaces {
     /// Returns an instance of closed sender.
     fn closed_sender(&self) -> <Self::Fmt as HandleFormat>::RawSender;
 
-    /// Creates a new workflow channel with the specified parameters.
+    /// Creates a new workflow channel.
     async fn create_channel(
         &self,
     ) -> (
@@ -121,9 +125,11 @@ pub trait ManageChannels: ManageInterfaces {
     );
 }
 
-/// Manager of workflows that allows spawning workflows of a certain type.
+/// Manager of workflows that allows spawning them.
 ///
-/// This trait is low-level; use [`ManageWorkflowsExt`] for a high-level alternative.
+/// Depending on the context, the spawned workflow may be a child workflow (if executed
+/// in the context of a workflow, via [`Workflows`]), or the top-level workflow
+/// (if executed from the host).
 #[async_trait]
 pub trait ManageWorkflows: ManageChannels {
     /// Handle to an instantiated workflow.
@@ -139,7 +145,7 @@ pub trait ManageWorkflows: ManageChannels {
         handles: UntypedHandles<Self::Fmt>,
     ) -> Result<Self::Spawned<()>, Self::Error>;
 
-    #[doc(hidden)]
+    #[doc(hidden)] // implementation detail
     fn downcast<W: WorkflowFn + WithHandle>(&self, spawned: Self::Spawned<()>) -> Self::Spawned<W>;
 
     /// Initiates creating a new workflow and returns the corresponding builder.

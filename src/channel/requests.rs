@@ -196,7 +196,7 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 /// #     channel::{Request, Requests, Response, Sender, Receiver},
 /// #     task::{TaskResult, ErrorContextExt},
 /// #     workflow::{
-/// #         GetInterface, InEnv, SpawnWorkflow, TaskHandle, TakeHandle, Wasm, WorkflowEnv,
+/// #         GetInterface, InEnv, SpawnWorkflow, TaskHandle, WithHandle, Wasm, HandleFormat,
 /// #         WorkflowFn,
 /// #     },
 /// #     Json,
@@ -210,15 +210,15 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 ///     // response fields...
 /// }
 ///
-/// #[derive(Debug, GetInterface, TakeHandle)]
+/// #[derive(Debug, GetInterface, WithHandle)]
 /// # #[tardigrade(handle = "MyHandle", auto_interface)]
 /// pub struct MyWorkflow(());
 ///
-/// #[derive(TakeHandle)]
+/// #[derive(WithHandle)]
 /// #[tardigrade(derive(Debug))]
-/// pub struct MyHandle<Env: WorkflowEnv> {
-///     pub requests: InEnv<Sender<Request<MyRequest>, Json>, Env>,
-///     pub responses: InEnv<Receiver<Response<MyResponse>, Json>, Env>,
+/// pub struct MyHandle<Fmt: HandleFormat> {
+///     pub requests: InEnv<Sender<Request<MyRequest>, Json>, Fmt>,
+///     pub responses: InEnv<Receiver<Response<MyResponse>, Json>, Fmt>,
 /// }
 /// # impl WorkflowFn for MyWorkflow {
 /// #     type Args = ();
@@ -354,17 +354,17 @@ where
 /// # use serde::{Deserialize, Serialize};
 /// # use std::error::Error;
 /// # use tardigrade::{
-/// #     channel::{SendError, RequestHandles}, workflow::{TakeHandle, Wasm, WorkflowEnv}, Json,
+/// #     channel::{SendError, RequestHandles}, workflow::{WithHandle, Wasm, HandleFormat}, Json,
 /// # };
 /// #[derive(Serialize, Deserialize)]
 /// pub struct MyRequest {
 ///     // request fields...
 /// }
 ///
-/// #[derive(TakeHandle)]
+/// #[derive(WithHandle)]
 /// #[tardigrade(derive(Debug))]
-/// pub struct MyHandle<Env: WorkflowEnv = Wasm> {
-///     pub task: RequestHandles<MyRequest, (), Json, Env>,
+/// pub struct MyHandle<Fmt: HandleFormat = Wasm> {
+///     pub task: RequestHandles<MyRequest, (), Json, Fmt>,
 ///     // other handles...
 /// }
 ///

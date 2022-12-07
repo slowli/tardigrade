@@ -17,19 +17,19 @@
 //! # use tardigrade::{
 //! #     channel::Sender,
 //! #     task::TaskResult,
-//! #     workflow::{InEnv, GetInterface, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
+//! #     workflow::{GetInterface, HandleFormat, InEnv, Inverse, SpawnWorkflow, WithHandle, Wasm, WorkflowFn},
 //! #     Json,
 //! # };
 //! // Assume we want to test a workflow.
-//! #[derive(Debug, GetInterface, TakeHandle)]
+//! #[derive(Debug, GetInterface, WithHandle)]
 //! #[tardigrade(handle = "MyHandle", auto_interface)]
 //! pub struct MyWorkflow(());
 //!
 //! /// Workflow handle.
-//! #[derive(TakeHandle)]
+//! #[derive(WithHandle)]
 //! #[tardigrade(derive(Debug))]
-//! pub struct MyHandle<Env: WorkflowEnv> {
-//!     pub events: InEnv<Sender<Event, Json>, Env>,
+//! pub struct MyHandle<Fmt: HandleFormat> {
+//!     pub events: InEnv<Sender<Event, Json>, Fmt>,
 //! }
 //!
 //! /// Arguments provided to the workflow on creation.
@@ -64,9 +64,9 @@
 //! // We can test the workflow as follows:
 //! use tardigrade::{spawn::RemoteWorkflow, test::{TestInstance, Timers}};
 //!
-//! async fn test_workflow(handle: MyHandle<RemoteWorkflow>) {
+//! async fn test_workflow(handle: MyHandle<Inverse<Wasm>>) {
 //!     // The workflow should be waiting for a timer to emit an event.
-//!     let mut events = handle.events.unwrap();
+//!     let mut events = handle.events;
 //!     assert!(events.next().now_or_never().is_none());
 //!
 //!     let now = Timers::now();

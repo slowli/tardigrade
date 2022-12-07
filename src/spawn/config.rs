@@ -93,7 +93,7 @@ impl<Fmt: HandleFormat> SpawnerInner<Fmt> {
     }
 }
 
-/// Spawn [environment](TakeHandle) that can be used to configure channels before spawning
+/// Spawn [environment](HandleFormat) that can be used to configure channels before spawning
 /// a workflow.
 pub struct Spawner<Fmt: HandleFormat = Wasm> {
     inner: Rc<SpawnerInner<Fmt>>,
@@ -320,8 +320,6 @@ where
 }
 
 impl<W: WithHandle, Fmt: HandleFormat> HandlesBuilder<W, Fmt> {
-    /// Builds the handles pair. This method must be called in the client environment.
-    #[allow(clippy::missing_panics_doc)] // false positive
     pub async fn build<M>(self, manager: &M) -> (InEnv<W, M::Fmt>, InEnv<W, Inverse<M::Fmt>>)
     where
         M: ManageChannels<Fmt = Fmt>,
