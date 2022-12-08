@@ -214,13 +214,9 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 ///     // response fields...
 /// }
 ///
-/// #[derive(Debug, GetInterface, WithHandle)]
-/// # #[tardigrade(handle = "MyHandle", auto_interface)]
-/// pub struct MyWorkflow(());
-///
-/// #[derive(WithHandle)]
-/// #[tardigrade(derive(Debug))]
-/// pub struct MyHandle<Fmt: HandleFormat> {
+/// #[derive(WithHandle, GetInterface)]
+/// #[tardigrade(derive(Debug), auto_interface)]
+/// pub struct MyWorkflow<Fmt: HandleFormat = Wasm> {
 ///     pub requests: InEnv<Sender<Request<MyRequest>, Json>, Fmt>,
 ///     pub responses: InEnv<Receiver<Response<MyResponse>, Json>, Fmt>,
 /// }
@@ -231,7 +227,7 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 ///
 /// #[async_trait(?Send)]
 /// impl SpawnWorkflow for MyWorkflow {
-///     async fn spawn(_args: (), handle: MyHandle<Wasm>) -> TaskResult {
+///     async fn spawn(_args: (), handle: Self) -> TaskResult {
 ///         let (requests, _) = Requests::builder(handle.requests, handle.responses)
 ///             .with_capacity(4)
 ///             .with_task_name("handling_requests")
@@ -370,14 +366,14 @@ where
 ///
 /// #[derive(WithHandle)]
 /// #[tardigrade(derive(Debug))]
-/// pub struct MyHandle<Fmt: HandleFormat = Wasm> {
+/// pub struct MyWorkflow<Fmt: HandleFormat = Wasm> {
 ///     pub task: RequestHandles<MyRequest, (), Json, Fmt>,
 ///     // other handles...
 /// }
 ///
 /// // Usage in workflow code:
-/// # async fn workflow_code(handle: MyHandle) -> Result<(), Box<dyn Error>> {
-/// let handle: MyHandle = // ...
+/// # async fn workflow_code(handle: MyWorkflow) -> Result<(), Box<dyn Error>> {
+/// let handle: MyWorkflow = // ...
 /// # handle;
 /// let (requests, _) =
 ///     handle.task.process_requests().with_capacity(4).build();

@@ -16,9 +16,9 @@ use tardigrade::{
     Json,
 };
 
-#[derive(WithHandle)]
-#[tardigrade(derive(Debug))]
-pub struct WorkflowHandle<Fmt: HandleFormat> {
+#[derive(GetInterface, WithHandle, WorkflowEntry)]
+#[tardigrade(derive(Debug), interface = "src/tardigrade-req.json")]
+pub struct PizzaDeliveryWithRequests<Fmt: HandleFormat = Wasm> {
     pub orders: InEnv<Receiver<PizzaOrder, Json>, Fmt>,
     #[tardigrade(flatten)]
     pub shared: SharedHandle<Fmt>,
@@ -29,10 +29,6 @@ pub struct WorkflowHandle<Fmt: HandleFormat> {
 pub struct Args {
     pub oven_count: usize,
 }
-
-#[derive(Debug, GetInterface, WithHandle, WorkflowEntry)]
-#[tardigrade(handle = "WorkflowHandle", interface = "src/tardigrade-req.json")]
-pub struct PizzaDeliveryWithRequests(());
 
 #[test]
 fn interface_agrees_between_declaration_and_handle() {
@@ -46,13 +42,13 @@ impl WorkflowFn for PizzaDeliveryWithRequests {
 
 #[async_trait(?Send)]
 impl SpawnWorkflow for PizzaDeliveryWithRequests {
-    async fn spawn(args: Self::Args, handle: WorkflowHandle<Wasm>) -> TaskResult {
+    async fn spawn(args: Self::Args, handle: Self) -> TaskResult {
         handle.spawn(args).await;
         Ok(())
     }
 }
 
-impl WorkflowHandle<Wasm> {
+impl PizzaDeliveryWithRequests {
     fn spawn(self, args: Args) -> impl Future<Output = ()> {
         let (requests, requests_task) = self
             .baking

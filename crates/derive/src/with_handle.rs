@@ -198,50 +198,7 @@ fn derive_with_handle(input: &DeriveInput) -> darling::Result<impl ToTokens> {
         || Ok(DeriveAttrs::default()),
         |meta| DeriveAttrs::from_nested_meta(&meta),
     )?;
-
-    if let Some(handle) = &attrs.handle {
-        let crate_path = attrs
-            .crate_path
-            .unwrap_or_else(|| syn::parse_quote!(tardigrade));
-        Ok(impl_with_handle_delegation(input, &crate_path, handle))
-    } else {
-        Handle::new(input, attrs)?.to_tokens()
-    }
-}
-
-// TODO: support generic handles
-fn impl_with_handle_delegation(
-    input: &DeriveInput,
-    cr: &Path,
-    handle: &Path,
-) -> proc_macro2::TokenStream {
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
-    let target = &input.ident;
-    let fmt = Ident::new("Fmt", input.ident.span());
-    let fmt_tr = quote!(#cr::workflow::HandleFormat);
-    let tr = quote!(#cr::workflow::WithHandle);
-    let wasm = quote!(#cr::workflow::Wasm);
-
-    quote! {
-        impl #impl_generics #tr for #target #ty_generics #where_clause {
-            type Handle<#fmt: #fmt_tr> = #handle<#fmt>;
-
-            fn take_from_untyped<#fmt: #fmt_tr>(
-                untyped: &mut dyn #cr::workflow::TakeHandles<#fmt>,
-                path: #cr::handle::HandlePath<'_>,
-            ) -> core::result::Result<Self::Handle<#fmt>, #cr::handle::AccessError> {
-               <#handle <#wasm> as #tr>::take_from_untyped(untyped, path)
-            }
-
-            fn insert_into_untyped<#fmt: #fmt_tr>(
-                handle: Self::Handle<#fmt>,
-                untyped: &mut dyn #cr::workflow::BuildHandles<#fmt>,
-                path: #cr::handle::HandlePath<'_>,
-            ) {
-                <#handle <#wasm> as #tr>::insert_into_untyped(handle, untyped, path)
-            }
-        }
-    }
+    Handle::new(input, attrs)?.to_tokens()
 }
 
 pub(crate) fn impl_with_handle(input: TokenStream) -> TokenStream {

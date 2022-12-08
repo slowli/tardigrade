@@ -90,22 +90,17 @@ pub struct SharedHandle<Fmt: HandleFormat> {
     pub events: InEnv<Sender<DomainEvent, Json>, Fmt>,
 }
 
-/// Handle for the workflow.
-#[derive(WithHandle)]
+/// Workflow type.
+// `GetInterface` derive macro picks up the workflow interface definition at `tardigrade.json`
+// and implements the corresponding trait based on it. It also exposes the interface definition
+// in a custom WASM section, so that it is available to the workflow runtime.
+#[derive(GetInterface, WithHandle, WorkflowEntry)]
 #[tardigrade(derive(Debug))]
-pub struct PizzaDeliveryHandle<Env: HandleFormat = Wasm> {
+pub struct PizzaDelivery<Env: HandleFormat = Wasm> {
     pub orders: InEnv<Receiver<PizzaOrder, Json>, Env>,
     #[tardigrade(flatten)]
     pub shared: SharedHandle<Env>,
 }
-
-/// Marker workflow type.
-// `GetInterface` derive macro picks up the workflow interface definition at `tardigrade.json`
-// and implements the corresponding trait based on it. It also exposes the interface definition
-// in a custom WASM section, so that it is available to the workflow runtime.
-#[derive(Debug, GetInterface, WithHandle, WorkflowEntry)]
-#[tardigrade(handle = "PizzaDeliveryHandle")]
-pub struct PizzaDelivery(());
 
 // The `GetInterface` implementation ensures (unfortunately, in runtime) that
 // the handle corresponds to the interface declaration.
@@ -123,13 +118,13 @@ impl WorkflowFn for PizzaDelivery {
 /// Defines how workflow instances are spawned.
 #[async_trait(?Send)]
 impl SpawnWorkflow for PizzaDelivery {
-    async fn spawn(args: Args, handle: PizzaDeliveryHandle) -> TaskResult {
+    async fn spawn(args: Args, handle: Self) -> TaskResult {
         handle.spawn(args).await;
         Ok(())
     }
 }
 
-impl PizzaDeliveryHandle {
+impl PizzaDelivery {
     /// This is where the actual workflow logic is contained. We pass incoming orders
     /// through 2 unordered buffers with the capacities defined by the workflow arguments.
     #[tracing::instrument(skip(self))]

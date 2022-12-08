@@ -15,13 +15,9 @@
 //! #     Json,
 //! # };
 //! // Assume we want to spawn a child workflow defined as follows:
-//! #[derive(Debug, GetInterface, WithHandle)]
-//! #[tardigrade(handle = "ChildHandle", auto_interface)]
-//! pub struct ChildWorkflow(());
-//!
-//! #[derive(WithHandle)]
-//! #[tardigrade(derive(Debug))]
-//! pub struct ChildHandle<Env: HandleFormat> {
+//! #[derive(GetInterface, WithHandle)]
+//! #[tardigrade(derive(Debug), auto_interface)]
+//! pub struct ChildWorkflow<Env: HandleFormat = Wasm> {
 //!     pub commands: InEnv<Receiver<String, Json>, Env>,
 //!     pub events: InEnv<Sender<String, Json>, Env>,
 //! }
@@ -32,7 +28,7 @@
 //! }
 //! # #[async_trait(?Send)]
 //! # impl SpawnWorkflow for ChildWorkflow {
-//! #     async fn spawn(_args: (), handle: ChildHandle<Wasm>) -> TaskResult {
+//! #     async fn spawn(_args: (), handle: Self) -> TaskResult {
 //! #         handle.commands.map(Ok).forward(handle.events).await?;
 //! #         Ok(())
 //! #     }

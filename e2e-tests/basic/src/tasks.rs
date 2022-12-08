@@ -6,10 +6,10 @@ use serde::{Deserialize, Serialize};
 
 use std::collections::HashSet;
 
-use crate::{DomainEvent, PizzaDeliveryHandle, PizzaKind};
+use crate::{DomainEvent, PizzaDelivery, PizzaKind};
 use tardigrade::{
     task::{self, ErrorContextExt, JoinError, TaskError, TaskResult},
-    workflow::{GetInterface, SpawnWorkflow, Wasm, WithHandle, WorkflowEntry, WorkflowFn},
+    workflow::{DelegateHandle, GetInterface, SpawnWorkflow, WorkflowEntry, WorkflowFn},
     Json,
 };
 
@@ -20,9 +20,12 @@ pub struct Args {
     pub propagate_errors: bool,
 }
 
-#[derive(Debug, GetInterface, WithHandle, WorkflowEntry)]
-#[tardigrade(handle = "PizzaDeliveryHandle")]
+#[derive(Debug, GetInterface, WorkflowEntry)]
 pub struct PizzaDeliveryWithTasks(());
+
+impl DelegateHandle for PizzaDeliveryWithTasks {
+    type Delegate = PizzaDelivery;
+}
 
 #[test]
 fn interface_agrees_between_declaration_and_handle() {
@@ -36,7 +39,7 @@ impl WorkflowFn for PizzaDeliveryWithTasks {
 
 #[async_trait(?Send)]
 impl SpawnWorkflow for PizzaDeliveryWithTasks {
-    async fn spawn(args: Args, mut handle: PizzaDeliveryHandle<Wasm>) -> TaskResult {
+    async fn spawn(args: Args, mut handle: PizzaDelivery) -> TaskResult {
         let mut index = 0;
         let mut tasks = FuturesUnordered::new();
 

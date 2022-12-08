@@ -80,6 +80,7 @@ impl<Fmt: HandleFormat> HandleFormat for Inverse<Fmt> {
 }
 
 /// Collection of handles in a certain format that can be taken from.
+/// Used in [`WithHandle::take_from_untyped()`].
 pub trait TakeHandles<Fmt: HandleFormat> {
     /// Takes a raw receiver handle at the specified `path` from this collection.
     ///
@@ -99,7 +100,7 @@ pub trait TakeHandles<Fmt: HandleFormat> {
     fn drain(&mut self) -> UntypedHandles<Fmt>;
 }
 
-/// Accumulator of handles in a certain format.
+/// Accumulator of handles in a certain format used in [`WithHandle::insert_into_untyped()`].
 pub trait BuildHandles<Fmt: HandleFormat> {
     /// Inserts a handle into this accumulator.
     fn insert_handle(
@@ -139,8 +140,8 @@ pub(super) fn default_insert_handles<Fmt, T>(
 /// A handle needs to be defined for a [workflow](crate::workflow::SpawnWorkflow)
 /// in order to specify which handles it receives on initialization. The intended way to
 /// do this is to define a dedicated handle type with the help of the
-/// [`WithHandle`](macro@crate::workflow::WithHandle) derive macro, and then proxy its
-/// implementation to the (usually empty) workflow type using the same derive macro.
+/// [`WithHandle`](macro@crate::workflow::WithHandle) derive macro. If necessary, its
+/// implementation can be [delegated](DelegateHandle) from the (usually empty) workflow type.
 /// See the [`workflow`](crate::workflow#examples) module docs for an example.
 pub trait WithHandle {
     /// Type of the handle in a particular format.
@@ -181,6 +182,32 @@ pub trait WithHandle {
         let mut untyped = UntypedHandles::<Fmt>::default();
         Self::insert_into_untyped(handle, &mut untyped, HandlePath::EMPTY);
         untyped
+    }
+}
+
+/// Implementation of [`WithHandle`] that delegates to the provided type. This is useful
+/// for sharing handles among multiple workflows.
+pub trait DelegateHandle {
+    /// Delegation target.
+    type Delegate: WithHandle;
+}
+
+impl<D: DelegateHandle> WithHandle for D {
+    type Handle<Fmt: HandleFormat> = <D::Delegate as WithHandle>::Handle<Fmt>;
+
+    fn take_from_untyped<Fmt: HandleFormat>(
+        untyped: &mut dyn TakeHandles<Fmt>,
+        path: HandlePath<'_>,
+    ) -> Result<Self::Handle<Fmt>, AccessError> {
+        <D::Delegate>::take_from_untyped(untyped, path)
+    }
+
+    fn insert_into_untyped<Fmt: HandleFormat>(
+        handle: Self::Handle<Fmt>,
+        untyped: &mut dyn BuildHandles<Fmt>,
+        path: HandlePath<'_>,
+    ) {
+        <D::Delegate>::insert_into_untyped(handle, untyped, path);
     }
 }
 

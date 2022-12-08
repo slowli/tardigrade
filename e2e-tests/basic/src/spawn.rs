@@ -5,14 +5,14 @@ use async_trait::async_trait;
 use futures::{SinkExt, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 
-use crate::{DomainEvent, PizzaDeliveryHandle, PizzaOrder, SharedHandle};
+use crate::{DomainEvent, PizzaDelivery, PizzaOrder, SharedHandle};
 use tardigrade::{
     channel::Sender,
     spawn::{ManageWorkflows, Workflows},
     task::{TaskError, TaskResult},
     workflow::{
-        GetInterface, HandleFormat, InEnv, SpawnWorkflow, Wasm, WithHandle, WorkflowEntry,
-        WorkflowFn,
+        DelegateHandle, GetInterface, HandleFormat, InEnv, SpawnWorkflow, Wasm, WithHandle,
+        WorkflowEntry, WorkflowFn,
     },
     Json,
 };
@@ -23,16 +23,19 @@ pub struct Args {
     pub collect_metrics: bool,
 }
 
-#[derive(Debug, GetInterface, WithHandle, WorkflowEntry)]
-#[tardigrade(handle = "PizzaDeliveryHandle")]
+#[derive(Debug, GetInterface, WorkflowEntry)]
 pub struct PizzaDeliveryWithSpawning(());
+
+impl DelegateHandle for PizzaDeliveryWithSpawning {
+    type Delegate = PizzaDelivery;
+}
 
 impl WorkflowFn for PizzaDeliveryWithSpawning {
     type Args = Args;
     type Codec = Json;
 }
 
-impl PizzaDeliveryHandle {
+impl PizzaDelivery {
     async fn spawn_with_child_workflows(self, args: Args) -> TaskResult {
         let mut counter = 0;
         self.orders
@@ -72,7 +75,7 @@ impl PizzaDeliveryHandle {
 
 #[async_trait(?Send)]
 impl SpawnWorkflow for PizzaDeliveryWithSpawning {
-    async fn spawn(args: Args, handle: PizzaDeliveryHandle) -> TaskResult {
+    async fn spawn(args: Args, handle: PizzaDelivery) -> TaskResult {
         handle.spawn_with_child_workflows(args).await
     }
 }
@@ -83,15 +86,12 @@ pub struct DurationMetric {
     duration_millis: u64,
 }
 
-#[derive(WithHandle)]
-pub struct BakingHandle<Fmt: HandleFormat = Wasm> {
+#[derive(GetInterface, WithHandle, WorkflowEntry)]
+#[tardigrade(derive(Debug), interface = "src/tardigrade-baking.json")]
+pub struct Baking<Fmt: HandleFormat = Wasm> {
     pub events: InEnv<Sender<DomainEvent, Json>, Fmt>,
     pub duration: InEnv<Sender<DurationMetric, Json>, Fmt>,
 }
-
-#[derive(Debug, GetInterface, WithHandle, WorkflowEntry)]
-#[tardigrade(handle = "BakingHandle", interface = "src/tardigrade-baking.json")]
-pub struct Baking(());
 
 impl WorkflowFn for Baking {
     type Args = (usize, PizzaOrder);
@@ -100,7 +100,7 @@ impl WorkflowFn for Baking {
 
 #[async_trait(?Send)]
 impl SpawnWorkflow for Baking {
-    async fn spawn((idx, order): (usize, PizzaOrder), mut handle: BakingHandle) -> TaskResult {
+    async fn spawn((idx, order): (usize, PizzaOrder), mut handle: Self) -> TaskResult {
         let start = tardigrade::now();
         let shared = SharedHandle {
             events: handle.events,

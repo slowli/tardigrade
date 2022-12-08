@@ -5,19 +5,23 @@ use futures::{stream, SinkExt, StreamExt, TryStreamExt};
 
 use std::collections::HashSet;
 
-use crate::{TestHandle, TestedWorkflow};
+use crate::TestedWorkflow;
 use tardigrade::{
     channel::Sender,
     spawn::{ManageWorkflows, Workflows},
     task::TaskResult,
     test::Runtime,
-    workflow::{GetInterface, SpawnWorkflow, Wasm, WithHandle, WorkflowFn},
+    workflow::{DelegateHandle, GetInterface, SpawnWorkflow, WorkflowFn},
     Json,
 };
 
-#[derive(Debug, GetInterface, WithHandle)]
-#[tardigrade(handle = "TestHandle", auto_interface)]
+#[derive(Debug, GetInterface)]
+#[tardigrade(auto_interface)]
 struct ParentWorkflow;
+
+impl DelegateHandle for ParentWorkflow {
+    type Delegate = TestedWorkflow;
+}
 
 impl ParentWorkflow {
     async fn spawn_child(command: i32, events: Sender<i32, Json>) -> TaskResult {
@@ -42,7 +46,7 @@ impl WorkflowFn for ParentWorkflow {
 
 #[async_trait(?Send)]
 impl SpawnWorkflow for ParentWorkflow {
-    async fn spawn(concurrency: u32, handle: TestHandle<Wasm>) -> TaskResult {
+    async fn spawn(concurrency: u32, handle: TestedWorkflow) -> TaskResult {
         let concurrency = concurrency as usize;
         handle
             .commands

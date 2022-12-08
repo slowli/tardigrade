@@ -15,9 +15,9 @@
 //! };
 //!
 //! /// Handle for the workflow. Fields are public for integration testing.
-//! #[derive(WithHandle)]
-//! #[tardigrade(derive(Debug))]
-//! pub struct MyHandle<Fmt: HandleFormat = Wasm> {
+//! #[derive(WithHandle, GetInterface, WorkflowEntry)]
+//! #[tardigrade(derive(Debug), auto_interface)]
+//! pub struct MyWorkflow<Fmt: HandleFormat = Wasm> {
 //!     /// Receiver for commands.
 //!     pub commands: InEnv<Receiver<Command, Json>, Fmt>,
 //!     /// Sender for events.
@@ -44,7 +44,7 @@
 //!     // other variants...
 //! }
 //!
-//! impl MyHandle {
+//! impl MyWorkflow {
 //!     async fn process_command(
 //!         &mut self,
 //!         command: &Command,
@@ -61,11 +61,6 @@
 //!     }
 //! }
 //!
-//! /// Workflow type. Usually, this should be a unit / empty struct.
-//! #[derive(Debug, GetInterface, WithHandle, WorkflowEntry)]
-//! #[tardigrade(handle = "MyHandle", auto_interface)]
-//! pub struct MyWorkflow(());
-//!
 //! // Workflow interface declaration.
 //! impl WorkflowFn for MyWorkflow {
 //!     type Args = Args;
@@ -75,7 +70,7 @@
 //! // Actual workflow logic.
 //! #[async_trait(?Send)]
 //! impl SpawnWorkflow for MyWorkflow {
-//!     async fn spawn(args: Args, mut handle: MyHandle) -> TaskResult {
+//!     async fn spawn(args: Args, mut handle: Self) -> TaskResult {
 //!         let mut counter = args.start_counter;
 //!         while let Some(command) = handle.commands.next().await {
 //!             handle
@@ -111,7 +106,8 @@ mod untyped;
 
 pub use self::{
     handle::{
-        BuildHandles, HandleFormat, InEnv, IntoRaw, Inverse, TakeHandles, TryFromRaw, WithHandle,
+        BuildHandles, DelegateHandle, HandleFormat, InEnv, IntoRaw, Inverse, TakeHandles,
+        TryFromRaw, WithHandle,
     },
     untyped::UntypedHandles,
 };
@@ -372,7 +368,7 @@ impl WorkflowFn for () {
 
 /// Workflow that can be spawned.
 ///
-/// This trait can be defined using the [`async_trait`] proc macro.
+/// This trait should be defined using the [`async_trait`] proc macro.
 ///
 /// [`async_trait`]: https://docs.rs/async-trait/
 ///

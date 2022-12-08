@@ -22,8 +22,6 @@ pub(crate) struct DeriveAttrs {
     #[darling(default)]
     pub interface: Option<String>,
     #[darling(default)]
-    pub handle: Option<Path>,
-    #[darling(default)]
     pub auto_interface: Option<()>,
     #[darling(rename = "crate", default)]
     pub crate_path: Option<Path>,

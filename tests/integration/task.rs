@@ -5,13 +5,13 @@ use async_trait::async_trait;
 use futures::{future, FutureExt, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 
-use crate::TestHandle;
+use crate::TestedWorkflow;
 use tardigrade::{
     channel::SendError,
     spawn::{ManageWorkflows, Workflows},
     task::{self, JoinError, TaskError, TaskResult},
     test::Runtime,
-    workflow::{GetInterface, SpawnWorkflow, Wasm, WithHandle, WorkflowFn},
+    workflow::{DelegateHandle, GetInterface, SpawnWorkflow, WorkflowFn},
     Json,
 };
 
@@ -22,9 +22,13 @@ struct Args {
     abort_subtask: bool,
 }
 
-#[derive(Debug, GetInterface, WithHandle)]
-#[tardigrade(handle = "TestHandle", auto_interface)]
+#[derive(Debug, GetInterface)]
+#[tardigrade(auto_interface)]
 struct WorkflowWithSubtask;
+
+impl DelegateHandle for WorkflowWithSubtask {
+    type Delegate = TestedWorkflow;
+}
 
 impl WorkflowFn for WorkflowWithSubtask {
     type Args = Args;
@@ -33,7 +37,7 @@ impl WorkflowFn for WorkflowWithSubtask {
 
 #[async_trait(?Send)]
 impl SpawnWorkflow for WorkflowWithSubtask {
-    async fn spawn(args: Args, mut handle: TestHandle<Wasm>) -> TaskResult {
+    async fn spawn(args: Args, mut handle: TestedWorkflow) -> TaskResult {
         handle.events.send(42).await?;
         let task = if args.fail_subtask {
             future::err(TaskError::new("subtask failure!")).left_future()
