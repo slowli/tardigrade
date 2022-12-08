@@ -2,12 +2,12 @@
 
 use futures::future;
 
-use std::{cell::RefCell, convert::Infallible, fmt, marker::PhantomData, mem, rc::Rc};
+use std::{cell::Cell, convert::Infallible, fmt, marker::PhantomData, mem, rc::Rc};
 
 use crate::{
     handle::{
-        AccessError, AccessErrorKind, Handle, HandleMap, HandleMapKey, HandlePath, HandlePathBuf,
-        ReceiverAt, SenderAt,
+        AccessError, AccessErrorKind, Handle, HandleMap, HandleMapKey, HandlePath, ReceiverAt,
+        SenderAt,
     },
     interface::Interface,
     spawn::ManageChannels,
@@ -35,77 +35,38 @@ impl<T> Default for ChannelSpawnConfig<T> {
     }
 }
 
+type SharedSpawnConfig<T> = Rc<Cell<ChannelSpawnConfig<T>>>;
+
 type ChannelsConfig<Fmt> = HandleMap<
-    ChannelSpawnConfig<<Fmt as HandleFormat>::RawReceiver>,
-    ChannelSpawnConfig<<Fmt as HandleFormat>::RawSender>,
+    SharedSpawnConfig<<Fmt as HandleFormat>::RawReceiver>,
+    SharedSpawnConfig<<Fmt as HandleFormat>::RawSender>,
 >;
-
-struct SpawnerInner<Fmt: HandleFormat> {
-    channels: RefCell<ChannelsConfig<Fmt>>,
-}
-
-impl<Fmt> fmt::Debug for SpawnerInner<Fmt>
-where
-    Fmt: HandleFormat,
-    Fmt::RawReceiver: fmt::Debug,
-    Fmt::RawSender: fmt::Debug,
-{
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("Spawner")
-            .field("channels", &self.channels)
-            .finish()
-    }
-}
-
-impl<Fmt: HandleFormat> SpawnerInner<Fmt> {
-    fn new(interface: &Interface) -> Self {
-        let config = interface.handles().map(|(path, spec)| {
-            let config = spec
-                .as_ref()
-                .map_receiver(|_| ChannelSpawnConfig::default())
-                .map_sender(|_| ChannelSpawnConfig::default());
-            (path.to_owned(), config)
-        });
-
-        Self {
-            channels: RefCell::new(config.collect()),
-        }
-    }
-
-    fn close_channel_half(&self, path: HandlePath<'_>) {
-        let mut borrow = self.channels.borrow_mut();
-        match borrow.get_mut(&path).unwrap() {
-            Handle::Receiver(rx) => {
-                *rx = ChannelSpawnConfig::Closed;
-            }
-            Handle::Sender(sx) => {
-                *sx = ChannelSpawnConfig::Closed;
-            }
-        }
-    }
-
-    fn copy_sender(&self, path: HandlePath<'_>, sender: Fmt::RawSender) {
-        let mut borrow = self.channels.borrow_mut();
-        if let Handle::Sender(sx) = borrow.get_mut(&path).unwrap() {
-            *sx = ChannelSpawnConfig::Existing(sender);
-        }
-    }
-}
 
 /// Spawn [environment](HandleFormat) that can be used to configure channels before spawning
 /// a workflow.
 pub struct Spawner<Fmt: HandleFormat = Wasm> {
-    inner: Rc<SpawnerInner<Fmt>>,
+    channels: ChannelsConfig<Fmt>,
 }
 
-impl<Fmt: HandleFormat> fmt::Debug for Spawner<Fmt>
-where
-    Fmt::RawReceiver: fmt::Debug,
-    Fmt::RawSender: fmt::Debug,
-{
+impl<Fmt: HandleFormat> fmt::Debug for Spawner<Fmt> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&self.inner, formatter)
+        formatter.debug_struct("Spawner").finish_non_exhaustive()
+    }
+}
+
+impl<Fmt: HandleFormat> Spawner<Fmt> {
+    fn new(interface: &Interface) -> Self {
+        let config = interface.handles().map(|(path, spec)| {
+            let config = spec
+                .as_ref()
+                .map_receiver(|_| SharedSpawnConfig::default())
+                .map_sender(|_| SharedSpawnConfig::default());
+            (path.to_owned(), config)
+        });
+
+        Self {
+            channels: config.collect(),
+        }
     }
 }
 
@@ -118,8 +79,7 @@ impl<Fmt: HandleFormat> HandleFormat for Spawner<Fmt> {
 
 /// Configurator of a workflow channel [`Receiver`](crate::channel::Receiver).
 pub struct ReceiverConfig<Fmt: HandleFormat, T, C> {
-    spawner: Rc<SpawnerInner<Fmt>>,
-    path: HandlePathBuf,
+    inner: SharedSpawnConfig<Fmt::RawReceiver>,
     _ty: PhantomData<fn(C) -> T>,
 }
 
@@ -127,14 +87,12 @@ impl<Fmt, T, C> fmt::Debug for ReceiverConfig<Fmt, T, C>
 where
     Fmt: HandleFormat,
     Fmt::RawReceiver: fmt::Debug,
-    Fmt::RawSender: fmt::Debug,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("ReceiverConfig")
-            .field("spawner", &self.spawner)
-            .field("channel_name", &self.path)
-            .finish()
+        let inner = self.inner.take();
+        let result = fmt::Debug::fmt(&inner, formatter);
+        self.inner.set(inner);
+        result
     }
 }
 
@@ -145,7 +103,7 @@ where
 {
     /// Closes the channel immediately on workflow instantiation.
     pub fn close(&self) {
-        self.spawner.close_channel_half(self.path.as_ref());
+        self.inner.set(ChannelSpawnConfig::Closed);
     }
 }
 
@@ -159,8 +117,7 @@ where
     #[inline]
     fn try_from_raw(raw: ReceiverConfig<Fmt, Vec<u8>, Raw>) -> Result<Self, Self::Error> {
         Ok(Self {
-            spawner: raw.spawner,
-            path: raw.path,
+            inner: raw.inner,
             _ty: PhantomData,
         })
     }
@@ -174,8 +131,7 @@ where
     #[inline]
     fn into_raw(self) -> ReceiverConfig<Fmt, Vec<u8>, Raw> {
         ReceiverConfig {
-            spawner: self.spawner,
-            path: self.path,
+            inner: self.inner,
             _ty: PhantomData,
         }
     }
@@ -183,23 +139,20 @@ where
 
 /// Configurator of a workflow channel [`Sender`](crate::channel::Sender).
 pub struct SenderConfig<Fmt: HandleFormat, T, C> {
-    spawner: Rc<SpawnerInner<Fmt>>,
-    path: HandlePathBuf,
+    inner: SharedSpawnConfig<Fmt::RawSender>,
     _ty: PhantomData<fn(C) -> T>,
 }
 
 impl<Fmt, T, C> fmt::Debug for SenderConfig<Fmt, T, C>
 where
     Fmt: HandleFormat,
-    Fmt::RawReceiver: fmt::Debug,
     Fmt::RawSender: fmt::Debug,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("SenderConfig")
-            .field("spawner", &self.spawner)
-            .field("channel_name", &self.path)
-            .finish()
+        let inner = self.inner.take();
+        let result = fmt::Debug::fmt(&inner, formatter);
+        self.inner.set(inner);
+        result
     }
 }
 
@@ -210,20 +163,14 @@ where
 {
     /// Closes the channel immediately on workflow instantiation.
     pub fn close(&self) {
-        self.spawner.close_channel_half(self.path.as_ref());
+        self.inner.set(ChannelSpawnConfig::Closed);
     }
-}
 
-impl<Fmt, T, C> SenderConfig<Fmt, T, C>
-where
-    Fmt: HandleFormat,
-    C: Codec<T>,
-{
     /// Copies the channel from the provided `sender`. Thus, the created workflow will send
     /// messages over the same channel as `sender`.
     pub fn copy_from(&self, sender: Fmt::Sender<T, C>) {
-        self.spawner
-            .copy_sender(self.path.as_ref(), sender.into_raw());
+        self.inner
+            .set(ChannelSpawnConfig::Existing(sender.into_raw()));
     }
 }
 
@@ -237,8 +184,7 @@ where
     #[inline]
     fn try_from_raw(raw: SenderConfig<Fmt, Vec<u8>, Raw>) -> Result<Self, Self::Error> {
         Ok(Self {
-            spawner: raw.spawner,
-            path: raw.path,
+            inner: raw.inner,
             _ty: PhantomData,
         })
     }
@@ -252,8 +198,7 @@ where
     #[inline]
     fn into_raw(self) -> SenderConfig<Fmt, Vec<u8>, Raw> {
         SenderConfig {
-            spawner: self.spawner,
-            path: self.path,
+            inner: self.inner,
             _ty: PhantomData,
         }
     }
@@ -290,23 +235,19 @@ impl<Fmt: HandleFormat> HandlesBuilder<Fmt> {
     }
 
     fn new_untyped(interface: &Interface) -> (Self, UntypedHandles<Spawner<Fmt>>) {
-        let spawner = Spawner {
-            inner: Rc::new(SpawnerInner::new(interface)),
-        };
-        let untyped = interface.handles().map(|(path, spec)| {
+        let spawner = Spawner::new(interface);
+        let untyped = spawner.channels.iter().map(|(path, spec)| {
             let config = spec
                 .as_ref()
-                .map_receiver(|_| ReceiverConfig {
-                    spawner: Rc::clone(&spawner.inner),
-                    path: path.to_owned(),
+                .map_receiver(|cell| ReceiverConfig {
+                    inner: Rc::clone(cell),
                     _ty: PhantomData,
                 })
-                .map_sender(|_| SenderConfig {
-                    spawner: Rc::clone(&spawner.inner),
-                    path: path.to_owned(),
+                .map_sender(|cell| SenderConfig {
+                    inner: Rc::clone(cell),
                     _ty: PhantomData,
                 });
-            (path.to_owned(), config)
+            (path.clone(), config)
         });
         let untyped = untyped.collect();
         (Self { spawner }, untyped)
@@ -318,16 +259,17 @@ impl<Fmt: HandleFormat> HandlesBuilder<Fmt> {
     where
         M: ManageChannels<Fmt = Fmt>,
     {
-        let spawner = Rc::try_unwrap(self.spawner.inner).map_err(drop).unwrap();
-        let channels = spawner.channels.into_inner();
+        let channels = self.spawner.channels;
 
         let pairs = channels.into_iter().map(|(path, config)| async {
             let pair = match config {
-                Handle::Receiver(rx_config) => {
-                    Handle::Receiver(ChannelPair::for_remote_receiver(rx_config, manager).await)
+                Handle::Receiver(config) => {
+                    let config = config.take();
+                    Handle::Receiver(ChannelPair::for_remote_receiver(config, manager).await)
                 }
-                Handle::Sender(sx_config) => {
-                    Handle::Sender(ChannelPair::for_remote_sender(sx_config, manager).await)
+                Handle::Sender(config) => {
+                    let config = config.take();
+                    Handle::Sender(ChannelPair::for_remote_sender(config, manager).await)
                 }
             };
             (path, pair)
