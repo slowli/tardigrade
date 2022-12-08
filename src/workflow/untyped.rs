@@ -53,7 +53,7 @@ impl WithHandle for () {
     type Handle<Fmt: HandleFormat> = UntypedHandles<Fmt>;
 
     fn take_from_untyped<Fmt: HandleFormat>(
-        untyped: &mut dyn TakeHandles<Fmt>,
+        untyped: &mut impl TakeHandles<Fmt>,
         path: HandlePath<'_>,
     ) -> Result<Self::Handle<Fmt>, AccessError> {
         if path.is_empty() {
@@ -66,7 +66,7 @@ impl WithHandle for () {
 
     fn insert_into_untyped<Fmt: HandleFormat>(
         handle: Self::Handle<Fmt>,
-        untyped: &mut dyn InsertHandles<Fmt>,
+        untyped: &mut impl InsertHandles<Fmt>,
         path: HandlePath<'_>,
     ) {
         untyped.insert_handles(path, handle);

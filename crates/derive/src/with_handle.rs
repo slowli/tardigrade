@@ -154,7 +154,7 @@ impl Handle {
                 type Handle<#fmt: #fmt_tr> = #handle #ty_generics;
 
                 fn take_from_untyped<#fmt: #fmt_tr>(
-                    untyped: &mut dyn #cr::workflow::TakeHandles<#fmt>,
+                    untyped: &mut impl #cr::workflow::TakeHandles<#fmt>,
                     path: #cr::handle::HandlePath<'_>,
                 ) -> core::result::Result<Self::Handle<#fmt>, #cr::handle::AccessError> {
                     core::result::Result::Ok(#handle #take_fields)
@@ -162,7 +162,7 @@ impl Handle {
 
                 fn insert_into_untyped<#fmt: #fmt_tr>(
                     handle: Self::Handle<#fmt>,
-                    untyped: &mut dyn #cr::workflow::InsertHandles<#fmt>,
+                    untyped: &mut impl #cr::workflow::InsertHandles<#fmt>,
                     path: #cr::handle::HandlePath<'_>,
                 ) {
                     #(#insert_fields;)*

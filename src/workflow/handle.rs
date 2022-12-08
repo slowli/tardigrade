@@ -153,7 +153,7 @@ pub trait WithHandle {
     ///
     /// Returns an error if the collection does not have the necessary shape.
     fn take_from_untyped<Fmt: HandleFormat>(
-        untyped: &mut dyn TakeHandles<Fmt>,
+        untyped: &mut impl TakeHandles<Fmt>,
         path: HandlePath<'_>,
     ) -> Result<Self::Handle<Fmt>, AccessError>;
 
@@ -172,7 +172,7 @@ pub trait WithHandle {
     /// Inserts the handle into an `untyped` accumulator.
     fn insert_into_untyped<Fmt: HandleFormat>(
         handle: Self::Handle<Fmt>,
-        untyped: &mut dyn InsertHandles<Fmt>,
+        untyped: &mut impl InsertHandles<Fmt>,
         path: HandlePath<'_>,
     );
 
@@ -196,7 +196,7 @@ impl<D: DelegateHandle> WithHandle for D {
     type Handle<Fmt: HandleFormat> = <D::Delegate as WithHandle>::Handle<Fmt>;
 
     fn take_from_untyped<Fmt: HandleFormat>(
-        untyped: &mut dyn TakeHandles<Fmt>,
+        untyped: &mut impl TakeHandles<Fmt>,
         path: HandlePath<'_>,
     ) -> Result<Self::Handle<Fmt>, AccessError> {
         <D::Delegate>::take_from_untyped(untyped, path)
@@ -204,7 +204,7 @@ impl<D: DelegateHandle> WithHandle for D {
 
     fn insert_into_untyped<Fmt: HandleFormat>(
         handle: Self::Handle<Fmt>,
-        untyped: &mut dyn InsertHandles<Fmt>,
+        untyped: &mut impl InsertHandles<Fmt>,
         path: HandlePath<'_>,
     ) {
         <D::Delegate>::insert_into_untyped(handle, untyped, path);

@@ -144,7 +144,7 @@ impl<T, C: Codec<T>> WithHandle for Receiver<T, C> {
     type Handle<Fmt: HandleFormat> = Fmt::Receiver<T, C>;
 
     fn take_from_untyped<Fmt: HandleFormat>(
-        untyped: &mut dyn TakeHandles<Fmt>,
+        untyped: &mut impl TakeHandles<Fmt>,
         path: HandlePath<'_>,
     ) -> Result<Self::Handle<Fmt>, AccessError> {
         let raw_receiver = untyped.take_receiver(path)?;
@@ -154,7 +154,7 @@ impl<T, C: Codec<T>> WithHandle for Receiver<T, C> {
 
     fn insert_into_untyped<Fmt: HandleFormat>(
         handle: Self::Handle<Fmt>,
-        untyped: &mut dyn InsertHandles<Fmt>,
+        untyped: &mut impl InsertHandles<Fmt>,
         path: HandlePath<'_>,
     ) {
         let raw_receiver = handle.into_raw();
@@ -255,7 +255,7 @@ impl<T, C: Codec<T>> WithHandle for Sender<T, C> {
     type Handle<Fmt: HandleFormat> = Fmt::Sender<T, C>;
 
     fn take_from_untyped<Fmt: HandleFormat>(
-        untyped: &mut dyn TakeHandles<Fmt>,
+        untyped: &mut impl TakeHandles<Fmt>,
         path: HandlePath<'_>,
     ) -> Result<Self::Handle<Fmt>, AccessError> {
         let raw_sender = untyped.take_sender(path)?;
@@ -265,7 +265,7 @@ impl<T, C: Codec<T>> WithHandle for Sender<T, C> {
 
     fn insert_into_untyped<Fmt: HandleFormat>(
         handle: Self::Handle<Fmt>,
-        untyped: &mut dyn InsertHandles<Fmt>,
+        untyped: &mut impl InsertHandles<Fmt>,
         path: HandlePath<'_>,
     ) {
         let raw_sender = handle.into_raw();
