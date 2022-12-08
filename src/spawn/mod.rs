@@ -61,6 +61,7 @@
 //! ```
 
 use async_trait::async_trait;
+use futures::future::BoxFuture;
 use pin_project_lite::pin_project;
 
 use std::{
@@ -89,10 +90,7 @@ use crate::{
     handle::{AccessError, AccessErrorKind},
     interface::Interface,
     task::JoinError,
-    workflow::{
-        GetInterface, HandleFormat, InEnv, Inverse, UntypedHandles, Wasm, WithHandle, WorkflowFn,
-    },
-    Codec,
+    workflow::{GetInterface, HandleFormat, InEnv, Inverse, Wasm, WithHandle, WorkflowFn},
 };
 
 /// Manager of [`Interface`]s that allows obtaining an interface by a string identifier.
@@ -126,7 +124,6 @@ pub trait ManageChannels: ManageInterfaces {
 /// Depending on the context, the spawned workflow may be a child workflow (if executed
 /// in the context of a workflow, via [`Workflows`]), or the top-level workflow
 /// (if executed from the host).
-#[async_trait]
 pub trait ManageWorkflows: ManageChannels {
     /// Handle to an instantiated workflow.
     type Spawned<W: WorkflowFn + WithHandle>;
@@ -134,15 +131,12 @@ pub trait ManageWorkflows: ManageChannels {
     type Error: 'static + Send + Sync;
 
     #[doc(hidden)] // implementation detail; should only be used via `WorkflowBuilder`
-    async fn new_workflow_raw(
+    fn new_workflow_unchecked<W: WorkflowFn + WithHandle>(
         &self,
         definition_id: &str,
-        args: Vec<u8>,
-        handles: UntypedHandles<Self::Fmt>,
-    ) -> Result<Self::Spawned<()>, Self::Error>;
-
-    #[doc(hidden)] // implementation detail
-    fn downcast<W: WorkflowFn + WithHandle>(&self, spawned: Self::Spawned<()>) -> Self::Spawned<W>;
+        args: W::Args,
+        handles: W::Handle<Self::Fmt>,
+    ) -> BoxFuture<'_, Result<Self::Spawned<W>, Self::Error>>;
 
     /// Initiates creating a new workflow and returns the corresponding builder.
     ///
@@ -205,13 +199,9 @@ where
         args: W::Args,
         handles: W::Handle<M::Fmt>,
     ) -> Result<M::Spawned<W>, M::Error> {
-        let raw_args = <W::Codec>::encode_value(args);
-        let raw_handles = W::into_untyped(handles);
-        let spawned = self
-            .manager
-            .new_workflow_raw(self.definition_id, raw_args, raw_handles)
-            .await?;
-        Ok(self.manager.downcast(spawned))
+        self.manager
+            .new_workflow_unchecked::<W>(self.definition_id, args, handles)
+            .await
     }
 }
 
@@ -252,22 +242,17 @@ impl ManageChannels for Workflows {
     }
 }
 
-#[async_trait]
 impl ManageWorkflows for Workflows {
     type Spawned<W: WorkflowFn + WithHandle> = RemoteWorkflow;
     type Error = HostError;
 
-    async fn new_workflow_raw(
+    fn new_workflow_unchecked<W: WorkflowFn + WithHandle>(
         &self,
         definition_id: &str,
-        args: Vec<u8>,
-        handles: UntypedHandles<Self::Fmt>,
-    ) -> Result<Self::Spawned<()>, Self::Error> {
-        imp::new_workflow(definition_id, args, handles).await
-    }
-
-    fn downcast<W: WorkflowFn + WithHandle>(&self, spawned: Self::Spawned<()>) -> Self::Spawned<W> {
-        spawned
+        args: W::Args,
+        handles: W::Handle<Wasm>,
+    ) -> BoxFuture<'_, Result<Self::Spawned<W>, Self::Error>> {
+        imp::new_workflow::<W>(definition_id, args, handles)
     }
 }
 

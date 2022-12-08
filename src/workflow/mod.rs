@@ -106,7 +106,7 @@ mod untyped;
 
 pub use self::{
     handle::{
-        BuildHandles, DelegateHandle, HandleFormat, InEnv, IntoRaw, Inverse, TakeHandles,
+        DelegateHandle, HandleFormat, InEnv, InsertHandles, IntoRaw, Inverse, TakeHandles,
         TryFromRaw, WithHandle,
     },
     untyped::UntypedHandles,
@@ -355,7 +355,7 @@ impl Wasm {
 /// Functional interface of a workflow.
 pub trait WorkflowFn {
     /// Argument(s) supplied to the workflow on its creation.
-    type Args;
+    type Args: Send;
     /// Codec used for [`Self::Args`] to encode / decode the arguments in order to pass them from
     /// the host to WASM.
     type Codec: Codec<Self::Args>;

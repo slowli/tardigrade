@@ -41,7 +41,7 @@ pub use crate::error::SendError;
 use crate::{
     codec::{Codec, Raw},
     handle::{AccessError, AccessErrorKind, Handle, HandlePath, ReceiverAt, SenderAt},
-    workflow::{BuildHandles, HandleFormat, IntoRaw, TakeHandles, TryFromRaw, WithHandle},
+    workflow::{HandleFormat, InsertHandles, IntoRaw, TakeHandles, TryFromRaw, WithHandle},
     ChannelId,
 };
 
@@ -154,7 +154,7 @@ impl<T, C: Codec<T>> WithHandle for Receiver<T, C> {
 
     fn insert_into_untyped<Fmt: HandleFormat>(
         handle: Self::Handle<Fmt>,
-        untyped: &mut dyn BuildHandles<Fmt>,
+        untyped: &mut dyn InsertHandles<Fmt>,
         path: HandlePath<'_>,
     ) {
         let raw_receiver = handle.into_raw();
@@ -265,7 +265,7 @@ impl<T, C: Codec<T>> WithHandle for Sender<T, C> {
 
     fn insert_into_untyped<Fmt: HandleFormat>(
         handle: Self::Handle<Fmt>,
-        untyped: &mut dyn BuildHandles<Fmt>,
+        untyped: &mut dyn InsertHandles<Fmt>,
         path: HandlePath<'_>,
     ) {
         let raw_sender = handle.into_raw();

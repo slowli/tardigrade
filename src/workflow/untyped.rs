@@ -2,7 +2,7 @@
 
 use std::mem;
 
-use super::{handle::default_insert_handles, BuildHandles, HandleFormat, TakeHandles, WithHandle};
+use super::{handle::default_insert_handles, HandleFormat, InsertHandles, TakeHandles, WithHandle};
 use crate::handle::{
     AccessError, AccessErrorKind, Handle, HandleMap, HandleMapKey, HandlePath, HandlePathBuf,
     ReceiverAt, SenderAt,
@@ -29,7 +29,7 @@ impl<Fmt: HandleFormat> TakeHandles<Fmt> for UntypedHandles<Fmt> {
     }
 }
 
-impl<Fmt: HandleFormat> BuildHandles<Fmt> for UntypedHandles<Fmt> {
+impl<Fmt: HandleFormat> InsertHandles<Fmt> for UntypedHandles<Fmt> {
     #[inline]
     fn insert_handle(
         &mut self,
@@ -66,7 +66,7 @@ impl WithHandle for () {
 
     fn insert_into_untyped<Fmt: HandleFormat>(
         handle: Self::Handle<Fmt>,
-        untyped: &mut dyn BuildHandles<Fmt>,
+        untyped: &mut dyn InsertHandles<Fmt>,
         path: HandlePath<'_>,
     ) {
         untyped.insert_handles(path, handle);

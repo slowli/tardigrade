@@ -162,7 +162,7 @@ impl Handle {
 
                 fn insert_into_untyped<#fmt: #fmt_tr>(
                     handle: Self::Handle<#fmt>,
-                    untyped: &mut dyn #cr::workflow::BuildHandles<#fmt>,
+                    untyped: &mut dyn #cr::workflow::InsertHandles<#fmt>,
                     path: #cr::handle::HandlePath<'_>,
                 ) {
                     #(#insert_fields;)*

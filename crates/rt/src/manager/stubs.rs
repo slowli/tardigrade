@@ -2,6 +2,7 @@
 
 use anyhow::{anyhow, ensure, Context as _};
 use async_trait::async_trait;
+use futures::future::{BoxFuture, FutureExt};
 use tracing_tunnel::PersistedSpans;
 
 use std::{
@@ -13,8 +14,8 @@ use std::{
 };
 
 use super::{
-    Clock, ManagerHandles, RawMessageReceiver, RawMessageSender, Services, Shared, StashStub,
-    WorkflowDefinitions, WorkflowHandle, WorkflowManager,
+    AsManager, Clock, ManagerHandles, RawMessageReceiver, RawMessageSender, Services, Shared,
+    StashStub, WorkflowDefinitions, WorkflowHandle, WorkflowManager,
 };
 use crate::{
     data::WorkflowData,
@@ -27,11 +28,11 @@ use crate::{
     workflow::{ChannelIds, PersistedWorkflow, Workflow, WorkflowAndChannelIds},
 };
 use tardigrade::{
-    handle::{Handle, HandlePathBuf},
+    handle::{Handle, HandlePath, HandlePathBuf},
     interface::Interface,
     spawn::{HostError, ManageChannels, ManageInterfaces, ManageWorkflows},
-    workflow::{UntypedHandles, WithHandle, WorkflowFn},
-    ChannelId, WorkflowId,
+    workflow::{InsertHandles, WithHandle, WorkflowFn},
+    ChannelId, Codec, WorkflowId,
 };
 
 impl ChannelRecord {
@@ -290,12 +291,12 @@ impl<S: DefineWorkflow> StashStub for Stubs<S> {
     fn stash_workflow(
         &mut self,
         stub_id: WorkflowId,
-        id: &str,
+        definition_id: &str,
         args: Vec<u8>,
         channel_ids: ChannelIds,
     ) -> anyhow::Result<()> {
-        let Some(definition) = self.shared.definitions.for_full_id(id) else {
-            return Err(anyhow!("definition with ID `{id}` is not defined"));
+        let Some(definition) = self.shared.definitions.for_full_id(definition_id) else {
+            return Err(anyhow!("definition with ID `{definition_id}` is not defined"));
         };
         definition
             .interface()
@@ -305,7 +306,7 @@ impl<S: DefineWorkflow> StashStub for Stubs<S> {
         self.new_workflows.insert(
             stub_id,
             WorkflowStub {
-                definition_id: id.to_string(),
+                definition_id: definition_id.to_owned(),
                 args,
                 channel_ids,
             },
@@ -374,27 +375,45 @@ where
     type Spawned<W: WorkflowFn + WithHandle> = WorkflowHandle<'a, W, WorkflowManager<E, C, S>>;
     type Error = anyhow::Error;
 
-    async fn new_workflow_raw(
+    fn new_workflow_unchecked<W: WorkflowFn + WithHandle>(
         &self,
         definition_id: &str,
-        args: Vec<u8>,
-        handles: UntypedHandles<Self::Fmt>,
-    ) -> Result<Self::Spawned<()>, Self::Error> {
-        let channel_ids = handles.into_iter().map(|(path, handle)| {
-            let id = handle
-                .map_receiver(|handle| handle.channel_id())
-                .map_sender(|handle| handle.channel_id());
-            (path, id)
-        });
-        let mut stubs = Stubs::new(None, self.shared());
-        stubs.stash_workflow(0, definition_id, args, channel_ids.collect())?;
-        let mut transaction = self.storage.transaction().await;
-        let workflow_id = stubs.commit_external(&mut transaction).await?;
-        transaction.commit().await;
-        Ok(self.workflow(workflow_id).await.unwrap())
-    }
+        args: W::Args,
+        handles: W::Handle<Self::Fmt>,
+    ) -> BoxFuture<'_, Result<Self::Spawned<W>, Self::Error>> {
+        let raw_args = <W::Codec>::encode_value(args);
+        let mut channel_ids = ChannelIdsCollector::default();
+        W::insert_into_untyped(handles, &mut channel_ids, HandlePath::EMPTY);
 
-    fn downcast<W: WorkflowFn + WithHandle>(&self, spawned: Self::Spawned<()>) -> Self::Spawned<W> {
-        spawned.downcast_unchecked()
+        let mut stubs = Stubs::new(None, self.shared());
+        let result = stubs.stash_workflow(0, definition_id, raw_args, channel_ids.0);
+        async move {
+            result?;
+            let mut transaction = self.storage.transaction().await;
+            let workflow_id = stubs.commit_external(&mut transaction).await?;
+            transaction.commit().await;
+            Ok(self
+                .workflow(workflow_id)
+                .await
+                .unwrap()
+                .downcast_unchecked())
+        }
+        .boxed()
+    }
+}
+
+#[derive(Debug, Default)]
+struct ChannelIdsCollector(ChannelIds);
+
+impl<'a, M: AsManager> InsertHandles<ManagerHandles<'a, M>> for ChannelIdsCollector {
+    fn insert_handle(
+        &mut self,
+        path: HandlePathBuf,
+        handle: Handle<RawMessageReceiver<'a, M>, RawMessageSender<'a, M>>,
+    ) {
+        let id = handle
+            .map_receiver(|handle| handle.channel_id())
+            .map_sender(|handle| handle.channel_id());
+        self.0.insert(path, id);
     }
 }

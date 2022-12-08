@@ -101,7 +101,7 @@ pub trait TakeHandles<Fmt: HandleFormat> {
 }
 
 /// Accumulator of handles in a certain format used in [`WithHandle::insert_into_untyped()`].
-pub trait BuildHandles<Fmt: HandleFormat> {
+pub trait InsertHandles<Fmt: HandleFormat> {
     /// Inserts a handle into this accumulator.
     fn insert_handle(
         &mut self,
@@ -121,7 +121,7 @@ pub(super) fn default_insert_handles<Fmt, T>(
     handles: UntypedHandles<Fmt>,
 ) where
     Fmt: HandleFormat,
-    T: BuildHandles<Fmt> + ?Sized,
+    T: InsertHandles<Fmt> + ?Sized,
 {
     for (suffix, handle) in handles {
         let mut path = path.to_owned();
@@ -172,7 +172,7 @@ pub trait WithHandle {
     /// Inserts the handle into an `untyped` accumulator.
     fn insert_into_untyped<Fmt: HandleFormat>(
         handle: Self::Handle<Fmt>,
-        untyped: &mut dyn BuildHandles<Fmt>,
+        untyped: &mut dyn InsertHandles<Fmt>,
         path: HandlePath<'_>,
     );
 
@@ -204,7 +204,7 @@ impl<D: DelegateHandle> WithHandle for D {
 
     fn insert_into_untyped<Fmt: HandleFormat>(
         handle: Self::Handle<Fmt>,
-        untyped: &mut dyn BuildHandles<Fmt>,
+        untyped: &mut dyn InsertHandles<Fmt>,
         path: HandlePath<'_>,
     ) {
         <D::Delegate>::insert_into_untyped(handle, untyped, path);

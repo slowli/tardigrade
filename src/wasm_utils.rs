@@ -8,8 +8,10 @@ use std::task::{Context, Poll, Waker};
 use crate::{
     abi::ResourceKind,
     channel::{RawReceiver, RawSender},
-    handle::{AccessError, AccessErrorKind, Handle, HandlePath, ReceiverAt, SenderAt},
-    workflow::{TakeHandles, UntypedHandles, Wasm},
+    handle::{
+        AccessError, AccessErrorKind, Handle, HandlePath, HandlePathBuf, ReceiverAt, SenderAt,
+    },
+    workflow::{InsertHandles, TakeHandles, UntypedHandles, Wasm},
 };
 
 /// Container similar to `Slab`, but with guarantee that returned item keys are never reused.
@@ -108,30 +110,9 @@ impl HostHandles {
     }
 }
 
-impl From<UntypedHandles<Wasm>> for HostHandles {
-    fn from(handles: UntypedHandles<Wasm>) -> Self {
+impl HostHandles {
+    pub(crate) fn new() -> Self {
         let resource = unsafe { create_handles() };
-        for (path, handle) in handles {
-            let path = path.to_string();
-            match handle {
-                Handle::Sender(sender) => unsafe {
-                    insert_sender(
-                        &resource,
-                        path.as_ptr(),
-                        path.len(),
-                        sender.as_resource().map(Resource::upcast_ref),
-                    );
-                },
-                Handle::Receiver(receiver) => unsafe {
-                    insert_receiver(
-                        &resource,
-                        path.as_ptr(),
-                        path.len(),
-                        receiver.into_resource().map(Resource::upcast),
-                    );
-                },
-            }
-        }
         Self { resource }
     }
 }
@@ -173,6 +154,30 @@ impl TakeHandles<Wasm> for HostHandles {
         // TODO: implement this. Not critical since in the only place where `HostHandles` are used
         //   so far (`TaskHandle::from_workflow()`), this method shouldn't be called.
         UntypedHandles::<Wasm>::new()
+    }
+}
+
+impl InsertHandles<Wasm> for HostHandles {
+    fn insert_handle(&mut self, path: HandlePathBuf, handle: Handle<RawReceiver, RawSender>) {
+        let path = path.to_string();
+        match handle {
+            Handle::Sender(sender) => unsafe {
+                insert_sender(
+                    &self.resource,
+                    path.as_ptr(),
+                    path.len(),
+                    sender.as_resource().map(Resource::upcast_ref),
+                );
+            },
+            Handle::Receiver(receiver) => unsafe {
+                insert_receiver(
+                    &self.resource,
+                    path.as_ptr(),
+                    path.len(),
+                    receiver.into_resource().map(Resource::upcast),
+                );
+            },
+        }
     }
 }
 

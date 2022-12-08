@@ -1,6 +1,7 @@
 //! WASM bindings for spawning child workflows.
 
 use externref::{externref, Resource};
+use futures::{future::BoxFuture, FutureExt, TryFutureExt};
 use once_cell::unsync::Lazy;
 
 use std::{
@@ -13,11 +14,12 @@ use std::{
 use super::{HostError, ManageInterfaces, Workflows};
 use crate::{
     abi::{IntoWasm, PollTask},
+    handle::HandlePath,
     interface::Interface,
     task::{JoinError, TaskError},
     wasm_utils::{HostHandles, Registry, StubState},
-    workflow::{UntypedHandles, Wasm},
-    WorkflowId,
+    workflow::{Wasm, WithHandle, WorkflowFn},
+    Codec, WorkflowId,
 };
 
 impl ManageInterfaces for Workflows {
@@ -40,11 +42,11 @@ type WorkflowStub = StubState<Result<RemoteWorkflow, HostError>>;
 
 static mut WORKFLOWS: Lazy<Registry<WorkflowStub>> = Lazy::new(|| Registry::with_capacity(1));
 
-pub(super) async fn new_workflow(
+pub(super) fn new_workflow<W: WorkflowFn + WithHandle>(
     definition_id: &str,
-    args: Vec<u8>,
-    handles: UntypedHandles<Wasm>,
-) -> Result<super::RemoteWorkflow, HostError> {
+    args: W::Args,
+    handles: W::Handle<Wasm>,
+) -> BoxFuture<'static, Result<super::RemoteWorkflow, HostError>> {
     #[externref]
     #[link(wasm_import_module = "tardigrade_rt")]
     extern "C" {
@@ -59,20 +61,23 @@ pub(super) async fn new_workflow(
         );
     }
 
-    let handles = HostHandles::from(handles);
+    let raw_args = <W::Codec>::encode_value(args);
+    let mut host_handles = HostHandles::new();
+    W::insert_into_untyped(handles, &mut host_handles, HandlePath::EMPTY);
     let stub_id = unsafe { WORKFLOWS.insert(WorkflowStub::default()) };
     unsafe {
         spawn_workflow(
             stub_id,
             definition_id.as_ptr(),
             definition_id.len(),
-            args.as_ptr(),
-            args.len(),
-            handles.into_resource(),
+            raw_args.as_ptr(),
+            raw_args.len(),
+            host_handles.into_resource(),
         );
     }
-    let inner = NewWorkflow { stub_id }.await?;
-    Ok(super::RemoteWorkflow { inner })
+    NewWorkflow { stub_id }
+        .map_ok(|inner| super::RemoteWorkflow { inner })
+        .boxed()
 }
 
 #[derive(Debug)]

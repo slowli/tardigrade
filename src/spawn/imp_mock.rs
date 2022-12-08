@@ -1,5 +1,6 @@
 //! Mock implementations for spawning child workflows.
 
+use futures::future::{self, BoxFuture, FutureExt};
 use pin_project_lite::pin_project;
 
 use std::{
@@ -8,14 +9,15 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
-use tardigrade_shared::interface::Interface;
 
 use super::{ManageInterfaces, Workflows};
 use crate::{
     error::HostError,
+    interface::Interface,
     task::{JoinError, JoinHandle},
     test::Runtime,
-    workflow::{UntypedHandles, Wasm},
+    workflow::{Wasm, WithHandle, WorkflowFn},
+    Codec,
 };
 
 impl ManageInterfaces for Workflows {
@@ -28,15 +30,17 @@ impl ManageInterfaces for Workflows {
     }
 }
 
-#[allow(clippy::unused_async)] // for symmetry with the wasm32 impl
-pub(super) async fn new_workflow(
+pub(super) fn new_workflow<W: WorkflowFn + WithHandle>(
     definition_id: &str,
-    args: Vec<u8>,
-    handles: UntypedHandles<Wasm>,
-) -> Result<super::RemoteWorkflow, HostError> {
-    let main_task = Runtime::with_mut(|rt| rt.create_workflow(definition_id, args, handles));
+    args: W::Args,
+    handles: W::Handle<Wasm>,
+) -> BoxFuture<'static, Result<super::RemoteWorkflow, HostError>> {
+    let raw_args = <W::Codec>::encode_value(args);
+    let raw_handles = W::into_untyped(handles);
+    let main_task =
+        Runtime::with_mut(|rt| rt.create_workflow(definition_id, raw_args, raw_handles));
     let main_task = JoinHandle::from_handle(main_task);
-    Ok(super::RemoteWorkflow::from_main_task(main_task))
+    future::ok(super::RemoteWorkflow::from_main_task(main_task)).boxed()
 }
 
 pin_project! {
