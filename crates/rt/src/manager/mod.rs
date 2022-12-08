@@ -145,9 +145,9 @@ enum ChannelSide {
 /// use tardigrade::spawn::ManageWorkflows;
 ///
 /// let manager = &manager;
-/// let definition_id = "test::Workflow";
+/// let definition_id = "test/Workflow";
 /// // ^ The definition ID is the ID of the module and the name of a workflow
-/// //   within the module separated by `::`.
+/// //   within the module separated by `/`.
 /// let args = b"test_args".to_vec();
 /// let builder = manager.new_workflow::<()>(definition_id)?;
 /// let (handles, self_handles) = builder.handles(|_| {}).await;

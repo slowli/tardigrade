@@ -83,10 +83,8 @@ impl SharedHandle<Wasm> {
         index: usize,
     ) {
         let mut events = self.events.clone();
-        events
-            .send(DomainEvent::OrderTaken { index, order })
-            .await
-            .ok();
+        let event = DomainEvent::OrderTaken { index, order };
+        events.send(event).await.ok();
         if requests.request(order).await.is_err() {
             return; // The request loop was terminated; thus, the pizza will never be baked :(
         }

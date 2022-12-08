@@ -15,25 +15,23 @@ use std::{
     str::FromStr,
 };
 
-const PATH_SEP: &str = "::";
+const PATH_SEP: char = '/';
 
 /// Inner part of `HandlePath`.
 #[derive(Debug, Clone, Copy)]
 enum Inner<'a> {
+    Empty,
     /// Linked list cell, with the suffix containing 1 or more segments.
-    Link(&'a Self, &'a str),
-    /// Slice borrowed from a `HandlePathBuf`.
-    Slice(&'a [String]),
-}
-
-impl Inner<'static> {
-    const EMPTY: Self = Self::Slice(&[]);
+    Link {
+        head: &'a Self,
+        tail: &'a str,
+    },
 }
 
 /// Path to a [`Handle`](crate::interface::Handle) in a [map](crate::interface::HandleMap).
 ///
 /// Conceptually, a path is hierarchical like a path in a file system; consists of zero or more
-/// string segments. A path can be represented as a string with the segments separated by `::`.
+/// string segments. A path can be represented as a string with the segments separated by `/`.
 /// Hierarchical nature of paths is used to compose simplest workflow handles (channel senders
 /// and receivers) into composable high-level components.
 ///
@@ -42,13 +40,13 @@ impl Inner<'static> {
 /// ```
 /// # use hashbrown::HashMap;
 /// # use tardigrade_shared::handle::{HandlePath, HandlePathBuf};
-/// const PATH: HandlePath<'_> = HandlePath::new("some::test").join("path");
-/// assert_eq!(PATH.to_string(), "some::test::path");
+/// const PATH: HandlePath<'_> = HandlePath::new("some/test").join("path");
+/// assert_eq!(PATH.to_string(), "some/test/path");
 /// assert_eq!(PATH.segments().collect::<Vec<_>>(), ["some", "test", "path"]);
 ///
 /// let path_buf: HandlePathBuf = PATH.to_owned();
 /// assert_eq!(path_buf.as_ref(), PATH);
-/// let other_path_buf: HandlePathBuf = "other::path".parse()?;
+/// let other_path_buf: HandlePathBuf = "other/path".parse()?;
 ///
 /// // One of key path properties is ability to use as keys in hash maps:
 /// let mut map = HashMap::<_, _>::from_iter([
@@ -70,7 +68,7 @@ impl fmt::Display for HandlePath<'_> {
         for (i, segment) in segments.iter().enumerate() {
             formatter.write_str(segment)?;
             if i + 1 < segments.len() {
-                formatter.write_str(PATH_SEP)?;
+                write!(formatter, "{PATH_SEP}")?;
             }
         }
         Ok(())
@@ -102,7 +100,7 @@ impl Hash for HandlePath<'_> {
 impl HandlePath<'static> {
     /// Empty path, i.e., a path with zero segments.
     pub const EMPTY: Self = Self {
-        inner: Inner::EMPTY,
+        inner: Inner::Empty,
     };
 }
 
@@ -110,9 +108,12 @@ impl<'a> HandlePath<'a> {
     /// Creates a path from the supplied string.
     pub const fn new(s: &'a str) -> Self {
         let inner = if s.is_empty() {
-            Inner::EMPTY
+            Inner::Empty
         } else {
-            Inner::Link(&Inner::EMPTY, s)
+            Inner::Link {
+                head: &Inner::Empty,
+                tail: s,
+            }
         };
         Self { inner }
     }
@@ -124,7 +125,10 @@ impl<'a> HandlePath<'a> {
             *self
         } else {
             Self {
-                inner: Inner::Link(&self.inner, suffix),
+                inner: Inner::Link {
+                    head: &self.inner,
+                    tail: suffix,
+                },
             }
         }
     }
@@ -137,30 +141,34 @@ impl<'a> HandlePath<'a> {
     #[doc(hidden)] // sort of low-level
     pub fn to_cow_string(self) -> Cow<'a, str> {
         match self.inner {
-            Inner::Slice([]) => Cow::Borrowed(""),
-            Inner::Link(Inner::Slice([]), segment) => Cow::Borrowed(segment),
-            Inner::Slice([segment]) => Cow::Borrowed(segment),
-            _ => Cow::Owned(self.to_string()),
+            Inner::Empty => Cow::Borrowed(""),
+
+            Inner::Link {
+                head: Inner::Empty,
+                tail,
+            } => Cow::Borrowed(tail),
+
+            Inner::Link { .. } => Cow::Owned(self.to_string()),
         }
     }
 
     /// Checks whether this path is empty (contains no segments).
     pub fn is_empty(self) -> bool {
-        matches!(self.inner, Inner::Slice([]))
+        matches!(self.inner, Inner::Empty)
     }
 
     /// Iterates over the segments in this path.
     pub fn segments(self) -> impl Iterator<Item = &'a str> {
         let ancestors = iter::successors(Some(self.inner), |&inner| match inner {
-            Inner::Link(head, _) => Some(*head),
-            Inner::Slice(_) => None,
+            Inner::Empty => None,
+            Inner::Link { head, .. } => Some(*head),
         });
         let mut ancestors: Vec<_> = ancestors.collect();
         ancestors.reverse();
 
         ancestors.into_iter().flat_map(|inner| match inner {
-            Inner::Link(_, tail) => Either::Left(tail.split(PATH_SEP)),
-            Inner::Slice(slice) => Either::Right(slice.iter().map(String::as_str)),
+            Inner::Empty => Either::Left(iter::empty()),
+            Inner::Link { tail, .. } => Either::Right(tail.split(PATH_SEP)),
         })
     }
 }
@@ -211,15 +219,13 @@ where
 /// See [`HandlePath`] docs for an overview and examples of usage.
 #[derive(Clone, Eq)]
 pub struct HandlePathBuf {
-    segments: Vec<String>,
+    segments: String,
 }
 
 impl HandlePathBuf {
     /// Borrows a [`HandlePath`] from this path.
     pub fn as_ref(&self) -> HandlePath<'_> {
-        HandlePath {
-            inner: Inner::Slice(&self.segments),
-        }
+        HandlePath::new(&self.segments)
     }
 
     /// Checks whether this path is empty (contains no segments).
@@ -229,24 +235,25 @@ impl HandlePathBuf {
 
     /// Iterates over the segments in this path.
     pub fn segments(&self) -> impl Iterator<Item = &str> + '_ {
-        self.segments.iter().map(String::as_str)
+        self.segments.split(PATH_SEP)
     }
 
     /// Extends this path with the specified suffix.
     pub fn extend(&mut self, suffix: Self) {
-        self.segments.extend(suffix.segments);
+        if self.segments.is_empty() {
+            self.segments = suffix.segments;
+        } else if suffix.segments.is_empty() {
+            // Do nothing
+        } else {
+            self.segments.push(PATH_SEP);
+            self.segments.push_str(&suffix.segments);
+        }
     }
 }
 
 impl fmt::Display for HandlePathBuf {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (i, segment) in self.segments.iter().enumerate() {
-            formatter.write_str(segment)?;
-            if i + 1 < self.segments.len() {
-                formatter.write_str(PATH_SEP)?;
-            }
-        }
-        Ok(())
+        formatter.write_str(&self.segments)
     }
 }
 
@@ -274,7 +281,7 @@ impl PartialEq for HandlePathBuf {
 
 impl Hash for HandlePathBuf {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        for segment in &self.segments {
+        for segment in self.segments() {
             str::hash(segment, state);
         }
     }
@@ -283,27 +290,22 @@ impl Hash for HandlePathBuf {
 /// Parses a path from its string presentation (e.g., `some::compound::path` for a 3-segment path).
 impl From<&str> for HandlePathBuf {
     fn from(s: &str) -> Self {
-        let segments: Vec<_> = s.split(PATH_SEP).map(String::from).collect();
-        Self { segments }
+        Self {
+            segments: s.to_owned(),
+        }
     }
 }
 
 impl From<HandlePath<'_>> for HandlePathBuf {
     fn from(path: HandlePath<'_>) -> Self {
-        if let Inner::Slice(segments) = path.inner {
-            Self {
-                segments: segments.to_vec(),
-            }
-        } else {
-            let segments = path.segments().map(String::from).collect();
-            Self { segments }
-        }
+        let segments = path.to_cow_string().into_owned();
+        Self { segments }
     }
 }
 
 impl Equivalent<HandlePathBuf> for HandlePath<'_> {
     fn equivalent(&self, key: &HandlePathBuf) -> bool {
-        let buf_segments = key.segments.iter();
+        let buf_segments = key.segments();
         buf_segments.eq(self.segments())
     }
 }
@@ -347,12 +349,12 @@ mod tests {
 
     #[test]
     fn creating_paths() {
-        let path = HandlePath::new("first::second::third");
+        let path = HandlePath::new("first/second/third");
         let segments: Vec<_> = path.segments().collect();
         assert_eq!(segments, ["first", "second", "third"]);
 
         let prefix = HandlePath::new("first");
-        let same_path = prefix.join("second::third");
+        let same_path = prefix.join("second/third");
         let segments: Vec<_> = same_path.segments().collect();
         assert_eq!(segments, ["first", "second", "third"]);
         assert_eq!(path, same_path);
@@ -381,7 +383,7 @@ mod tests {
         let path = HandlePath::new("first");
         assert_eq!(path.to_cow_string(), "first");
         let path = path.join("second");
-        assert_eq!(path.to_cow_string(), "first::second");
+        assert_eq!(path.to_cow_string(), "first/second");
     }
 
     #[test]
@@ -420,7 +422,7 @@ mod tests {
         let path = HandlePath::EMPTY.join(&segments[0]);
         let path = path.join(&segments[1]);
         let path = path.join(&segments[2]);
-        assert_eq!(path.to_string(), "1::2::3");
+        assert_eq!(path.to_string(), "1/2/3");
     }
 
     #[test]
