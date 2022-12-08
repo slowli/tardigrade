@@ -87,7 +87,7 @@ pub use crate::error::HostError;
 use self::config::HandlesBuilder;
 use crate::{
     channel::{channel, RawReceiver, RawSender},
-    handle::{AccessError, AccessErrorKind},
+    handle::{AccessError, AccessErrorKind, HandlePath},
     interface::Interface,
     task::JoinError,
     workflow::{GetInterface, HandleFormat, InEnv, Inverse, Wasm, WithHandle, WorkflowFn},
@@ -211,13 +211,20 @@ where
     W: WorkflowFn + WithHandle,
 {
     /// Builds the handles pair allowing to configure handles in the process.
+    #[allow(clippy::missing_panics_doc)] // false positive
     pub async fn handles<F>(&self, config_fn: F) -> (InEnv<W, M::Fmt>, InEnv<W, Inverse<M::Fmt>>)
     where
         F: FnOnce(&InEnv<W, Spawner<M::Fmt>>),
     {
-        let handles_builder = HandlesBuilder::<W, M::Fmt>::new(&self.interface);
-        config_fn(handles_builder.config());
-        handles_builder.build(self.manager).await
+        let (handles_builder, config) = <HandlesBuilder<M::Fmt>>::new::<W>(&self.interface);
+        config_fn(&config);
+        drop(config);
+        let mut container = handles_builder.build(self.manager).await;
+
+        let self_handles = W::take_from_untyped(&mut container, HandlePath::EMPTY).unwrap();
+        let mut container = container.for_child();
+        let child_handles = W::take_from_untyped(&mut container, HandlePath::EMPTY).unwrap();
+        (child_handles, self_handles)
     }
 }
 

@@ -261,34 +261,35 @@ where
 
 /// Builder of handle pairs: ones to be retained in the parent workflow and ones to be provided
 /// to the child workflow.
-pub(super) struct HandlesBuilder<W: WithHandle, Fmt: HandleFormat = Wasm> {
+pub(super) struct HandlesBuilder<Fmt: HandleFormat = Wasm> {
     spawner: Spawner<Fmt>,
-    config: InEnv<W, Spawner<Fmt>>,
 }
 
-impl<W: WithHandle, Fmt: HandleFormat> fmt::Debug for HandlesBuilder<W, Fmt>
+impl<Fmt: HandleFormat> fmt::Debug for HandlesBuilder<Fmt>
 where
     Fmt::RawReceiver: fmt::Debug,
     Fmt::RawSender: fmt::Debug,
-    InEnv<W, Spawner<Fmt>>: fmt::Debug,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("HandlesBuilder")
             .field("spawner", &self.spawner)
-            .field("config", &self.config)
             .finish()
     }
 }
 
-impl<W, Fmt> HandlesBuilder<W, Fmt>
-where
-    Fmt: HandleFormat,
-    W: WithHandle,
-{
+impl<Fmt: HandleFormat> HandlesBuilder<Fmt> {
     /// Creates a new builder based on the interface of `W`.
-    #[allow(clippy::missing_panics_doc)] // false positive
-    pub fn new(interface: &Interface) -> Self {
+    ///
+    /// **Important.** The returned config (second param) must be dropped before calling
+    /// `Self::build()`.
+    pub fn new<W: WithHandle>(interface: &Interface) -> (Self, InEnv<W, Spawner<Fmt>>) {
+        let (this, untyped) = Self::new_untyped(interface);
+        let config = W::try_from_untyped(untyped).unwrap();
+        (this, config)
+    }
+
+    fn new_untyped(interface: &Interface) -> (Self, UntypedHandles<Spawner<Fmt>>) {
         let spawner = Spawner {
             inner: Rc::new(SpawnerInner::new(interface)),
         };
@@ -308,23 +309,15 @@ where
             (path.to_owned(), config)
         });
         let untyped = untyped.collect();
-
-        let config = W::try_from_untyped(untyped).unwrap();
-        Self { spawner, config }
-    }
-
-    /// Returns a [handle](TakeHandle) that can be used to configure created workflow channels.
-    pub fn config(&self) -> &InEnv<W, Spawner<Fmt>> {
-        &self.config
+        (Self { spawner }, untyped)
     }
 }
 
-impl<W: WithHandle, Fmt: HandleFormat> HandlesBuilder<W, Fmt> {
-    pub async fn build<M>(self, manager: &M) -> (InEnv<W, M::Fmt>, InEnv<W, Inverse<M::Fmt>>)
+impl<Fmt: HandleFormat> HandlesBuilder<Fmt> {
+    pub async fn build<M>(self, manager: &M) -> ForSelf<Fmt>
     where
         M: ManageChannels<Fmt = Fmt>,
     {
-        drop(self.config);
         let spawner = Rc::try_unwrap(self.spawner.inner).map_err(drop).unwrap();
         let channels = spawner.channels.into_inner();
 
@@ -341,15 +334,9 @@ impl<W: WithHandle, Fmt: HandleFormat> HandlesBuilder<W, Fmt> {
         });
         let pairs = future::join_all(pairs).await;
 
-        let mut remote = ForSelf {
+        ForSelf {
             inner: pairs.into_iter().collect(),
-        };
-        let remote_handles = W::take_from_untyped(&mut remote, HandlePath::EMPTY).unwrap();
-        let mut local = ForChild {
-            inner: remote.inner,
-        };
-        let local_handles = W::take_from_untyped(&mut local, HandlePath::EMPTY).unwrap();
-        (local_handles, remote_handles)
+        }
     }
 }
 
@@ -393,8 +380,14 @@ impl<Fmt: HandleFormat> ChannelPair<Fmt> {
 }
 
 /// Handles format for handles retained for the parent workflow of a spawned child.
-struct ForSelf<Fmt: HandleFormat> {
+pub(super) struct ForSelf<Fmt: HandleFormat> {
     inner: HandleMap<ChannelPair<Fmt>>,
+}
+
+impl<Fmt: HandleFormat> ForSelf<Fmt> {
+    pub fn for_child(self) -> ForChild<Fmt> {
+        ForChild { inner: self.inner }
+    }
 }
 
 impl<Fmt: HandleFormat> TakeHandles<Inverse<Fmt>> for ForSelf<Fmt> {
@@ -426,7 +419,7 @@ impl<Fmt: HandleFormat> TakeHandles<Inverse<Fmt>> for ForSelf<Fmt> {
     }
 }
 
-struct ForChild<Fmt: HandleFormat> {
+pub(super) struct ForChild<Fmt: HandleFormat> {
     inner: HandleMap<ChannelPair<Fmt>>,
 }
 
