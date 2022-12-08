@@ -215,7 +215,7 @@ type HostHandles = UntypedHandles<Wasm>;
 pub trait GetInterface: WithHandle + Sized + 'static {
     /// Obtains the workflow interface.
     ///
-    /// The default implementation uses the [`TakeHandle`] implementation to create
+    /// The default implementation uses the [`WithHandle`] implementation to create
     /// an owned interface. The `GetInterface` derive macro provides a more efficient cached
     /// implementation.
     fn interface() -> Cow<'static, Interface> {
@@ -256,7 +256,9 @@ pub fn interface_by_handle<W: WithHandle>() -> Interface {
 
 /// Workflow that is accessible by its name from a module.
 ///
-/// This trait is automatically derived using the [corresponding derive macro](macro@WorkflowEntry).
+/// This trait should be automatically derived using the
+/// [corresponding derive macro](macro@WorkflowEntry) since the macro additionally generates
+/// the WASM entry point for the workflow.
 pub trait WorkflowEntry: SpawnWorkflow {
     /// Name of the workflow.
     const WORKFLOW_NAME: &'static str;
@@ -267,9 +269,12 @@ pub trait WorkflowEntry: SpawnWorkflow {
 
 /// WASM environment.
 ///
-/// This type is used as a type param for the [`TakeHandle`] trait. The returned handles
-/// are ones provided via Tardigrade runtime imports for the WASM module, or emulated
-/// in case of [tests](crate::test).
+/// This type is a [`HandleFormat`] with [`Receiver`] and [`Sender`] handles being ones that
+/// are available to the client workflow logic. Handles are provided by the Tardigrade runtime
+/// when the workflow is initialized and can be created in runtime using the [`channel()`] function.
+/// The whole process is emulated in case of [tests](crate::test).
+///
+/// [`channel()`]: crate::channel::channel()
 #[derive(Debug, Default)]
 pub struct Wasm;
 

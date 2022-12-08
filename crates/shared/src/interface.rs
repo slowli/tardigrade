@@ -154,7 +154,7 @@ impl Interface {
         &self,
         key: K,
     ) -> Result<&K::Output<ReceiverSpec, SenderSpec>, AccessError> {
-        key.get(&self.handles)
+        key.get_from(&self.handles)
     }
 
     /// Lists all handle specifications in this interface.
@@ -217,8 +217,8 @@ impl Interface {
         self.handles
             .iter()
             .try_fold((), |(), (path, spec)| match spec {
-                Handle::Receiver(_) => ReceiverAt(path).get(handles).map(drop),
-                Handle::Sender(_) => SenderAt(path).get(handles).map(drop),
+                Handle::Receiver(_) => ReceiverAt(path).get_from(handles).map(drop),
+                Handle::Sender(_) => SenderAt(path).get_from(handles).map(drop),
             })?;
 
         if exact {

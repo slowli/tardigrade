@@ -17,6 +17,10 @@ pub use crate::{
 /// Newtype for indexing channel receivers, e.g., in an [`Interface`].
 ///
 /// [`Interface`]: crate::interface::Interface
+///
+/// # Examples
+///
+/// See [`HandleMapKey`] and [`WithIndexing`] docs for examples of usage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ReceiverAt<T>(pub T);
 
@@ -29,6 +33,10 @@ impl<T: fmt::Display> fmt::Display for ReceiverAt<T> {
 /// Newtype for indexing channel senders, e.g., in an [`Interface`].
 ///
 /// [`Interface`]: crate::interface::Interface
+///
+/// # Examples
+///
+/// See [`HandleMapKey`] and [`WithIndexing`] docs for examples of usage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SenderAt<T>(pub T);
 
@@ -40,9 +48,37 @@ impl<T: fmt::Display> fmt::Display for SenderAt<T> {
 
 /// Key type for accessing handles in a named collections, such as a [`HandleMap`]
 /// or an [`Interface`].
+///
+/// The methods of this trait rarely need to be used directly; rather, you'd see `HandleMapKey`
+/// as a bound on the access methods of handle collections, e.g. [`Interface::handle()`].
+///
+/// [`Interface`]: crate::interface::Interface
+/// [`Interface::handle()`]: crate::interface::Interface::handle()
+///
+/// # Examples
+///
+/// ```
+/// # use tardigrade_shared::handle::{
+/// #     AccessError, AccessErrorKind, Handle, HandleMap, HandleMapKey, SenderAt, ReceiverAt,
+/// # };
+/// let mut map: HandleMap<u64> = HandleMap::from_iter([
+///     ("sx".into(), Handle::Sender(42)),
+///     ("rx".into(), Handle::Receiver(555)),
+/// ]);
+///
+/// assert_eq!("sx".get_from(&map)?, &Handle::Sender(42));
+/// *ReceiverAt("rx").get_mut_from(&mut map)? = 777;
+/// assert_eq!(SenderAt("sx").remove_from(&mut map)?, 42);
+///
+/// let err = SenderAt("rx").get_from(&map).unwrap_err();
+/// assert!(matches!(err.kind(), AccessErrorKind::KindMismatch));
+/// # Ok::<_, AccessError>(())
+/// ```
 pub trait HandleMapKey: Into<HandleLocation> + Copy + fmt::Debug {
     /// Output of the access operation. Parameterized by receiver and sender types
     /// (e.g., the corresponding specifications for [`Interface`]).
+    ///
+    /// [`Interface`]: crate::interface::Interface
     type Output<Rx, Sx>;
 
     // This is quite ugly, but we cannot return `HandlePath<'_>` from a method
@@ -67,7 +103,10 @@ pub trait HandleMapKey: Into<HandleLocation> + Copy + fmt::Debug {
     ///
     /// Returns an error if a value with the specified key doesn't exist in the map,
     /// or if it has an unexpected type.
-    fn get<Rx, Sx>(self, map: &HandleMap<Rx, Sx>) -> Result<&Self::Output<Rx, Sx>, AccessError> {
+    fn get_from<Rx, Sx>(
+        self,
+        map: &HandleMap<Rx, Sx>,
+    ) -> Result<&Self::Output<Rx, Sx>, AccessError> {
         let result = self
             .with_path(|path| map.get(&path))
             .ok_or(AccessErrorKind::Missing);
@@ -82,7 +121,7 @@ pub trait HandleMapKey: Into<HandleLocation> + Copy + fmt::Debug {
     ///
     /// Returns an error if a value with the specified key doesn't exist in the map,
     /// or if it has an unexpected type.
-    fn get_mut<Rx, Sx>(
+    fn get_mut_from<Rx, Sx>(
         self,
         map: &mut HandleMap<Rx, Sx>,
     ) -> Result<&mut Self::Output<Rx, Sx>, AccessError> {
@@ -101,11 +140,11 @@ pub trait HandleMapKey: Into<HandleLocation> + Copy + fmt::Debug {
     /// Returns an error if a value with the specified key doesn't exist in the map,
     /// or if it has an unexpected type. In the latter case, the value is *not* removed
     /// from the map (i.e., the type check is performed before any modifications).
-    fn remove<Rx, Sx>(
+    fn remove_from<Rx, Sx>(
         self,
         map: &mut HandleMap<Rx, Sx>,
     ) -> Result<Self::Output<Rx, Sx>, AccessError> {
-        self.get(map)?;
+        self.get_from(map)?;
         let handle = self.with_path(|path| map.remove(&path)).unwrap();
         Ok(Self::from_handle(handle).unwrap())
     }
@@ -202,9 +241,15 @@ where
 // region:WithIndexing
 
 /// Wrapper for [`HandleMap`] allowing accessing the map elements by [`HandleMapKey`].
+/// This wrapper is produced by the [`WithIndexing`] trait.
+///
+/// # Examples
+///
+/// See [`WithIndexing`](WithIndexing#examples) for an example of usage.
 #[derive(Debug)]
 pub struct IndexingHandleMap<T, Rx, Sx> {
-    inner: T,
+    /// Contained map.
+    pub inner: T,
     _ty: PhantomData<fn(Rx, Sx)>,
 }
 
@@ -219,7 +264,7 @@ where
     /// Returns an error if the element is not present in the handle, or if it has an unexpected
     /// type (e.g., a sender instead of a receiver).
     pub fn remove<K: HandleMapKey>(&mut self, key: K) -> Result<K::Output<Rx, Sx>, AccessError> {
-        key.remove(self.inner.borrow_mut())
+        key.remove_from(self.inner.borrow_mut())
     }
 }
 
@@ -231,7 +276,7 @@ where
 
     fn index(&self, index: K) -> &Self::Output {
         index
-            .get(self.inner.borrow())
+            .get_from(self.inner.borrow())
             .unwrap_or_else(|err| panic!("{err}"))
     }
 }
@@ -242,12 +287,33 @@ where
 {
     fn index_mut(&mut self, index: K) -> &mut Self::Output {
         index
-            .get_mut(self.inner.borrow_mut())
+            .get_mut_from(self.inner.borrow_mut())
             .unwrap_or_else(|err| panic!("{err}"))
     }
 }
 
-/// Converts [`HandleMap`] to the [indexing form](IndexingHandleMap).
+/// Converts [`HandleMap`] to the [indexing form](IndexingHandleMap). This allows accessing
+/// contained [`Handle`]s by any type implementing [`HandleMapKey`], e.g., [`SenderAt`] /
+/// [`ReceiverAt`].
+///
+/// # Examples
+///
+/// ```
+/// # use tardigrade_shared::handle::{
+/// #     AccessError, Handle, HandleMap, SenderAt, ReceiverAt, WithIndexing,
+/// # };
+/// let map: HandleMap<u64> = HandleMap::from_iter([
+///     ("sx".into(), Handle::Sender(42)),
+///     ("rx".into(), Handle::Receiver(555)),
+/// ]);
+/// let mut map = map.with_indexing();
+/// assert_eq!(map["sx"], Handle::Sender(42));
+/// assert_eq!(map[SenderAt("sx")], 42);
+/// assert_eq!(map[ReceiverAt("rx")], 555);
+///
+/// let mut map = (&mut map.inner).with_indexing();
+/// map["sx"] = Handle::Receiver(23);
+/// ```
 pub trait WithIndexing<Rx, Sx>: Borrow<HandleMap<Rx, Sx>> + Sized {
     /// Performs the conversion.
     fn with_indexing(self) -> IndexingHandleMap<Self, Rx, Sx>;

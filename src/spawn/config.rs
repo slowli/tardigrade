@@ -116,7 +116,7 @@ impl<Fmt: HandleFormat> HandleFormat for Spawner<Fmt> {
     type Sender<T, C: Codec<T>> = SenderConfig<Fmt, T, C>;
 }
 
-/// Configurator of a workflow channel [`Receiver`].
+/// Configurator of a workflow channel [`Receiver`](crate::channel::Receiver).
 pub struct ReceiverConfig<Fmt: HandleFormat, T, C> {
     spawner: Rc<SpawnerInner<Fmt>>,
     path: HandlePathBuf,
@@ -181,7 +181,7 @@ where
     }
 }
 
-/// Configurator of a workflow channel [`Sender`].
+/// Configurator of a workflow channel [`Sender`](crate::channel::Sender).
 pub struct SenderConfig<Fmt: HandleFormat, T, C> {
     spawner: Rc<SpawnerInner<Fmt>>,
     path: HandlePathBuf,
@@ -399,7 +399,7 @@ struct ForSelf<Fmt: HandleFormat> {
 
 impl<Fmt: HandleFormat> TakeHandles<Inverse<Fmt>> for ForSelf<Fmt> {
     fn take_receiver(&mut self, path: HandlePath<'_>) -> Result<Fmt::RawSender, AccessError> {
-        let pair = ReceiverAt(path).get_mut(&mut self.inner)?;
+        let pair = ReceiverAt(path).get_mut_from(&mut self.inner)?;
         pair.sender.take().ok_or_else(|| {
             AccessErrorKind::custom("attempted to take the same handle twice")
                 .with_location(ReceiverAt(path))
@@ -407,7 +407,7 @@ impl<Fmt: HandleFormat> TakeHandles<Inverse<Fmt>> for ForSelf<Fmt> {
     }
 
     fn take_sender(&mut self, path: HandlePath<'_>) -> Result<Fmt::RawReceiver, AccessError> {
-        let pair = SenderAt(path).get_mut(&mut self.inner)?;
+        let pair = SenderAt(path).get_mut_from(&mut self.inner)?;
         pair.receiver.take().ok_or_else(|| {
             AccessErrorKind::custom("attempted to take the same handle twice")
                 .with_location(ReceiverAt(path))
@@ -432,7 +432,7 @@ struct ForChild<Fmt: HandleFormat> {
 
 impl<Fmt: HandleFormat> TakeHandles<Fmt> for ForChild<Fmt> {
     fn take_receiver(&mut self, path: HandlePath<'_>) -> Result<Fmt::RawReceiver, AccessError> {
-        let pair = ReceiverAt(path).get_mut(&mut self.inner)?;
+        let pair = ReceiverAt(path).get_mut_from(&mut self.inner)?;
         pair.receiver.take().ok_or_else(|| {
             AccessErrorKind::custom("attempted to take the same handle twice")
                 .with_location(ReceiverAt(path))
@@ -440,7 +440,7 @@ impl<Fmt: HandleFormat> TakeHandles<Fmt> for ForChild<Fmt> {
     }
 
     fn take_sender(&mut self, path: HandlePath<'_>) -> Result<Fmt::RawSender, AccessError> {
-        let pair = SenderAt(path).get_mut(&mut self.inner)?;
+        let pair = SenderAt(path).get_mut_from(&mut self.inner)?;
         pair.sender.take().ok_or_else(|| {
             AccessErrorKind::custom("attempted to take the same handle twice")
                 .with_location(ReceiverAt(path))

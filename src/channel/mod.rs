@@ -5,7 +5,7 @@
 //! A workflow owns a single end of a channel (either a [`Receiver`] or
 //! [`Sender`]s), while the other end is owned by the host environment or another workflow.
 //!
-//! A `Sender` or `Receiver` can be obtained from the environment using [`TakeHandle`] trait.
+//! A `Sender` or `Receiver` can be obtained from the environment using [`WithHandle`] trait.
 //! This process is usually automated via workflow types. When executed in WASM, channels
 //! are backed by imported functions from the Tardigrade runtime. This is emulated for
 //! the [test environment](crate::test).

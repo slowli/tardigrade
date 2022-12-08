@@ -172,8 +172,8 @@ impl WorkflowData {
         if let Some(interface) = interface {
             for (path, spec) in interface.handles() {
                 match spec {
-                    Handle::Receiver(_) => ReceiverAt(path).get(channels)?,
-                    Handle::Sender(_) => SenderAt(path).get(channels)?,
+                    Handle::Receiver(_) => ReceiverAt(path).get_from(channels)?,
+                    Handle::Sender(_) => SenderAt(path).get_from(channels)?,
                 };
             }
 

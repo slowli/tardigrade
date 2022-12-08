@@ -15,12 +15,12 @@ pub type UntypedHandles<Fmt> =
 impl<Fmt: HandleFormat> TakeHandles<Fmt> for UntypedHandles<Fmt> {
     #[inline]
     fn take_receiver(&mut self, path: HandlePath<'_>) -> Result<Fmt::RawReceiver, AccessError> {
-        ReceiverAt(path).remove(self)
+        ReceiverAt(path).remove_from(self)
     }
 
     #[inline]
     fn take_sender(&mut self, path: HandlePath<'_>) -> Result<Fmt::RawSender, AccessError> {
-        SenderAt(path).remove(self)
+        SenderAt(path).remove_from(self)
     }
 
     #[inline]

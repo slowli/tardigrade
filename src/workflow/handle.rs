@@ -68,7 +68,7 @@ impl HandleFormat for () {
 
 /// Wrapper for a [`HandleFormat`] that swaps handles for senders and receivers.
 ///
-/// This transform is used, e.g., when [`spawn`]ing child workflows.
+/// This transform is used, e.g., when [`spawn`](crate::spawn)ing child workflows.
 #[derive(Debug)]
 pub struct Inverse<Fmt>(PhantomData<Fmt>);
 
@@ -129,9 +129,21 @@ pub(super) fn default_insert_handles<Fmt, T>(
     }
 }
 
-/// Type with a handle in workflow [environments](WorkflowEnv).
+/// Type with a polymorphic handle depending on a [`HandleFormat`].
+///
+/// Conceptually, a handle collects simplest [`Handle`]s (that for receivers and senders)
+/// into more complex structures. A handle can be [taken](Self::take_from_untyped())
+/// from an untyped collection of handles (e.g., [`UntypedHandles`]) or, conversely,
+/// [inserted](Self::insert_into_untyped()) into an untyped collection.
+///
+/// A handle needs to be defined for a [workflow](crate::workflow::SpawnWorkflow)
+/// in order to specify which handles it receives on initialization. The intended way to
+/// do this is to define a dedicated handle type with the help of the
+/// [`WithHandle`](macro@crate::workflow::WithHandle) derive macro, and then proxy its
+/// implementation to the (usually empty) workflow type using the same derive macro.
+/// See the [`workflow`](crate::workflow#examples) module docs for an example.
 pub trait WithHandle {
-    /// Type of the handle in a particular environment.
+    /// Type of the handle in a particular format.
     type Handle<Fmt: HandleFormat>;
 
     /// Produces the handle from an `untyped` collection of handles.

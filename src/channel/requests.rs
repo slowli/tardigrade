@@ -22,13 +22,15 @@ use crate::{
     ChannelId, Codec,
 };
 
-/// Container for a request.
+/// Container for a [request](Requests) that can also be used to cancel the pending request
+/// from the client side.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Request<T> {
     /// New request.
     New {
-        /// Identifier associated with the value.
+        /// Identifier of the request unique within the [`Requests`] instance generating
+        /// requests.
         #[serde(rename = "@id")]
         id: u64,
         /// Payload of the request.
@@ -39,19 +41,19 @@ pub enum Request<T> {
     },
     /// Request cancellation.
     Cancel {
-        /// Identifier associated with the value.
+        /// Identifier of a [previously created](Self::New) request.
         #[serde(rename = "@id")]
         id: u64,
     },
 }
 
-/// Container for a response to the request.
+/// Container for the response to a [`Request`].
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Response<T> {
-    /// Identifier associated with the value.
+    /// Identifier of the request that this response corresponds to.
     #[serde(rename = "@id")]
     pub id: u64,
-    /// Wrapped value.
+    /// Wrapped response payload.
     pub data: T,
 }
 
@@ -182,11 +184,13 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
     }
 }
 
-/// Request sender based on a pair of channels. Can be used to call to external task executors.
+/// [`Request`] sender based on a pair of channels: an outbound channel to send requests,
+/// and the corresponding inbound channel to listen to responses.
+/// Can be used to call to external task executors.
 ///
 /// # Examples
 ///
-/// `Requests` instance can be built from a pair of sender / receiver channel halves:
+/// A `Requests` instance can be built from a pair of sender / receiver channel halves:
 ///
 /// ```
 /// # use async_trait::async_trait;
@@ -268,6 +272,9 @@ impl<Req: 'static, Resp: 'static> Requests<Req, Resp> {
 
     /// Performs a request and returns a future that resolves to the response.
     ///
+    /// If the future is dropped before the response arrives,
+    /// a [cancellation signal](Request::Cancel) will be sent to the external executor.
+    ///
     /// # Errors
     ///
     /// The returned future resolves to an error if the responses channel is closed before
@@ -314,7 +321,7 @@ where
         self
     }
 
-    /// Specifies a task name to use when [spawning a task](crate::task::spawn()) to support
+    /// Specifies a task name to use when [spawning a task](task::spawn()) to support
     /// request / response processing. The default task name is `_requests`.
     #[must_use]
     pub fn with_task_name(mut self, task_name: &'a str) -> Self {
@@ -344,7 +351,7 @@ where
     }
 }
 
-/// A pair consisting of a sender and a receiver that can be used to handle requests.
+/// A pair consisting of a sender and a receiver that can be used to generate [`Requests`].
 ///
 /// # Examples
 ///
@@ -384,9 +391,11 @@ pub struct RequestHandles<Req, Resp, C, Fmt: HandleFormat = Wasm>
 where
     C: Codec<Request<Req>> + Codec<Response<Resp>>,
 {
-    /// Requests sender.
+    /// Requests sender. Will have [path](crate::handle::HandlePath) `requests` relative
+    /// to the `RequestHandles` path.
     pub requests: InEnv<Sender<Request<Req>, C>, Fmt>,
-    /// Responses receiver.
+    /// Responses receiver. Will have [path](crate::handle::HandlePath) `responses` relative
+    /// to the `RequestHandles` path.
     pub responses: InEnv<Receiver<Response<Resp>, C>, Fmt>,
 }
 
