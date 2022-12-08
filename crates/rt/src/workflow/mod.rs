@@ -124,11 +124,11 @@ impl<T: RunWorkflow> Workflow<T> {
                 wake_up_cause,
             } => {
                 WorkflowData::wake(&mut self.inner, wake_up_cause.clone(), |workflow| {
-                    workflow.wake_waker(*waker_id)
-                })?;
+                    workflow.wake_waker(*waker_id);
+                });
             }
             ExecutedFunction::TaskDrop { task_id } => {
-                self.inner.drop_task(*task_id)?;
+                self.inner.drop_task(*task_id);
             }
             ExecutedFunction::Entry => {
                 let Some(ExecutedFunctionArgs::WorkflowArgs(args)) = args else { unreachable!() };

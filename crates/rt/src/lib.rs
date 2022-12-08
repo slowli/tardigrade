@@ -74,9 +74,9 @@
 //!
 //! // Workflows are created within a manager that is responsible
 //! // for their persistence and managing channels, time, and child workflows.
-//!  let builder = manager.new_workflow::<()>("test::Workflow")?;
-//!  let (handles, self_handles) = builder.handles(|_| {}).await;
-//!  let new_workflow =
+//! let builder = manager.new_workflow::<()>("test::Workflow")?;
+//! let (handles, self_handles) = builder.handles(|_| {}).await;
+//! let new_workflow =
 //!     builder.build(b"data".to_vec(), handles).await?;
 //!
 //! // Let's initialize the workflow.
@@ -86,6 +86,7 @@
 //! // events for each of executions:
 //! println!("{:?}", receipt.executions());
 //! // It's possible to communicate with the workflow using `self_handles`
+//! // and/or `new_workflow`.
 //! # Ok(())
 //! # }
 //! ```

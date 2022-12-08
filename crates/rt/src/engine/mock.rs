@@ -228,18 +228,17 @@ impl RunWorkflow for MockInstance {
         result
     }
 
-    fn drop_task(&mut self, _task_id: TaskId) -> anyhow::Result<()> {
-        Ok(())
+    fn drop_task(&mut self, _task_id: TaskId) {
+        // Does nothing
     }
 
-    fn wake_waker(&mut self, waker_id: WakerId) -> anyhow::Result<()> {
+    fn wake_waker(&mut self, waker_id: WakerId) {
         let owning_task_id = self.persisted.wakers.remove(&waker_id).unwrap();
         self.inner.task(owning_task_id).schedule_wakeup();
-        Ok(())
     }
 
-    fn initialize_child(&mut self, local_id: WorkflowId, _result: Result<WorkflowId, HostError>) {
-        if let Some(stub) = self.persisted.child_stubs.get_mut(&local_id) {
+    fn initialize_child(&mut self, stub_id: WorkflowId, _result: Result<WorkflowId, HostError>) {
+        if let Some(stub) = self.persisted.child_stubs.get_mut(&stub_id) {
             self.inner.task(stub.owning_task_id).schedule_wakeup();
         } else {
             // Assume that the manually created stub was created from the main (0th) task.

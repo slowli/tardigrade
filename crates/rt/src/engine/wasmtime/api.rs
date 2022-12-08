@@ -132,7 +132,7 @@ impl ModuleExports {
     pub fn initialize_child(
         &self,
         mut ctx: StoreContextMut<'_, InstanceData>,
-        local_id: WorkflowId,
+        stub_id: WorkflowId,
         result: Result<WorkflowId, HostError>,
     ) -> anyhow::Result<()> {
         let mut child_id = None;
@@ -142,20 +142,20 @@ impl ModuleExports {
         let result = result.into_wasm(&mut WasmAllocator::new(ctx.as_context_mut()))?;
         let child = child_id.map(|id| HostResource::Workflow(id).into_ref());
 
-        self.initialize_child.call(ctx, (local_id, child, result))
+        self.initialize_child.call(ctx, (stub_id, child, result))
     }
 
     #[tracing::instrument(level = "debug", skip(self, ctx), err)]
     pub fn initialize_channel(
         &self,
         ctx: StoreContextMut<'_, InstanceData>,
-        local_id: ChannelId,
+        stub_id: ChannelId,
         channel_id: ChannelId,
     ) -> anyhow::Result<()> {
         let sender = Some(HostResource::Sender(channel_id).into_ref());
         let receiver = Some(HostResource::Receiver(channel_id).into_ref());
         self.initialize_channel
-            .call(ctx, (local_id, sender, receiver))
+            .call(ctx, (stub_id, sender, receiver))
     }
 }
 

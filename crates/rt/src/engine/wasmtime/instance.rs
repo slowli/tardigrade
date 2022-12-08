@@ -113,27 +113,31 @@ impl RunWorkflow for WasmtimeInstance {
         exports.poll_task(self.store.as_context_mut(), task_id)
     }
 
-    fn drop_task(&mut self, task_id: TaskId) -> anyhow::Result<()> {
+    fn drop_task(&mut self, task_id: TaskId) {
         let exports = self.store.data().exports();
-        exports.drop_task(self.store.as_context_mut(), task_id)
+        if let Err(err) = exports.drop_task(self.store.as_context_mut(), task_id) {
+            tracing::warn!(%err, "failed dropping task");
+        }
     }
 
-    fn wake_waker(&mut self, waker_id: WakerId) -> anyhow::Result<()> {
+    fn wake_waker(&mut self, waker_id: WakerId) {
         let exports = self.store.data().exports();
-        exports.wake_waker(self.store.as_context_mut(), waker_id)
+        if let Err(err) = exports.wake_waker(self.store.as_context_mut(), waker_id) {
+            tracing::warn!(%err, "failed waking waker");
+        }
     }
 
-    fn initialize_child(&mut self, local_id: WorkflowId, result: Result<WorkflowId, HostError>) {
+    fn initialize_child(&mut self, stub_id: WorkflowId, result: Result<WorkflowId, HostError>) {
         let exports = self.store.data().exports();
-        if let Err(err) = exports.initialize_child(self.store.as_context_mut(), local_id, result) {
+        if let Err(err) = exports.initialize_child(self.store.as_context_mut(), stub_id, result) {
             tracing::warn!(%err, "failed initializing child");
         }
     }
 
-    fn initialize_channel(&mut self, local_id: ChannelId, channel_id: ChannelId) {
+    fn initialize_channel(&mut self, stub_id: ChannelId, channel_id: ChannelId) {
         let exports = self.store.data().exports();
         let init_result =
-            exports.initialize_channel(self.store.as_context_mut(), local_id, channel_id);
+            exports.initialize_channel(self.store.as_context_mut(), stub_id, channel_id);
         if let Err(err) = init_result {
             tracing::warn!(%err, "failed initializing channel");
         }

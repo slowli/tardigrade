@@ -533,17 +533,28 @@ impl WorkflowData {
             .push_stub_event(StubId::Channel(local_id), StubEventKind::Mapped(Ok(id)));
     }
 
-    /// Starts creating a channel.
+    /// Starts creating a channel. When the channel initialization is complete,
+    /// it will be reported via [`initialize_channel()`].
+    ///
+    /// As of right now, channel initialization cannot fail, nor can it be cancelled
+    /// by the workflow logic.
+    ///
+    /// [`initialize_channel()`]: crate::engine::RunWorkflow::initialize_channel()
+    ///
+    /// # Arguments
+    ///
+    /// - `stub_id` must be unique across all invocations of `create_channel_stub()`
+    ///   for a single workflow. E.g., it can be implemented as an incrementing static.
     ///
     /// # Errors
     ///
     /// Returns an error if a channel cannot be created.
-    pub fn create_channel_stub(&mut self, id: ChannelId) -> anyhow::Result<()> {
+    pub fn create_channel_stub(&mut self, stub_id: ChannelId) -> anyhow::Result<()> {
         let workflows = self.services_mut().stubs.as_deref_mut();
         let workflows = workflows.ok_or_else(|| anyhow!("cannot create new channel"))?;
-        workflows.stash_channel(id);
+        workflows.stash_channel(stub_id);
         self.current_execution()
-            .push_stub_event(StubId::Channel(id), StubEventKind::Created);
+            .push_stub_event(StubId::Channel(stub_id), StubEventKind::Created);
         Ok(())
     }
 
@@ -551,7 +562,10 @@ impl WorkflowData {
     ///
     /// # Panics
     ///
-    /// Panics if the receiver with `id` does not exist in the workflow.
+    /// Panics if the receiver with `id` is not owned by the workflow. Note that
+    /// receivers for the channel with ID 0 (the "pre-closed" channel) are not considered to be owned
+    /// by any workflow, despite a workflow potentially acquiring receiver(s) for this channel
+    /// on initialization.
     pub fn receiver(&mut self, id: ChannelId) -> ReceiverActions<'_> {
         assert!(
             self.persisted.channels.receivers.contains_key(&id),
@@ -564,7 +578,10 @@ impl WorkflowData {
     ///
     /// # Panics
     ///
-    /// Panics if the sender with `id` does not exist in the workflow.
+    /// Panics if a sender with `id` is not owned by the workflow. Note that
+    /// senders for the channel with ID 0 (the "pre-closed" channel) are not considered to be owned
+    /// by any workflow, despite a workflow potentially acquiring sender(s) for this channel
+    /// on initialization.
     pub fn sender(&mut self, id: ChannelId) -> SenderActions<'_> {
         assert!(
             self.persisted.channels.senders.contains_key(&id),

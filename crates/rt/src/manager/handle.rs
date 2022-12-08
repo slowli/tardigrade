@@ -45,9 +45,10 @@ impl error::Error for ConcurrencyError {}
 
 /// Handle to an active workflow in a [`WorkflowManager`].
 ///
-/// This type is used as a type param for the [`TakeHandle`] trait. The returned handles
-/// allow interacting with the workflow (e.g., [send messages](MessageSender)
-/// and [take messages](MessageReceiver) via channels).
+/// A workflow handle allows [getting handles](Self::handle()) for the channels specified
+/// in the workflow interface. The returned handles
+/// allow interacting with the workflow by [sending messages](MessageSender)
+/// and/or [receiving messages](MessageReceiver).
 ///
 /// See [`Driver`] for a more high-level alternative.
 ///
@@ -231,6 +232,8 @@ impl<'a, W: WithHandle, M: AsManager> WorkflowHandle<'a, W, M> {
 }
 
 /// [`HandleFormat`] for handles returned by a [`WorkflowManager`].
+///
+/// [`WorkflowManager`]: crate::manager::WorkflowManager
 #[derive(Debug)]
 pub struct ManagerHandles<'a, M>(PhantomData<&'a M>);
 
@@ -243,6 +246,8 @@ impl<'a, M: AsManager> HandleFormat for ManagerHandles<'a, M> {
 
 /// Host handles of a shape specified by a workflow [`Interface`] and provided
 /// by a [`WorkflowManager`].
+///
+/// [`WorkflowManager`]: crate::manager::WorkflowManager
 pub type HostHandles<'a, W, M> = InEnv<W, Inverse<ManagerHandles<'a, M>>>;
 
 /// Handle for a workflow channel [`Receiver`] that allows sending messages via the channel.

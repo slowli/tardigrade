@@ -30,6 +30,9 @@ pub(super) enum WakerPlacement {
 }
 
 /// Polling context for workflows.
+///
+/// Like [`Poll`] from the standard library, this type must be consumed
+/// by calling  [`Self::into_inner()`] in order to handle the `Pending` variant.
 #[derive(Debug)]
 #[must_use = "Needs to be converted to a waker"]
 pub struct WorkflowPoll<T> {
@@ -49,7 +52,9 @@ impl<T> WorkflowPoll<T> {
         }
     }
 
-    /// Saves the waker potentially contained in this context.
+    /// Handles the [`Poll::Pending`] variant by [creating a waker](CreateWaker)
+    /// from the provided context and saving it into [`WorkflowData`], which is also
+    /// contained in the context.
     ///
     /// # Errors
     ///

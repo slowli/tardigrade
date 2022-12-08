@@ -4,12 +4,13 @@
 //!
 //! A [`WorkflowEngine`] is responsible for:
 //!
-//! - Transforming a WASM [**module**](WorkflowModule) into one or more named
-//!   workflow [**definitions**](DefineWorkflow)
-//! - Instantiating zero or more workflow **instances** from a definition.
+//! - Transforming a WASM [*module*](WorkflowModule) into one or more named
+//!   workflow [*definitions*](DefineWorkflow)
+//! - Instantiating zero or more workflow *instances* from a definition.
 //! - [Running](RunWorkflow) and [persisting](PersistWorkflow) workflow instances
 //!
-//! The crate provides a default engine implementation powered by the [`wasmtime`] crate.
+//! The crate provides a [default engine implementation](Wasmtime)
+//! powered by the [`wasmtime`] crate.
 //!
 //! [`wasmtime`]: https://docs.rs/wasmtime/
 
@@ -104,27 +105,21 @@ pub trait RunWorkflow: AsWorkflowData {
     fn poll_task(&mut self, task_id: TaskId) -> anyhow::Result<Poll<()>>;
 
     /// Drops a task with the specified ID.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if dropping the task fails, e.g., due to a WASM trap.
-    fn drop_task(&mut self, task_id: TaskId) -> anyhow::Result<()>;
+    fn drop_task(&mut self, task_id: TaskId);
 
     /// Wakes a waker with the specified ID.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if waking the waker fails, e.g., due to a WASM trap.
-    fn wake_waker(&mut self, waker_id: WakerId) -> anyhow::Result<()>;
+    fn wake_waker(&mut self, waker_id: WakerId);
 
-    /// Notifies that the child workflow with the specified `local_id` has been initialized
-    /// with the specified `result`: either was allocated the ID wrapped in `Ok(_)`, or
+    /// Notifies that the child workflow with the specified `local_id`, which was previously supplied
+    /// to [`WorkflowData::create_workflow_stub()`], has been initialized
+    /// with the specified `result`. Either the child was allocated the ID wrapped in `Ok(_)`, or
     /// an error has occurred during initialization.
-    fn initialize_child(&mut self, local_id: WorkflowId, result: Result<WorkflowId, HostError>);
+    fn initialize_child(&mut self, stub_id: WorkflowId, result: Result<WorkflowId, HostError>);
 
-    /// Notifies that the channel with the specified `local_id` has been created
-    /// and was allocated the provided `id`.
-    fn initialize_channel(&mut self, local_id: ChannelId, channel_id: ChannelId);
+    /// Notifies that the channel with the specified `local_id`, which was previously supplied
+    /// to [`WorkflowData::create_channel_stub()`], has been created and was allocated
+    /// the provided `channel_id`.
+    fn initialize_channel(&mut self, stub_id: ChannelId, channel_id: ChannelId);
 }
 
 /// Creating wakers in workflows. This is used in [`WorkflowPoll`] to unwrap the contained

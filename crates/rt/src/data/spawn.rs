@@ -202,12 +202,24 @@ impl WorkflowData {
         anyhow!("extra handles: {extra_handles}")
     }
 
-    /// Creates a workflow stub with the specified parameters.
+    /// Starts initializing a child workflow with the specified parameters.
+    /// When the child initialization is complete, it will be reported via [`initialize_child()`].
+    ///
+    /// As of right now, child initialization cannot be cancelled by the workflow logic.
+    ///
+    /// [`initialize_child()`]: crate::engine::RunWorkflow::initialize_child()
+    ///
+    /// # Arguments
+    ///
+    /// - `stub_id` must be unique across all invocations of `create_workflow_stub()`
+    ///   for a single workflow. E.g., it can be implemented as an incrementing static.
     ///
     /// # Errors
     ///
     /// Returns an error if the provided `channels` config is not valid (e.g., doesn't contain
     /// precisely the same channels as specified in the spawned workflow interface).
+    /// The checks that are performed in this function are not exhaustive; even if this method
+    /// succeeds, child initialization can still fail later.
     #[tracing::instrument(skip(args), ret, err, fields(args.len = args.len()))]
     pub fn create_workflow_stub(
         &mut self,
