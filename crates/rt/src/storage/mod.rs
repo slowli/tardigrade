@@ -38,10 +38,13 @@ use chrono::{DateTime, Utc};
 use futures::stream::BoxStream;
 use tracing_tunnel::PersistedMetadata;
 
-use std::ops;
+use std::{ops, sync::Arc};
 
+#[macro_use]
+mod macros;
 mod local;
 mod records;
+mod stream;
 
 pub use self::{
     local::{LocalStorage, LocalStorageSnapshot, LocalTransaction, ModuleRecordMut},
@@ -50,6 +53,7 @@ pub use self::{
         ErroredWorkflowState, MessageError, ModuleRecord, WorkflowRecord,
         WorkflowSelectionCriteria, WorkflowState, WorkflowWaker, WorkflowWakerRecord,
     },
+    stream::{MessageEvent, Streaming, StreamingTransaction},
 };
 
 use tardigrade::{ChannelId, WakerId, WorkflowId};
@@ -69,6 +73,22 @@ pub trait Storage: 'static + Send + Sync {
     async fn transaction(&self) -> Self::Transaction<'_>;
     /// Creates a new readonly transaction.
     async fn readonly_transaction(&self) -> Self::ReadonlyTransaction<'_>;
+}
+
+#[async_trait]
+impl<S: Storage + ?Sized> Storage for Arc<S> {
+    type Transaction<'a> = S::Transaction<'a>;
+    type ReadonlyTransaction<'a> = S::ReadonlyTransaction<'a>;
+
+    #[inline]
+    async fn transaction(&self) -> Self::Transaction<'_> {
+        (**self).transaction().await
+    }
+
+    #[inline]
+    async fn readonly_transaction(&self) -> Self::ReadonlyTransaction<'_> {
+        (**self).readonly_transaction().await
+    }
 }
 
 /// [`Storage`] transaction with readonly access to the storage.
@@ -238,61 +258,20 @@ pub trait WriteWorkflowWakers {
 /// Wrapper for [`StorageTransaction`] implementations that allows safely using them
 /// as readonly transactions.
 #[derive(Debug)]
-pub struct Readonly<T>(T);
+pub struct Readonly<T> {
+    inner: T,
+}
 
 impl<T: ReadonlyStorageTransaction> From<T> for Readonly<T> {
     fn from(inner: T) -> Self {
-        Self(inner)
+        Self { inner }
     }
 }
 
 impl<T: ReadonlyStorageTransaction> AsRef<T> for Readonly<T> {
     fn as_ref(&self) -> &T {
-        &self.0
+        &self.inner
     }
 }
 
-#[async_trait]
-impl<T: ReadonlyStorageTransaction> ReadModules for Readonly<T> {
-    async fn module(&self, id: &str) -> Option<ModuleRecord> {
-        self.0.module(id).await
-    }
-
-    fn modules(&self) -> BoxStream<'_, ModuleRecord> {
-        self.0.modules()
-    }
-}
-
-#[async_trait]
-impl<T: ReadonlyStorageTransaction> ReadChannels for Readonly<T> {
-    async fn channel(&self, id: ChannelId) -> Option<ChannelRecord> {
-        self.0.channel(id).await
-    }
-
-    async fn channel_message(&self, id: ChannelId, index: usize) -> Result<Vec<u8>, MessageError> {
-        self.0.channel_message(id, index).await
-    }
-
-    fn channel_messages(
-        &self,
-        id: ChannelId,
-        indices: ops::RangeInclusive<usize>,
-    ) -> BoxStream<'_, (usize, Vec<u8>)> {
-        self.0.channel_messages(id, indices)
-    }
-}
-
-#[async_trait]
-impl<T: ReadonlyStorageTransaction> ReadWorkflows for Readonly<T> {
-    async fn count_active_workflows(&self) -> usize {
-        self.0.count_active_workflows().await
-    }
-
-    async fn workflow(&self, id: WorkflowId) -> Option<WorkflowRecord> {
-        self.0.workflow(id).await
-    }
-
-    async fn nearest_timer_expiration(&self) -> Option<DateTime<Utc>> {
-        self.0.nearest_timer_expiration().await
-    }
-}
+delegate_read_traits!(Readonly { inner });
