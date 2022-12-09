@@ -62,12 +62,16 @@ use tardigrade::{ChannelId, WakerId, WorkflowId};
 ///
 /// A storage is required to instantiate a [`WorkflowManager`](crate::manager::WorkflowManager).
 #[async_trait]
-pub trait Storage: 'static + Send + Sync {
+pub trait Storage: Send + Sync {
     /// Read/write transaction for the storage. See [`StorageTransaction`] for required
     /// transaction semantics.
-    type Transaction<'a>: 'a + StorageTransaction;
+    type Transaction<'a>: 'a + StorageTransaction
+    where
+        Self: 'a;
     /// Readonly transaction for the storage.
-    type ReadonlyTransaction<'a>: 'a + ReadonlyStorageTransaction;
+    type ReadonlyTransaction<'a>: 'a + ReadonlyStorageTransaction
+    where
+        Self: 'a;
 
     /// Creates a new read/write transaction.
     async fn transaction(&self) -> Self::Transaction<'_>;
@@ -76,9 +80,37 @@ pub trait Storage: 'static + Send + Sync {
 }
 
 #[async_trait]
+impl<S: Storage + ?Sized> Storage for &S {
+    type Transaction<'a>
+    where
+        Self: 'a,
+    = S::Transaction<'a>;
+    type ReadonlyTransaction<'a>
+    where
+        Self: 'a,
+    = S::ReadonlyTransaction<'a>;
+
+    #[inline]
+    async fn transaction(&self) -> Self::Transaction<'_> {
+        (**self).transaction().await
+    }
+
+    #[inline]
+    async fn readonly_transaction(&self) -> Self::ReadonlyTransaction<'_> {
+        (**self).readonly_transaction().await
+    }
+}
+
+#[async_trait]
 impl<S: Storage + ?Sized> Storage for Arc<S> {
-    type Transaction<'a> = S::Transaction<'a>;
-    type ReadonlyTransaction<'a> = S::ReadonlyTransaction<'a>;
+    type Transaction<'a>
+    where
+        S: 'a,
+    = S::Transaction<'a>;
+    type ReadonlyTransaction<'a>
+    where
+        S: 'a,
+    = S::ReadonlyTransaction<'a>;
 
     #[inline]
     async fn transaction(&self) -> Self::Transaction<'_> {

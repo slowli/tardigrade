@@ -8,7 +8,10 @@ use std::{collections::HashSet, task::Poll};
 
 mod spawn;
 
-use super::*;
+use super::{
+    persistence::{close_host_receiver, close_host_sender, send_message},
+    *,
+};
 use crate::{
     engine::{AsWorkflowData, MockAnswers, MockEngine, MockInstance, MockPollFn},
     receipt::{
@@ -19,6 +22,7 @@ use crate::{
     workflow::WorkflowAndChannelIds,
 };
 use tardigrade::{
+    channel::SendError,
     handle::{Handle, HandleMap, HandlePath, ReceiverAt, SenderAt, WithIndexing},
     spawn::{ManageChannels, ManageWorkflows},
 };
@@ -259,7 +263,7 @@ async fn closing_workflow_channels() {
         .async_scope(tick_workflow(&manager, workflow_id))
         .await
         .unwrap();
-    manager.close_host_receiver(events_id).await;
+    close_host_receiver(&manager.storage, events_id).await;
     let channel_info = manager.channel(events_id).await.unwrap();
     assert!(channel_info.is_closed);
 
@@ -329,12 +333,11 @@ async fn test_closing_receiver_from_host_side(with_message: bool) {
         .await
         .unwrap();
     if with_message {
-        manager
-            .send_message(orders_id, b"order #1".to_vec())
+        send_message(&manager.storage, orders_id, b"order #1".to_vec())
             .await
             .unwrap();
     }
-    manager.close_host_sender(orders_id).await;
+    close_host_sender(&manager.storage, orders_id).await;
 
     if with_message {
         let receipt = poll_fn_sx
@@ -452,8 +455,7 @@ async fn sending_message_to_workflow() {
         .async_scope(tick_workflow(&manager, workflow_id))
         .await
         .unwrap();
-    manager
-        .send_message(orders_id, b"order #1".to_vec())
+    send_message(&manager.storage, orders_id, b"order #1".to_vec())
         .await
         .unwrap();
 
@@ -512,8 +514,7 @@ async fn error_processing_inbound_message_in_workflow() {
         .async_scope(tick_workflow(&manager, workflow_id))
         .await
         .unwrap();
-    manager
-        .send_message(orders_id, b"test".to_vec())
+    send_message(&manager.storage, orders_id, b"test".to_vec())
         .await
         .unwrap();
     let err = poll_fn_sx
@@ -568,8 +569,7 @@ async fn workflow_not_consuming_inbound_message() {
         .async_scope(tick_workflow(&manager, workflow_id))
         .await
         .unwrap();
-    manager
-        .send_message(orders_id, b"order #1".to_vec())
+    send_message(&manager.storage, orders_id, b"order #1".to_vec())
         .await
         .unwrap();
     let tick_result = poll_fn_sx
@@ -595,6 +595,7 @@ async fn workflow_not_consuming_inbound_message() {
 async fn handles_shape_mismatch_error() {
     let (poll_fns, _) = Answers::channel();
     let manager = &create_test_manager(poll_fns, ()).await;
+    let storage = &manager.storage;
 
     let builder = manager.new_workflow::<()>(DEFINITION_ID).unwrap();
     let err = builder
@@ -608,15 +609,15 @@ async fn handles_shape_mismatch_error() {
     let mut handles = HandleMap::new();
     handles.insert(
         "orders".into(),
-        Handle::Receiver(MessageReceiver::closed(manager)),
+        Handle::Receiver(MessageReceiver::closed(storage)),
     );
     handles.insert(
         "events".into(),
-        Handle::Sender(MessageSender::closed(manager)),
+        Handle::Sender(MessageSender::closed(storage)),
     );
     handles.insert(
         "traces".into(),
-        Handle::Receiver(MessageReceiver::closed(manager)),
+        Handle::Receiver(MessageReceiver::closed(storage)),
     );
     let builder = manager.new_workflow::<()>(DEFINITION_ID).unwrap();
     let err = builder
@@ -632,6 +633,7 @@ async fn handles_shape_mismatch_error() {
 async fn non_owned_channel_error() {
     let (poll_fns, _) = Answers::channel();
     let manager = &create_test_manager(poll_fns, ()).await;
+    let storage = &manager.storage;
     let workflow = create_test_workflow(manager).await;
 
     let orders_id = channel_id(workflow.ids(), "orders");
@@ -666,15 +668,15 @@ async fn non_owned_channel_error() {
         .await
         .unwrap();
 
-    manager.close_host_sender(traces_id).await;
+    close_host_sender(storage, traces_id).await;
     let mut handles = HandleMap::new();
     handles.insert(
         "orders".into(),
-        Handle::Receiver(MessageReceiver::closed(manager)),
+        Handle::Receiver(MessageReceiver::closed(storage)),
     );
     handles.insert(
         "events".into(),
-        Handle::Sender(MessageSender::closed(manager)),
+        Handle::Sender(MessageSender::closed(storage)),
     );
     handles.insert("traces".into(), Handle::Sender(traces_sx));
 

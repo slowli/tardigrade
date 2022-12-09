@@ -14,8 +14,8 @@ use std::{
 };
 
 use super::{
-    AsManager, Clock, ManagerHandles, RawMessageReceiver, RawMessageSender, Services, Shared,
-    StashStub, WorkflowDefinitions, WorkflowHandle, WorkflowManager,
+    Clock, RawMessageReceiver, RawMessageSender, Services, Shared, StashStub, StorageHandles,
+    WorkflowDefinitions, WorkflowHandle, WorkflowManager,
 };
 use crate::{
     data::WorkflowData,
@@ -337,30 +337,25 @@ impl<'a, E, C, S> ManageChannels for &'a WorkflowManager<E, C, S>
 where
     E: WorkflowEngine,
     C: Clock,
-    S: Storage,
+    S: Storage + 'static, // TODO: can this bound be relaxed? (may be introduced by `async_trait`)
 {
-    type Fmt = ManagerHandles<'a, WorkflowManager<E, C, S>>;
+    type Fmt = StorageHandles<'a, S>;
 
-    fn closed_receiver(&self) -> RawMessageReceiver<'a, WorkflowManager<E, C, S>> {
-        RawMessageReceiver::closed(self)
+    fn closed_receiver(&self) -> RawMessageReceiver<&'a S> {
+        RawMessageReceiver::closed(&self.storage)
     }
 
-    fn closed_sender(&self) -> RawMessageSender<'a, WorkflowManager<E, C, S>> {
-        RawMessageSender::closed(self)
+    fn closed_sender(&self) -> RawMessageSender<&'a S> {
+        RawMessageSender::closed(&self.storage)
     }
 
-    async fn create_channel(
-        &self,
-    ) -> (
-        RawMessageSender<'a, WorkflowManager<E, C, S>>,
-        RawMessageReceiver<'a, WorkflowManager<E, C, S>>,
-    ) {
+    async fn create_channel(&self) -> (RawMessageSender<&'a S>, RawMessageReceiver<&'a S>) {
         let mut transaction = self.storage.transaction().await;
         let (channel_id, record) = commit_channel(None, &mut transaction).await;
         transaction.commit().await;
         (
-            RawMessageSender::new(self, channel_id, record.clone()),
-            RawMessageReceiver::new(self, channel_id, record),
+            RawMessageSender::new(&self.storage, channel_id, record.clone()),
+            RawMessageReceiver::new(&self.storage, channel_id, record),
         )
     }
 }
@@ -370,7 +365,7 @@ impl<'a, E, C, S> ManageWorkflows for &'a WorkflowManager<E, C, S>
 where
     E: WorkflowEngine,
     C: Clock,
-    S: Storage,
+    S: Storage + 'static,
 {
     type Spawned<W: WorkflowFn + WithHandle> = WorkflowHandle<'a, W, WorkflowManager<E, C, S>>;
     type Error = anyhow::Error;
@@ -405,11 +400,11 @@ where
 #[derive(Debug, Default)]
 struct ChannelIdsCollector(ChannelIds);
 
-impl<'a, M: AsManager> InsertHandles<ManagerHandles<'a, M>> for ChannelIdsCollector {
+impl<'a, S: Storage> InsertHandles<StorageHandles<'a, S>> for ChannelIdsCollector {
     fn insert_handle(
         &mut self,
         path: HandlePathBuf,
-        handle: Handle<RawMessageReceiver<'a, M>, RawMessageSender<'a, M>>,
+        handle: Handle<RawMessageReceiver<&'a S>, RawMessageSender<&'a S>>,
     ) {
         let id = handle
             .map_receiver(|handle| handle.channel_id())

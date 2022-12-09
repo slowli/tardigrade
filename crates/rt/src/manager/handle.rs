@@ -5,7 +5,10 @@ use futures::{FutureExt, Stream, StreamExt};
 use std::{convert::Infallible, error, fmt, marker::PhantomData, ops};
 
 use crate::{
-    manager::AsManager,
+    manager::{
+        persistence::{close_host_receiver, close_host_sender, send_message},
+        AsManager,
+    },
     receipt::ExecutionError,
     storage::{
         ActiveWorkflowState, ChannelRecord, CompletedWorkflowState, ErroneousMessageRef,
@@ -203,25 +206,21 @@ impl<'a, W: WithHandle, M: AsManager> WorkflowHandle<'a, W, M> {
 
     /// Returns a handle for the workflow that allows interacting with its channels.
     #[allow(clippy::missing_panics_doc)] // false positive
-    pub async fn handle(&self) -> HostHandles<'a, W, M> {
-        let transaction = self
-            .manager
-            .as_manager()
-            .storage
-            .readonly_transaction()
-            .await;
+    pub async fn handle(&self) -> HostHandles<'a, W, M::Storage> {
+        let storage = &self.manager.as_manager().storage;
+        let transaction = storage.readonly_transaction().await;
         let mut untyped = HandleMap::with_capacity(self.ids.channel_ids.len());
 
         for (path, &id_handle) in &self.ids.channel_ids {
             let handle = match id_handle {
                 Handle::Receiver(id) => {
                     let record = transaction.channel(id).await.unwrap();
-                    let sender = MessageSender::new(self.manager, id, record);
+                    let sender = MessageSender::new(storage, id, record);
                     Handle::Receiver(sender)
                 }
                 Handle::Sender(id) => {
                     let record = transaction.channel(id).await.unwrap();
-                    let receiver = MessageReceiver::new(self.manager, id, record);
+                    let receiver = MessageReceiver::new(storage, id, record);
                     Handle::Sender(receiver)
                 }
             };
@@ -235,39 +234,39 @@ impl<'a, W: WithHandle, M: AsManager> WorkflowHandle<'a, W, M> {
 ///
 /// [`WorkflowManager`]: crate::manager::WorkflowManager
 #[derive(Debug)]
-pub struct ManagerHandles<'a, M>(PhantomData<&'a M>);
+pub struct StorageHandles<'a, S>(PhantomData<&'a S>);
 
-impl<'a, M: AsManager> HandleFormat for ManagerHandles<'a, M> {
-    type RawReceiver = RawMessageReceiver<'a, M>;
-    type Receiver<T, C: Codec<T>> = MessageReceiver<'a, T, C, M>;
-    type RawSender = RawMessageSender<'a, M>;
-    type Sender<T, C: Codec<T>> = MessageSender<'a, T, C, M>;
+impl<'a, S: Storage> HandleFormat for StorageHandles<'a, S> {
+    type RawReceiver = RawMessageReceiver<&'a S>;
+    type Receiver<T, C: Codec<T>> = MessageReceiver<T, C, &'a S>;
+    type RawSender = RawMessageSender<&'a S>;
+    type Sender<T, C: Codec<T>> = MessageSender<T, C, &'a S>;
 }
 
 /// Host handles of a shape specified by a workflow [`Interface`] and provided
 /// by a [`WorkflowManager`].
 ///
 /// [`WorkflowManager`]: crate::manager::WorkflowManager
-pub type HostHandles<'a, W, M> = InEnv<W, Inverse<ManagerHandles<'a, M>>>;
+pub type HostHandles<'a, W, S> = InEnv<W, Inverse<StorageHandles<'a, S>>>;
 
 /// Handle for a workflow channel [`Receiver`] that allows sending messages via the channel.
 ///
 /// [`Receiver`]: tardigrade::channel::Receiver
 #[derive(Debug)]
-pub struct MessageSender<'a, T, C, M> {
-    manager: &'a M,
+pub struct MessageSender<T, C, S> {
+    storage: S,
     channel_id: ChannelId,
     record: ChannelRecord,
     _ty: PhantomData<(fn(T), C)>,
 }
 
 /// [`MessageSender`] for raw bytes.
-pub type RawMessageSender<'a, M> = MessageSender<'a, Vec<u8>, Raw, M>;
+pub type RawMessageSender<S> = MessageSender<Vec<u8>, Raw, S>;
 
-impl<T, C: Codec<T>, M: AsManager> Clone for MessageSender<'_, T, C, M> {
+impl<T, C: Codec<T>, S: Storage + Clone> Clone for MessageSender<T, C, S> {
     fn clone(&self) -> Self {
         Self {
-            manager: self.manager,
+            storage: self.storage.clone(),
             channel_id: self.channel_id,
             record: self.record.clone(),
             _ty: PhantomData,
@@ -275,19 +274,19 @@ impl<T, C: Codec<T>, M: AsManager> Clone for MessageSender<'_, T, C, M> {
     }
 }
 
-impl<'a, T, C: Codec<T>, M: AsManager> MessageSender<'a, T, C, M> {
-    pub(super) fn closed(manager: &'a M) -> Self {
+impl<'a, T, C: Codec<T>, S: Storage> MessageSender<T, C, S> {
+    pub(super) fn closed(storage: S) -> Self {
         Self {
-            manager,
+            storage,
             channel_id: 0,
             record: ChannelRecord::closed(),
             _ty: PhantomData,
         }
     }
 
-    pub(super) fn new(manager: &'a M, id: ChannelId, record: ChannelRecord) -> Self {
+    pub(super) fn new(storage: S, id: ChannelId, record: ChannelRecord) -> Self {
         Self {
-            manager,
+            storage,
             channel_id: id,
             record,
             _ty: PhantomData,
@@ -310,12 +309,7 @@ impl<'a, T, C: Codec<T>, M: AsManager> MessageSender<'a, T, C, M> {
     /// Updates the snapshot of the state of this channel.
     #[allow(clippy::missing_panics_doc)] // false positive
     pub async fn update(&mut self) {
-        let transaction = self
-            .manager
-            .as_manager()
-            .storage
-            .readonly_transaction()
-            .await;
+        let transaction = self.storage.readonly_transaction().await;
         self.record = transaction.channel(self.channel_id).await.unwrap();
     }
 
@@ -333,27 +327,25 @@ impl<'a, T, C: Codec<T>, M: AsManager> MessageSender<'a, T, C, M> {
     /// Returns an error if the channel is full or closed.
     pub async fn send(&mut self, message: T) -> Result<(), SendError> {
         let raw_message = C::encode_value(message);
-        let manager = self.manager.as_manager();
-        manager.send_message(self.channel_id, raw_message).await
+        send_message(&self.storage, self.channel_id, raw_message).await
     }
 
     /// Closes this channel from the host side.
     pub async fn close(self) {
-        let manager = self.manager.as_manager();
-        manager.close_host_sender(self.channel_id).await;
+        close_host_sender(&self.storage, self.channel_id).await;
     }
 }
 
-impl<'a, T, C, M> TryFromRaw<RawMessageSender<'a, M>> for MessageSender<'a, T, C, M>
+impl<T, C, S> TryFromRaw<RawMessageSender<S>> for MessageSender<T, C, S>
 where
     C: Codec<T>,
-    M: AsManager,
+    S: Storage,
 {
     type Error = Infallible;
 
-    fn try_from_raw(raw: RawMessageSender<'a, M>) -> Result<Self, Self::Error> {
+    fn try_from_raw(raw: RawMessageSender<S>) -> Result<Self, Self::Error> {
         Ok(Self {
-            manager: raw.manager,
+            storage: raw.storage,
             channel_id: raw.channel_id,
             record: raw.record,
             _ty: PhantomData,
@@ -361,14 +353,14 @@ where
     }
 }
 
-impl<'a, T, C, M> IntoRaw<RawMessageSender<'a, M>> for MessageSender<'a, T, C, M>
+impl<T, C, S> IntoRaw<RawMessageSender<S>> for MessageSender<T, C, S>
 where
     C: Codec<T>,
-    M: AsManager,
+    S: Storage,
 {
-    fn into_raw(self) -> RawMessageSender<'a, M> {
+    fn into_raw(self) -> RawMessageSender<S> {
         RawMessageSender {
-            manager: self.manager,
+            storage: self.storage,
             channel_id: self.channel_id,
             record: self.record,
             _ty: PhantomData,
@@ -380,29 +372,29 @@ where
 ///
 /// [`Sender`]: tardigrade::channel::Sender
 #[derive(Debug)]
-pub struct MessageReceiver<'a, T, C, M> {
-    manager: &'a M,
+pub struct MessageReceiver<T, C, S> {
+    storage: S,
     channel_id: ChannelId,
     record: ChannelRecord,
     _ty: PhantomData<(C, fn() -> T)>,
 }
 
 /// [`MessageReceiver`] for raw bytes.
-pub type RawMessageReceiver<'a, M> = MessageReceiver<'a, Vec<u8>, Raw, M>;
+pub type RawMessageReceiver<S> = MessageReceiver<Vec<u8>, Raw, S>;
 
-impl<'a, T, C: Codec<T>, M: AsManager> MessageReceiver<'a, T, C, M> {
-    pub(super) fn closed(manager: &'a M) -> Self {
+impl<T, C: Codec<T>, S: Storage> MessageReceiver<T, C, S> {
+    pub(super) fn closed(storage: S) -> Self {
         Self {
-            manager,
+            storage,
             channel_id: 0,
             record: ChannelRecord::closed(),
             _ty: PhantomData,
         }
     }
 
-    pub(super) fn new(manager: &'a M, id: ChannelId, record: ChannelRecord) -> Self {
+    pub(super) fn new(storage: S, id: ChannelId, record: ChannelRecord) -> Self {
         Self {
-            manager,
+            storage,
             channel_id: id,
             record,
             _ty: PhantomData,
@@ -425,12 +417,7 @@ impl<'a, T, C: Codec<T>, M: AsManager> MessageReceiver<'a, T, C, M> {
     /// Updates the snapshot of the state of this channel.
     #[allow(clippy::missing_panics_doc)] // false positive
     pub async fn update(&mut self) {
-        let transaction = self
-            .manager
-            .as_manager()
-            .storage
-            .readonly_transaction()
-            .await;
+        let transaction = self.storage.readonly_transaction().await;
         self.record = transaction.channel(self.channel_id).await.unwrap();
     }
 
@@ -443,8 +430,7 @@ impl<'a, T, C: Codec<T>, M: AsManager> MessageReceiver<'a, T, C, M> {
         &self,
         index: usize,
     ) -> Result<ReceivedMessage<T, C>, MessageError> {
-        let manager = self.manager.as_manager();
-        let transaction = manager.storage.readonly_transaction().await;
+        let transaction = self.storage.readonly_transaction().await;
         let raw_message = transaction.channel_message(self.channel_id, index).await?;
 
         Ok(ReceivedMessage {
@@ -476,9 +462,8 @@ impl<'a, T, C: Codec<T>, M: AsManager> MessageReceiver<'a, T, C, M> {
         };
         let indices = start_idx..=end_idx;
 
-        let manager = self.manager.as_manager();
         let messages_future = async {
-            let tx = manager.storage.readonly_transaction().await;
+            let tx = self.storage.readonly_transaction().await;
             RefStream::from_source(tx, |tx| tx.channel_messages(self.channel_id, indices))
         };
         messages_future
@@ -503,8 +488,7 @@ impl<'a, T, C: Codec<T>, M: AsManager> MessageReceiver<'a, T, C, M> {
     /// If [`Self::can_manipulate()`] returns `false`, this is a no-op.
     pub async fn truncate(&self, min_index: usize) {
         if self.can_manipulate() {
-            let manager = self.manager.as_manager();
-            let mut transaction = manager.storage.transaction().await;
+            let mut transaction = self.storage.transaction().await;
             transaction
                 .truncate_channel(self.channel_id, min_index)
                 .await;
@@ -516,22 +500,21 @@ impl<'a, T, C: Codec<T>, M: AsManager> MessageReceiver<'a, T, C, M> {
     /// this is a no-op.
     pub async fn close(self) {
         if self.can_manipulate() {
-            let manager = self.manager.as_manager();
-            manager.close_host_receiver(self.channel_id).await;
+            close_host_receiver(&self.storage, self.channel_id).await;
         }
     }
 }
 
-impl<'a, T, C, M> TryFromRaw<RawMessageReceiver<'a, M>> for MessageReceiver<'a, T, C, M>
+impl<T, C, S> TryFromRaw<RawMessageReceiver<S>> for MessageReceiver<T, C, S>
 where
     C: Codec<T>,
-    M: AsManager,
+    S: Storage,
 {
     type Error = Infallible;
 
-    fn try_from_raw(raw: RawMessageReceiver<'a, M>) -> Result<Self, Self::Error> {
+    fn try_from_raw(raw: RawMessageReceiver<S>) -> Result<Self, Self::Error> {
         Ok(Self {
-            manager: raw.manager,
+            storage: raw.storage,
             channel_id: raw.channel_id,
             record: raw.record,
             _ty: PhantomData,
@@ -539,14 +522,14 @@ where
     }
 }
 
-impl<'a, T, C, M> IntoRaw<RawMessageReceiver<'a, M>> for MessageReceiver<'a, T, C, M>
+impl<T, C, S> IntoRaw<RawMessageReceiver<S>> for MessageReceiver<T, C, S>
 where
     C: Codec<T>,
-    M: AsManager,
+    S: Storage,
 {
-    fn into_raw(self) -> RawMessageReceiver<'a, M> {
+    fn into_raw(self) -> RawMessageReceiver<S> {
         RawMessageReceiver {
-            manager: self.manager,
+            storage: self.storage,
             channel_id: self.channel_id,
             record: self.record,
             _ty: PhantomData,

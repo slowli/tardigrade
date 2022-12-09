@@ -10,12 +10,13 @@ use crate::{
     receipt::{ChannelEvent, ChannelEventKind, ExecutionError, Receipt},
     storage::{
         ActiveWorkflowState, ChannelRecord, CompletedWorkflowState, ErroneousMessageRef,
-        StorageTransaction, WorkflowSelectionCriteria, WorkflowState, WorkflowWaker,
+        ReadChannels, Storage, StorageTransaction, WorkflowSelectionCriteria, WorkflowState,
+        WorkflowWaker, WriteChannels,
     },
     utils::{clone_join_error, Message},
     PersistedWorkflow,
 };
-use tardigrade::{handle::Handle, ChannelId, WorkflowId};
+use tardigrade::{channel::SendError, handle::Handle, ChannelId, WorkflowId};
 
 impl ChannelRecord {
     fn close_side(&mut self, side: ChannelSide) {
@@ -192,4 +193,36 @@ impl Receipt {
             None
         })
     }
+}
+
+pub(super) async fn send_message<S: Storage>(
+    storage: &S,
+    channel_id: ChannelId,
+    message: Vec<u8>,
+) -> Result<(), SendError> {
+    let mut transaction = storage.transaction().await;
+    let channel = transaction.channel(channel_id).await.unwrap();
+    if channel.is_closed {
+        return Err(SendError::Closed);
+    }
+
+    transaction.push_messages(channel_id, vec![message]).await;
+    transaction.commit().await;
+    Ok(())
+}
+
+pub(super) async fn close_host_sender<S: Storage>(storage: &S, channel_id: ChannelId) {
+    let mut transaction = storage.transaction().await;
+    StorageHelper::new(&mut transaction)
+        .close_channel_side(channel_id, ChannelSide::HostSender)
+        .await;
+    transaction.commit().await;
+}
+
+pub(super) async fn close_host_receiver<S: Storage>(storage: &S, channel_id: ChannelId) {
+    let mut transaction = storage.transaction().await;
+    StorageHelper::new(&mut transaction)
+        .close_channel_side(channel_id, ChannelSide::HostReceiver)
+        .await;
+    transaction.commit().await;
 }

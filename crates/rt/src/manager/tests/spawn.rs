@@ -180,8 +180,7 @@ async fn send_message_from_child(
         .async_scope(tick_workflow(manager, CHILD_ID))
         .await
         .unwrap();
-    manager
-        .send_message(traces_id, b"trace".to_vec())
+    send_message(&manager.storage, traces_id, b"trace".to_vec())
         .await
         .unwrap();
 
@@ -563,11 +562,11 @@ async fn test_child_with_copied_closed_sender(close_before_spawn: bool) {
     let events_id = channel_id(workflow.ids(), "events");
 
     if close_before_spawn {
-        manager.close_host_receiver(events_id).await;
+        close_host_receiver(&manager.storage, events_id).await;
     }
     init_workflow_with_copied_child_channel(&manager, workflow_id, &mut poll_fn_sx).await;
     if !close_before_spawn {
-        manager.close_host_receiver(events_id).await;
+        close_host_receiver(&manager.storage, events_id).await;
     }
 
     let test_writing_event_in_child: MockPollFn = |ctx| {

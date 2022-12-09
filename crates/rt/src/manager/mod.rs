@@ -22,8 +22,8 @@ pub(crate) use self::services::{Services, StashStub};
 pub use self::{
     handle::{
         AnyWorkflowHandle, CompletedWorkflowHandle, ConcurrencyError, ErroneousMessage,
-        ErroredWorkflowHandle, HostHandles, ManagerHandles, MessageReceiver, MessageSender,
-        RawMessageReceiver, RawMessageSender, ReceivedMessage, WorkflowHandle,
+        ErroredWorkflowHandle, HostHandles, MessageReceiver, MessageSender, RawMessageReceiver,
+        RawMessageSender, ReceivedMessage, StorageHandles, WorkflowHandle,
     },
     services::{Clock, Schedule, TimerFuture},
     tick::{TickResult, WouldBlock},
@@ -35,10 +35,10 @@ use crate::{
     engine::{DefineWorkflow, WorkflowEngine, WorkflowModule},
     storage::{
         ChannelRecord, ModuleRecord, ReadChannels, ReadModules, ReadWorkflows, Storage,
-        StorageTransaction, WorkflowState, WriteChannels, WriteModules, WriteWorkflows,
+        StorageTransaction, WorkflowState, WriteModules, WriteWorkflows,
     },
 };
-use tardigrade::{channel::SendError, ChannelId, WorkflowId};
+use tardigrade::{ChannelId, WorkflowId};
 
 #[derive(Debug)]
 struct WorkflowDefinitions<D> {
@@ -233,15 +233,15 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
     }
 
     /// Returns a sender handle for the specified channel, or `None` if the channel does not exist.
-    pub async fn sender(&self, channel_id: ChannelId) -> Option<RawMessageSender<'_, Self>> {
+    pub async fn sender(&self, channel_id: ChannelId) -> Option<RawMessageSender<&S>> {
         let record = self.channel(channel_id).await?;
-        Some(RawMessageSender::new(self, channel_id, record))
+        Some(RawMessageSender::new(&self.storage, channel_id, record))
     }
 
     /// Returns a receiver handle for the specified channel, or `None` if the channel does not exist.
-    pub async fn receiver(&self, channel_id: ChannelId) -> Option<RawMessageReceiver<'_, Self>> {
+    pub async fn receiver(&self, channel_id: ChannelId) -> Option<RawMessageReceiver<&S>> {
         let record = self.channel(channel_id).await?;
-        Some(RawMessageReceiver::new(self, channel_id, record))
+        Some(RawMessageReceiver::new(&self.storage, channel_id, record))
     }
 
     /// Returns a handle to an active workflow with the specified ID. If the workflow is
@@ -305,38 +305,6 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
             clock: Arc::clone(&self.clock) as Arc<dyn Clock>,
             definitions: Arc::clone(&self.definitions),
         }
-    }
-
-    pub(crate) async fn send_message(
-        &self,
-        channel_id: ChannelId,
-        message: Vec<u8>,
-    ) -> Result<(), SendError> {
-        let mut transaction = self.storage.transaction().await;
-        let channel = transaction.channel(channel_id).await.unwrap();
-        if channel.is_closed {
-            return Err(SendError::Closed);
-        }
-
-        transaction.push_messages(channel_id, vec![message]).await;
-        transaction.commit().await;
-        Ok(())
-    }
-
-    pub(crate) async fn close_host_sender(&self, channel_id: ChannelId) {
-        let mut transaction = self.storage.transaction().await;
-        StorageHelper::new(&mut transaction)
-            .close_channel_side(channel_id, ChannelSide::HostSender)
-            .await;
-        transaction.commit().await;
-    }
-
-    pub(crate) async fn close_host_receiver(&self, channel_id: ChannelId) {
-        let mut transaction = self.storage.transaction().await;
-        StorageHelper::new(&mut transaction)
-            .close_channel_side(channel_id, ChannelSide::HostReceiver)
-            .await;
-        transaction.commit().await;
     }
 
     /// Sets the current time for this manager. This may expire timers in some of the contained

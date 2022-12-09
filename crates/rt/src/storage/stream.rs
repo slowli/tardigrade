@@ -42,8 +42,14 @@ impl<S: Storage> Streaming<S> {
 
 #[async_trait]
 impl<S: Storage> Storage for Streaming<S> {
-    type Transaction<'a> = StreamingTransaction<S::Transaction<'a>>;
-    type ReadonlyTransaction<'a> = S::ReadonlyTransaction<'a>;
+    type Transaction<'a>
+    where
+        S: 'a,
+    = StreamingTransaction<S::Transaction<'a>>;
+    type ReadonlyTransaction<'a>
+    where
+        S: 'a,
+    = S::ReadonlyTransaction<'a>;
 
     async fn transaction(&self) -> Self::Transaction<'_> {
         let transaction = self.inner.transaction().await;
@@ -196,6 +202,9 @@ impl<T: StorageTransaction> StorageTransaction for StreamingTransaction<T> {
             .new_messages
             .into_iter()
             .map(|(channel_id, count)| Ok(MessageEvent { channel_id, count }));
-        self.events_sink.send_all(&mut stream::iter(events)).await.ok();
+        self.events_sink
+            .send_all(&mut stream::iter(events))
+            .await
+            .ok();
     }
 }
