@@ -10,7 +10,7 @@ use crate::{
         ChannelEventKind, ResourceEvent, ResourceEventKind, ResourceId, StubEvent, StubEventKind,
         StubId,
     },
-    storage::{LocalTransaction, Readonly, WorkflowWaker},
+    storage::{LocalReadonlyTransaction, WorkflowWaker},
     workflow::ChannelIds,
 };
 use tardigrade::{
@@ -26,14 +26,13 @@ async fn wakers_for_workflow(
 ) -> Vec<WorkflowWaker> {
     let transaction = manager.storage.readonly_transaction().await;
     transaction
-        .as_ref()
         .wakers_for_workflow(workflow_id)
         .cloned()
         .collect()
 }
 
 async fn peek_channel(
-    transaction: &Readonly<LocalTransaction<'_>>,
+    transaction: &LocalReadonlyTransaction<'_>,
     channel_id: ChannelId,
 ) -> Vec<Vec<u8>> {
     let channel = transaction.channel(channel_id).await.unwrap();

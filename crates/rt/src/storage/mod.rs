@@ -47,7 +47,10 @@ mod records;
 mod stream;
 
 pub use self::{
-    local::{LocalStorage, LocalStorageSnapshot, LocalTransaction, ModuleRecordMut},
+    local::{
+        LocalReadonlyTransaction, LocalStorage, LocalStorageSnapshot, LocalTransaction,
+        ModuleRecordMut,
+    },
     records::{
         ActiveWorkflowState, ChannelRecord, CompletedWorkflowState, ErroneousMessageRef,
         ErroredWorkflowState, MessageError, ModuleRecord, WorkflowRecord,
@@ -306,4 +309,4 @@ impl<T: ReadonlyStorageTransaction> AsRef<T> for Readonly<T> {
     }
 }
 
-delegate_read_traits!(Readonly { inner });
+delegate_read_traits!(Readonly<T> { inner: T });

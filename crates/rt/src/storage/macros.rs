@@ -1,11 +1,11 @@
 //! Helper macros.
 
 macro_rules! delegate_read_traits {
-    ($name:ident { $field:ident }) => {
+    ($name:ty { $field:ident $(: $field_ty:ident)? }) => {
         #[async_trait::async_trait]
-        impl<T> $crate::storage::ReadModules for $name<T>
-        where
-            T: $crate::storage::ReadonlyStorageTransaction,
+        impl$(<$field_ty>)? $crate::storage::ReadModules for $name
+        $(where
+            $field_ty: $crate::storage::ReadonlyStorageTransaction,)?
         {
             async fn module(&self, id: &str) -> Option<$crate::storage::ModuleRecord> {
                 self.$field.module(id).await
@@ -17,9 +17,9 @@ macro_rules! delegate_read_traits {
         }
 
         #[async_trait::async_trait]
-        impl<T> $crate::storage::ReadChannels for $name<T>
-        where
-            T: $crate::storage::ReadonlyStorageTransaction,
+        impl$(<$field_ty>)? $crate::storage::ReadChannels for $name
+        $(where
+            $field_ty: $crate::storage::ReadonlyStorageTransaction,)?
         {
             async fn channel(
                 &self,
@@ -46,9 +46,9 @@ macro_rules! delegate_read_traits {
         }
 
         #[async_trait::async_trait]
-        impl<T> $crate::storage::ReadWorkflows for $name<T>
-        where
-            T: $crate::storage::ReadonlyStorageTransaction,
+        impl$(<$field_ty>)? $crate::storage::ReadWorkflows for $name
+        $(where
+            $field_ty: $crate::storage::ReadonlyStorageTransaction,)?
         {
             async fn count_active_workflows(&self) -> usize {
                 self.$field.count_active_workflows().await

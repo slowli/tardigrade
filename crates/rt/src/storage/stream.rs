@@ -125,13 +125,13 @@ impl<S: Storage> StreamingStorage<mpsc::Sender<MessageOrEof>> for Streaming<S> {
 ///
 /// Note that committing this transaction may involve dealing with backpressure.
 #[derive(Debug)]
-pub struct StreamingTransaction<S> {
-    inner: S,
+pub struct StreamingTransaction<T> {
+    inner: T,
     events_sink: mpsc::Sender<MessageEvent>,
     new_messages: HashMap<ChannelId, usize>,
 }
 
-delegate_read_traits!(StreamingTransaction { inner });
+delegate_read_traits!(StreamingTransaction<T> { inner: T });
 
 #[async_trait]
 impl<T: StorageTransaction> WriteModules for StreamingTransaction<T> {
