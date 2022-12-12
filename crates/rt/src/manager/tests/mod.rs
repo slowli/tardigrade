@@ -29,16 +29,17 @@ use tardigrade::{
 
 const DEFINITION_ID: &str = "test@latest::TestWorkflow";
 
-type LocalManager<C = ()> = WorkflowManager<MockEngine, C, LocalStorage>;
+type LocalManager<C = (), S = LocalStorage> = WorkflowManager<MockEngine, C, S>;
 
 fn channel_id(ids: &WorkflowAndChannelIds, path: &str) -> ChannelId {
     ids.channel_ids[&HandlePath::new(path)].factor()
 }
 
-pub(crate) async fn create_test_manager<C: Clock>(
+pub(crate) async fn create_test_manager_with_storage<S: Storage, C: Clock>(
     poll_fns: MockAnswers,
     clock: C,
-) -> LocalManager<C> {
+    storage: S,
+) -> LocalManager<C, S> {
     let engine = MockEngine::new(poll_fns);
     let module_record = ModuleRecord {
         id: "test@latest".to_owned(),
@@ -47,7 +48,7 @@ pub(crate) async fn create_test_manager<C: Clock>(
     };
     let module = engine.create_module(&module_record).await.unwrap();
 
-    let mut manager = WorkflowManager::builder(engine, LocalStorage::default())
+    let mut manager = WorkflowManager::builder(engine, storage)
         .with_clock(clock)
         .build()
         .await
@@ -57,15 +58,32 @@ pub(crate) async fn create_test_manager<C: Clock>(
     manager
 }
 
-pub(crate) async fn create_test_workflow<C: Clock>(
-    manager: &LocalManager<C>,
-) -> WorkflowHandle<'_, (), LocalManager<C>> {
-    let builder = manager.new_workflow(DEFINITION_ID).unwrap();
+async fn create_test_manager<C: Clock>(poll_fns: MockAnswers, clock: C) -> LocalManager<C> {
+    create_test_manager_with_storage(poll_fns, clock, LocalStorage::default()).await
+}
+
+pub(crate) async fn create_test_workflow<C: Clock, S: Storage + 'static>(
+    manager: &LocalManager<C, S>,
+) -> WorkflowHandle<'_, (), LocalManager<C, S>> {
+    let builder = manager.new_workflow::<()>(DEFINITION_ID).unwrap();
     let (handles, _) = builder.handles(|_| { /* use default config */ }).await;
-    builder
+    let senders_to_close = handles.values().filter_map(|handle| {
+        if let Handle::Sender(sender) = handle {
+            Some(sender.clone())
+        } else {
+            None
+        }
+    });
+    let senders_to_close: Vec<_> = senders_to_close.collect();
+
+    let workflow = builder
         .build(b"test_input".to_vec(), handles)
         .await
-        .unwrap()
+        .unwrap();
+    for sender in senders_to_close {
+        sender.close().await;
+    }
+    workflow
 }
 
 async fn tick_workflow(manager: &LocalManager, id: WorkflowId) -> Result<Receipt, ExecutionError> {
@@ -638,8 +656,7 @@ async fn non_owned_channel_error() {
 
     let orders_id = channel_id(workflow.ids(), "orders");
     let orders_rx = manager.receiver(orders_id).await.unwrap();
-    let traces_id = channel_id(workflow.ids(), "traces");
-    let traces_sx = manager.sender(traces_id).await.unwrap();
+    let (traces_sx, _) = manager.create_channel().await;
     let mut handles = HandleMap::new();
     handles.insert("orders".into(), Handle::Receiver(orders_rx));
     handles.insert("events".into(), Handle::Sender(traces_sx.clone()));
@@ -668,7 +685,7 @@ async fn non_owned_channel_error() {
         .await
         .unwrap();
 
-    close_host_sender(storage, traces_id).await;
+    close_host_sender(storage, traces_sx.channel_id()).await;
     let mut handles = HandleMap::new();
     handles.insert(
         "orders".into(),

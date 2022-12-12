@@ -2,6 +2,8 @@
 //!
 //! See `WorkflowManager` docs for an overview and examples of usage.
 
+// FIXME: move workflow / channel getters to storage
+
 use chrono::{DateTime, Utc};
 use futures::{lock::Mutex, StreamExt};
 use tracing_tunnel::{LocalSpans, PersistedMetadata, PersistedSpans};

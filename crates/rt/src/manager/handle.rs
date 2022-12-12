@@ -1,6 +1,6 @@
 //! Handles for workflows in a `WorkflowManager` and their components (e.g., channels).
 
-use futures::{FutureExt, Stream, StreamExt};
+use futures::{channel::mpsc, future, FutureExt, Stream, StreamExt};
 
 use std::{convert::Infallible, error, fmt, marker::PhantomData, ops};
 
@@ -12,8 +12,8 @@ use crate::{
     receipt::ExecutionError,
     storage::{
         ActiveWorkflowState, ChannelRecord, CompletedWorkflowState, ErroneousMessageRef,
-        MessageError, ReadChannels, ReadWorkflows, Storage, StorageTransaction, WorkflowState,
-        WriteChannels,
+        MessageError, MessageOrEof, ReadChannels, ReadWorkflows, Storage, StorageTransaction,
+        StreamMessages, WorkflowState, WriteChannels,
     },
     utils::RefStream,
     workflow::WorkflowAndChannelIds,
@@ -325,7 +325,7 @@ impl<'a, T, C: Codec<T>, S: Storage> MessageSender<T, C, S> {
     /// # Errors
     ///
     /// Returns an error if the channel is full or closed.
-    pub async fn send(&mut self, message: T) -> Result<(), SendError> {
+    pub async fn send(&self, message: T) -> Result<(), SendError> {
         let raw_message = C::encode_value(message);
         send_message(&self.storage, self.channel_id, raw_message).await
     }
@@ -502,6 +502,31 @@ impl<T, C: Codec<T>, S: Storage> MessageReceiver<T, C, S> {
         if self.can_manipulate() {
             close_host_receiver(&self.storage, self.channel_id).await;
         }
+    }
+}
+
+impl<T, C: Codec<T>, S: StreamMessages> MessageReceiver<T, C, S> {
+    /// FIXME
+    pub fn stream_messages(
+        &self,
+        start_index: usize,
+    ) -> impl Stream<Item = ReceivedMessage<T, C>> + '_ {
+        let (sx, rx) = mpsc::channel(16);
+        let messages = self
+            .storage
+            .stream_messages(self.channel_id, start_index, sx)
+            .map(|()| rx)
+            .flatten_stream();
+        messages.filter_map(|message_or_eof| {
+            future::ready(match message_or_eof {
+                MessageOrEof::Message(index, raw_message) => Some(ReceivedMessage {
+                    index,
+                    raw_message,
+                    _ty: PhantomData,
+                }),
+                MessageOrEof::Eof => None, // TODO: signal the termination somehow
+            })
+        })
     }
 }
 

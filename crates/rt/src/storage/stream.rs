@@ -1,6 +1,6 @@
 //! Storage streaming.
 
-#![allow(clippy::similar_names)] // `_sx` / `_rx` naming is acceptable
+#![allow(clippy::similar_names)] // `*_sx` / `*_rx` is conventional naming
 
 use async_trait::async_trait;
 use futures::{
@@ -9,7 +9,7 @@ use futures::{
     lock::Mutex,
     sink,
     stream::{self, FuturesUnordered},
-    FutureExt, Sink, SinkExt, StreamExt,
+    FutureExt, SinkExt, StreamExt,
 };
 use tracing_tunnel::PersistedMetadata;
 
@@ -32,16 +32,50 @@ pub struct MessageEvent {
     pub(crate) channel_id: ChannelId,
 }
 
+/// Message from a channel or the channel end marker.
 #[derive(Debug)]
 pub enum MessageOrEof {
+    /// Message payload together with the 0-based message index.
     Message(usize, Vec<u8>),
+    /// Channel end marker.
     Eof,
 }
 
+/// FIXME
 #[async_trait]
-pub trait StreamingStorage<S: Sink<MessageOrEof>>: Storage {
+pub trait StreamMessages: Storage {
     /// Streams messages to the provided sink.
-    async fn stream_messages(&self, channel_id: ChannelId, start_index: usize, sink: S);
+    async fn stream_messages(
+        &self,
+        channel_id: ChannelId,
+        start_index: usize,
+        sink: mpsc::Sender<MessageOrEof>,
+    );
+}
+
+#[async_trait]
+impl<S: StreamMessages + ?Sized> StreamMessages for &S {
+    async fn stream_messages(
+        &self,
+        channel_id: ChannelId,
+        start_index: usize,
+        sink: mpsc::Sender<MessageOrEof>,
+    ) {
+        (**self)
+            .stream_messages(channel_id, start_index, sink)
+            .await;
+    }
+}
+
+/// FIXME
+pub trait StreamCommits: Storage {
+    /// Sets the sink to stream commit events to. Unlike [`stream_messages()`], the sink
+    /// will replace the existing commit sink if any was set previously. The sink should
+    /// be propagated to storages cloned from this storage, but not to the parent / sibling
+    /// storages.
+    ///
+    /// [`stream_messages()`]: StreamMessages::stream_messages()
+    fn stream_commits(&mut self, sink: mpsc::Sender<()>);
 }
 
 #[derive(Debug)]
@@ -52,10 +86,11 @@ struct MessageStreamRequest {
 }
 
 /// Storage that streams [events](MessageEvent) about new messages when they are committed.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Streaming<S> {
     inner: S,
     message_events_sx: mpsc::Sender<MessageEvent>,
+    commits_sx: mpsc::Sender<()>,
     message_streams_sx: mpsc::UnboundedSender<MessageStreamRequest>,
 }
 
@@ -68,6 +103,7 @@ impl<S: Storage + Clone> Streaming<S> {
 
         let this = Self {
             inner: storage.clone(),
+            commits_sx: mpsc::channel(1).0,
             message_events_sx,
             message_streams_sx,
         };
@@ -93,7 +129,8 @@ impl<S: Storage> Storage for Streaming<S> {
         let transaction = self.inner.transaction().await;
         StreamingTransaction {
             inner: transaction,
-            events_sink: self.message_events_sx.clone(),
+            message_events_sx: self.message_events_sx.clone(),
+            commits_sx: self.commits_sx.clone(),
             new_messages: HashMap::new(),
         }
     }
@@ -104,7 +141,7 @@ impl<S: Storage> Storage for Streaming<S> {
 }
 
 #[async_trait]
-impl<S: Storage> StreamingStorage<mpsc::Sender<MessageOrEof>> for Streaming<S> {
+impl<S: Storage> StreamMessages for Streaming<S> {
     async fn stream_messages(
         &self,
         channel_id: ChannelId,
@@ -120,6 +157,12 @@ impl<S: Storage> StreamingStorage<mpsc::Sender<MessageOrEof>> for Streaming<S> {
     }
 }
 
+impl<S: Storage> StreamCommits for Streaming<S> {
+    fn stream_commits(&mut self, sink: mpsc::Sender<()>) {
+        self.commits_sx = sink;
+    }
+}
+
 /// Wrapper around a transaction that streams [`MessageEvent`]s on commit. Used
 /// as the transaction type for [`Streaming`] storages.
 ///
@@ -127,7 +170,8 @@ impl<S: Storage> StreamingStorage<mpsc::Sender<MessageOrEof>> for Streaming<S> {
 #[derive(Debug)]
 pub struct StreamingTransaction<T> {
     inner: T,
-    events_sink: mpsc::Sender<MessageEvent>,
+    message_events_sx: mpsc::Sender<MessageEvent>,
+    commits_sx: mpsc::Sender<()>,
     new_messages: HashMap<ChannelId, usize>,
 }
 
@@ -263,11 +307,15 @@ impl<T: StorageTransaction> WriteWorkflowWakers for StreamingTransaction<T> {
 impl<T: StorageTransaction> StorageTransaction for StreamingTransaction<T> {
     async fn commit(mut self) {
         self.inner.commit().await;
+        if !self.new_messages.is_empty() {
+            self.commits_sx.send(()).await.ok();
+        }
+
         let events = self
             .new_messages
             .into_iter()
             .map(|(channel_id, _)| Ok(MessageEvent { channel_id }));
-        self.events_sink
+        self.message_events_sx
             .send_all(&mut stream::iter(events))
             .await
             .ok();

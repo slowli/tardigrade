@@ -56,7 +56,9 @@ pub use self::{
         ErroredWorkflowState, MessageError, ModuleRecord, WorkflowRecord,
         WorkflowSelectionCriteria, WorkflowState, WorkflowWaker, WorkflowWakerRecord,
     },
-    stream::{MessageEvent, Streaming, StreamingTransaction},
+    stream::{
+        MessageEvent, MessageOrEof, StreamCommits, StreamMessages, Streaming, StreamingTransaction,
+    },
 };
 
 use tardigrade::{ChannelId, WakerId, WorkflowId};
