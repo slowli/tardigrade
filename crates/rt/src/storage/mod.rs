@@ -58,7 +58,7 @@ pub use self::{
         WorkflowSelectionCriteria, WorkflowState, WorkflowWaker, WorkflowWakerRecord,
     },
     stream::{
-        MessageEvent, MessageOrEof, StreamCommits, StreamMessages, Streaming, StreamingTransaction,
+        CommitStream, MessageEvent, MessageOrEof, StreamMessages, Streaming, StreamingTransaction,
     },
 };
 

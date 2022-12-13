@@ -1,21 +1,22 @@
 //! Storage streaming.
 
-#![allow(clippy::similar_names)] // `*_sx` / `*_rx` is conventional naming
-
 use async_trait::async_trait;
 use futures::{
     channel::mpsc,
     future::{BoxFuture, Future},
     lock::Mutex,
     sink,
-    stream::{self, FuturesUnordered},
-    FutureExt, SinkExt, StreamExt,
+    stream::{self, FusedStream, FuturesUnordered},
+    FutureExt, SinkExt, Stream, StreamExt,
 };
+use pin_project_lite::pin_project;
 use tracing_tunnel::PersistedMetadata;
 
 use std::{
     collections::{HashMap, HashSet},
+    pin::Pin,
     sync::Arc,
+    task::{Context, Poll},
 };
 
 use super::{
@@ -67,15 +68,44 @@ impl<S: StreamMessages + ?Sized> StreamMessages for &S {
     }
 }
 
-/// FIXME
-pub trait StreamCommits: Storage {
-    /// Sets the sink to stream commit events to. Unlike [`stream_messages()`], the sink
-    /// will replace the existing commit sink if any was set previously. The sink should
-    /// be propagated to storages cloned from this storage, but not to the parent / sibling
-    /// storages.
-    ///
-    /// [`stream_messages()`]: StreamMessages::stream_messages()
-    fn stream_commits(&mut self, sink: mpsc::Sender<()>);
+pin_project! {
+    /// Stream of commits returned from [`Streaming::stream_commits()`].
+    #[derive(Debug)]
+    pub struct CommitStream {
+        #[pin]
+        inner: mpsc::Receiver<()>,
+    }
+}
+
+impl Stream for CommitStream {
+    type Item = ();
+
+    // Compresses a sequence of available items into a single item.
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut seen_item = false;
+        loop {
+            let projection = self.as_mut().project();
+            match projection.inner.poll_next(cx) {
+                Poll::Pending => {
+                    return if seen_item {
+                        Poll::Ready(Some(()))
+                    } else {
+                        Poll::Pending
+                    }
+                }
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Ready(Some(_)) => {
+                    seen_item = true;
+                }
+            }
+        }
+    }
+}
+
+impl FusedStream for CommitStream {
+    fn is_terminated(&self) -> bool {
+        self.inner.is_terminated()
+    }
 }
 
 #[derive(Debug)]
@@ -86,12 +116,23 @@ struct MessageStreamRequest {
 }
 
 /// Storage that streams [events](MessageEvent) about new messages when they are committed.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Streaming<S> {
     inner: S,
     message_events_sx: mpsc::Sender<MessageEvent>,
     commits_sx: mpsc::Sender<()>,
     message_streams_sx: mpsc::UnboundedSender<MessageStreamRequest>,
+}
+
+impl<S: Storage + Clone> Clone for Streaming<S> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            message_events_sx: self.message_events_sx.clone(),
+            commits_sx: mpsc::channel(1).0, // intentionally not cloned
+            message_streams_sx: self.message_streams_sx.clone(),
+        }
+    }
 }
 
 impl<S: Storage + Clone> Streaming<S> {
@@ -103,13 +144,21 @@ impl<S: Storage + Clone> Streaming<S> {
 
         let this = Self {
             inner: storage.clone(),
-            commits_sx: mpsc::channel(1).0,
+            commits_sx: mpsc::channel(0).0,
             message_events_sx,
             message_streams_sx,
         };
         let router = MessageRouter::new(message_events_rx, message_streams_rx);
         let router_task = router.run(storage);
         (this, router_task)
+    }
+
+    /// Returns a stream of commit events specific to this storage. A previous stream returned
+    /// from this method, if any, is disconnected after the call.
+    pub fn stream_commits(&mut self) -> CommitStream {
+        let (commits_sx, commits_rx) = mpsc::channel(0);
+        self.commits_sx = commits_sx;
+        CommitStream { inner: commits_rx }
     }
 }
 
@@ -154,12 +203,6 @@ impl<S: Storage> StreamMessages for Streaming<S> {
             message_sx: sink,
         };
         self.message_streams_sx.unbounded_send(request).ok();
-    }
-}
-
-impl<S: Storage> StreamCommits for Streaming<S> {
-    fn stream_commits(&mut self, sink: mpsc::Sender<()>) {
-        self.commits_sx = sink;
     }
 }
 
@@ -308,7 +351,9 @@ impl<T: StorageTransaction> StorageTransaction for StreamingTransaction<T> {
     async fn commit(mut self) {
         self.inner.commit().await;
         if !self.new_messages.is_empty() {
-            self.commits_sx.send(()).await.ok();
+            // If sending fails, the consumer has an unprocessed event, which is OK
+            // for our purposes.
+            dbg!(self.commits_sx.try_send(()).ok());
         }
 
         let events = self
@@ -514,6 +559,7 @@ impl MessageRouter {
 mod tests {
     use assert_matches::assert_matches;
     use async_std::task;
+    use futures::future;
 
     use super::*;
     use crate::storage::LocalStorage;
@@ -658,5 +704,21 @@ mod tests {
 
         router_task.cancel().await;
         assert!(first_rx.next().await.is_none());
+    }
+
+    #[async_std::test]
+    async fn commit_stream_basics() {
+        let (mut commits_sx, commits_rx) = mpsc::channel(2);
+        let mut commits_rx = CommitStream { inner: commits_rx };
+        for _ in 0..3 {
+            commits_sx.try_send(()).unwrap();
+        }
+
+        commits_rx.next().await.unwrap();
+        assert!(commits_rx.next().now_or_never().is_none());
+
+        future::join(commits_rx.next(), commits_sx.send(()).map(Result::unwrap)).await;
+        drop(commits_sx);
+        assert!(commits_rx.next().await.is_none());
     }
 }
