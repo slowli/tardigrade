@@ -1,6 +1,7 @@
 //! Handles for workflows in a `WorkflowManager` and their components (e.g., channels).
 
 use async_trait::async_trait;
+use futures::{Future, FutureExt};
 
 mod channel;
 mod workflow;
@@ -17,14 +18,15 @@ pub use self::{
 pub use crate::storage::helper::ConcurrencyError;
 
 use crate::storage::{
-    helper, ChannelRecord, ReadChannels, ReadModules, ReadWorkflows, Storage, StorageTransaction,
-    WorkflowState,
+    helper, ChannelRecord, ReadonlyStorageTransaction, Storage, StorageTransaction, WorkflowState,
 };
 use tardigrade::{
     spawn::ManageChannels,
     workflow::{HandleFormat, InEnv, Inverse},
     ChannelId, Codec, WorkflowId,
 };
+
+type Channel<'a, S> = (RawMessageSender<&'a S>, RawMessageReceiver<&'a S>);
 
 /// [`HandleFormat`] for handles returned by a [`WorkflowManager`].
 ///
@@ -47,13 +49,26 @@ impl<'a, S: Storage> From<&'a S> for StorageRef<'a, S> {
     }
 }
 
+// The convoluted implementations for methods are required to properly infer the `Send` bound
+// for the `async fn` futures for all `S: Storage`. If done normally, this bound is only inferred
+// for `S: 'static` (probably related to GAT limitations).
 impl<'a, S: Storage> StorageRef<'a, S> {
     /// Returns current information about the channel with the specified ID, or `None` if a channel
     /// with this ID does not exist.
     pub async fn channel(&self, channel_id: ChannelId) -> Option<ChannelRecord> {
-        let transaction = self.inner.readonly_transaction().await;
-        let record = transaction.channel(channel_id).await?;
-        Some(record)
+        #[allow(clippy::manual_async_fn)] // manual impl is required because of the `Send` bound
+        #[inline]
+        fn get_channel<'t, T: 't + ReadonlyStorageTransaction>(
+            transaction: T,
+            channel_id: ChannelId,
+        ) -> impl Future<Output = Option<ChannelRecord>> + Send + 't {
+            async move { transaction.channel(channel_id).await }
+        }
+
+        self.inner
+            .readonly_transaction()
+            .then(move |transaction| get_channel(transaction, channel_id))
+            .await
     }
 
     /// Returns a sender handle for the specified channel, or `None` if the channel does not exist.
@@ -81,38 +96,84 @@ impl<'a, S: Storage> StorageRef<'a, S> {
     /// Returns a handle to a workflow with the specified ID. The workflow may have any state.
     /// If the workflow does not exist, returns `None`.
     pub async fn any_workflow(&self, workflow_id: WorkflowId) -> Option<AnyWorkflowHandle<&'a S>> {
-        let transaction = self.inner.readonly_transaction().await;
-        let record = transaction.workflow(workflow_id).await?;
-        match record.state {
-            WorkflowState::Active(state) => {
-                let module = transaction.module(&record.module_id).await?;
-                let interface = &module.definitions.get(&record.name_in_module)?.interface;
-                let handle =
-                    WorkflowHandle::new(self.inner, workflow_id, interface.clone(), *state);
-                Some(handle.into())
-            }
+        let storage = self.inner;
+        storage
+            .readonly_transaction()
+            .then(move |transaction| Self::get_workflow(storage, transaction, workflow_id))
+            .await
+    }
 
-            WorkflowState::Errored(state) => {
-                let handle = ErroredWorkflowHandle::new(
-                    self.inner,
-                    workflow_id,
-                    state.error,
-                    state.erroneous_messages,
-                );
-                Some(handle.into())
-            }
+    #[allow(clippy::manual_async_fn)] // manual impl is required because of the `Send` bound
+    fn get_workflow<T: ReadonlyStorageTransaction + 'a>(
+        storage: &'a S,
+        transaction: T,
+        workflow_id: WorkflowId,
+    ) -> impl Future<Output = Option<AnyWorkflowHandle<&'a S>>> + Send + 'a {
+        async move {
+            let record = transaction.workflow(workflow_id).await?;
+            match record.state {
+                WorkflowState::Active(state) => {
+                    let module = transaction.module(&record.module_id).await?;
+                    let interface = &module.definitions.get(&record.name_in_module)?.interface;
+                    let handle =
+                        WorkflowHandle::new(storage, workflow_id, interface.clone(), *state);
+                    Some(handle.into())
+                }
 
-            WorkflowState::Completed(state) => {
-                let handle = CompletedWorkflowHandle::new(workflow_id, state);
-                Some(handle.into())
+                WorkflowState::Errored(state) => {
+                    let handle = ErroredWorkflowHandle::new(
+                        storage,
+                        workflow_id,
+                        state.error,
+                        state.erroneous_messages,
+                    );
+                    Some(handle.into())
+                }
+
+                WorkflowState::Completed(state) => {
+                    let handle = CompletedWorkflowHandle::new(workflow_id, state);
+                    Some(handle.into())
+                }
             }
         }
     }
 
     /// Returns the number of active workflows.
     pub async fn workflow_count(&self) -> usize {
-        let transaction = self.inner.readonly_transaction().await;
-        transaction.count_active_workflows().await
+        #[allow(clippy::manual_async_fn)] // manual impl is required because of the `Send` bound
+        #[inline]
+        fn count_workflows<'t, T: 't + ReadonlyStorageTransaction>(
+            transaction: T,
+        ) -> impl Future<Output = usize> + Send + 't {
+            async move { transaction.count_active_workflows().await }
+        }
+
+        self.inner
+            .readonly_transaction()
+            .then(count_workflows)
+            .await
+    }
+
+    fn create_channel(&self) -> impl Future<Output = Channel<'a, S>> + Send + 'a {
+        #[inline]
+        async fn do_create_channel<T: StorageTransaction>(
+            mut transaction: T,
+        ) -> (ChannelId, ChannelRecord) {
+            let (channel_id, record) = helper::commit_channel(None, &mut transaction).await;
+            transaction.commit().await;
+            (channel_id, record)
+        }
+
+        let storage = self.inner;
+        storage
+            .transaction()
+            .then(do_create_channel)
+            .map(move |(channel_id, record)| {
+                (
+                    RawMessageSender::new(storage, channel_id, record.clone()),
+                    RawMessageReceiver::new(storage, channel_id, record),
+                )
+            })
     }
 }
 
@@ -123,10 +184,7 @@ impl<'a, S: Storage> StorageRef<'a, S> {
 pub type HostHandles<'a, W, S> = InEnv<W, Inverse<StorageRef<'a, S>>>;
 
 #[async_trait]
-impl<'a, S> ManageChannels for StorageRef<'a, S>
-where
-    S: Storage + 'static, // TODO: can this bound be relaxed? (may be introduced by `async_trait`)
-{
+impl<'a, S: Storage> ManageChannels for StorageRef<'a, S> {
     type Fmt = Self;
 
     fn closed_receiver(&self) -> RawMessageReceiver<&'a S> {
@@ -138,12 +196,25 @@ where
     }
 
     async fn create_channel(&self) -> (RawMessageSender<&'a S>, RawMessageReceiver<&'a S>) {
-        let mut transaction = self.inner.transaction().await;
-        let (channel_id, record) = helper::commit_channel(None, &mut transaction).await;
-        transaction.commit().await;
-        (
-            RawMessageSender::new(self.inner, channel_id, record.clone()),
-            RawMessageReceiver::new(self.inner, channel_id, record),
-        )
+        self.create_channel().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_send<T: Send>(value: T) -> T {
+        value
+    }
+
+    #[allow(dead_code)]
+    async fn storage_ref_futures_are_send<S: Storage>(storage: StorageRef<'_, S>) {
+        assert_send(storage.channel(1)).await;
+        assert_send(storage.sender(1)).await;
+        assert_send(storage.receiver(1)).await;
+        assert_send(storage.any_workflow(1)).await;
+        assert_send(storage.workflow(1)).await;
+        assert_send(storage.workflow_count()).await;
     }
 }

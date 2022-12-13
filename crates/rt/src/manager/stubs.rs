@@ -2,7 +2,7 @@
 
 use anyhow::{anyhow, ensure, Context as _};
 use async_trait::async_trait;
-use futures::future::{BoxFuture, FutureExt};
+use futures::future::{BoxFuture, Future, FutureExt};
 use tracing_tunnel::PersistedSpans;
 
 use std::{
@@ -109,15 +109,27 @@ impl<S: DefineWorkflow> Stubs<S> {
         }
     }
 
-    async fn commit_external<T: StorageTransaction>(
+    #[inline]
+    async fn do_commit_external<T: StorageTransaction>(
         self,
-        transaction: &mut T,
+        mut transaction: T,
     ) -> anyhow::Result<WorkflowId> {
         debug_assert!(self.executing_workflow_id.is_none());
         debug_assert_eq!(self.new_workflows.len(), 1);
         let (_, mut child_stub) = self.new_workflows.into_iter().next().unwrap();
-        let child = Self::commit_child(None, &self.shared, transaction, &mut child_stub);
-        Ok(child.await?.workflow_id)
+        let child = Self::commit_child(None, &self.shared, &mut transaction, &mut child_stub);
+        let child = child.await.map(|ids| ids.workflow_id);
+        if child.is_ok() {
+            transaction.commit().await;
+        }
+        child
+    }
+
+    fn commit_external<'a, T: 'a + StorageTransaction>(
+        self,
+        transaction: T,
+    ) -> impl Future<Output = anyhow::Result<WorkflowId>> + Send + 'a {
+        self.do_commit_external(transaction)
     }
 
     async fn commit_child<T: StorageTransaction>(
@@ -300,7 +312,7 @@ impl<'a, E, C, S> ManageChannels for &'a WorkflowManager<E, C, S>
 where
     E: WorkflowEngine,
     C: Clock,
-    S: Storage + 'static, // TODO: can this bound be relaxed? (may be introduced by `async_trait`)
+    S: Storage,
 {
     type Fmt = StorageRef<'a, S>;
 
@@ -317,12 +329,11 @@ where
     }
 }
 
-#[async_trait]
 impl<'a, E, C, S> ManageWorkflows for &'a WorkflowManager<E, C, S>
 where
     E: WorkflowEngine,
     C: Clock,
-    S: Storage + 'static,
+    S: Storage,
 {
     type Spawned<W: WorkflowFn + WithHandle> = WorkflowHandle<W, &'a S>;
     type Error = anyhow::Error;
@@ -341,9 +352,11 @@ where
         let result = stubs.stash_workflow(0, definition_id, raw_args, channel_ids.0);
         async move {
             result?;
-            let mut transaction = self.storage.transaction().await;
-            let workflow_id = stubs.commit_external(&mut transaction).await?;
-            transaction.commit().await;
+            let workflow_id = self
+                .storage
+                .transaction()
+                .then(|transaction| stubs.commit_external(transaction))
+                .await?;
             Ok(self
                 .storage()
                 .workflow(workflow_id)
