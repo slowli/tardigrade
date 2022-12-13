@@ -13,9 +13,8 @@ use std::{
 use crate::{
     receipt::{ChannelEvent, ChannelEventKind, ExecutionError, Receipt},
     storage::{
-        ActiveWorkflowState, ChannelRecord, CompletedWorkflowState, ErroneousMessageRef,
-        Storage, StorageTransaction, WorkflowSelectionCriteria, WorkflowState,
-        WorkflowWaker,
+        ActiveWorkflowState, ChannelRecord, CompletedWorkflowState, ErroneousMessageRef, Storage,
+        StorageTransaction, WorkflowSelectionCriteria, WorkflowState, WorkflowWaker,
     },
     utils::{clone_join_error, Message},
     PersistedWorkflow,
@@ -276,10 +275,7 @@ pub(crate) fn close_host_sender<S: Storage>(
     storage: &S,
     channel_id: ChannelId,
 ) -> impl Future<Output = ()> + Send + '_ {
-    async fn do_close_sender<T: StorageTransaction>(
-        mut transaction: T,
-        channel_id: ChannelId
-    ) {
+    async fn do_close_sender<T: StorageTransaction>(mut transaction: T, channel_id: ChannelId) {
         StorageHelper::new(&mut transaction)
             .close_channel_side(channel_id, ChannelSide::HostSender)
             .await;
@@ -295,10 +291,7 @@ pub(crate) fn close_host_receiver<S: Storage>(
     storage: &S,
     channel_id: ChannelId,
 ) -> impl Future<Output = ()> + Send + '_ {
-    async fn do_close_receiver<T: StorageTransaction>(
-        mut transaction: T,
-        channel_id: ChannelId
-    ) {
+    async fn do_close_receiver<T: StorageTransaction>(mut transaction: T, channel_id: ChannelId) {
         StorageHelper::new(&mut transaction)
             .close_channel_side(channel_id, ChannelSide::HostReceiver)
             .await;
@@ -340,7 +333,9 @@ pub(crate) fn abort_workflow<S: Storage>(
         Ok(())
     }
 
-    storage.transaction().then(move |transaction| do_abort(transaction, workflow_id))
+    storage
+        .transaction()
+        .then(move |transaction| do_abort(transaction, workflow_id))
 }
 
 #[tracing::instrument(skip(storage))]
@@ -366,9 +361,9 @@ pub(crate) fn repair_workflow<S: Storage>(
         Ok(())
     }
 
-    storage.transaction().then(move |transaction| {
-        do_repair_workflow(transaction, workflow_id)
-    })
+    storage
+        .transaction()
+        .then(move |transaction| do_repair_workflow(transaction, workflow_id))
 }
 
 #[tracing::instrument(skip(storage))]
@@ -403,9 +398,9 @@ pub(crate) fn drop_message<'s, S: Storage>(
         Ok(())
     }
 
-    storage.transaction().then(move |transaction| {
-        do_drop_message(transaction, workflow_id, message_ref)
-    })
+    storage
+        .transaction()
+        .then(move |transaction| do_drop_message(transaction, workflow_id, message_ref))
 }
 
 pub(crate) async fn commit_channel<T: StorageTransaction>(
@@ -431,7 +426,9 @@ mod tests {
 
     #[allow(dead_code)]
     async fn helper_futures_are_send<S: Storage>(storage: &S) {
-        assert_send(send_message(storage, 1, b"test".to_vec())).await.ok();
+        assert_send(send_message(storage, 1, b"test".to_vec()))
+            .await
+            .ok();
         assert_send(close_host_sender(storage, 1)).await;
         assert_send(close_host_receiver(storage, 1)).await;
         assert_send(abort_workflow(storage, 1)).await.ok();
@@ -441,6 +438,8 @@ mod tests {
             channel_id: 1,
             index: 0,
         };
-        assert_send(drop_message(storage, 1, &message_ref)).await.ok();
+        assert_send(drop_message(storage, 1, &message_ref))
+            .await
+            .ok();
     }
 }
