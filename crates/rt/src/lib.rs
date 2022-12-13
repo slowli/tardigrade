@@ -133,6 +133,7 @@ mod backends;
 mod data;
 pub mod driver;
 pub mod engine;
+pub mod handle;
 pub mod manager;
 pub mod receipt;
 pub mod storage;

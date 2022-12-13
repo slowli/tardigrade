@@ -4,14 +4,18 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing_tunnel::{PersistedMetadata, PersistedSpans};
 
-use std::{collections::HashSet, error, fmt, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    error, fmt,
+    sync::Arc,
+};
 
 use crate::{
     receipt::ExecutionError,
     utils::{clone_join_error, serde_b64},
     workflow::PersistedWorkflow,
 };
-use tardigrade::{task::JoinError, ChannelId, WakerId, WorkflowId};
+use tardigrade::{interface::Interface, task::JoinError, ChannelId, WakerId, WorkflowId};
 
 /// Storage record for a [`WorkflowModule`].
 ///
@@ -25,6 +29,8 @@ pub struct ModuleRecord {
     pub bytes: Arc<[u8]>,
     /// Persisted metadata.
     pub tracing_metadata: PersistedMetadata,
+    /// Workflow definitions from this module keyed by the definition ID.
+    pub definitions: HashMap<String, DefinitionRecord>,
 }
 
 impl fmt::Debug for ModuleRecord {
@@ -34,8 +40,16 @@ impl fmt::Debug for ModuleRecord {
             .field("id", &self.id)
             .field("bytes_len", &self.bytes.len())
             .field("tracing_metadata", &self.tracing_metadata)
+            .field("definitions", &self.definitions)
             .finish()
     }
+}
+
+/// Storage record for a workflow definition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DefinitionRecord {
+    /// Interface associated with the definition.
+    pub interface: Interface,
 }
 
 /// Error retrieving a message from a workflow channel. Returned by

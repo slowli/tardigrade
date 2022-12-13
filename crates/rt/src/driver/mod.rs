@@ -10,9 +10,12 @@ use futures::{channel::mpsc, future, stream::FusedStream, FutureExt, StreamExt};
 mod tests;
 
 use crate::{
+    handle::{AnyWorkflowHandle, StorageRef},
     manager::{AsManager, TickResult},
+    storage::Storage,
     Schedule,
 };
+use tardigrade::WorkflowId;
 
 /// Terminal status of a [`WorkflowManager`].
 ///
@@ -148,7 +151,7 @@ impl Driver {
         let manager_ref = manager.as_manager();
         let nearest_timer_expiration = self.tick_manager(manager).await;
         if nearest_timer_expiration.is_none() {
-            let no_workflows = manager_ref.workflow_count().await == 0;
+            let no_workflows = manager_ref.storage().workflow_count().await == 0;
             if self.commits_rx.is_terminated() || no_workflows {
                 let termination = if no_workflows {
                     Termination::Finished
@@ -187,25 +190,32 @@ impl Driver {
                 Err(blocked) => break blocked.nearest_timer_expiration(),
             };
 
-            if self.drop_erroneous_messages {
-                if let Err(handle) = tick_result.as_ref() {
-                    // Concurrency errors should not occur if the driver is used properly
-                    // (i.e., the workflows are not mutated externally). That's why the errors
-                    // are ignored below.
-                    let mut dropped_messages = false;
-                    for message in handle.messages() {
-                        message.drop_for_workflow().await.ok();
-                        dropped_messages = true;
-                    }
-                    if dropped_messages {
-                        handle.consider_repaired_by_ref().await.ok();
-                    }
-                }
+            if self.drop_erroneous_messages && tick_result.as_ref().is_err() {
+                let storage = manager.as_manager().storage();
+                Self::repair_workflow(storage, tick_result.workflow_id()).await;
             }
-            let tick_result = tick_result.drop_handle();
             if let Some(sx) = &self.results_sx {
                 sx.unbounded_send(tick_result).ok();
             }
+        }
+    }
+
+    async fn repair_workflow<S: Storage>(storage: StorageRef<'_, S>, id: WorkflowId) {
+        // Concurrency errors should not occur if the driver is used properly
+        // (i.e., the workflows are not mutated externally). That's why the errors
+        // are ignored below.
+        let handle = storage.any_workflow(id).await;
+        let Some(AnyWorkflowHandle::Errored(handle)) = handle else {
+            return;
+        };
+
+        let mut dropped_messages = false;
+        for message in handle.messages() {
+            message.drop_for_workflow().await.ok();
+            dropped_messages = true;
+        }
+        if dropped_messages {
+            handle.consider_repaired().await.ok();
         }
     }
 }

@@ -337,7 +337,7 @@ struct Subscription {
 
 impl Subscription {
     // For some bizarre reason, the method doesn't work if provided with `&impl Storage`;
-    // it requires a static boundary on the storage impl.
+    // it requires a 'static boundary on the storage impl.
     fn relay_messages<'a, T, Fut>(
         &self,
         subscription_id: usize,

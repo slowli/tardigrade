@@ -1,19 +1,18 @@
 //! Handles for workflows in a `WorkflowManager` and their components (e.g., channels).
 
+use async_trait::async_trait;
 use futures::{channel::mpsc, future, FutureExt, Stream, StreamExt};
 
-use std::{convert::Infallible, error, fmt, marker::PhantomData, ops};
+use std::{convert::Infallible, fmt, marker::PhantomData, ops};
+
+pub use crate::storage::helper::ConcurrencyError;
 
 use crate::{
-    manager::{
-        persistence::{close_host_receiver, close_host_sender, send_message},
-        AsManager,
-    },
     receipt::ExecutionError,
     storage::{
-        ActiveWorkflowState, ChannelRecord, CompletedWorkflowState, ErroneousMessageRef,
-        MessageError, MessageOrEof, ReadChannels, ReadWorkflows, Storage, StorageTransaction,
-        StreamMessages, WorkflowState, WriteChannels,
+        helper, ActiveWorkflowState, ChannelRecord, CompletedWorkflowState, ErroneousMessageRef,
+        MessageError, MessageOrEof, ReadChannels, ReadModules, ReadWorkflows, Storage,
+        StorageTransaction, StreamMessages, WorkflowState, WriteChannels,
     },
     utils::RefStream,
     workflow::WorkflowAndChannelIds,
@@ -23,28 +22,11 @@ use tardigrade::{
     channel::SendError,
     handle::{AccessError, Handle, HandleMap},
     interface::Interface,
+    spawn::ManageChannels,
     task::JoinError,
     workflow::{GetInterface, HandleFormat, InEnv, IntoRaw, Inverse, TryFromRaw, WithHandle},
     ChannelId, Codec, Raw, WorkflowId,
 };
-
-/// Concurrency errors for modifying operations on workflows.
-#[derive(Debug)]
-pub struct ConcurrencyError(());
-
-impl ConcurrencyError {
-    pub(super) fn new() -> Self {
-        Self(())
-    }
-}
-
-impl fmt::Display for ConcurrencyError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("operation failed because of a concurrent edit")
-    }
-}
-
-impl error::Error for ConcurrencyError {}
 
 /// Handle to an active workflow in a [`WorkflowManager`].
 ///
@@ -91,39 +73,33 @@ impl error::Error for ConcurrencyError {}
 /// # Ok(())
 /// # }
 /// ```
-pub struct WorkflowHandle<'a, W, M> {
-    manager: &'a M,
+pub struct WorkflowHandle<W, S> {
+    storage: S,
     ids: WorkflowAndChannelIds,
-    interface: &'a Interface,
+    interface: Interface,
     persisted: PersistedWorkflow,
     _ty: PhantomData<fn(W)>,
 }
 
-impl<W, M: fmt::Debug> fmt::Debug for WorkflowHandle<'_, W, M> {
+impl<W, S: fmt::Debug> fmt::Debug for WorkflowHandle<W, S> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("WorkflowHandle")
-            .field("manager", &self.manager)
+            .field("storage", &self.storage)
             .field("ids", &self.ids)
             .finish()
     }
 }
 
-#[allow(clippy::mismatching_type_param_order)] // false positive
-impl<'a, M: AsManager> WorkflowHandle<'a, (), M> {
-    pub(super) fn new(
-        manager: &'a M,
-        id: WorkflowId,
-        interface: &'a Interface,
-        state: ActiveWorkflowState,
-    ) -> WorkflowHandle<'a, (), M> {
+impl<S: Storage> WorkflowHandle<(), S> {
+    fn new(storage: S, id: WorkflowId, interface: Interface, state: ActiveWorkflowState) -> Self {
         let ids = WorkflowAndChannelIds {
             workflow_id: id,
             channel_ids: state.persisted.channels().to_ids(),
         };
 
         Self {
-            manager,
+            storage,
             ids,
             interface,
             persisted: state.persisted,
@@ -132,7 +108,7 @@ impl<'a, M: AsManager> WorkflowHandle<'a, (), M> {
     }
 
     #[cfg(test)]
-    pub(super) fn ids(&self) -> &WorkflowAndChannelIds {
+    pub(crate) fn ids(&self) -> &WorkflowAndChannelIds {
         &self.ids
     }
 
@@ -142,14 +118,14 @@ impl<'a, M: AsManager> WorkflowHandle<'a, (), M> {
     ///
     /// Returns an error on workflow interface mismatch.
     #[allow(clippy::missing_panics_doc)] // false positive
-    pub fn downcast<W: GetInterface>(self) -> Result<WorkflowHandle<'a, W, M>, AccessError> {
-        W::interface().check_compatibility(self.interface)?;
+    pub fn downcast<W: GetInterface>(self) -> Result<WorkflowHandle<W, S>, AccessError> {
+        W::interface().check_compatibility(&self.interface)?;
         Ok(self.downcast_unchecked())
     }
 
-    pub(crate) fn downcast_unchecked<W>(self) -> WorkflowHandle<'a, W, M> {
+    pub(crate) fn downcast_unchecked<W>(self) -> WorkflowHandle<W, S> {
         WorkflowHandle {
-            manager: self.manager,
+            storage: self.storage,
             ids: self.ids,
             interface: self.interface,
             persisted: self.persisted,
@@ -158,10 +134,15 @@ impl<'a, M: AsManager> WorkflowHandle<'a, (), M> {
     }
 }
 
-impl<'a, W: WithHandle, M: AsManager> WorkflowHandle<'a, W, M> {
+impl<W: WithHandle, S: Storage> WorkflowHandle<W, S> {
     /// Returns the ID of this workflow.
     pub fn id(&self) -> WorkflowId {
         self.ids.workflow_id
+    }
+
+    /// Returns the workflow interface.
+    pub fn interface(&self) -> &Interface {
+        &self.interface
     }
 
     /// Returns the snapshot of the persisted state of this workflow.
@@ -178,8 +159,7 @@ impl<'a, W: WithHandle, M: AsManager> WorkflowHandle<'a, W, M> {
     ///
     /// Returns an error if the workflow was terminated.
     pub async fn update(&mut self) -> Result<(), ConcurrencyError> {
-        let manager = self.manager.as_manager();
-        let transaction = manager.storage.readonly_transaction().await;
+        let transaction = self.storage.readonly_transaction().await;
         let record = transaction.workflow(self.ids.workflow_id).await;
         let record = record.ok_or_else(ConcurrencyError::new)?;
         self.persisted = match record.state {
@@ -198,16 +178,15 @@ impl<'a, W: WithHandle, M: AsManager> WorkflowHandle<'a, W, M> {
     /// Returns an error if abort fails because of a concurrent edit (e.g., the workflow is
     /// already aborted).
     pub async fn abort(self) -> Result<(), ConcurrencyError> {
-        self.manager
-            .as_manager()
-            .abort_workflow(self.ids.workflow_id)
-            .await
+        helper::abort_workflow(&self.storage, self.ids.workflow_id).await
     }
+}
 
+impl<'a, W: WithHandle, S: Storage> WorkflowHandle<W, &'a S> {
     /// Returns a handle for the workflow that allows interacting with its channels.
     #[allow(clippy::missing_panics_doc)] // false positive
-    pub async fn handle(&self) -> HostHandles<'a, W, M::Storage> {
-        let storage = &self.manager.as_manager().storage;
+    pub async fn handle(&self) -> HostHandles<'a, W, S> {
+        let storage = self.storage;
         let transaction = storage.readonly_transaction().await;
         let mut untyped = HandleMap::with_capacity(self.ids.channel_ids.len());
 
@@ -234,20 +213,97 @@ impl<'a, W: WithHandle, M: AsManager> WorkflowHandle<'a, W, M> {
 ///
 /// [`WorkflowManager`]: crate::manager::WorkflowManager
 #[derive(Debug)]
-pub struct StorageHandles<'a, S>(PhantomData<&'a S>);
+pub struct StorageRef<'a, S> {
+    inner: &'a S,
+}
 
-impl<'a, S: Storage> HandleFormat for StorageHandles<'a, S> {
+impl<'a, S: Storage> HandleFormat for StorageRef<'a, S> {
     type RawReceiver = RawMessageReceiver<&'a S>;
     type Receiver<T, C: Codec<T>> = MessageReceiver<T, C, &'a S>;
     type RawSender = RawMessageSender<&'a S>;
     type Sender<T, C: Codec<T>> = MessageSender<T, C, &'a S>;
 }
 
+impl<'a, S: Storage> From<&'a S> for StorageRef<'a, S> {
+    fn from(storage: &'a S) -> Self {
+        Self { inner: storage }
+    }
+}
+
+impl<'a, S: Storage> StorageRef<'a, S> {
+    /// Returns current information about the channel with the specified ID, or `None` if a channel
+    /// with this ID does not exist.
+    pub async fn channel(&self, channel_id: ChannelId) -> Option<ChannelRecord> {
+        let transaction = self.inner.readonly_transaction().await;
+        let record = transaction.channel(channel_id).await?;
+        Some(record)
+    }
+
+    /// Returns a sender handle for the specified channel, or `None` if the channel does not exist.
+    pub async fn sender(&self, channel_id: ChannelId) -> Option<RawMessageSender<&'a S>> {
+        let record = self.channel(channel_id).await?;
+        Some(RawMessageSender::new(self.inner, channel_id, record))
+    }
+
+    /// Returns a receiver handle for the specified channel, or `None` if the channel does not exist.
+    pub async fn receiver(&self, channel_id: ChannelId) -> Option<RawMessageReceiver<&'a S>> {
+        let record = self.channel(channel_id).await?;
+        Some(RawMessageReceiver::new(self.inner, channel_id, record))
+    }
+
+    /// Returns a handle to an active workflow with the specified ID. If the workflow is
+    /// not active or does not exist, returns `None`.
+    pub async fn workflow(&self, workflow_id: WorkflowId) -> Option<WorkflowHandle<(), &'a S>> {
+        let handle = self.any_workflow(workflow_id).await?;
+        match handle {
+            AnyWorkflowHandle::Active(handle) => Some(*handle),
+            _ => None,
+        }
+    }
+
+    /// Returns a handle to a workflow with the specified ID. The workflow may have any state.
+    /// If the workflow does not exist, returns `None`.
+    pub async fn any_workflow(&self, workflow_id: WorkflowId) -> Option<AnyWorkflowHandle<&'a S>> {
+        let transaction = self.inner.readonly_transaction().await;
+        let record = transaction.workflow(workflow_id).await?;
+        match record.state {
+            WorkflowState::Active(state) => {
+                let module = transaction.module(&record.module_id).await?;
+                let interface = &module.definitions.get(&record.name_in_module)?.interface;
+                let handle =
+                    WorkflowHandle::new(self.inner, workflow_id, interface.clone(), *state);
+                Some(handle.into())
+            }
+
+            WorkflowState::Errored(state) => {
+                let handle = ErroredWorkflowHandle::new(
+                    self.inner,
+                    workflow_id,
+                    state.error,
+                    state.erroneous_messages,
+                );
+                Some(handle.into())
+            }
+
+            WorkflowState::Completed(state) => {
+                let handle = CompletedWorkflowHandle::new(workflow_id, state);
+                Some(handle.into())
+            }
+        }
+    }
+
+    /// Returns the number of active workflows.
+    pub async fn workflow_count(&self) -> usize {
+        let transaction = self.inner.readonly_transaction().await;
+        transaction.count_active_workflows().await
+    }
+}
+
 /// Host handles of a shape specified by a workflow [`Interface`] and provided
 /// by a [`WorkflowManager`].
 ///
 /// [`WorkflowManager`]: crate::manager::WorkflowManager
-pub type HostHandles<'a, W, S> = InEnv<W, Inverse<StorageHandles<'a, S>>>;
+pub type HostHandles<'a, W, S> = InEnv<W, Inverse<StorageRef<'a, S>>>;
 
 /// Handle for a workflow channel [`Receiver`] that allows sending messages via the channel.
 ///
@@ -275,7 +331,7 @@ impl<T, C: Codec<T>, S: Storage + Clone> Clone for MessageSender<T, C, S> {
 }
 
 impl<'a, T, C: Codec<T>, S: Storage> MessageSender<T, C, S> {
-    pub(super) fn closed(storage: S) -> Self {
+    fn closed(storage: S) -> Self {
         Self {
             storage,
             channel_id: 0,
@@ -284,7 +340,7 @@ impl<'a, T, C: Codec<T>, S: Storage> MessageSender<T, C, S> {
         }
     }
 
-    pub(super) fn new(storage: S, id: ChannelId, record: ChannelRecord) -> Self {
+    fn new(storage: S, id: ChannelId, record: ChannelRecord) -> Self {
         Self {
             storage,
             channel_id: id,
@@ -327,12 +383,12 @@ impl<'a, T, C: Codec<T>, S: Storage> MessageSender<T, C, S> {
     /// Returns an error if the channel is full or closed.
     pub async fn send(&self, message: T) -> Result<(), SendError> {
         let raw_message = C::encode_value(message);
-        send_message(&self.storage, self.channel_id, raw_message).await
+        helper::send_message(&self.storage, self.channel_id, raw_message).await
     }
 
     /// Closes this channel from the host side.
     pub async fn close(self) {
-        close_host_sender(&self.storage, self.channel_id).await;
+        helper::close_host_sender(&self.storage, self.channel_id).await;
     }
 }
 
@@ -383,7 +439,7 @@ pub struct MessageReceiver<T, C, S> {
 pub type RawMessageReceiver<S> = MessageReceiver<Vec<u8>, Raw, S>;
 
 impl<T, C: Codec<T>, S: Storage> MessageReceiver<T, C, S> {
-    pub(super) fn closed(storage: S) -> Self {
+    fn closed(storage: S) -> Self {
         Self {
             storage,
             channel_id: 0,
@@ -392,7 +448,7 @@ impl<T, C: Codec<T>, S: Storage> MessageReceiver<T, C, S> {
         }
     }
 
-    pub(super) fn new(storage: S, id: ChannelId, record: ChannelRecord) -> Self {
+    fn new(storage: S, id: ChannelId, record: ChannelRecord) -> Self {
         Self {
             storage,
             channel_id: id,
@@ -500,13 +556,13 @@ impl<T, C: Codec<T>, S: Storage> MessageReceiver<T, C, S> {
     /// this is a no-op.
     pub async fn close(self) {
         if self.can_manipulate() {
-            close_host_receiver(&self.storage, self.channel_id).await;
+            helper::close_host_receiver(&self.storage, self.channel_id).await;
         }
     }
 }
 
 impl<T, C: Codec<T>, S: StreamMessages> MessageReceiver<T, C, S> {
-    /// FIXME
+    /// Streams messages from this channel starting from the specified index.
     pub fn stream_messages(
         &self,
         start_index: usize,
@@ -638,22 +694,22 @@ impl<T, C: Codec<T>> ReceivedMessage<T, C> {
 /// # }
 /// ```
 #[derive(Debug)]
-pub struct ErroredWorkflowHandle<'a, M> {
-    manager: &'a M,
+pub struct ErroredWorkflowHandle<S> {
+    storage: S,
     id: WorkflowId,
-    pub(super) error: ExecutionError,
+    pub(crate) error: ExecutionError,
     erroneous_messages: Vec<ErroneousMessageRef>,
 }
 
-impl<'a, M: AsManager> ErroredWorkflowHandle<'a, M> {
-    pub(super) fn new(
-        manager: &'a M,
+impl<S: Storage> ErroredWorkflowHandle<S> {
+    fn new(
+        storage: S,
         id: WorkflowId,
         error: ExecutionError,
         erroneous_messages: Vec<ErroneousMessageRef>,
     ) -> Self {
         Self {
-            manager,
+            storage,
             id,
             error,
             erroneous_messages,
@@ -677,7 +733,7 @@ impl<'a, M: AsManager> ErroredWorkflowHandle<'a, M> {
     /// Returns an error if abort fails because of a concurrent edit (e.g., the workflow is
     /// already aborted).
     pub async fn abort(self) -> Result<(), ConcurrencyError> {
-        self.manager.as_manager().abort_workflow(self.id).await
+        helper::abort_workflow(&self.storage, self.id).await
     }
 
     /// Considers this workflow repaired, usually after [dropping bogus messages] for the workflow
@@ -690,20 +746,15 @@ impl<'a, M: AsManager> ErroredWorkflowHandle<'a, M> {
     ///
     /// [dropping bogus messages]: ErroneousMessage::drop_for_workflow()
     pub async fn consider_repaired(self) -> Result<(), ConcurrencyError> {
-        self.consider_repaired_by_ref().await
-    }
-
-    // Used by `Driver`.
-    pub(crate) async fn consider_repaired_by_ref(&self) -> Result<(), ConcurrencyError> {
-        self.manager.as_manager().repair_workflow(self.id).await
+        helper::repair_workflow(&self.storage, self.id).await
     }
 
     /// Iterates over messages the ingestion of which may have led to the execution error.
-    pub fn messages(&self) -> impl Iterator<Item = ErroneousMessage<'a, M>> + '_ {
+    pub fn messages(&self) -> impl Iterator<Item = ErroneousMessage<&S>> + '_ {
         self.erroneous_messages
             .iter()
             .map(|message_ref| ErroneousMessage {
-                manager: self.manager,
+                storage: &self.storage,
                 workflow_id: self.id,
                 message_ref: message_ref.clone(),
             })
@@ -714,21 +765,20 @@ impl<'a, M: AsManager> ErroredWorkflowHandle<'a, M> {
 ///
 /// The handle allows inspecting the message and dropping it from the workflow perspective.
 #[derive(Debug)]
-pub struct ErroneousMessage<'a, M> {
-    manager: &'a M,
+pub struct ErroneousMessage<S> {
+    storage: S,
     workflow_id: WorkflowId,
     message_ref: ErroneousMessageRef,
 }
 
-impl<M: AsManager> ErroneousMessage<'_, M> {
+impl<S: Storage> ErroneousMessage<S> {
     /// Receives this message.
     ///
     /// # Errors
     ///
     /// Returns an error if the message is not available.
     pub async fn receive(&self) -> Result<ReceivedMessage<Vec<u8>, Raw>, MessageError> {
-        let manager = self.manager.as_manager();
-        let transaction = manager.storage.readonly_transaction().await;
+        let transaction = self.storage.readonly_transaction().await;
         let raw_message = transaction
             .channel_message(self.message_ref.channel_id, self.message_ref.index)
             .await?;
@@ -747,10 +797,7 @@ impl<M: AsManager> ErroneousMessage<'_, M> {
     /// Returns an error if the message cannot be dropped because of a concurrent edit;
     /// e.g., if the workflow was aborted, repaired, or the message was already dropped.
     pub async fn drop_for_workflow(self) -> Result<(), ConcurrencyError> {
-        self.manager
-            .as_manager()
-            .drop_message(self.workflow_id, &self.message_ref)
-            .await
+        helper::drop_message(&self.storage, self.workflow_id, &self.message_ref).await
     }
 }
 
@@ -769,7 +816,7 @@ pub struct CompletedWorkflowHandle {
 }
 
 impl CompletedWorkflowHandle {
-    pub(super) fn new(id: WorkflowId, state: CompletedWorkflowState) -> Self {
+    fn new(id: WorkflowId, state: CompletedWorkflowState) -> Self {
         Self {
             id,
             result: state.result,
@@ -791,16 +838,16 @@ impl CompletedWorkflowHandle {
 /// Handle to a workflow in an unknown state.
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum AnyWorkflowHandle<'a, M> {
+pub enum AnyWorkflowHandle<S> {
     /// The workflow is active.
-    Active(Box<WorkflowHandle<'a, (), M>>),
+    Active(Box<WorkflowHandle<(), S>>),
     /// The workflow is errored.
-    Errored(ErroredWorkflowHandle<'a, M>),
+    Errored(ErroredWorkflowHandle<S>),
     /// The workflow is completed.
     Completed(CompletedWorkflowHandle),
 }
 
-impl<'a, M: AsManager> AnyWorkflowHandle<'a, M> {
+impl<S: Storage> AnyWorkflowHandle<S> {
     /// Returns the ID of this workflow.
     pub fn id(&self) -> WorkflowId {
         match self {
@@ -830,7 +877,7 @@ impl<'a, M: AsManager> AnyWorkflowHandle<'a, M> {
     /// # Panics
     ///
     /// Panics if the workflow is not active.
-    pub fn unwrap_active(self) -> WorkflowHandle<'a, (), M> {
+    pub fn unwrap_active(self) -> WorkflowHandle<(), S> {
         match self {
             Self::Active(handle) => *handle,
             _ => panic!("workflow is not active"),
@@ -842,7 +889,7 @@ impl<'a, M: AsManager> AnyWorkflowHandle<'a, M> {
     /// # Panics
     ///
     /// Panics if the workflow is not errored.
-    pub fn unwrap_errored(self) -> ErroredWorkflowHandle<'a, M> {
+    pub fn unwrap_errored(self) -> ErroredWorkflowHandle<S> {
         match self {
             Self::Errored(handle) => handle,
             _ => panic!("workflow is not errored"),
@@ -862,20 +909,46 @@ impl<'a, M: AsManager> AnyWorkflowHandle<'a, M> {
     }
 }
 
-impl<'a, M: AsManager> From<WorkflowHandle<'a, (), M>> for AnyWorkflowHandle<'a, M> {
-    fn from(handle: WorkflowHandle<'a, (), M>) -> Self {
+impl<S: Storage> From<WorkflowHandle<(), S>> for AnyWorkflowHandle<S> {
+    fn from(handle: WorkflowHandle<(), S>) -> Self {
         Self::Active(Box::new(handle))
     }
 }
 
-impl<'a, M: AsManager> From<ErroredWorkflowHandle<'a, M>> for AnyWorkflowHandle<'a, M> {
-    fn from(handle: ErroredWorkflowHandle<'a, M>) -> Self {
+impl<S: Storage> From<ErroredWorkflowHandle<S>> for AnyWorkflowHandle<S> {
+    fn from(handle: ErroredWorkflowHandle<S>) -> Self {
         Self::Errored(handle)
     }
 }
 
-impl<'a, M: AsManager> From<CompletedWorkflowHandle> for AnyWorkflowHandle<'a, M> {
+impl<S: Storage> From<CompletedWorkflowHandle> for AnyWorkflowHandle<S> {
     fn from(handle: CompletedWorkflowHandle) -> Self {
         Self::Completed(handle)
+    }
+}
+
+#[async_trait]
+impl<'a, S> ManageChannels for StorageRef<'a, S>
+where
+    S: Storage + 'static, // TODO: can this bound be relaxed? (may be introduced by `async_trait`)
+{
+    type Fmt = Self;
+
+    fn closed_receiver(&self) -> RawMessageReceiver<&'a S> {
+        RawMessageReceiver::closed(self.inner)
+    }
+
+    fn closed_sender(&self) -> RawMessageSender<&'a S> {
+        RawMessageSender::closed(self.inner)
+    }
+
+    async fn create_channel(&self) -> (RawMessageSender<&'a S>, RawMessageReceiver<&'a S>) {
+        let mut transaction = self.inner.transaction().await;
+        let (channel_id, record) = helper::commit_channel(None, &mut transaction).await;
+        transaction.commit().await;
+        (
+            RawMessageSender::new(self.inner, channel_id, record.clone()),
+            RawMessageReceiver::new(self.inner, channel_id, record),
+        )
     }
 }

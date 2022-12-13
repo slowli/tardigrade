@@ -2,16 +2,12 @@
 //!
 //! See `WorkflowManager` docs for an overview and examples of usage.
 
-// FIXME: move workflow / channel getters to storage
-
 use chrono::{DateTime, Utc};
 use futures::{lock::Mutex, StreamExt};
-use tracing_tunnel::{LocalSpans, PersistedMetadata, PersistedSpans};
+use tracing_tunnel::{LocalSpans, PersistedMetadata};
 
 use std::{collections::HashMap, sync::Arc};
 
-mod handle;
-mod persistence;
 mod services;
 mod stubs;
 mod tick;
@@ -22,25 +18,20 @@ pub(crate) mod tests;
 
 pub(crate) use self::services::{Services, StashStub};
 pub use self::{
-    handle::{
-        AnyWorkflowHandle, CompletedWorkflowHandle, ConcurrencyError, ErroneousMessage,
-        ErroredWorkflowHandle, HostHandles, MessageReceiver, MessageSender, RawMessageReceiver,
-        RawMessageSender, ReceivedMessage, StorageHandles, WorkflowHandle,
-    },
     services::{Clock, Schedule, TimerFuture},
     tick::{TickResult, WouldBlock},
     traits::AsManager,
 };
 
-use self::persistence::StorageHelper;
+use crate::storage::DefinitionRecord;
 use crate::{
     engine::{DefineWorkflow, WorkflowEngine, WorkflowModule},
+    handle::StorageRef,
     storage::{
-        ChannelRecord, ModuleRecord, ReadChannels, ReadModules, ReadWorkflows, Storage,
-        StorageTransaction, WorkflowState, WriteModules, WriteWorkflows,
+        helper::StorageHelper, ModuleRecord, ReadModules, Storage, StorageTransaction, WriteModules,
     },
 };
-use tardigrade::{ChannelId, WorkflowId};
+use tardigrade::WorkflowId;
 
 #[derive(Debug)]
 struct WorkflowDefinitions<D> {
@@ -80,14 +71,6 @@ impl<D> WorkflowDefinitions<D> {
 struct Shared<D> {
     clock: Arc<dyn Clock>,
     definitions: Arc<WorkflowDefinitions<D>>,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum ChannelSide {
-    HostSender,
-    WorkflowSender(WorkflowId),
-    HostReceiver,
-    Receiver(WorkflowId),
 }
 
 /// Manager for workflow modules, workflows and channels.
@@ -211,90 +194,33 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
 
     /// Inserts the specified module into the manager.
     pub async fn insert_module(&mut self, id: &str, module: E::Module) {
-        let mut transaction = self.storage.transaction().await;
+        let bytes = module.bytes();
+        let mut definitions = HashMap::new();
+        for (name, def) in module {
+            definitions.insert(
+                name.clone(),
+                DefinitionRecord {
+                    interface: def.interface().clone(),
+                },
+            );
+            let self_definitions = Arc::get_mut(&mut self.definitions).expect("leaked definitions");
+            self_definitions.insert(id.to_owned(), name, def);
+        }
+
         let module_record = ModuleRecord {
             id: id.to_owned(),
-            bytes: module.bytes(),
+            bytes,
+            definitions,
             tracing_metadata: PersistedMetadata::default(),
         };
+        let mut transaction = self.storage.transaction().await;
         transaction.insert_module(module_record).await;
-
-        for (name, def) in module {
-            let definitions = Arc::get_mut(&mut self.definitions).expect("leaked definitions");
-            definitions.insert(id.to_owned(), name, def);
-        }
         transaction.commit().await;
     }
 
-    /// Returns current information about the channel with the specified ID, or `None` if a channel
-    /// with this ID does not exist.
-    pub async fn channel(&self, channel_id: ChannelId) -> Option<ChannelRecord> {
-        let transaction = self.storage.readonly_transaction().await;
-        let record = transaction.channel(channel_id).await?;
-        Some(record)
-    }
-
-    /// Returns a sender handle for the specified channel, or `None` if the channel does not exist.
-    pub async fn sender(&self, channel_id: ChannelId) -> Option<RawMessageSender<&S>> {
-        let record = self.channel(channel_id).await?;
-        Some(RawMessageSender::new(&self.storage, channel_id, record))
-    }
-
-    /// Returns a receiver handle for the specified channel, or `None` if the channel does not exist.
-    pub async fn receiver(&self, channel_id: ChannelId) -> Option<RawMessageReceiver<&S>> {
-        let record = self.channel(channel_id).await?;
-        Some(RawMessageReceiver::new(&self.storage, channel_id, record))
-    }
-
-    /// Returns a handle to an active workflow with the specified ID. If the workflow is
-    /// not active or does not exist, returns `None`.
-    pub async fn workflow(&self, workflow_id: WorkflowId) -> Option<WorkflowHandle<'_, (), Self>> {
-        let handle = self.any_workflow(workflow_id).await?;
-        match handle {
-            AnyWorkflowHandle::Active(handle) => Some(*handle),
-            _ => None,
-        }
-    }
-
-    /// Returns a handle to a workflow with the specified ID. The workflow may have any state.
-    /// If the workflow does not exist, returns `None`.
-    pub async fn any_workflow(
-        &self,
-        workflow_id: WorkflowId,
-    ) -> Option<AnyWorkflowHandle<'_, Self>> {
-        let transaction = self.storage.readonly_transaction().await;
-        let record = transaction.workflow(workflow_id).await?;
-        match record.state {
-            WorkflowState::Active(state) => {
-                let interface = self
-                    .definitions
-                    .get(&record.module_id, &record.name_in_module)
-                    .interface();
-                let handle = WorkflowHandle::new(self, workflow_id, interface, *state);
-                Some(handle.into())
-            }
-
-            WorkflowState::Errored(state) => {
-                let handle = ErroredWorkflowHandle::new(
-                    self,
-                    workflow_id,
-                    state.error,
-                    state.erroneous_messages,
-                );
-                Some(handle.into())
-            }
-
-            WorkflowState::Completed(state) => {
-                let handle = CompletedWorkflowHandle::new(workflow_id, state);
-                Some(handle.into())
-            }
-        }
-    }
-
-    /// Returns the number of active workflows.
-    pub async fn workflow_count(&self) -> usize {
-        let transaction = self.storage.readonly_transaction().await;
-        transaction.count_active_workflows().await
+    /// Returns a reference to the underlying storage.
+    pub fn storage(&self) -> StorageRef<'_, S> {
+        StorageRef::from(&self.storage)
     }
 
     /// Returns the encapsulated storage.
@@ -318,46 +244,6 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
             .set_current_time(time)
             .await;
         transaction.commit().await;
-    }
-
-    /// Aborts the workflow with the specified ID. The parent workflow, if any, will be notified,
-    /// and all channel handles owned by the workflow will be properly disposed.
-    #[tracing::instrument(skip(self))]
-    async fn abort_workflow(&self, workflow_id: WorkflowId) -> Result<(), ConcurrencyError> {
-        let mut transaction = self.storage.transaction().await;
-        let record = transaction
-            .workflow_for_update(workflow_id)
-            .await
-            .ok_or_else(ConcurrencyError::new)?;
-        let (parent_id, mut persisted) = match record.state {
-            WorkflowState::Active(state) => (record.parent_id, state.persisted),
-            WorkflowState::Errored(state) => (record.parent_id, state.persisted),
-            WorkflowState::Completed(_) => return Err(ConcurrencyError::new()),
-        };
-
-        persisted.abort();
-        let spans = PersistedSpans::default();
-        StorageHelper::new(&mut transaction)
-            .persist_workflow(workflow_id, parent_id, persisted, spans)
-            .await;
-        transaction.commit().await;
-        Ok(())
-    }
-
-    #[tracing::instrument(skip(self))]
-    async fn repair_workflow(&self, workflow_id: WorkflowId) -> Result<(), ConcurrencyError> {
-        let mut transaction = self.storage.transaction().await;
-        let record = transaction
-            .workflow_for_update(workflow_id)
-            .await
-            .ok_or_else(ConcurrencyError::new)?;
-        let record = record.into_errored().ok_or_else(ConcurrencyError::new)?;
-        let repaired_state = record.state.repair();
-        transaction
-            .update_workflow(workflow_id, repaired_state.into())
-            .await;
-        transaction.commit().await;
-        Ok(())
     }
 }
 

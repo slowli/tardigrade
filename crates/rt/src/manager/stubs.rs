@@ -13,16 +13,14 @@ use std::{
     sync::Arc,
 };
 
-use super::{
-    Clock, RawMessageReceiver, RawMessageSender, Services, Shared, StashStub, StorageHandles,
-    WorkflowDefinitions, WorkflowHandle, WorkflowManager,
-};
+use super::{Clock, Services, Shared, StashStub, WorkflowDefinitions, WorkflowManager};
 use crate::{
     data::WorkflowData,
     engine::{DefineWorkflow, RunWorkflow, WorkflowEngine},
+    handle::{RawMessageReceiver, RawMessageSender, StorageRef, WorkflowHandle},
     receipt::Receipt,
     storage::{
-        ActiveWorkflowState, ChannelRecord, Storage, StorageTransaction, WorkflowRecord,
+        helper, ActiveWorkflowState, ChannelRecord, Storage, StorageTransaction, WorkflowRecord,
         WorkflowWaker,
     },
     workflow::{ChannelIds, PersistedWorkflow, Workflow, WorkflowAndChannelIds},
@@ -34,41 +32,6 @@ use tardigrade::{
     workflow::{InsertHandles, WithHandle, WorkflowFn},
     ChannelId, Codec, WorkflowId,
 };
-
-impl ChannelRecord {
-    fn owned_by_host() -> Self {
-        Self {
-            receiver_workflow_id: None,
-            sender_workflow_ids: HashSet::new(),
-            has_external_sender: true,
-            is_closed: false,
-            received_messages: 0,
-        }
-    }
-
-    fn owned_by_workflow(workflow_id: WorkflowId) -> Self {
-        Self {
-            receiver_workflow_id: Some(workflow_id),
-            sender_workflow_ids: HashSet::from_iter([workflow_id]),
-            has_external_sender: false,
-            is_closed: false,
-            received_messages: 0,
-        }
-    }
-}
-
-async fn commit_channel<T: StorageTransaction>(
-    executed_workflow_id: Option<WorkflowId>,
-    transaction: &mut T,
-) -> (ChannelId, ChannelRecord) {
-    let channel_id = transaction.allocate_channel_id().await;
-    let state = executed_workflow_id.map_or_else(
-        ChannelRecord::owned_by_host,
-        ChannelRecord::owned_by_workflow,
-    );
-    transaction.insert_channel(channel_id, state.clone()).await;
-    (channel_id, state)
-}
 
 #[derive(Debug)]
 struct WorkflowStub {
@@ -130,7 +93,7 @@ impl<S: DefineWorkflow> Stubs<S> {
         let executed_workflow_id = self.executing_workflow_id;
 
         for local_id in self.new_channels {
-            let (channel_id, _) = commit_channel(executed_workflow_id, transaction).await;
+            let (channel_id, _) = helper::commit_channel(executed_workflow_id, transaction).await;
             parent.notify_on_channel_init(local_id, channel_id, receipt);
         }
 
@@ -339,24 +302,18 @@ where
     C: Clock,
     S: Storage + 'static, // TODO: can this bound be relaxed? (may be introduced by `async_trait`)
 {
-    type Fmt = StorageHandles<'a, S>;
+    type Fmt = StorageRef<'a, S>;
 
     fn closed_receiver(&self) -> RawMessageReceiver<&'a S> {
-        RawMessageReceiver::closed(&self.storage)
+        self.storage().closed_receiver()
     }
 
     fn closed_sender(&self) -> RawMessageSender<&'a S> {
-        RawMessageSender::closed(&self.storage)
+        self.storage().closed_sender()
     }
 
     async fn create_channel(&self) -> (RawMessageSender<&'a S>, RawMessageReceiver<&'a S>) {
-        let mut transaction = self.storage.transaction().await;
-        let (channel_id, record) = commit_channel(None, &mut transaction).await;
-        transaction.commit().await;
-        (
-            RawMessageSender::new(&self.storage, channel_id, record.clone()),
-            RawMessageReceiver::new(&self.storage, channel_id, record),
-        )
+        self.storage().create_channel().await
     }
 }
 
@@ -367,7 +324,7 @@ where
     C: Clock,
     S: Storage + 'static,
 {
-    type Spawned<W: WorkflowFn + WithHandle> = WorkflowHandle<'a, W, WorkflowManager<E, C, S>>;
+    type Spawned<W: WorkflowFn + WithHandle> = WorkflowHandle<W, &'a S>;
     type Error = anyhow::Error;
 
     fn new_workflow_unchecked<W: WorkflowFn + WithHandle>(
@@ -388,6 +345,7 @@ where
             let workflow_id = stubs.commit_external(&mut transaction).await?;
             transaction.commit().await;
             Ok(self
+                .storage()
                 .workflow(workflow_id)
                 .await
                 .unwrap()
@@ -400,7 +358,7 @@ where
 #[derive(Debug, Default)]
 struct ChannelIdsCollector(ChannelIds);
 
-impl<'a, S: Storage> InsertHandles<StorageHandles<'a, S>> for ChannelIdsCollector {
+impl<'a, S: Storage> InsertHandles<StorageRef<'a, S>> for ChannelIdsCollector {
     fn insert_handle(
         &mut self,
         path: HandlePathBuf,

@@ -101,7 +101,7 @@ pub trait ManageInterfaces {
 
 /// Manager of workflow channels.
 #[async_trait]
-pub trait ManageChannels: ManageInterfaces {
+pub trait ManageChannels {
     /// Format of handles that this manager operates in.
     type Fmt: HandleFormat;
 
@@ -124,7 +124,7 @@ pub trait ManageChannels: ManageInterfaces {
 /// Depending on the context, the spawned workflow may be a child workflow (if executed
 /// in the context of a workflow, via [`Workflows`]), or the top-level workflow
 /// (if executed from the host).
-pub trait ManageWorkflows: ManageChannels {
+pub trait ManageWorkflows: ManageInterfaces + ManageChannels {
     /// Handle to an instantiated workflow.
     type Spawned<W: WorkflowFn + WithHandle>;
     /// Error spawning a workflow.

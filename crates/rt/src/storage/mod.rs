@@ -42,6 +42,7 @@ use std::{ops, sync::Arc};
 
 #[macro_use]
 mod macros;
+pub(crate) mod helper;
 mod local;
 mod records;
 mod stream;
@@ -52,8 +53,8 @@ pub use self::{
         ModuleRecordMut,
     },
     records::{
-        ActiveWorkflowState, ChannelRecord, CompletedWorkflowState, ErroneousMessageRef,
-        ErroredWorkflowState, MessageError, ModuleRecord, WorkflowRecord,
+        ActiveWorkflowState, ChannelRecord, CompletedWorkflowState, DefinitionRecord,
+        ErroneousMessageRef, ErroredWorkflowState, MessageError, ModuleRecord, WorkflowRecord,
         WorkflowSelectionCriteria, WorkflowState, WorkflowWaker, WorkflowWakerRecord,
     },
     stream::{
