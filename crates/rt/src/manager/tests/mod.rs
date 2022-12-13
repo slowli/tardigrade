@@ -65,25 +65,13 @@ async fn create_test_manager<C: Clock>(poll_fns: MockAnswers, clock: C) -> Local
 pub(crate) async fn create_test_workflow<C: Clock, S: Storage + 'static>(
     manager: &LocalManager<C, S>,
 ) -> WorkflowHandle<(), &S> {
-    let builder = manager.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let spawner = manager.spawner().close_senders();
+    let builder = spawner.new_workflow::<()>(DEFINITION_ID).unwrap();
     let (handles, _) = builder.handles(|_| { /* use default config */ }).await;
-    let senders_to_close = handles.values().filter_map(|handle| {
-        if let Handle::Sender(sender) = handle {
-            Some(sender.clone())
-        } else {
-            None
-        }
-    });
-    let senders_to_close: Vec<_> = senders_to_close.collect();
-
-    let workflow = builder
+    builder
         .build(b"test_input".to_vec(), handles)
         .await
-        .unwrap();
-    for sender in senders_to_close {
-        sender.close().await;
-    }
-    workflow
+        .unwrap()
 }
 
 async fn tick_workflow(manager: &LocalManager, id: WorkflowId) -> Result<Receipt, ExecutionError> {
@@ -203,8 +191,9 @@ async fn initializing_workflow_with_closed_channels() {
     };
 
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let manager = &create_test_manager(poll_fns, ()).await;
-    let builder = manager.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let manager = create_test_manager(poll_fns, ()).await;
+    let spawner = manager.spawner();
+    let builder = spawner.new_workflow::<()>(DEFINITION_ID).unwrap();
     let handles = builder.handles(|config| {
         let config = config.with_indexing();
         config[ReceiverAt("orders")].close();
@@ -222,7 +211,7 @@ async fn initializing_workflow_with_closed_channels() {
 
     poll_fn_sx
         .send(test_channels)
-        .async_scope(tick_workflow(manager, workflow_id))
+        .async_scope(tick_workflow(&manager, workflow_id))
         .await
         .unwrap();
 
@@ -612,10 +601,11 @@ async fn workflow_not_consuming_inbound_message() {
 #[async_std::test]
 async fn handles_shape_mismatch_error() {
     let (poll_fns, _) = Answers::channel();
-    let manager = &create_test_manager(poll_fns, ()).await;
+    let manager = create_test_manager(poll_fns, ()).await;
+    let spawner = manager.spawner();
     let storage = manager.storage();
 
-    let builder = manager.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let builder = spawner.new_workflow::<()>(DEFINITION_ID).unwrap();
     let err = builder
         .build(b"test_input".to_vec(), HandleMap::new())
         .await
@@ -628,7 +618,7 @@ async fn handles_shape_mismatch_error() {
     handles.insert("orders".into(), Handle::Receiver(storage.closed_receiver()));
     handles.insert("events".into(), Handle::Sender(storage.closed_sender()));
     handles.insert("traces".into(), Handle::Receiver(storage.closed_receiver()));
-    let builder = manager.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let builder = spawner.new_workflow::<()>(DEFINITION_ID).unwrap();
     let err = builder
         .build(b"test_input".to_vec(), handles)
         .await
@@ -641,19 +631,20 @@ async fn handles_shape_mismatch_error() {
 #[async_std::test]
 async fn non_owned_channel_error() {
     let (poll_fns, _) = Answers::channel();
-    let manager = &create_test_manager(poll_fns, ()).await;
+    let manager = create_test_manager(poll_fns, ()).await;
+    let spawner = manager.spawner();
     let storage = &manager.storage;
-    let workflow = create_test_workflow(manager).await;
+    let workflow = create_test_workflow(&manager).await;
 
     let orders_id = channel_id(workflow.ids(), "orders");
     let orders_rx = manager.storage().receiver(orders_id).await.unwrap();
-    let (traces_sx, _) = manager.new_channel().await;
+    let (traces_sx, _) = spawner.new_channel().await;
     let mut handles = HandleMap::new();
     handles.insert("orders".into(), Handle::Receiver(orders_rx));
     handles.insert("events".into(), Handle::Sender(traces_sx.clone()));
     handles.insert("traces".into(), Handle::Sender(traces_sx.clone()));
 
-    let builder = manager.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let builder = spawner.new_workflow::<()>(DEFINITION_ID).unwrap();
     let err = builder
         .build(b"test_input".to_vec(), handles)
         .await
@@ -665,12 +656,12 @@ async fn non_owned_channel_error() {
         "{err}"
     );
 
-    let (_, new_rx) = manager.new_channel().await;
+    let (_, new_rx) = spawner.new_channel().await;
     let mut handles = HandleMap::new();
     handles.insert("orders".into(), Handle::Receiver(new_rx));
     handles.insert("events".into(), Handle::Sender(traces_sx.clone()));
     handles.insert("traces".into(), Handle::Sender(traces_sx.clone()));
-    let builder = manager.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let builder = spawner.new_workflow::<()>(DEFINITION_ID).unwrap();
     builder
         .build(b"test_input".to_vec(), handles)
         .await
@@ -683,7 +674,7 @@ async fn non_owned_channel_error() {
     handles.insert("events".into(), Handle::Sender(storage.closed_sender()));
     handles.insert("traces".into(), Handle::Sender(traces_sx));
 
-    let builder = manager.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let builder = spawner.new_workflow::<()>(DEFINITION_ID).unwrap();
     let err = builder
         .build(b"test_input".to_vec(), handles)
         .await

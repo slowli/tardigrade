@@ -19,16 +19,17 @@ pub(crate) mod tests;
 pub(crate) use self::services::{Services, StashStub};
 pub use self::{
     services::{Clock, Schedule, TimerFuture},
+    stubs::ManagerSpawner,
     tick::{TickResult, WouldBlock},
     traits::AsManager,
 };
 
-use crate::storage::DefinitionRecord;
 use crate::{
     engine::{DefineWorkflow, WorkflowEngine, WorkflowModule},
     handle::StorageRef,
     storage::{
-        helper::StorageHelper, ModuleRecord, ReadModules, Storage, StorageTransaction, WriteModules,
+        helper::StorageHelper, DefinitionRecord, ModuleRecord, ReadModules, Storage,
+        StorageTransaction, WriteModules,
     },
 };
 use tardigrade::WorkflowId;
@@ -221,6 +222,11 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
     /// Returns a reference to the underlying storage.
     pub fn storage(&self) -> StorageRef<'_, S> {
         StorageRef::from(&self.storage)
+    }
+
+    /// Returns a spawner handle that can be used to create new workflows.
+    pub fn spawner(&self) -> ManagerSpawner<'_, Self> {
+        ManagerSpawner::new(self)
     }
 
     /// Returns the encapsulated storage.
