@@ -6,6 +6,7 @@ use mimicry::Answers;
 
 use std::{collections::HashSet, task::Poll};
 
+mod driver;
 mod spawn;
 
 use super::*;

@@ -8,6 +8,7 @@ use tracing_tunnel::{LocalSpans, PersistedMetadata};
 
 use std::{collections::HashMap, sync::Arc};
 
+mod driver;
 mod services;
 mod stubs;
 mod tick;
@@ -18,6 +19,7 @@ pub(crate) mod tests;
 
 pub(crate) use self::services::{Services, StashStub};
 pub use self::{
+    driver::{DriveConfig, Termination},
     services::{Clock, Schedule, TimerFuture},
     stubs::ManagerSpawner,
     tick::{TickResult, WouldBlock},
@@ -28,7 +30,7 @@ use crate::{
     engine::{DefineWorkflow, WorkflowEngine, WorkflowModule},
     handle::StorageRef,
     storage::{
-        helper::StorageHelper, DefinitionRecord, ModuleRecord, ReadModules, Storage,
+        helper::StorageHelper, CommitStream, DefinitionRecord, ModuleRecord, ReadModules, Storage,
         StorageTransaction, WriteModules,
     },
 };
@@ -245,11 +247,22 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
     /// workflows.
     #[tracing::instrument(skip(self))]
     pub async fn set_current_time(&self, time: DateTime<Utc>) {
-        let mut transaction = self.storage.transaction().await;
+        self.do_set_current_time(&self.storage, time).await;
+    }
+
+    pub(super) async fn do_set_current_time(&self, storage: &S, time: DateTime<Utc>) {
+        let mut transaction = storage.transaction().await;
         StorageHelper::new(&mut transaction)
             .set_current_time(time)
             .await;
         transaction.commit().await;
+    }
+}
+
+impl<E: WorkflowEngine, C: Schedule, S: Storage + Clone> WorkflowManager<E, C, S> {
+    /// Drives this manager using the provided config.
+    pub async fn drive(&self, commits_rx: &mut CommitStream, config: DriveConfig) -> Termination {
+        config.run(self, commits_rx).await
     }
 }
 

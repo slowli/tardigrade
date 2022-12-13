@@ -312,9 +312,13 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
     /// Returns an error if the manager cannot be progressed.
     #[allow(clippy::missing_panics_doc)] // false positive
     pub async fn tick(&self) -> Result<TickResult, WouldBlock> {
+        self.do_tick(&self.storage).await
+    }
+
+    pub(super) async fn do_tick(&self, storage: &S) -> Result<TickResult, WouldBlock> {
         let span = tracing::info_span!("tick");
         let _entered = span.enter();
-        let mut transaction = self.storage.transaction().await;
+        let mut transaction = storage.transaction().await;
 
         let mut workflow = transaction.workflow_with_wakers_for_update().await;
         let waker_records = if let Some(workflow) = &workflow {

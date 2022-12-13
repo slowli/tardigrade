@@ -1,19 +1,20 @@
-//! [`Driver`] for a [`WorkflowManager`](manager::WorkflowManager) that drives
-//! workflows contained in the manager to completion.
-//!
-//! See `Driver` docs for examples of usage.
+//! Driving `WorkflowManager` to completion.
 
-use chrono::{DateTime, Utc};
-use futures::{channel::mpsc, future, stream::FusedStream, FutureExt, StreamExt};
+use chrono::{DateTime, TimeZone, Utc};
+use futures::{
+    channel::mpsc,
+    future::{self, Either},
+    stream::FusedStream,
+    FutureExt, StreamExt,
+};
 
-#[cfg(test)]
-mod tests;
+use std::mem;
 
 use crate::{
     handle::{AnyWorkflowHandle, StorageRef},
     manager::{AsManager, TickResult},
-    storage::Storage,
-    Schedule,
+    storage::{CommitStream, Storage},
+    Schedule, TimerFuture,
 };
 use tardigrade::WorkflowId;
 
@@ -28,6 +29,20 @@ pub enum Termination {
     /// The manager has stalled: its progress does not depend on any external futures
     /// (inbound messages or timers).
     Stalled,
+}
+
+struct CachedTimer {
+    expires_at: DateTime<Utc>,
+    timer: Option<TimerFuture>,
+}
+
+impl Default for CachedTimer {
+    fn default() -> Self {
+        Self {
+            expires_at: Utc.timestamp_nanos(0),
+            timer: None,
+        }
+    }
 }
 
 /// Environment for driving workflow execution in a [`WorkflowManager`].
@@ -89,21 +104,16 @@ pub enum Termination {
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug)]
-pub struct Driver {
-    commits_rx: mpsc::Receiver<()>,
+#[derive(Debug, Default)]
+pub struct DriveConfig {
     results_sx: Option<mpsc::UnboundedSender<TickResult>>,
     drop_erroneous_messages: bool,
 }
 
-impl Driver {
-    /// FIXME
-    pub fn new(commits_rx: mpsc::Receiver<()>) -> Self {
-        Self {
-            commits_rx,
-            results_sx: None,
-            drop_erroneous_messages: false,
-        }
+impl DriveConfig {
+    /// Creates a new driver configuration.
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Returns the receiver of [`TickResult`]s generated during workflow execution.
@@ -128,31 +138,45 @@ impl Driver {
     ///
     /// [`WorkflowManager`]: manager::WorkflowManager
     /// [`select`]: futures::select
-    pub async fn drive<M>(mut self, manager: &mut M) -> Termination
+    pub(super) async fn run<M: AsManager>(
+        mut self,
+        manager: &M,
+        commits_rx: &mut CommitStream,
+    ) -> Termination
     where
-        M: AsManager,
         M::Clock: Schedule,
+        M::Storage: Clone,
     {
-        // Technically, we don't need a mutable ref to a manager; we use it to ensure that
-        // the manager isn't driven elsewhere, which can lead to unexpected behavior.
+        // Clone the storage to prevent echoing commit events. This is ugly, but seems
+        // the easiest solution.
+        let storage = manager.as_manager().storage.clone();
+        let mut cached_timer = CachedTimer::default();
         loop {
-            if let Some(termination) = self.tick(manager).await {
+            if let Some(termination) = self
+                .tick(manager, &storage, commits_rx, &mut cached_timer)
+                .await
+            {
                 return termination;
             }
         }
     }
 
     #[tracing::instrument(level = "debug", skip_all, ret)]
-    async fn tick<M>(&mut self, manager: &M) -> Option<Termination>
+    async fn tick<M: AsManager>(
+        &mut self,
+        manager: &M,
+        storage: &M::Storage,
+        commits_rx: &mut CommitStream,
+        cached_timer: &mut CachedTimer,
+    ) -> Option<Termination>
     where
-        M: AsManager,
         M::Clock: Schedule,
     {
+        let nearest_timer_expiration = self.tick_manager(manager, storage).await;
         let manager_ref = manager.as_manager();
-        let nearest_timer_expiration = self.tick_manager(manager).await;
         if nearest_timer_expiration.is_none() {
-            let no_workflows = manager_ref.storage().workflow_count().await == 0;
-            if self.commits_rx.is_terminated() || no_workflows {
+            let no_workflows = StorageRef::from(storage).workflow_count().await == 0;
+            if commits_rx.is_terminated() || no_workflows {
                 let termination = if no_workflows {
                     Termination::Finished
                 } else {
@@ -162,37 +186,49 @@ impl Driver {
             }
         }
 
-        // TODO: cache `timer_event`?
-        let mut commit_event = self.commits_rx.select_next_some();
+        let commit_event = commits_rx.select_next_some();
         let timer_event = nearest_timer_expiration.map_or_else(
             || future::pending().left_future(),
             |timestamp| {
+                if cached_timer.expires_at == timestamp {
+                    if let Some(cached) = mem::take(&mut cached_timer.timer) {
+                        return cached.right_future();
+                    }
+                }
                 let timer = manager_ref.clock.create_timer(timestamp);
                 timer.right_future()
             },
         );
 
-        futures::select! {
-            _ = commit_event => {
-               // We just need the fact that a commit has occurred.
+        let selected = future::select(commit_event, timer_event).await;
+        match selected {
+            Either::Left((_, timer_event)) => {
+                // We just need the fact that a commit has occurred.
+                if let Either::Right(timer) = timer_event {
+                    cached_timer.timer = Some(timer);
+                }
             }
-            timestamp = timer_event.fuse() => {
-                manager_ref.set_current_time(timestamp).await;
+            Either::Right((timestamp, _)) => {
+                manager_ref.do_set_current_time(storage, timestamp).await;
             }
         }
         None
     }
 
-    async fn tick_manager<M: AsManager>(&mut self, manager: &M) -> Option<DateTime<Utc>> {
+    async fn tick_manager<M: AsManager>(
+        &mut self,
+        manager: &M,
+        storage: &M::Storage,
+    ) -> Option<DateTime<Utc>> {
+        let manager = manager.as_manager();
         loop {
-            let tick_result = match manager.as_manager().tick().await {
+            let tick_result = match manager.do_tick(storage).await {
                 Ok(result) => result,
                 Err(blocked) => break blocked.nearest_timer_expiration(),
             };
 
             if self.drop_erroneous_messages && tick_result.as_ref().is_err() {
-                let storage = manager.as_manager().storage();
-                Self::repair_workflow(storage, tick_result.workflow_id()).await;
+                Self::repair_workflow(storage.into(), tick_result.workflow_id()).await;
             }
             if let Some(sx) = &self.results_sx {
                 sx.unbounded_send(tick_result).ok();
@@ -211,8 +247,9 @@ impl Driver {
 
         let mut dropped_messages = false;
         for message in handle.messages() {
-            message.drop_for_workflow().await.ok();
-            dropped_messages = true;
+            if message.drop_for_workflow().await.is_ok() {
+                dropped_messages = true;
+            }
         }
         if dropped_messages {
             handle.consider_repaired().await.ok();

@@ -127,11 +127,14 @@
 // Linter settings.
 #![warn(missing_debug_implementations, missing_docs, bare_trait_objects)]
 #![warn(clippy::all, clippy::pedantic)]
-#![allow(clippy::must_use_candidate, clippy::module_name_repetitions)]
+#![allow(
+    clippy::must_use_candidate,
+    clippy::module_name_repetitions,
+    clippy::similar_names
+)]
 
 mod backends;
 mod data;
-pub mod driver;
 pub mod engine;
 pub mod handle;
 pub mod manager;
