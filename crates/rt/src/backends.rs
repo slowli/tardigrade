@@ -24,7 +24,7 @@ mod mock {
     /// ```
     /// # use async_std::task;
     /// # use futures::TryStreamExt;
-    /// # use tardigrade::{handle::{SenderAt, WithIndexing}, spawn::ManageWorkflows};
+    /// # use tardigrade::{handle::{SenderAt, WithIndexing}, spawn::CreateWorkflow};
     /// # use tardigrade_rt::{
     /// #     driver::Driver, engine::{Wasmtime, WasmtimeModule},
     /// #     manager::{WorkflowHandle, WorkflowManager}, storage::LocalStorage, test::MockScheduler,

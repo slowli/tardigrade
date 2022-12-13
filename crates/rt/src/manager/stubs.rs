@@ -28,7 +28,7 @@ use crate::{
 use tardigrade::{
     handle::{Handle, HandlePath, HandlePathBuf},
     interface::Interface,
-    spawn::{HostError, ManageChannels, ManageInterfaces, ManageWorkflows},
+    spawn::{CreateChannel, CreateWorkflow, HostError, ManageInterfaces},
     workflow::{InsertHandles, WithHandle, WorkflowFn},
     ChannelId, Codec, WorkflowId,
 };
@@ -308,7 +308,7 @@ where
 }
 
 #[async_trait]
-impl<'a, E, C, S> ManageChannels for &'a WorkflowManager<E, C, S>
+impl<'a, E, C, S> CreateChannel for &'a WorkflowManager<E, C, S>
 where
     E: WorkflowEngine,
     C: Clock,
@@ -324,12 +324,12 @@ where
         self.storage().closed_sender()
     }
 
-    async fn create_channel(&self) -> (RawMessageSender<&'a S>, RawMessageReceiver<&'a S>) {
-        self.storage().create_channel().await
+    async fn new_channel(&self) -> (RawMessageSender<&'a S>, RawMessageReceiver<&'a S>) {
+        self.storage().new_channel().await
     }
 }
 
-impl<'a, E, C, S> ManageWorkflows for &'a WorkflowManager<E, C, S>
+impl<'a, E, C, S> CreateWorkflow for &'a WorkflowManager<E, C, S>
 where
     E: WorkflowEngine,
     C: Clock,

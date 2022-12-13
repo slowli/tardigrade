@@ -52,7 +52,7 @@
 //! use tardigrade_rt::{
 //!     engine::Wasmtime, manager::WorkflowManager, storage::LocalStorage,
 //! };
-//! use tardigrade::spawn::ManageWorkflows;
+//! use tardigrade::spawn::CreateWorkflow;
 //!
 //! # async fn test_wrapper() -> anyhow::Result<()> {
 //! let module_bytes: Vec<u8> = // e.g., take from a file

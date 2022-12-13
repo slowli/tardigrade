@@ -127,7 +127,7 @@ struct Shared<D> {
 ///
 /// // After that, new workflows can be spawned using `ManageWorkflowsExt`
 /// // trait from the `tardigrade` crate:
-/// use tardigrade::spawn::ManageWorkflows;
+/// use tardigrade::spawn::CreateWorkflow;
 ///
 /// let manager = &manager;
 /// let definition_id = "test/Workflow";

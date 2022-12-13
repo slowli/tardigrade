@@ -36,7 +36,7 @@
 //!
 //! // To spawn a workflow, we should use the following code
 //! // in the parent workflow:
-//! use tardigrade::spawn::{ManageWorkflows, Workflows};
+//! use tardigrade::spawn::{CreateWorkflow, Workflows};
 //! # use tardigrade::test::Runtime;
 //!
 //! # let mut runtime = Runtime::default();
@@ -101,7 +101,7 @@ pub trait ManageInterfaces {
 
 /// Manager of workflow channels.
 #[async_trait]
-pub trait ManageChannels {
+pub trait CreateChannel {
     /// Format of handles that this manager operates in.
     type Fmt: HandleFormat;
 
@@ -111,7 +111,7 @@ pub trait ManageChannels {
     fn closed_sender(&self) -> <Self::Fmt as HandleFormat>::RawSender;
 
     /// Creates a new workflow channel.
-    async fn create_channel(
+    async fn new_channel(
         &self,
     ) -> (
         <Self::Fmt as HandleFormat>::RawSender,
@@ -124,7 +124,7 @@ pub trait ManageChannels {
 /// Depending on the context, the spawned workflow may be a child workflow (if executed
 /// in the context of a workflow, via [`Workflows`]), or the top-level workflow
 /// (if executed from the host).
-pub trait ManageWorkflows: ManageInterfaces + ManageChannels {
+pub trait CreateWorkflow: ManageInterfaces + CreateChannel {
     /// Handle to an instantiated workflow.
     type Spawned<W: WorkflowFn + WithHandle>;
     /// Error spawning a workflow.
@@ -166,14 +166,14 @@ pub trait ManageWorkflows: ManageInterfaces + ManageChannels {
 }
 
 /// Builder of child workflows.
-pub struct WorkflowBuilder<'a, M: ManageWorkflows, W> {
+pub struct WorkflowBuilder<'a, M: CreateWorkflow, W> {
     manager: &'a M,
     interface: Cow<'a, Interface>,
     definition_id: &'a str,
     _ty: PhantomData<W>,
 }
 
-impl<M: ManageWorkflows, W> fmt::Debug for WorkflowBuilder<'_, M, W> {
+impl<M: CreateWorkflow, W> fmt::Debug for WorkflowBuilder<'_, M, W> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("WorkflowBuilder")
@@ -185,7 +185,7 @@ impl<M: ManageWorkflows, W> fmt::Debug for WorkflowBuilder<'_, M, W> {
 
 impl<M, W> WorkflowBuilder<'_, M, W>
 where
-    M: ManageWorkflows,
+    M: CreateWorkflow,
     W: WorkflowFn + WithHandle,
 {
     /// Creates a new workflow.
@@ -207,7 +207,7 @@ where
 
 impl<'a, M, W> WorkflowBuilder<'a, M, W>
 where
-    M: ManageWorkflows,
+    M: CreateWorkflow,
     W: WorkflowFn + WithHandle,
 {
     /// Builds the handles pair allowing to configure handles in the process.
@@ -233,7 +233,7 @@ where
 pub struct Workflows;
 
 #[async_trait]
-impl ManageChannels for Workflows {
+impl CreateChannel for Workflows {
     type Fmt = Wasm;
 
     fn closed_receiver(&self) -> RawReceiver {
@@ -244,12 +244,12 @@ impl ManageChannels for Workflows {
         RawSender::closed()
     }
 
-    async fn create_channel(&self) -> (RawSender, RawReceiver) {
+    async fn new_channel(&self) -> (RawSender, RawReceiver) {
         channel().await
     }
 }
 
-impl ManageWorkflows for Workflows {
+impl CreateWorkflow for Workflows {
     type Spawned<W: WorkflowFn + WithHandle> = RemoteWorkflow;
     type Error = HostError;
 

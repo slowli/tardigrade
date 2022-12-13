@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::TestedWorkflow;
 use tardigrade::{
     channel::SendError,
-    spawn::{ManageWorkflows, Workflows},
+    spawn::{CreateWorkflow, Workflows},
     task::{self, JoinError, TaskError, TaskResult},
     test::Runtime,
     workflow::{DelegateHandle, GetInterface, SpawnWorkflow, WorkflowFn},

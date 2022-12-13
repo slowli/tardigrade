@@ -21,7 +21,7 @@ use crate::storage::{
     helper, ChannelRecord, ReadonlyStorageTransaction, Storage, StorageTransaction, WorkflowState,
 };
 use tardigrade::{
-    spawn::ManageChannels,
+    spawn::CreateChannel,
     workflow::{HandleFormat, InEnv, Inverse},
     ChannelId, Codec, WorkflowId,
 };
@@ -184,7 +184,7 @@ impl<'a, S: Storage> StorageRef<'a, S> {
 pub type HostHandles<'a, W, S> = InEnv<W, Inverse<StorageRef<'a, S>>>;
 
 #[async_trait]
-impl<'a, S: Storage> ManageChannels for StorageRef<'a, S> {
+impl<'a, S: Storage> CreateChannel for StorageRef<'a, S> {
     type Fmt = Self;
 
     fn closed_receiver(&self) -> RawMessageReceiver<&'a S> {
@@ -195,7 +195,7 @@ impl<'a, S: Storage> ManageChannels for StorageRef<'a, S> {
         RawMessageSender::closed(self.inner)
     }
 
-    async fn create_channel(&self) -> (RawMessageSender<&'a S>, RawMessageReceiver<&'a S>) {
+    async fn new_channel(&self) -> (RawMessageSender<&'a S>, RawMessageReceiver<&'a S>) {
         self.create_channel().await
     }
 }

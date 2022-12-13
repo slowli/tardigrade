@@ -96,7 +96,7 @@ use std::{
 
 use crate::{
     interface::Interface,
-    spawn::{ManageWorkflows, Workflows},
+    spawn::{CreateWorkflow, Workflows},
     task::{self, TaskResult},
     workflow::{InEnv, Inverse, SpawnWorkflow, TaskHandle, UntypedHandles, Wasm, WithHandle},
     ChannelId, WorkflowId,

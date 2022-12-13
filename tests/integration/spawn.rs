@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use crate::TestedWorkflow;
 use tardigrade::{
     channel::Sender,
-    spawn::{ManageWorkflows, Workflows},
+    spawn::{CreateWorkflow, Workflows},
     task::TaskResult,
     test::Runtime,
     workflow::{DelegateHandle, GetInterface, SpawnWorkflow, WorkflowFn},

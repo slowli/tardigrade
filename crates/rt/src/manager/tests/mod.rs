@@ -22,7 +22,7 @@ use crate::{
 use tardigrade::{
     channel::SendError,
     handle::{Handle, HandleMap, HandlePath, ReceiverAt, SenderAt, WithIndexing},
-    spawn::{ManageChannels, ManageWorkflows},
+    spawn::{CreateChannel, CreateWorkflow},
     ChannelId,
 };
 
@@ -647,7 +647,7 @@ async fn non_owned_channel_error() {
 
     let orders_id = channel_id(workflow.ids(), "orders");
     let orders_rx = manager.storage().receiver(orders_id).await.unwrap();
-    let (traces_sx, _) = manager.create_channel().await;
+    let (traces_sx, _) = manager.new_channel().await;
     let mut handles = HandleMap::new();
     handles.insert("orders".into(), Handle::Receiver(orders_rx));
     handles.insert("events".into(), Handle::Sender(traces_sx.clone()));
@@ -665,7 +665,7 @@ async fn non_owned_channel_error() {
         "{err}"
     );
 
-    let (_, new_rx) = manager.create_channel().await;
+    let (_, new_rx) = manager.new_channel().await;
     let mut handles = HandleMap::new();
     handles.insert("orders".into(), Handle::Receiver(new_rx));
     handles.insert("events".into(), Handle::Sender(traces_sx.clone()));
