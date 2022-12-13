@@ -9,7 +9,7 @@ mod persistence;
 pub use self::persistence::PersistedWorkflow;
 
 use crate::{
-    data::WorkflowData,
+    data::{WakerOrTask, WorkflowData},
     engine::{DefineWorkflow, PersistWorkflow, RunWorkflow},
     manager::Services,
     receipt::{
@@ -18,7 +18,9 @@ use crate::{
     },
     utils::Message,
 };
-use tardigrade::{interface::HandleMap, task::TaskResult, ChannelId, TaskId};
+use tardigrade::{
+    handle::HandleMap, spawn::HostError, task::TaskResult, ChannelId, TaskId, WorkflowId,
+};
 
 #[derive(Debug, Default)]
 struct ExecutionOutput {
@@ -28,6 +30,25 @@ struct ExecutionOutput {
 
 pub(crate) type ChannelIds = HandleMap<ChannelId>;
 
+#[derive(Debug)]
+pub(crate) struct WorkflowAndChannelIds {
+    pub workflow_id: WorkflowId,
+    pub channel_ids: ChannelIds,
+}
+
+#[derive(Debug)]
+enum ExecutedFunctionArgs<'a> {
+    WorkflowArgs(&'a [u8]),
+    NewChannel {
+        local_id: ChannelId,
+        id: ChannelId,
+    },
+    NewChild {
+        local_id: WorkflowId,
+        result: Result<WorkflowAndChannelIds, HostError>,
+    },
+}
+
 /// Workflow instance.
 #[derive(Debug)]
 pub(crate) struct Workflow<T> {
@@ -35,7 +56,7 @@ pub(crate) struct Workflow<T> {
     args: Option<Message>,
 }
 
-impl<T: RunWorkflow + PersistWorkflow> Workflow<T> {
+impl<T: RunWorkflow> Workflow<T> {
     pub(crate) fn new<D>(
         definition: &D,
         data: WorkflowData,
@@ -72,10 +93,11 @@ impl<T: RunWorkflow + PersistWorkflow> Workflow<T> {
         Ok(spawn_receipt)
     }
 
-    fn spawn_main_task(&mut self, raw_data: &[u8]) -> Result<Receipt, ExecutionError> {
+    fn spawn_main_task(&mut self, raw_args: &[u8]) -> Result<Receipt, ExecutionError> {
+        let args = ExecutedFunctionArgs::WorkflowArgs(raw_args);
         let mut receipt = Receipt::default();
         let task_id = self
-            .execute(ExecutedFunction::Entry, Some(raw_data), &mut receipt)?
+            .execute(ExecutedFunction::Entry, Some(args), &mut receipt)?
             .main_task_id
             .expect("main task ID not set");
         self.inner.data_mut().spawn_main_task(task_id);
@@ -85,7 +107,7 @@ impl<T: RunWorkflow + PersistWorkflow> Workflow<T> {
     fn do_execute(
         &mut self,
         function: &ExecutedFunction,
-        data: Option<&[u8]>,
+        args: Option<ExecutedFunctionArgs<'_>>,
     ) -> anyhow::Result<ExecutionOutput> {
         let mut output = ExecutionOutput::default();
         match function {
@@ -97,18 +119,43 @@ impl<T: RunWorkflow + PersistWorkflow> Workflow<T> {
                     }
                 })?;
             }
-
             ExecutedFunction::Waker {
                 waker_id,
                 wake_up_cause,
             } => {
-                WorkflowData::wake(&mut self.inner, *waker_id, wake_up_cause.clone())?;
+                WorkflowData::wake(&mut self.inner, wake_up_cause.clone(), |workflow| {
+                    workflow.wake_waker(*waker_id);
+                });
             }
             ExecutedFunction::TaskDrop { task_id } => {
-                self.inner.drop_task(*task_id)?;
+                self.inner.drop_task(*task_id);
             }
             ExecutedFunction::Entry => {
-                output.main_task_id = Some(self.inner.create_main_task(data.unwrap())?);
+                let Some(ExecutedFunctionArgs::WorkflowArgs(args)) = args else { unreachable!() };
+                output.main_task_id = Some(self.inner.create_main_task(args)?);
+            }
+
+            ExecutedFunction::StubInitialization => {
+                let cause = WakeUpCause::StubInitialized;
+                match args.unwrap() {
+                    ExecutedFunctionArgs::NewChannel { local_id, id } => {
+                        self.inner.data_mut().notify_on_channel_init(local_id, id);
+                        WorkflowData::wake(&mut self.inner, cause, |workflow| {
+                            workflow.initialize_channel(local_id, id);
+                        });
+                    }
+                    ExecutedFunctionArgs::NewChild { local_id, result } => {
+                        let narrow_result = result
+                            .as_ref()
+                            .map(|ids| ids.workflow_id)
+                            .map_err(HostError::clone);
+                        self.inner.data_mut().notify_on_child_init(local_id, result);
+                        WorkflowData::wake(&mut self.inner, cause, |workflow| {
+                            workflow.initialize_child(local_id, narrow_result);
+                        });
+                    }
+                    ExecutedFunctionArgs::WorkflowArgs(_) => unreachable!(),
+                }
             }
         }
         Ok(output)
@@ -117,13 +164,13 @@ impl<T: RunWorkflow + PersistWorkflow> Workflow<T> {
     fn execute(
         &mut self,
         function: ExecutedFunction,
-        data: Option<&[u8]>,
+        args: Option<ExecutedFunctionArgs<'_>>,
         receipt: &mut Receipt,
     ) -> Result<ExecutionOutput, ExecutionError> {
         self.inner.data_mut().set_current_execution(&function);
 
-        let mut output = self.do_execute(&function, data);
-        let (events, panic_info) = self
+        let mut output = self.do_execute(&function, args);
+        let (mut events, panic_info) = self
             .inner
             .data_mut()
             .remove_current_execution(output.is_err());
@@ -131,11 +178,26 @@ impl<T: RunWorkflow + PersistWorkflow> Workflow<T> {
         let task_result = output
             .as_mut()
             .map_or(None, |output| output.task_result.take());
-        receipt.executions.push(Execution {
-            function,
-            events,
-            task_result,
-        });
+
+        // Compress initialization executions: the fact that they are executed separately
+        // is an implementation detail.
+        let mut is_compressed = false;
+        if function.is_stub_initialization() {
+            debug_assert!(task_result.is_none());
+            if let Some(last_execution) = receipt.executions.last_mut() {
+                if last_execution.function.is_stub_initialization() {
+                    last_execution.events.extend(mem::take(&mut events));
+                    is_compressed = true;
+                }
+            }
+        }
+        if !is_compressed {
+            receipt.executions.push(Execution {
+                function,
+                events,
+                task_result,
+            });
+        }
 
         // On error, we don't drop tasks mentioned in `resource_events`.
         let output =
@@ -178,12 +240,19 @@ impl<T: RunWorkflow + PersistWorkflow> Workflow<T> {
 
     fn wake_tasks(&mut self, receipt: &mut Receipt) -> Result<(), ExecutionError> {
         let wakers = self.inner.data_mut().take_wakers();
-        for (waker_id, wake_up_cause) in wakers {
-            let function = ExecutedFunction::Waker {
-                waker_id,
-                wake_up_cause,
-            };
-            self.execute(function, None, receipt)?;
+        for (waker_or_task, wake_up_cause) in wakers {
+            match waker_or_task {
+                WakerOrTask::Task(task_id) => {
+                    self.inner.data_mut().enqueue_task(task_id, &wake_up_cause);
+                }
+                WakerOrTask::Waker(waker_id) => {
+                    let function = ExecutedFunction::Waker {
+                        waker_id,
+                        wake_up_cause,
+                    };
+                    self.execute(function, None, receipt)?;
+                }
+            }
         }
         Ok(())
     }
@@ -224,17 +293,44 @@ impl<T: RunWorkflow + PersistWorkflow> Workflow<T> {
         self.inner.data_mut().take_services()
     }
 
+    pub(crate) fn notify_on_channel_init(
+        &mut self,
+        local_id: ChannelId,
+        id: ChannelId,
+        receipt: &mut Receipt,
+    ) {
+        let function = ExecutedFunction::StubInitialization;
+        let args = ExecutedFunctionArgs::NewChannel { local_id, id };
+        self.execute(function, Some(args), receipt).unwrap();
+        // ^ `unwrap()` should be safe; no user-generated code is executed
+    }
+
+    pub(crate) fn notify_on_child_init(
+        &mut self,
+        local_id: WorkflowId,
+        result: Result<WorkflowAndChannelIds, HostError>,
+        receipt: &mut Receipt,
+    ) {
+        let function = ExecutedFunction::StubInitialization;
+        let args = ExecutedFunctionArgs::NewChild { local_id, result };
+        self.execute(function, Some(args), receipt).unwrap();
+        // ^ `unwrap()` should be safe; no user-generated code is executed
+    }
+
     #[tracing::instrument(level = "debug", skip(self), ret)]
     pub(crate) fn drain_messages(&mut self) -> HashMap<ChannelId, Vec<Message>> {
         self.inner.data_mut().drain_messages()
     }
+}
 
+impl<T: PersistWorkflow> Workflow<T> {
     /// Persists this workflow.
     ///
     /// # Panics
     ///
     /// Panics if the workflow is in such a state that it cannot be persisted right now.
     pub(crate) fn persist(&mut self) -> PersistedWorkflow {
+        self.inner.data_mut().move_task_queue_to_wakers();
         PersistedWorkflow::new(self).unwrap()
     }
 }

@@ -185,8 +185,7 @@ pub trait WriteChannels: ReadChannels {
 
     /// Creates a new channel with the provided `state`. If the channel with the specified ID
     /// already exists, does nothing (i.e., the channel state is not updated in any way).
-    async fn get_or_insert_channel(&mut self, id: ChannelId, state: ChannelRecord)
-        -> ChannelRecord;
+    async fn insert_channel(&mut self, id: ChannelId, state: ChannelRecord);
 
     /// Changes the channel state and selects the updated state.
     async fn manipulate_channel<F: FnOnce(&mut ChannelRecord) + Send>(
@@ -253,6 +252,19 @@ pub struct ChannelRecord {
     pub is_closed: bool,
     /// Number of messages written to the channel.
     pub received_messages: usize,
+}
+
+impl ChannelRecord {
+    /// Returns a record for a channel with both sides closed.
+    pub fn closed() -> Self {
+        Self {
+            receiver_workflow_id: None,
+            sender_workflow_ids: HashSet::new(),
+            has_external_sender: false,
+            is_closed: true,
+            received_messages: 0,
+        }
+    }
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // required by serde

@@ -9,20 +9,21 @@ use tracing_tunnel::{LocalSpans, PersistedMetadata, PersistedSpans};
 use std::{collections::HashMap, sync::Arc};
 
 mod handle;
-mod new_workflows;
 mod persistence;
 mod services;
+mod stubs;
 mod tick;
 mod traits;
 
 #[cfg(test)]
 pub(crate) mod tests;
 
-pub(crate) use self::services::{Services, StashWorkflow};
+pub(crate) use self::services::{Services, StashStub};
 pub use self::{
     handle::{
         AnyWorkflowHandle, CompletedWorkflowHandle, ConcurrencyError, ErroneousMessage,
-        ErroredWorkflowHandle, MessageReceiver, MessageSender, ReceivedMessage, WorkflowHandle,
+        ErroredWorkflowHandle, HostHandles, ManagerHandles, MessageReceiver, MessageSender,
+        RawMessageReceiver, RawMessageSender, ReceivedMessage, WorkflowHandle,
     },
     services::{Clock, Schedule, TimerFuture},
     tick::{TickResult, WouldBlock},
@@ -36,15 +37,8 @@ use crate::{
         ChannelRecord, ModuleRecord, ReadChannels, ReadModules, ReadWorkflows, Storage,
         StorageTransaction, WorkflowState, WriteChannels, WriteModules, WriteWorkflows,
     },
-    workflow::ChannelIds,
 };
 use tardigrade::{channel::SendError, ChannelId, WorkflowId};
-
-#[derive(Debug)]
-struct WorkflowAndChannelIds {
-    workflow_id: WorkflowId,
-    channel_ids: ChannelIds,
-}
 
 #[derive(Debug)]
 struct WorkflowDefinitions<D> {
@@ -90,7 +84,8 @@ struct Shared<D> {
 enum ChannelSide {
     HostSender,
     WorkflowSender(WorkflowId),
-    Receiver,
+    HostReceiver,
+    Receiver(WorkflowId),
 }
 
 /// Manager for workflow modules, workflows and channels.
@@ -147,16 +142,18 @@ enum ChannelSide {
 ///
 /// // After that, new workflows can be spawned using `ManageWorkflowsExt`
 /// // trait from the `tardigrade` crate:
-/// use tardigrade::spawn::ManageWorkflowsExt;
-/// let definition_id = "test::Workflow";
+/// use tardigrade::spawn::ManageWorkflows;
+///
+/// let manager = &manager;
+/// let definition_id = "test/Workflow";
 /// // ^ The definition ID is the ID of the module and the name of a workflow
-/// //   within the module separated by `::`.
+/// //   within the module separated by `/`.
 /// let args = b"test_args".to_vec();
-/// let mut workflow = manager
-///     .new_workflow::<()>(definition_id, args)?
-///     .build()
-///     .await?;
-/// // Do something with `workflow`, e.g., write something to its channels...
+/// let builder = manager.new_workflow::<()>(definition_id)?;
+/// let (handles, self_handles) = builder.handles(|_| {}).await;
+/// let mut workflow = builder.build(args, handles).await?;
+/// // Do something with `workflow`, e.g., write something to its channels
+/// // using `self_handles`...
 ///
 /// // Initialize the workflow:
 /// let receipt = manager.tick().await?.drop_handle().into_inner()?;
@@ -235,6 +232,18 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         Some(record)
     }
 
+    /// Returns a sender handle for the specified channel, or `None` if the channel does not exist.
+    pub async fn sender(&self, channel_id: ChannelId) -> Option<RawMessageSender<'_, Self>> {
+        let record = self.channel(channel_id).await?;
+        Some(RawMessageSender::new(self, channel_id, record))
+    }
+
+    /// Returns a receiver handle for the specified channel, or `None` if the channel does not exist.
+    pub async fn receiver(&self, channel_id: ChannelId) -> Option<RawMessageReceiver<'_, Self>> {
+        let record = self.channel(channel_id).await?;
+        Some(RawMessageReceiver::new(self, channel_id, record))
+    }
+
     /// Returns a handle to an active workflow with the specified ID. If the workflow is
     /// not active or does not exist, returns `None`.
     pub async fn workflow(&self, workflow_id: WorkflowId) -> Option<WorkflowHandle<'_, (), Self>> {
@@ -259,8 +268,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
                     .definitions
                     .get(&record.module_id, &record.name_in_module)
                     .interface();
-                let handle =
-                    WorkflowHandle::new(self, &transaction, workflow_id, interface, *state).await;
+                let handle = WorkflowHandle::new(self, workflow_id, interface, *state);
                 Some(handle.into())
             }
 
@@ -325,16 +333,8 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
 
     pub(crate) async fn close_host_receiver(&self, channel_id: ChannelId) {
         let mut transaction = self.storage.transaction().await;
-        if cfg!(debug_assertions) {
-            let channel = transaction.channel(channel_id).await.unwrap();
-            debug_assert!(
-                channel.receiver_workflow_id.is_none(),
-                "Attempted to close channel {} for which the host doesn't hold receiver",
-                channel_id
-            );
-        }
         StorageHelper::new(&mut transaction)
-            .close_channel_side(channel_id, ChannelSide::Receiver)
+            .close_channel_side(channel_id, ChannelSide::HostReceiver)
             .await;
         transaction.commit().await;
     }

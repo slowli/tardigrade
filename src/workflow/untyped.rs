@@ -1,94 +1,74 @@
 //! Untyped workflow handle.
 
-use std::{fmt, ops};
+use std::mem;
 
-use super::{DescribeEnv, InEnv, TakeHandle, WithHandle, WorkflowEnv};
-use crate::{
-    channel::{RawReceiver, RawSender},
-    interface::{AccessError, AccessErrorKind, Handle, HandleMap, HandleMapKey, HandlePath},
+use super::{handle::default_insert_handles, HandleFormat, InsertHandles, TakeHandles, WithHandle};
+use crate::handle::{
+    AccessError, AccessErrorKind, Handle, HandleMap, HandleMapKey, HandlePath, HandlePathBuf,
+    ReceiverAt, SenderAt,
 };
 
 /// Dynamically-typed handle to a workflow containing handles to its channels.
-pub struct UntypedHandle<Env: WorkflowEnv> {
-    pub(crate) handles: HandleMap<InEnv<RawReceiver, Env>, InEnv<RawSender, Env>>,
+pub type UntypedHandles<Fmt> =
+    HandleMap<<Fmt as HandleFormat>::RawReceiver, <Fmt as HandleFormat>::RawSender>;
+
+impl<Fmt: HandleFormat> TakeHandles<Fmt> for UntypedHandles<Fmt> {
+    #[inline]
+    fn take_receiver(&mut self, path: HandlePath<'_>) -> Result<Fmt::RawReceiver, AccessError> {
+        ReceiverAt(path).remove_from(self)
+    }
+
+    #[inline]
+    fn take_sender(&mut self, path: HandlePath<'_>) -> Result<Fmt::RawSender, AccessError> {
+        SenderAt(path).remove_from(self)
+    }
+
+    #[inline]
+    fn drain(&mut self) -> UntypedHandles<Fmt> {
+        mem::take(self)
+    }
 }
 
-impl<Env: WorkflowEnv> Default for UntypedHandle<Env> {
-    fn default() -> Self {
-        Self {
-            handles: HandleMap::new(),
+impl<Fmt: HandleFormat> InsertHandles<Fmt> for UntypedHandles<Fmt> {
+    #[inline]
+    fn insert_handle(
+        &mut self,
+        path: HandlePathBuf,
+        handle: Handle<Fmt::RawReceiver, Fmt::RawSender>,
+    ) {
+        self.insert(path, handle);
+    }
+
+    #[inline]
+    fn insert_handles(&mut self, path: HandlePath<'_>, handles: UntypedHandles<Fmt>) {
+        if path.is_empty() {
+            self.extend(handles);
+        } else {
+            default_insert_handles::<Fmt, _>(self, path, handles);
         }
-    }
-}
-
-impl<Env: WorkflowEnv> fmt::Debug for UntypedHandle<Env>
-where
-    InEnv<RawReceiver, Env>: fmt::Debug,
-    InEnv<RawSender, Env>: fmt::Debug,
-{
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&self.handles, formatter)
-    }
-}
-
-type KeyHandle<K, Env> =
-    <K as HandleMapKey>::Output<InEnv<RawReceiver, Env>, InEnv<RawSender, Env>>;
-
-impl<Env: WorkflowEnv> UntypedHandle<Env> {
-    /// Removes an element with the specified index from this handle.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the element is not present in the handle, or if it has an unexpected
-    /// type (e.g., a sender instead of a receiver).
-    pub fn remove<K: HandleMapKey>(&mut self, key: K) -> Result<KeyHandle<K, Env>, AccessError> {
-        key.remove(&mut self.handles)
     }
 }
 
 impl WithHandle for () {
-    type Handle<Env: WorkflowEnv> = UntypedHandle<Env>;
-}
+    type Handle<Fmt: HandleFormat> = UntypedHandles<Fmt>;
 
-impl<Env: DescribeEnv> TakeHandle<Env> for () {
-    fn take_handle(env: &mut Env, path: HandlePath<'_>) -> Result<UntypedHandle<Env>, AccessError> {
-        if !path.is_empty() {
+    fn take_from_untyped<Fmt: HandleFormat>(
+        untyped: &mut impl TakeHandles<Fmt>,
+        path: HandlePath<'_>,
+    ) -> Result<Self::Handle<Fmt>, AccessError> {
+        if path.is_empty() {
+            Ok(untyped.drain())
+        } else {
             let message = "untyped handle can only obtained from an empty path";
-            return Err(AccessErrorKind::custom(message).with_location(path));
+            Err(AccessErrorKind::custom(message).with_location(path))
         }
-        let interface = env.interface().into_owned();
-
-        let handles = interface
-            .handles()
-            .map(|(path, spec)| {
-                let handle = match spec {
-                    Handle::Receiver(_) => {
-                        Handle::Receiver(RawReceiver::take_handle(&mut *env, path)?)
-                    }
-                    Handle::Sender(_) => Handle::Sender(RawSender::take_handle(&mut *env, path)?),
-                };
-                Ok((path.to_owned(), handle))
-            })
-            .collect::<Result<_, AccessError>>()?;
-
-        Ok(UntypedHandle { handles })
     }
-}
 
-impl<Env: WorkflowEnv, K: HandleMapKey> ops::Index<K> for UntypedHandle<Env> {
-    type Output = KeyHandle<K, Env>;
-
-    fn index(&self, index: K) -> &Self::Output {
-        index
-            .get(&self.handles)
-            .unwrap_or_else(|err| panic!("{err}"))
-    }
-}
-
-impl<Env: WorkflowEnv, K: HandleMapKey> ops::IndexMut<K> for UntypedHandle<Env> {
-    fn index_mut(&mut self, index: K) -> &mut Self::Output {
-        index
-            .get_mut(&mut self.handles)
-            .unwrap_or_else(|err| panic!("{err}"))
+    fn insert_into_untyped<Fmt: HandleFormat>(
+        handle: Self::Handle<Fmt>,
+        untyped: &mut impl InsertHandles<Fmt>,
+        path: HandlePath<'_>,
+    ) {
+        untyped.insert_handles(path, handle);
     }
 }

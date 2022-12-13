@@ -19,11 +19,10 @@ use crate::{
     utils,
 };
 use tardigrade::{
-    abi::{IntoWasm, TryFromWasm},
-    interface::{AccessError, AccessErrorKind, ChannelHalf, Handle, HandlePathBuf},
-    spawn::{ChannelSpawnConfig, HostError},
+    abi::{IntoWasm, ResourceKind},
+    handle::{Handle, HandlePath, HandlePathBuf},
     task::{JoinError, TaskError},
-    TaskId, TimerDefinition, TimerId, WakerId,
+    ChannelId, TaskId, TimerDefinition, TimerId, WakerId, WorkflowId,
 };
 
 pub(super) type WasmContextPtr = u32;
@@ -70,8 +69,9 @@ impl WorkflowFunctions {
             HostResource::Receiver(id) | HostResource::Sender(id) | HostResource::Workflow(id) => {
                 Ok(*id)
             }
-
-            _ => Err(anyhow!("getting ID for resource not supported")),
+            HostResource::ChannelHandles(_) => {
+                Err(anyhow!("getting ID for resource not supported"))
+            }
         }
     }
 
@@ -85,13 +85,6 @@ impl WorkflowFunctions {
         let waker_ids = match dropped {
             HostResource::Receiver(channel_id) => data.receiver(*channel_id).drop(),
             HostResource::Sender(channel_id) => data.sender(*channel_id).drop(),
-            HostResource::WorkflowStub(stub_id) => {
-                if data.persisted.contains_child_stub(*stub_id) {
-                    data.child_stub(*stub_id).drop()
-                } else {
-                    HashSet::new()
-                }
-            }
             HostResource::Workflow(workflow_id) => data.child(*workflow_id).drop(),
             HostResource::ChannelHandles(_) => HashSet::new(),
         };
@@ -101,6 +94,102 @@ impl WorkflowFunctions {
             exports.drop_waker(ctx.as_context_mut(), waker_id).ok();
         }
         Ok(())
+    }
+
+    #[tracing::instrument(level = "debug", skip_all)]
+    #[allow(clippy::unnecessary_wraps)] // required by wasmtime
+    pub fn create_handles() -> Option<ExternRef> {
+        let resource = HostResource::ChannelHandles(SharedChannelHandles::default());
+        Some(resource.into_ref())
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, err, fields(path, channel))]
+    pub fn insert_sender_into_handles(
+        ctx: StoreContextMut<'_, InstanceData>,
+        handles: Option<ExternRef>,
+        path_ptr: u32,
+        path_len: u32,
+        sender: Option<ExternRef>,
+    ) -> anyhow::Result<()> {
+        let channel_id = sender
+            .as_ref()
+            .map(|half| HostResource::from_ref(Some(half)).and_then(HostResource::as_sender));
+        let channel_id = channel_id.transpose()?.unwrap_or(0);
+        let channel_half = Handle::Sender(channel_id);
+
+        Self::insert_into_handles(&ctx, handles.as_ref(), path_ptr, path_len, channel_half)
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, err, fields(path, channel))]
+    pub fn insert_receiver_into_handles(
+        ctx: StoreContextMut<'_, InstanceData>,
+        handles: Option<ExternRef>,
+        path_ptr: u32,
+        path_len: u32,
+        receiver: Option<ExternRef>,
+    ) -> anyhow::Result<()> {
+        let channel_id = receiver
+            .as_ref()
+            .map(|half| HostResource::from_ref(Some(half)).and_then(HostResource::as_receiver));
+        let channel_id = channel_id.transpose()?.unwrap_or(0);
+        let channel_half = Handle::Receiver(channel_id);
+
+        Self::insert_into_handles(&ctx, handles.as_ref(), path_ptr, path_len, channel_half)
+    }
+
+    fn insert_into_handles(
+        ctx: &StoreContextMut<'_, InstanceData>,
+        handles: Option<&ExternRef>,
+        path_ptr: u32,
+        path_len: u32,
+        channel_half: Handle<ChannelId>,
+    ) -> anyhow::Result<()> {
+        let memory = ctx.data().exports().memory;
+        let path = copy_string_from_wasm(ctx, &memory, path_ptr, path_len)?;
+        let path = HandlePathBuf::from(path.as_str());
+
+        tracing::Span::current()
+            .record("path", field::debug(&path))
+            .record("channel", field::debug(&channel_half));
+
+        let handles = HostResource::from_ref(handles)?.as_channel_handles()?;
+        let mut handles = handles.inner.lock().unwrap();
+        handles.insert(path, channel_half);
+        tracing::debug!(?handles, "inserted channel handle");
+        Ok(())
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, err, fields(path))]
+    pub fn remove_from_handles(
+        ctx: StoreContextMut<'_, InstanceData>,
+        handles: Option<ExternRef>,
+        path_ptr: u32,
+        path_len: u32,
+        kind_ptr: u32,
+    ) -> anyhow::Result<Option<ExternRef>> {
+        let memory = ctx.data().exports().memory;
+        let path = copy_string_from_wasm(&ctx, &memory, path_ptr, path_len)?;
+        let path = HandlePath::new(&path);
+
+        tracing::Span::current().record("path", field::debug(path));
+
+        let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
+        let mut handles = handles.inner.lock().unwrap();
+        let mut kind = ResourceKind::None;
+        let removed = handles.remove(&path).and_then(|handle| match handle {
+            Handle::Receiver(id) => {
+                kind = ResourceKind::Receiver;
+                (id != 0).then(|| HostResource::Receiver(id).into_ref())
+            }
+            Handle::Sender(id) => {
+                kind = ResourceKind::Sender;
+                (id != 0).then(|| HostResource::Sender(id).into_ref())
+            }
+        });
+
+        let kind_bytes = (kind as i32).to_le_bytes();
+        memory.write(ctx, kind_ptr as usize, &kind_bytes)?;
+        Ok(removed)
     }
 
     pub fn report_panic(
@@ -165,47 +254,14 @@ impl WorkflowFunctions {
 }
 
 /// Channel-related functions.
-#[allow(clippy::needless_pass_by_value)] // required for WASM function wrappers
+#[allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
+// ^ Required for WASM function wrappers
 impl WorkflowFunctions {
-    fn write_access_result(
-        ctx: &mut StoreContextMut<'_, InstanceData>,
-        result: Result<(), AccessErrorKind>,
-        error_ptr: u32,
-    ) -> anyhow::Result<()> {
-        let memory = ctx.data().exports().memory;
-        let result_abi = result.into_wasm(&mut WasmAllocator::new(ctx.as_context_mut()))?;
-        memory
-            .write(ctx, error_ptr as usize, &result_abi.to_le_bytes())
-            .context("cannot write to WASM memory")
-    }
-
-    pub fn get_receiver(
+    pub fn new_channel(
         mut ctx: StoreContextMut<'_, InstanceData>,
-        child: Option<ExternRef>,
-        path_ptr: u32,
-        path_len: u32,
-        error_ptr: u32,
-    ) -> anyhow::Result<Option<ExternRef>> {
-        let memory = ctx.data().exports().memory;
-        let path = copy_string_from_wasm(&ctx, &memory, path_ptr, path_len)?;
-        let path: HandlePathBuf = path.parse()?;
-        let child_id = if let Some(child) = &child {
-            Some(HostResource::from_ref(Some(child))?.as_workflow()?)
-        } else {
-            None
-        };
-
-        let result = ctx
-            .data_mut()
-            .inner
-            .acquire_receiver(child_id, path.as_ref());
-
-        let mut channel_ref = None;
-        let result = result.map(|acquire_result| {
-            channel_ref = acquire_result.map(|id| HostResource::Receiver(id).into_ref());
-        });
-        Self::write_access_result(&mut ctx, result.map_err(AccessError::into_kind), error_ptr)?;
-        Ok(channel_ref)
+        stub_id: ChannelId,
+    ) -> anyhow::Result<()> {
+        ctx.data_mut().inner.create_channel_stub(stub_id)
     }
 
     pub fn poll_next_for_receiver(
@@ -220,33 +276,6 @@ impl WorkflowFunctions {
         let mut poll_cx = WasmContext::new(ctx.as_context_mut(), poll_cx);
         let poll_result = poll_result.into_inner(&mut poll_cx)?;
         poll_result.into_wasm(&mut WasmAllocator::new(ctx))
-    }
-
-    #[tracing::instrument(level = "debug", skip_all, err, fields(workflow_id, channel_name))]
-    pub fn get_sender(
-        mut ctx: StoreContextMut<'_, InstanceData>,
-        child: Option<ExternRef>,
-        path_ptr: u32,
-        path_len: u32,
-        error_ptr: u32,
-    ) -> anyhow::Result<Option<ExternRef>> {
-        let memory = ctx.data().exports().memory;
-        let path = copy_string_from_wasm(&ctx, &memory, path_ptr, path_len)?;
-        let path: HandlePathBuf = path.parse()?;
-        let child_id = if let Some(child) = &child {
-            Some(HostResource::from_ref(Some(child))?.as_workflow()?)
-        } else {
-            None
-        };
-
-        let result = ctx.data_mut().inner.acquire_sender(child_id, path.as_ref());
-
-        let mut channel_ref = None;
-        let result = result.map(|acquire_result| {
-            channel_ref = acquire_result.map(|id| HostResource::Sender(id).into_ref());
-        });
-        Self::write_access_result(&mut ctx, result.map_err(AccessError::into_kind), error_ptr)?;
-        Ok(channel_ref)
     }
 
     pub fn poll_ready_for_sender(
@@ -453,18 +482,6 @@ pub(super) struct SpawnFunctions;
 
 #[allow(clippy::needless_pass_by_value)]
 impl SpawnFunctions {
-    fn write_spawn_result(
-        ctx: &mut StoreContextMut<'_, InstanceData>,
-        result: Result<(), HostError>,
-        error_ptr: u32,
-    ) -> anyhow::Result<()> {
-        let memory = ctx.data().exports().memory;
-        let result_abi = result.into_wasm(&mut WasmAllocator::new(ctx.as_context_mut()))?;
-        memory
-            .write(ctx, error_ptr as usize, &result_abi.to_le_bytes())
-            .context("cannot write to WASM memory")
-    }
-
     pub fn workflow_interface(
         ctx: StoreContextMut<'_, InstanceData>,
         id_ptr: u32,
@@ -478,122 +495,25 @@ impl SpawnFunctions {
         interface.into_wasm(&mut WasmAllocator::new(ctx))
     }
 
-    #[tracing::instrument(level = "debug", skip_all)]
-    #[allow(clippy::unnecessary_wraps)] // required by wasmtime
-    pub fn create_channel_handles() -> Option<ExternRef> {
-        let resource = HostResource::ChannelHandles(SharedChannelHandles::default());
-        Some(resource.into_ref())
-    }
-
-    #[tracing::instrument(level = "debug", skip_all, err, fields(channel_kind, name, config))]
-    pub fn set_channel_handle(
-        ctx: StoreContextMut<'_, InstanceData>,
-        handles: Option<ExternRef>,
-        channel_kind: i32,
-        path_ptr: u32,
-        path_len: u32,
-        is_closed: i32,
-    ) -> anyhow::Result<()> {
-        let channel_kind =
-            ChannelHalf::try_from_wasm(channel_kind).context("cannot parse channel kind")?;
-        let channel_config = match is_closed {
-            0 => ChannelSpawnConfig::New,
-            1 => ChannelSpawnConfig::Closed,
-            _ => return Err(anyhow!("invalid `is_closed` value; expected 0 or 1")),
-        };
-        let memory = ctx.data().exports().memory;
-        let path = copy_string_from_wasm(&ctx, &memory, path_ptr, path_len)?;
-        let path: HandlePathBuf = path.parse()?;
-
-        tracing::Span::current()
-            .record("channel_kind", field::debug(channel_kind))
-            .record("path", field::debug(&path))
-            .record("config", field::debug(&channel_config));
-
-        let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
-        let mut handles = handles.inner.lock().unwrap();
-        match channel_kind {
-            ChannelHalf::Receiver => {
-                handles.insert(path, Handle::Receiver(channel_config));
-            }
-            ChannelHalf::Sender => {
-                handles.insert(path, Handle::Sender(channel_config));
-            }
-        }
-        tracing::debug!(?handles, "inserted channel handle");
-        Ok(())
-    }
-
-    #[tracing::instrument(level = "debug", skip_all, err, fields(name, sender))]
-    pub fn copy_sender_handle(
-        ctx: StoreContextMut<'_, InstanceData>,
-        handles: Option<ExternRef>,
-        path_ptr: u32,
-        path_len: u32,
-        sender: Option<ExternRef>,
-    ) -> anyhow::Result<()> {
-        let channel_id = HostResource::from_ref(sender.as_ref())?.as_sender()?;
-        let memory = ctx.data().exports().memory;
-        let path = copy_string_from_wasm(&ctx, &memory, path_ptr, path_len)?;
-        let path: HandlePathBuf = path.parse()?;
-
-        tracing::Span::current()
-            .record("path", field::debug(&path))
-            .record("sender", channel_id);
-
-        let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
-        let mut handles = handles.inner.lock().unwrap();
-        handles.insert(
-            path,
-            Handle::Sender(ChannelSpawnConfig::Existing(channel_id)),
-        );
-        tracing::debug!(?handles, "inserted channel handle");
-        Ok(())
-    }
-
     pub fn spawn(
         mut ctx: StoreContextMut<'_, InstanceData>,
-        id_ptr: u32,
-        id_len: u32,
+        stub_id: WorkflowId,
+        definition_id_ptr: u32,
+        definition_id_len: u32,
         args_ptr: u32,
         args_len: u32,
         handles: Option<ExternRef>,
-    ) -> anyhow::Result<Option<ExternRef>> {
+    ) -> anyhow::Result<()> {
         let memory = ctx.data().exports().memory;
-        let id = copy_string_from_wasm(&ctx, &memory, id_ptr, id_len)?;
+        let definition_id =
+            copy_string_from_wasm(&ctx, &memory, definition_id_ptr, definition_id_len)?;
         let args = copy_bytes_from_wasm(&ctx, &memory, args_ptr, args_len)?;
         let handles = HostResource::from_ref(handles.as_ref())?.as_channel_handles()?;
         let handles = handles.inner.lock().unwrap();
 
-        let stub_id = ctx
-            .data_mut()
+        ctx.data_mut()
             .inner
-            .create_workflow_stub(&id, args, &handles)?;
-        Ok(Some(HostResource::WorkflowStub(stub_id).into_ref()))
-    }
-
-    #[tracing::instrument(level = "debug", skip_all, err, fields(stub_id))]
-    pub fn poll_workflow_init(
-        mut ctx: StoreContextMut<'_, InstanceData>,
-        stub: Option<ExternRef>,
-        poll_cx: WasmContextPtr,
-        error_ptr: u32,
-    ) -> anyhow::Result<Option<ExternRef>> {
-        let stub_id = HostResource::from_ref(stub.as_ref())?.as_workflow_stub()?;
-        tracing::Span::current().record("stub_id", stub_id);
-
-        let poll_result = ctx.data_mut().inner.child_stub(stub_id).poll_init();
-        let mut poll_cx = WasmContext::new(ctx.as_context_mut(), poll_cx);
-        let poll_result = poll_result.into_inner(&mut poll_cx)?;
-
-        let mut workflow_id = None;
-        let result = poll_result.map_ok(|id| {
-            workflow_id = Some(id);
-        });
-        if let Poll::Ready(result) = result {
-            Self::write_spawn_result(&mut ctx, result, error_ptr)?;
-        }
-        Ok(workflow_id.map(|id| HostResource::Workflow(id).into_ref()))
+            .create_workflow_stub(stub_id, &definition_id, args, handles.clone())
     }
 
     pub fn poll_workflow_completion(

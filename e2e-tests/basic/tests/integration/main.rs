@@ -10,10 +10,14 @@ use tracing_subscriber::{
 
 use std::{collections::HashMap, error};
 
-use tardigrade::interface::ReceiverAt;
+use tardigrade::{
+    handle::ReceiverAt,
+    spawn::ManageWorkflows,
+    workflow::{GetInterface, WorkflowFn},
+};
 use tardigrade_rt::{
     engine::{Wasmtime, WasmtimeModule},
-    manager::WorkflowManager,
+    manager::{HostHandles, WorkflowHandle, WorkflowManager},
     storage::LocalStorage,
     test::{ModuleCompiler, WasmOpt},
     Clock,
@@ -57,6 +61,26 @@ async fn create_manager<C: Clock>(clock: C) -> TestResult<LocalManager<C>> {
     Ok(manager)
 }
 
+type WorkflowAndHandles<'m, C, W> = (
+    WorkflowHandle<'m, W, LocalManager<C>>,
+    HostHandles<'m, W, LocalManager<C>>,
+);
+
+async fn spawn_workflow<'m, C, W>(
+    manager: &'m LocalManager<C>,
+    definition_id: &str,
+    args: W::Args,
+) -> TestResult<WorkflowAndHandles<'m, C, W>>
+where
+    C: Clock,
+    W: WorkflowFn + GetInterface,
+{
+    let builder = manager.new_workflow(definition_id)?;
+    let (child_handles, self_handles) = builder.handles(|_| { /* use default config */ }).await;
+    let workflow = builder.build(args, child_handles).await?;
+    Ok((workflow, self_handles))
+}
+
 fn create_fmt_subscriber() -> impl Subscriber + for<'a> LookupSpan<'a> {
     const FILTER: &str = "tardigrade_test_basic=debug,\
         tardigrade=debug,\
@@ -84,8 +108,8 @@ fn module_information_is_correct() -> TestResult {
     let interfaces: HashMap<_, _> = MODULE.interfaces().collect();
     interfaces["PizzaDelivery"].handle(ReceiverAt("orders"))?;
     assert!(interfaces["PizzaDelivery"]
-        .handle(ReceiverAt("baking::responses"))
+        .handle(ReceiverAt("baking/responses"))
         .is_err());
-    interfaces["PizzaDeliveryWithRequests"].handle(ReceiverAt("baking::responses"))?;
+    interfaces["PizzaDeliveryWithRequests"].handle(ReceiverAt("baking/responses"))?;
     Ok(())
 }

@@ -6,19 +6,21 @@ use futures::{stream, SinkExt, StreamExt, TryStreamExt};
 
 use std::{collections::HashMap, task::Poll};
 
-use tardigrade::spawn::ManageWorkflowsExt;
 use tardigrade_rt::{
     driver::{Driver, Termination},
     receipt::{Event, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
     test::MockScheduler,
     AsyncIoScheduler,
 };
+
+use crate::{
+    create_manager, driver::spawn_traced_task, enable_tracing_assertions, spawn_workflow,
+    TestResult,
+};
 use tardigrade_test_basic::{
     spawn::{Args, Baking, PizzaDeliveryWithSpawning},
     DomainEvent, PizzaKind, PizzaOrder,
 };
-
-use crate::{create_manager, driver::spawn_traced_task, enable_tracing_assertions, TestResult};
 
 const PARENT_DEF: &str = "test::PizzaDeliveryWithSpawning";
 
@@ -29,16 +31,13 @@ async fn spawning_child_workflows() -> TestResult {
     let (_guard, tracing_storage) = enable_tracing_assertions();
     let mut manager = create_manager(AsyncIoScheduler).await?;
 
-    let inputs = Args {
+    let args = Args {
         oven_count: 2,
         collect_metrics: true,
     };
-    let mut workflow = manager
-        .new_workflow::<PizzaDeliveryWithSpawning>(PARENT_DEF, inputs)?
-        .build()
-        .await?;
+    let (_, handle) =
+        spawn_workflow::<_, PizzaDeliveryWithSpawning>(&manager, PARENT_DEF, args).await?;
 
-    let handle = workflow.handle();
     let mut driver = Driver::new();
     let results = driver.tick_results();
     let mut orders_sx = handle.orders.into_sink(&mut driver);
@@ -129,15 +128,12 @@ async fn accessing_handles_in_child_workflows() -> TestResult {
     let (scheduler, mut expirations) = MockScheduler::with_expirations();
     let mut manager = create_manager(scheduler.clone()).await?;
 
-    let inputs = Args {
+    let args = Args {
         oven_count: 2,
         collect_metrics: false,
     };
-    let mut workflow = manager
-        .new_workflow::<PizzaDeliveryWithSpawning>(PARENT_DEF, inputs)?
-        .build()
-        .await?;
-    let mut handle = workflow.handle();
+    let (_, mut handle) =
+        spawn_workflow::<_, PizzaDeliveryWithSpawning>(&manager, PARENT_DEF, args).await?;
 
     let orders = [
         PizzaOrder {
@@ -179,7 +175,7 @@ async fn accessing_handles_in_child_workflows() -> TestResult {
     let mut child_events_rxs = vec![];
     for &child_id in &child_ids {
         let child = manager.workflow(child_id).await.unwrap();
-        let child_handle = child.downcast::<Baking>()?.handle();
+        let child_handle = child.downcast::<Baking>()?.handle().await;
 
         assert!(child_handle.events.can_manipulate());
         assert_eq!(child_handle.events.channel_id(), parent_events_id);
@@ -187,8 +183,7 @@ async fn accessing_handles_in_child_workflows() -> TestResult {
         assert_matches!(event.decode()?, DomainEvent::OrderTaken { .. });
         child_events_rxs.push(child_handle.events.into_stream(&mut driver));
 
-        assert!(!child_handle.duration.can_manipulate());
-        assert!(child_handle.duration.channel_info().await.is_closed);
+        assert!(child_handle.duration.channel_info().is_closed);
         assert_eq!(child_handle.duration.channel_id(), 0);
     }
 

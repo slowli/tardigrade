@@ -2,7 +2,6 @@
 
 use futures::future::{Aborted, FutureExt, RemoteHandle, TryFutureExt};
 use once_cell::unsync::Lazy;
-use slab::Slab;
 
 use std::{
     future::Future,
@@ -14,43 +13,9 @@ use std::{
 use crate::{
     abi::{IntoWasm, PollTask, TryFromWasm},
     task::{JoinError, TaskError, TaskResult},
+    wasm_utils::Registry,
     TaskId, WakerId,
 };
-
-/// Container similar to `Slab`, but with guarantee that returned item keys are never reused.
-#[derive(Debug)]
-struct Registry<T> {
-    items: Slab<T>,
-    item_counter: u32,
-}
-
-impl<T> Registry<T> {
-    fn with_capacity(capacity: usize) -> Self {
-        Self {
-            items: Slab::with_capacity(capacity),
-            item_counter: 0,
-        }
-    }
-
-    fn insert(&mut self, value: T) -> u64 {
-        let slab_key = self.items.insert(value);
-        let item_counter = self.item_counter;
-        self.item_counter += 1;
-        (u64::from(item_counter) << 32) + u64::try_from(slab_key).unwrap()
-    }
-
-    fn get_mut(&mut self, key: u64) -> &mut T {
-        let slab_key = (key & 0x_ffff_ffff) as usize;
-        self.items
-            .get_mut(slab_key)
-            .expect("registry item not found")
-    }
-
-    fn remove(&mut self, key: u64) -> T {
-        let slab_key = (key & 0x_ffff_ffff) as usize;
-        self.items.remove(slab_key)
-    }
-}
 
 type PinnedFuture = Pin<Box<dyn Future<Output = ()>>>;
 
@@ -59,7 +24,7 @@ static mut TASKS: Lazy<Registry<Option<PinnedFuture>>> = Lazy::new(|| {
     Registry::with_capacity(1)
 });
 
-/// [`Context`](core::task::Context) analogue connected to the host env.
+/// [`Context`] analogue connected to the host env.
 ///
 /// Internally, the context is the ID of the currently executing task.
 #[derive(Debug, Clone, Copy)]
@@ -271,13 +236,12 @@ pub(super) fn spawn(
 /// # Safety
 ///
 /// Calls to this method and `__drop_task` must be linearly ordered (no recursion).
-#[no_mangle]
 #[export_name = "tardigrade_rt::poll_task"]
 #[cfg_attr(
     feature = "tracing",
     tracing::instrument(name = "poll_task", skip_all, fields(task_id = task.0))
 )]
-pub extern "C" fn __tardigrade_rt__poll_task(task: RawTaskHandle) -> i32 {
+pub extern "C" fn __tardigrade_rt_poll_task(task: RawTaskHandle) -> i32 {
     let waker = Waker::from(Arc::new(HostContext(task.0)));
     let mut cx = Context::from_waker(&waker);
     let poll_result = task.deref_and_poll(&mut cx);
@@ -293,13 +257,12 @@ pub extern "C" fn __tardigrade_rt__poll_task(task: RawTaskHandle) -> i32 {
 /// # Safety
 ///
 /// Calls to this method and `__poll_task` must be linearly ordered (no recursion).
-#[no_mangle]
 #[export_name = "tardigrade_rt::drop_task"]
 #[cfg_attr(
     feature = "tracing",
     tracing::instrument(level = "debug", name = "drop_task", skip_all, fields(task_id = task.0))
 )]
-pub extern "C" fn __tardigrade_rt__drop_task(task: RawTaskHandle) {
+pub extern "C" fn __tardigrade_rt_drop_task(task: RawTaskHandle) {
     task.drop_ref();
 }
 
@@ -309,37 +272,34 @@ static mut WAKERS: Lazy<Registry<Waker>> = Lazy::new(|| {
 });
 
 /// Equivalent of `cx.waker().clone()`.
-#[no_mangle]
 #[export_name = "tardigrade_rt::create_waker"]
 #[cfg_attr(
     feature = "tracing",
     tracing::instrument(level = "debug", name = "create_waker", skip(cx), ret)
 )]
-pub extern "C" fn __tardigrade_rt__create_waker(cx: *mut Context<'_>) -> WakerId {
+pub extern "C" fn __tardigrade_rt_create_waker(cx: *mut Context<'_>) -> WakerId {
     let cx = unsafe { &mut *cx };
     let waker = cx.waker().clone();
     unsafe { WAKERS.insert(waker) }
 }
 
 /// Equivalent of `waker.wake()`.
-#[no_mangle]
 #[export_name = "tardigrade_rt::wake_waker"]
 #[cfg_attr(
     feature = "tracing",
     tracing::instrument(level = "debug", name = "wake_waker")
 )]
-pub extern "C" fn __tardigrade_rt__wake_waker(waker: WakerId) {
+pub extern "C" fn __tardigrade_rt_wake_waker(waker: WakerId) {
     let waker = unsafe { WAKERS.remove(waker) };
     waker.wake();
 }
 
 /// Equivalent of `drop(waker)`.
-#[no_mangle]
 #[export_name = "tardigrade_rt::drop_waker"]
 #[cfg_attr(
     feature = "tracing",
     tracing::instrument(level = "debug", name = "drop_waker")
 )]
-pub extern "C" fn __tardigrade_rt__drop_waker(waker: WakerId) {
+pub extern "C" fn __tardigrade_rt_drop_waker(waker: WakerId) {
     unsafe { WAKERS.remove(waker) };
 }

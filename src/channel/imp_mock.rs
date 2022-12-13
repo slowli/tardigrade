@@ -8,7 +8,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::{channel::SendError, ChannelId};
+use crate::{channel::SendError, test::Runtime, ChannelId};
 
 pin_project! {
     #[derive(Debug)]
@@ -20,6 +20,13 @@ pin_project! {
 }
 
 impl MpscReceiver {
+    pub(super) fn closed() -> Self {
+        Self {
+            channel_id: 0,
+            inner: mpsc::unbounded().1,
+        }
+    }
+
     pub(super) fn channel_id(&self) -> ChannelId {
         self.channel_id
     }
@@ -43,6 +50,15 @@ pin_project! {
         channel_id: ChannelId,
         #[pin]
         inner: mpsc::UnboundedSender<Vec<u8>>,
+    }
+}
+
+impl MpscSender {
+    pub(super) fn closed() -> Self {
+        Self {
+            channel_id: 0,
+            inner: mpsc::unbounded().0,
+        }
     }
 }
 
@@ -84,7 +100,9 @@ fn convert_send_err(err: &mpsc::SendError) -> SendError {
     }
 }
 
-pub(crate) fn raw_channel(channel_id: ChannelId) -> (MpscSender, MpscReceiver) {
+#[allow(clippy::unused_async)] // for uniformity with the WASM impl
+pub(super) async fn raw_channel() -> (MpscSender, MpscReceiver) {
+    let channel_id = Runtime::with_mut(Runtime::allocate_channel_id);
     let (sx, rx) = mpsc::unbounded();
     let rx = MpscReceiver {
         channel_id,

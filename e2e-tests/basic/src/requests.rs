@@ -9,27 +9,26 @@ use crate::{DomainEvent, PizzaOrder, SharedHandle};
 use tardigrade::{
     channel::{Receiver, RequestHandles, Requests},
     task::TaskResult,
-    workflow::{GetInterface, InEnv, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
+    workflow::{
+        GetInterface, HandleFormat, InEnv, SpawnWorkflow, Wasm, WithHandle, WorkflowEntry,
+        WorkflowFn,
+    },
     Json,
 };
 
-#[derive(TakeHandle)]
-#[tardigrade(derive(Debug))]
-pub struct WorkflowHandle<Env: WorkflowEnv> {
-    pub orders: InEnv<Receiver<PizzaOrder, Json>, Env>,
+#[derive(GetInterface, WithHandle, WorkflowEntry)]
+#[tardigrade(derive(Debug), interface = "src/tardigrade-req.json")]
+pub struct PizzaDeliveryWithRequests<Fmt: HandleFormat = Wasm> {
+    pub orders: InEnv<Receiver<PizzaOrder, Json>, Fmt>,
     #[tardigrade(flatten)]
-    pub shared: SharedHandle<Env>,
-    pub baking: RequestHandles<PizzaOrder, (), Json, Env>,
+    pub shared: SharedHandle<Fmt>,
+    pub baking: RequestHandles<PizzaOrder, (), Json, Fmt>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Args {
     pub oven_count: usize,
 }
-
-#[derive(Debug, GetInterface, TakeHandle)]
-#[tardigrade(handle = "WorkflowHandle", interface = "src/tardigrade-req.json")]
-pub struct PizzaDeliveryWithRequests(());
 
 #[test]
 fn interface_agrees_between_declaration_and_handle() {
@@ -43,15 +42,13 @@ impl WorkflowFn for PizzaDeliveryWithRequests {
 
 #[async_trait(?Send)]
 impl SpawnWorkflow for PizzaDeliveryWithRequests {
-    async fn spawn(args: Self::Args, handle: WorkflowHandle<Wasm>) -> TaskResult {
+    async fn spawn(args: Self::Args, handle: Self) -> TaskResult {
         handle.spawn(args).await;
         Ok(())
     }
 }
 
-tardigrade::workflow_entry!(PizzaDeliveryWithRequests);
-
-impl WorkflowHandle<Wasm> {
+impl PizzaDeliveryWithRequests {
     fn spawn(self, args: Args) -> impl Future<Output = ()> {
         let (requests, requests_task) = self
             .baking
@@ -86,10 +83,8 @@ impl SharedHandle<Wasm> {
         index: usize,
     ) {
         let mut events = self.events.clone();
-        events
-            .send(DomainEvent::OrderTaken { index, order })
-            .await
-            .ok();
+        let event = DomainEvent::OrderTaken { index, order };
+        events.send(event).await.ok();
         if requests.request(order).await.is_err() {
             return; // The request loop was terminated; thus, the pizza will never be baked :(
         }

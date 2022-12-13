@@ -11,18 +11,13 @@ use crate::{
         Channels, ChildWorkflow, ConsumeError, PersistError, PersistedWorkflowData, ReceiverState,
         SenderState, TaskState, TimerState, Wakers,
     },
-    engine::{DefineWorkflow, PersistWorkflow, RunWorkflow},
+    engine::{DefineWorkflow, PersistWorkflow},
     manager::Services,
     receipt::WakeUpCause,
     utils::Message,
-    workflow::{ChannelIds, Workflow},
+    workflow::Workflow,
 };
-use tardigrade::{
-    interface::Handle,
-    spawn::{ChannelsConfig, HostError},
-    task::JoinError,
-    ChannelId, TaskId, TimerId, WorkflowId,
-};
+use tardigrade::{handle::Handle, task::JoinError, ChannelId, TaskId, TimerId, WorkflowId};
 
 /// Persisted version of a workflow containing the state of its external dependencies
 /// (channels and timers), and its linear WASM memory.
@@ -37,7 +32,7 @@ pub struct PersistedWorkflow {
 impl PersistedWorkflow {
     pub(super) fn new<T>(workflow: &mut Workflow<T>) -> Result<Self, PersistError>
     where
-        T: RunWorkflow + PersistWorkflow,
+        T: PersistWorkflow,
     {
         workflow.inner.data().check_persistence()?;
         let engine_data = workflow.inner.persist();
@@ -122,23 +117,6 @@ impl PersistedWorkflow {
         result: Result<(), JoinError>,
     ) {
         self.data.notify_on_child_completion(id, result);
-    }
-
-    #[tracing::instrument(level = "debug", skip(self))]
-    pub(crate) fn notify_on_child_init(
-        &mut self,
-        stub_id: WorkflowId,
-        id: WorkflowId,
-        channels: &ChannelsConfig<ChannelId>,
-        channel_ids: ChannelIds,
-    ) {
-        self.data
-            .notify_on_child_init(stub_id, id, channels, channel_ids);
-    }
-
-    #[tracing::instrument(level = "debug", skip(self))]
-    pub(crate) fn notify_on_child_spawn_error(&mut self, stub_id: WorkflowId, err: HostError) {
-        self.data.notify_on_child_spawn_error(stub_id, err);
     }
 
     /// Checks whether the workflow is initialized.

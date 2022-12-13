@@ -16,10 +16,8 @@ use std::{
     future::Future,
 };
 
-use crate::LocalManager;
 use tardigrade::{
-    interface::{ReceiverAt, SenderAt},
-    spawn::ManageWorkflowsExt,
+    handle::{ReceiverAt, SenderAt, WithIndexing},
     Codec, Json, TimerId,
 };
 use tardigrade_rt::{
@@ -29,9 +27,9 @@ use tardigrade_rt::{
     test::MockScheduler,
     AsyncIoScheduler,
 };
-use tardigrade_test_basic::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOrder};
 
-use super::{create_manager, enable_tracing_assertions, TestResult};
+use super::{create_manager, enable_tracing_assertions, spawn_workflow, LocalManager, TestResult};
+use tardigrade_test_basic::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOrder};
 
 pub(crate) fn spawn_traced_task<T: Send + 'static>(
     future: impl Future<Output = T> + Send + 'static,
@@ -49,16 +47,13 @@ async fn test_async_handle(cancel_workflow: bool) -> TestResult {
     let (_guard, tracing_storage) = enable_tracing_assertions();
     let mut manager = create_manager(AsyncIoScheduler).await?;
 
-    let inputs = Args {
+    let args = Args {
         oven_count: 1,
         deliverer_count: 1,
     };
-    let mut workflow = manager
-        .new_workflow::<PizzaDelivery>("test::PizzaDelivery", inputs)?
-        .build()
-        .await?;
+    let (workflow, handle) =
+        spawn_workflow::<_, PizzaDelivery>(&manager, "test::PizzaDelivery", args).await?;
     let workflow_id = workflow.id();
-    let handle = workflow.handle();
     let mut driver = Driver::new();
     let mut orders = handle.orders.into_sink(&mut driver);
     let events = handle.shared.events.into_stream(&mut driver);
@@ -132,17 +127,14 @@ async fn async_handle_with_cancellation() -> TestResult {
     test_async_handle(true).await
 }
 
-async fn test_async_handle_with_concurrency(inputs: Args) -> TestResult {
+async fn test_async_handle_with_concurrency(args: Args) -> TestResult {
     const ORDER_COUNT: usize = 5;
 
-    println!("testing async handle with {:?}", inputs);
+    println!("testing async handle with {args:?}");
 
     let mut manager = create_manager(AsyncIoScheduler).await?;
-    let mut workflow = manager
-        .new_workflow::<PizzaDelivery>("test::PizzaDelivery", inputs)?
-        .build()
-        .await?;
-    let handle = workflow.handle();
+    let (_, handle) =
+        spawn_workflow::<_, PizzaDelivery>(&manager, "test::PizzaDelivery", args).await?;
     let mut driver = Driver::new();
     let mut orders_sx = handle.orders.into_sink(&mut driver);
     let events_rx = handle.shared.events.into_stream(&mut driver);
@@ -246,15 +238,12 @@ async fn initialize_workflow() -> TestResult<AsyncRig> {
     let (scheduler, expirations) = MockScheduler::with_expirations();
     let mut manager = create_manager(scheduler.clone()).await?;
 
-    let inputs = Args {
+    let args = Args {
         oven_count: 2,
         deliverer_count: 1,
     };
-    let mut workflow = manager
-        .new_workflow::<PizzaDelivery>("test::PizzaDelivery", inputs)?
-        .build()
-        .await?;
-    let handle = workflow.handle();
+    let (_, handle) =
+        spawn_workflow::<_, PizzaDelivery>(&manager, "test::PizzaDelivery", args).await?;
     let mut driver = Driver::new();
     let mut orders_sx = handle.orders.into_sink(&mut driver);
     let mut events_rx = handle.shared.events.into_stream(&mut driver);
@@ -412,15 +401,12 @@ async fn spawn_cancellable_workflow() -> TestResult<CancellableWorkflow> {
     let (scheduler, expirations) = MockScheduler::with_expirations();
     let mut manager = create_manager(scheduler.clone()).await?;
 
-    let inputs = Args {
+    let args = Args {
         oven_count: 1,
         deliverer_count: 1,
     };
-    let mut workflow = manager
-        .new_workflow::<PizzaDelivery>("test::PizzaDelivery", inputs)?
-        .build()
-        .await?;
-    let handle = workflow.handle();
+    let (_, handle) =
+        spawn_workflow::<_, PizzaDelivery>(&manager, "test::PizzaDelivery", args).await?;
     let mut driver = Driver::new();
     let orders_sx = handle.orders.into_sink(&mut driver);
     let events_rx = handle.shared.events.into_stream(&mut driver);
@@ -477,13 +463,13 @@ async fn launching_env_after_pause() -> TestResult {
     let mut manager = join_handle.await;
 
     // Restore the persisted workflow and launch it again.
-    let mut workflow = manager
+    let workflow = manager
         .workflow(0)
         .await
         .unwrap()
         .downcast::<PizzaDelivery>()?;
     let mut env = Driver::new();
-    let handle = workflow.handle();
+    let handle = workflow.handle().await;
     let orders_sx = handle.orders.into_sink(&mut env);
     let join_handle = spawn_traced_task(async move { env.drive(&mut manager).await });
 
@@ -500,15 +486,12 @@ async fn launching_env_after_pause() -> TestResult {
 async fn dynamically_typed_async_handle() -> TestResult {
     let mut manager = create_manager(AsyncIoScheduler).await?;
 
-    let data = Json::encode_value(Args {
+    let args = Json::encode_value(Args {
         oven_count: 1,
         deliverer_count: 1,
     });
-    let mut workflow = manager
-        .new_workflow::<()>("test::PizzaDelivery", data)?
-        .build()
-        .await?;
-    let mut handle = workflow.handle();
+    let (_, handle) = spawn_workflow::<_, ()>(&manager, "test::PizzaDelivery", args).await?;
+    let mut handle = handle.with_indexing();
     let mut env = Driver::new();
     let orders_sx = handle.remove(ReceiverAt("orders")).unwrap();
     let orders_id = orders_sx.channel_id();
@@ -557,15 +540,12 @@ async fn dynamically_typed_async_handle() -> TestResult {
 async fn rollbacks_on_trap() -> TestResult {
     let mut manager = create_manager(AsyncIoScheduler).await?;
 
-    let data = Json::encode_value(Args {
+    let args = Json::encode_value(Args {
         oven_count: 1,
         deliverer_count: 1,
     });
-    let mut workflow = manager
-        .new_workflow::<()>("test::PizzaDelivery", data)?
-        .build()
-        .await?;
-    let mut handle = workflow.handle();
+    let (_, handle) = spawn_workflow::<_, ()>(&manager, "test::PizzaDelivery", args).await?;
+    let mut handle = handle.with_indexing();
     let mut env = Driver::new();
     env.drop_erroneous_messages();
     let orders_sx = handle.remove(ReceiverAt("orders")).unwrap();

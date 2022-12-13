@@ -24,6 +24,7 @@ pin-project-lite = "0.2.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
 tracing = "0.1.37"
+tracing-tunnel = { version = "0.1.0", features = ["receiver"] }
 wasmtime = "3.0.0"
 
 ## Standalone optional dependencies
@@ -36,14 +37,8 @@ tardigrade = { version = "0.1.0", path = "../.." }
 version = "0.1.0"
 optional = true
 git = "https://github.com/slowli/externref.git"
-rev = "36f978748b27d1621e6a565317859b00f99f5e8a"
+rev = "2e7ce459f98d0493d7734fe20b1945e41838250e"
 features = ["processor"]
-
-[dependencies.tracing-tunnel]
-version = "0.1.0"
-git = "https://github.com/slowli/tracing-toolbox.git"
-rev = "8ee374e08cb702df70d27c9eb7e36f87ff72da6f"
-features = ["receiver"]
 
 [dev-dependencies]
 assert_matches = "1.5.0"

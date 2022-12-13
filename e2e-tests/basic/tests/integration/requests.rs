@@ -6,14 +6,13 @@ use futures::{channel::mpsc, future, stream, FutureExt, SinkExt, StreamExt, TryS
 
 use std::cmp;
 
-use tardigrade::{
-    channel::{Request, Response},
-    spawn::ManageWorkflowsExt,
-};
+use tardigrade::channel::{Request, Response};
 use tardigrade_rt::{
     driver::{Driver, Termination},
     AsyncIoScheduler,
 };
+
+use crate::spawn_workflow;
 use tardigrade_test_basic::{
     requests::{Args, PizzaDeliveryWithRequests},
     DomainEvent, PizzaKind, PizzaOrder,
@@ -34,11 +33,9 @@ async fn test_external_tasks(
 ) -> TestResult {
     let mut manager = create_manager(AsyncIoScheduler).await?;
 
-    let mut workflow = manager
-        .new_workflow::<PizzaDeliveryWithRequests>(DEFINITION_ID, Args { oven_count })?
-        .build()
-        .await?;
-    let handle = workflow.handle();
+    let args = Args { oven_count };
+    let (_, handle) =
+        spawn_workflow::<_, PizzaDeliveryWithRequests>(&manager, DEFINITION_ID, args).await?;
     let mut driver = Driver::new();
     let responses_id = handle.baking.responses.channel_id();
     let responses_sx = handle.baking.responses.into_sink(&mut driver);
@@ -114,13 +111,11 @@ async fn closing_task_responses_on_host() -> TestResult {
     const SUCCESSFUL_TASK_COUNT: usize = 3;
 
     let mut manager = create_manager(AsyncIoScheduler).await?;
-    let mut workflow = manager
-        .new_workflow::<PizzaDeliveryWithRequests>(DEFINITION_ID, Args { oven_count: 2 })?
-        .build()
-        .await?;
+    let args = Args { oven_count: 2 };
+    let (_, handle) =
+        spawn_workflow::<_, PizzaDeliveryWithRequests>(&manager, DEFINITION_ID, args).await?;
 
     let mut driver = Driver::new();
-    let handle = workflow.handle();
     let responses_sx = handle.baking.responses.into_sink(&mut driver);
     let baking_tasks_rx = handle.baking.requests.into_stream(&mut driver);
     let mut orders_sx = handle.orders.into_sink(&mut driver);

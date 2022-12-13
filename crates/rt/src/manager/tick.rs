@@ -6,7 +6,7 @@ use tracing_tunnel::TracingEventReceiver;
 use std::{error, fmt, sync::Arc};
 
 use super::{
-    new_workflows::NewWorkflows, persistence::StorageHelper, AsManager, Clock, ConcurrencyError,
+    persistence::StorageHelper, stubs::Stubs, AsManager, Clock, ConcurrencyError,
     ErroredWorkflowHandle, Services, WorkflowManager,
 };
 use crate::{
@@ -20,7 +20,7 @@ use crate::{
     workflow::Workflow,
     PersistedWorkflow,
 };
-use tardigrade::{interface::Handle, ChannelId, WorkflowId};
+use tardigrade::{handle::Handle, ChannelId, WorkflowId};
 
 /// Result of [ticking](WorkflowManager::tick()) a [`WorkflowManager`].
 #[derive(Debug)]
@@ -194,24 +194,20 @@ impl<'a, D: DefineWorkflow> WorkflowSeed<'a, D> {
         pending_channel
     }
 
-    fn restore(
-        self,
-        workflows: NewWorkflows<D>,
-        tracer: TracingEventReceiver,
-    ) -> Workflow<D::Instance> {
+    fn restore(self, stubs: Stubs<D>, tracer: TracingEventReceiver) -> Workflow<D::Instance> {
         let services = Services {
             clock: self.clock,
-            workflows: Some(Box::new(workflows)),
+            stubs: Some(Box::new(stubs)),
             tracer: Some(tracer),
         };
         self.persisted.restore(self.definition, services).unwrap()
     }
 
-    fn extract_services(services: Services) -> (NewWorkflows<D>, TracingEventReceiver) {
-        let workflows = services.workflows.unwrap();
-        let workflows = *workflows.downcast::<NewWorkflows<D>>();
+    fn extract_services(services: Services) -> (Stubs<D>, TracingEventReceiver) {
+        let stubs = services.stubs.unwrap();
+        let stubs = *stubs.downcast::<Stubs<D>>();
         let receiver = services.tracer.unwrap();
-        (workflows, receiver)
+        (stubs, receiver)
     }
 }
 
@@ -256,7 +252,14 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         (template, tracer)
     }
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(
+        skip_all,
+        fields(
+            workflow.id = workflow.id,
+            workflow.module_id = workflow.module_id,
+            workflow.name_in_module = workflow.name_in_module
+        )
+    )]
     async fn tick_workflow<'a>(
         &'a self,
         transaction: &mut S::Transaction<'a>,
@@ -269,11 +272,11 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         let (mut template, tracer) = self.restore_workflow(transaction, workflow).await;
         template.apply_wakers(transaction, wakers).await;
         let pending_channel = template.update_inbound_channels(transaction).await;
-        let children = NewWorkflows::new(Some(workflow_id), self.shared());
-        let mut workflow = template.restore(children, tracer);
+        let stubs = Stubs::new(Some(workflow_id), self.shared());
+        let mut workflow = template.restore(stubs, tracer);
 
-        let result = workflow.tick();
-        if let Ok(receipt) = &result {
+        let mut result = workflow.tick();
+        if let Ok(receipt) = &mut result {
             if let Some(pending) = &pending_channel {
                 pending.take_pending_message::<E>(&mut workflow);
             }
@@ -281,14 +284,14 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
             let span = tracing::debug_span!("persist_workflow_and_messages", workflow_id);
             let _entered = span.enter();
 
-            let (children, tracer) =
+            let (stubs, tracer) =
                 WorkflowSeed::<E::Definition>::extract_services(workflow.take_services());
             let messages = workflow.drain_messages();
-            let mut persisted = workflow.persist();
-            children.commit(transaction, &mut persisted).await;
+            stubs.commit(transaction, &mut workflow, receipt).await;
             let tracing_metadata = tracer.persist_metadata();
             let (spans, local_spans) = tracer.persist();
 
+            let persisted = workflow.persist();
             let mut persistence = StorageHelper::new(transaction);
             persistence.push_messages(messages).await;
             persistence

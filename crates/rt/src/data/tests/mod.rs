@@ -25,8 +25,7 @@ use crate::{
     workflow::{PersistedWorkflow, Workflow},
 };
 use tardigrade::{
-    abi::PollMessage, interface::Interface, spawn::ChannelsConfig, task::JoinError, ChannelId,
-    TimerDefinition,
+    abi::PollMessage, interface::Interface, task::JoinError, ChannelId, TimerDefinition,
 };
 
 fn extract_message(poll_res: PollMessage) -> Vec<u8> {
@@ -56,9 +55,10 @@ fn answer_main_task(mut poll_fns: mimicry::Answers<MockPollFn>) -> MockAnswers {
 fn initialize_task(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     // Emulate basic task startup: getting the channel receiver
     let orders_id = ctx
-        .data_mut()
-        .acquire_receiver(None, "orders".into())
-        .unwrap()
+        .data()
+        .persisted
+        .channels()
+        .channel_id("orders")
         .unwrap();
     // ...then polling this channel
     let mut orders = ctx.data_mut().receiver(orders_id);
@@ -133,7 +133,7 @@ fn create_workflow_with_scheduler(
     let channel_ids = mock_channel_ids(definition.interface(), &mut 1);
     let services = Services {
         clock: Arc::new(scheduler),
-        workflows: None,
+        stubs: None,
         tracer: None,
     };
     let data = WorkflowData::new(definition.interface(), channel_ids, services);
@@ -154,7 +154,7 @@ fn restore_workflow(
     let definition = MockDefinition::new(poll_fns);
     let services = Services {
         clock: Arc::new(scheduler),
-        workflows: None,
+        stubs: None,
         tracer: None,
     };
     persisted.restore(&definition, services).unwrap()
@@ -224,7 +224,13 @@ fn receiving_inbound_message() {
     assert_eq!(messages[&events_id].len(), 1);
     assert_eq!(messages[&events_id][0].as_ref(), b"event #1");
 
-    let (waker_ids, causes): (HashSet<_>, Vec<_>) = workflow.data_mut().take_wakers().unzip();
+    let wakers = workflow.data_mut().take_wakers();
+    let (waker_ids, causes): (HashSet<_>, Vec<_>) = wakers
+        .map(|(id, cause)| {
+            let WakerOrTask::Waker(id) = id else { unreachable!() };
+            (id, cause)
+        })
+        .unzip();
     assert_eq!(waker_ids.len(), 2);
     assert_eq!(causes.len(), 2);
     for cause in &causes {
@@ -311,7 +317,7 @@ fn trap_when_starting_workflow() {
     let channel_ids = mock_channel_ids(definition.interface(), &mut 1);
     let services = Services {
         clock: Arc::new(MockScheduler::default()),
-        workflows: None,
+        stubs: None,
         tracer: None,
     };
     let data = WorkflowData::new(definition.interface(), channel_ids, services);

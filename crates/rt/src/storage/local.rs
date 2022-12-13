@@ -13,7 +13,7 @@ use tracing_tunnel::PersistedMetadata;
 use std::{
     borrow::Cow,
     cmp,
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     ops,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -70,14 +70,7 @@ struct Inner {
 
 impl Default for Inner {
     fn default() -> Self {
-        let closed_channel = LocalChannel::new(ChannelRecord {
-            receiver_workflow_id: None,
-            sender_workflow_ids: HashSet::new(),
-            has_external_sender: false,
-            is_closed: true,
-            received_messages: 0,
-        });
-
+        let closed_channel = LocalChannel::new(ChannelRecord::closed());
         Self {
             modules: HashMap::new(),
             channels: HashMap::from_iter([(0, closed_channel)]),
@@ -368,17 +361,11 @@ impl WriteChannels for LocalTransaction<'_> {
         self.next_channel_id.fetch_add(1, Ordering::SeqCst)
     }
 
-    async fn get_or_insert_channel(
-        &mut self,
-        id: ChannelId,
-        record: ChannelRecord,
-    ) -> ChannelRecord {
+    async fn insert_channel(&mut self, id: ChannelId, record: ChannelRecord) {
         self.inner
             .channels
             .entry(id)
-            .or_insert_with(|| LocalChannel::new(record))
-            .record
-            .clone()
+            .or_insert_with(|| LocalChannel::new(record));
     }
 
     async fn manipulate_channel<F: FnOnce(&mut ChannelRecord) + Send>(
@@ -590,6 +577,8 @@ impl Storage for LocalStorage {
 mod tests {
     use assert_matches::assert_matches;
 
+    use std::collections::HashSet;
+
     use super::*;
 
     fn create_channel_record() -> ChannelRecord {
@@ -611,7 +600,7 @@ mod tests {
         assert_matches!(err, MessageError::UnknownChannelId);
 
         let channel_state = create_channel_record();
-        transaction.get_or_insert_channel(1, channel_state).await;
+        transaction.insert_channel(1, channel_state).await;
 
         transaction.push_messages(1, vec![b"test".to_vec()]).await;
         let message = transaction.channel_message(1, 0).await.unwrap();
@@ -638,7 +627,7 @@ mod tests {
         let mut transaction = storage.transaction().await;
 
         let channel_state = create_channel_record();
-        transaction.get_or_insert_channel(1, channel_state).await;
+        transaction.insert_channel(1, channel_state).await;
 
         let messages: Vec<_> = transaction
             .channel_messages(1, 0..=usize::MAX)

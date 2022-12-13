@@ -13,7 +13,7 @@ use std::{error, fmt, task::Poll};
 
 use crate::{
     error::{HostError, SendError, TaskError},
-    interface::{AccessErrorKind, ChannelHalf},
+    handle::AccessErrorKind,
 };
 
 /// Result of polling a receiver end of a channel.
@@ -260,7 +260,7 @@ impl IntoWasm for Result<(), AccessErrorKind> {
     fn into_wasm<A: AllocateBytes>(self, alloc: &mut A) -> Result<Self::Abi, A::Error> {
         Ok(match self {
             Ok(()) => 0,
-            Err(AccessErrorKind::Unknown) => -1,
+            Err(AccessErrorKind::Missing) => -1,
             Err(AccessErrorKind::Custom(err)) => {
                 let message = err.to_string();
                 let (ptr, len) = alloc.copy_to_wasm(message.as_bytes())?;
@@ -274,7 +274,7 @@ impl IntoWasm for Result<(), AccessErrorKind> {
     unsafe fn from_abi_in_wasm(abi: i64) -> Self {
         Err(match abi {
             0 => return Ok(()),
-            -1 => AccessErrorKind::Unknown,
+            -1 => AccessErrorKind::Missing,
             _ => {
                 let ptr = (abi >> 32) as *mut u8;
                 let len = (abi & 0xffff_ffff) as usize;
@@ -351,21 +351,11 @@ impl IntoWasm for Result<(), HostError> {
     }
 }
 
-impl TryFromWasm for ChannelHalf {
-    type Abi = i32;
-
-    fn into_abi_in_wasm(self) -> Self::Abi {
-        match self {
-            Self::Receiver => 0,
-            Self::Sender => 1,
-        }
-    }
-
-    fn try_from_wasm(abi: Self::Abi) -> Result<Self, FromWasmError> {
-        match abi {
-            0 => Ok(Self::Receiver),
-            1 => Ok(Self::Sender),
-            _ => Err(FromWasmError::new("unexpected `ChannelKind` value")),
-        }
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum ResourceKind {
+    None = 0,
+    Receiver = 1,
+    Sender = 2,
+    Other = -1,
 }

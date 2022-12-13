@@ -10,10 +10,16 @@ use std::{collections::HashMap, fmt, str, task::Poll};
 
 use super::{
     functions::{SpawnFunctions, TracingFunctions, WasmContextPtr, WorkflowFunctions},
-    instance::InstanceData,
+    instance::{HostResource, InstanceData},
     module::ExtendLinker,
+    WasmAllocator,
 };
-use tardigrade::{abi::TryFromWasm, interface::Interface, TaskId, TimerId, WakerId};
+use tardigrade::{
+    abi::{IntoWasm, TryFromWasm},
+    interface::Interface,
+    spawn::HostError,
+    ChannelId, TaskId, TimerId, WakerId, WorkflowId,
+};
 
 type Ref = Option<ExternRef>;
 
@@ -24,12 +30,12 @@ where
 {
     let ty = ty
         .func()
-        .ok_or_else(|| anyhow!("`{}` is not a function", fn_name))?;
+        .ok_or_else(|| anyhow!("`{fn_name}` is not a function"))?;
 
     Args::typecheck(ty.params())
-        .with_context(|| format!("`{}` function has incorrect param types", fn_name))?;
+        .with_context(|| format!("`{fn_name}` function has incorrect param types"))?;
     Out::typecheck(ty.results())
-        .with_context(|| format!("`{}` function has incorrect return types", fn_name))
+        .with_context(|| format!("`{fn_name}` function has incorrect return types"))
 }
 
 #[derive(Clone, Copy)]
@@ -37,13 +43,15 @@ pub(super) struct ModuleExports {
     pub memory: Memory,
     pub data_location: Option<(u32, u32)>,
     pub ref_table: Table,
-    create_main_task: TypedFunc<(u32, u32), TaskId>,
+    create_main_task: TypedFunc<(u32, u32, Ref), TaskId>,
     poll_task: TypedFunc<TaskId, i32>,
     drop_task: TypedFunc<TaskId, ()>,
     alloc_bytes: TypedFunc<u32, u32>,
     create_waker: TypedFunc<WasmContextPtr, WakerId>,
     wake_waker: TypedFunc<WakerId, ()>,
     drop_waker: TypedFunc<WakerId, ()>,
+    initialize_child: TypedFunc<(WorkflowId, Ref, i64), ()>,
+    initialize_channel: TypedFunc<(ChannelId, Ref, Ref), ()>,
 }
 
 impl ModuleExports {
@@ -58,7 +66,11 @@ impl ModuleExports {
         self.memory
             .write(ctx.as_context_mut(), data_ptr as usize, raw_args)
             .context("cannot write workflow args to WASM memory")?;
-        self.create_main_task.call(ctx, (data_ptr, data_len))
+
+        let channel_ids = ctx.data().inner.persisted.channels().to_ids();
+        let handles = HostResource::channel_handles(channel_ids).into_ref();
+        self.create_main_task
+            .call(ctx, (data_ptr, data_len, Some(handles)))
     }
 
     #[tracing::instrument(level = "debug", skip(self, ctx), ret, err)]
@@ -115,6 +127,36 @@ impl ModuleExports {
     ) -> anyhow::Result<()> {
         self.drop_waker.call(ctx, waker_id)
     }
+
+    #[tracing::instrument(level = "debug", skip(self, ctx), err)]
+    pub fn initialize_child(
+        &self,
+        mut ctx: StoreContextMut<'_, InstanceData>,
+        stub_id: WorkflowId,
+        result: Result<WorkflowId, HostError>,
+    ) -> anyhow::Result<()> {
+        let mut child_id = None;
+        let result = result.map(|id| {
+            child_id = Some(id);
+        });
+        let result = result.into_wasm(&mut WasmAllocator::new(ctx.as_context_mut()))?;
+        let child = child_id.map(|id| HostResource::Workflow(id).into_ref());
+
+        self.initialize_child.call(ctx, (stub_id, child, result))
+    }
+
+    #[tracing::instrument(level = "debug", skip(self, ctx), err)]
+    pub fn initialize_channel(
+        &self,
+        ctx: StoreContextMut<'_, InstanceData>,
+        stub_id: ChannelId,
+        channel_id: ChannelId,
+    ) -> anyhow::Result<()> {
+        let sender = Some(HostResource::Sender(channel_id).into_ref());
+        let receiver = Some(HostResource::Receiver(channel_id).into_ref());
+        self.initialize_channel
+            .call(ctx, (stub_id, sender, receiver))
+    }
 }
 
 impl fmt::Debug for ModuleExports {
@@ -151,9 +193,9 @@ impl ModuleExports {
         );
 
         for workflow_name in workflows.keys() {
-            Self::ensure_export_ty::<(u32, u32), TaskId>(
+            Self::ensure_export_ty::<(u32, u32, Ref), TaskId>(
                 module,
-                &format!("tardigrade_rt::spawn::{}", workflow_name),
+                &format!("tardigrade_rt::spawn::{workflow_name}"),
             )?;
         }
         Self::ensure_export_ty::<TaskId, i32>(module, "tardigrade_rt::poll_task")?;
@@ -162,6 +204,8 @@ impl ModuleExports {
         Self::ensure_export_ty::<WasmContextPtr, WakerId>(module, "tardigrade_rt::create_waker")?;
         Self::ensure_export_ty::<WakerId, ()>(module, "tardigrade_rt::wake_waker")?;
         Self::ensure_export_ty::<WakerId, ()>(module, "tardigrade_rt::drop_waker")?;
+        Self::ensure_export_ty::<(WorkflowId, Ref, i64), ()>(module, "tardigrade_rt::init_child")?;
+        Self::ensure_export_ty::<(ChannelId, Ref, Ref), ()>(module, "tardigrade_rt::init_channel")?;
 
         Ok(())
     }
@@ -189,17 +233,19 @@ impl ModuleExports {
             memory,
             data_location,
             ref_table,
-            create_main_task: Self::extract_function(&mut *store, instance, &main_fn_name),
-            poll_task: Self::extract_function(&mut *store, instance, "tardigrade_rt::poll_task"),
-            drop_task: Self::extract_function(&mut *store, instance, "tardigrade_rt::drop_task"),
-            alloc_bytes: Self::extract_function(
-                &mut *store,
-                instance,
-                "tardigrade_rt::alloc_bytes",
-            ),
+            create_main_task: Self::extract_function(store, instance, &main_fn_name),
+            poll_task: Self::extract_function(store, instance, "tardigrade_rt::poll_task"),
+            drop_task: Self::extract_function(store, instance, "tardigrade_rt::drop_task"),
+            alloc_bytes: Self::extract_function(store, instance, "tardigrade_rt::alloc_bytes"),
             create_waker: Self::extract_function(store, instance, "tardigrade_rt::create_waker"),
             wake_waker: Self::extract_function(store, instance, "tardigrade_rt::wake_waker"),
             drop_waker: Self::extract_function(store, instance, "tardigrade_rt::drop_waker"),
+            initialize_child: Self::extract_function(store, instance, "tardigrade_rt::init_child"),
+            initialize_channel: Self::extract_function(
+                store,
+                instance,
+                "tardigrade_rt::init_channel",
+            ),
         }
     }
 
@@ -256,9 +302,7 @@ impl ModuleImports {
             "task::spawn" => ensure_func_ty::<(u32, u32, TaskId), ()>(ty, fn_name),
             "task::wake" | "task::abort" => ensure_func_ty::<TaskId, ()>(ty, fn_name),
 
-            "mpsc_receiver::get" | "mpsc_sender::get" => {
-                ensure_func_ty::<(Ref, u32, u32, u32), Ref>(ty, fn_name)
-            }
+            "channel::new" => ensure_func_ty::<ChannelId, ()>(ty, fn_name),
 
             "mpsc_receiver::poll_next" => ensure_func_ty::<(Ref, WasmContextPtr), i64>(ty, fn_name),
 
@@ -272,6 +316,11 @@ impl ModuleImports {
             "timer::drop" => ensure_func_ty::<TimerId, ()>(ty, fn_name),
             "timer::poll" => ensure_func_ty::<(TimerId, WasmContextPtr), i64>(ty, fn_name),
 
+            "handles::create" => ensure_func_ty::<(), Ref>(ty, fn_name),
+            "handles::insert_sender" | "handles::insert_receiver" => {
+                ensure_func_ty::<(Ref, i32, i32, Ref), ()>(ty, fn_name)
+            }
+            "handles::remove" => ensure_func_ty::<(Ref, i32, i32, i32), Ref>(ty, fn_name),
             "resource::id" => ensure_func_ty::<Ref, u64>(ty, fn_name),
             "resource::drop" => ensure_func_ty::<Ref, ()>(ty, fn_name),
             "task::report_error" | "report_panic" => {
@@ -312,12 +361,11 @@ impl ExtendLinker for WorkflowFunctions {
                 wrap6(&mut *store, Self::report_task_error),
             ),
             // Channel functions
-            ("mpsc_receiver::get", wrap4(&mut *store, Self::get_receiver)),
+            ("channel::new", wrap1(&mut *store, Self::new_channel)),
             (
                 "mpsc_receiver::poll_next",
                 wrap2(&mut *store, Self::poll_next_for_receiver),
             ),
-            ("mpsc_sender::get", wrap4(&mut *store, Self::get_sender)),
             (
                 "mpsc_sender::poll_ready",
                 wrap2(&mut *store, Self::poll_ready_for_sender),
@@ -338,6 +386,22 @@ impl ExtendLinker for WorkflowFunctions {
             // Resource management
             ("resource::id", Func::wrap(&mut *store, Self::resource_id)),
             ("resource::drop", wrap1(&mut *store, Self::drop_resource)),
+            (
+                "handles::create",
+                Func::wrap(&mut *store, Self::create_handles),
+            ),
+            (
+                "handles::insert_sender",
+                wrap4(&mut *store, Self::insert_sender_into_handles),
+            ),
+            (
+                "handles::insert_receiver",
+                wrap4(&mut *store, Self::insert_receiver_into_handles),
+            ),
+            (
+                "handles::remove",
+                wrap4(&mut *store, Self::remove_from_handles),
+            ),
             // Panic hook
             ("report_panic", wrap6(&mut *store, Self::report_panic)),
         ]
@@ -348,15 +412,9 @@ impl SpawnFunctions {
     fn validate_import(ty: &ExternType, fn_name: &str) -> anyhow::Result<()> {
         match fn_name {
             "workflow::interface" => ensure_func_ty::<(u32, u32), i64>(ty, fn_name),
-            "workflow::create_handles" => ensure_func_ty::<(), Ref>(ty, fn_name),
-            "workflow::insert_handle" => {
-                ensure_func_ty::<(Ref, i32, u32, u32, i32), ()>(ty, fn_name)
+            "workflow::spawn" => {
+                ensure_func_ty::<(WorkflowId, u32, u32, u32, u32, Ref), ()>(ty, fn_name)
             }
-            "workflow::copy_sender_handle" => {
-                ensure_func_ty::<(Ref, i32, i32, Ref), ()>(ty, fn_name)
-            }
-            "workflow::spawn" => ensure_func_ty::<(u32, u32, u32, u32, Ref), Ref>(ty, fn_name),
-            "workflow::poll_init" => ensure_func_ty::<(Ref, WasmContextPtr, u32), Ref>(ty, fn_name),
             "workflow::poll_completion" => {
                 ensure_func_ty::<(Ref, WasmContextPtr), i64>(ty, fn_name)
             }
@@ -382,23 +440,7 @@ impl ExtendLinker for SpawnFunctions {
                 "workflow::interface",
                 wrap2(&mut *store, Self::workflow_interface),
             ),
-            (
-                "workflow::create_handles",
-                Func::wrap(&mut *store, Self::create_channel_handles),
-            ),
-            (
-                "workflow::insert_handle",
-                wrap5(&mut *store, Self::set_channel_handle),
-            ),
-            (
-                "workflow::copy_sender_handle",
-                wrap4(&mut *store, Self::copy_sender_handle),
-            ),
-            ("workflow::spawn", wrap5(&mut *store, Self::spawn)),
-            (
-                "workflow::poll_init",
-                wrap3(&mut *store, Self::poll_workflow_init),
-            ),
+            ("workflow::spawn", wrap6(&mut *store, Self::spawn)),
             (
                 "workflow::poll_completion",
                 wrap2(&mut *store, Self::poll_workflow_completion),
@@ -441,7 +483,6 @@ impl_wrapper!(wrap1 => a: A);
 impl_wrapper!(wrap2 => a: A, b: B);
 impl_wrapper!(wrap3 => a: A, b: B, c: C);
 impl_wrapper!(wrap4 => a: A, b: B, c: C, d: D);
-impl_wrapper!(wrap5 => a: A, b: B, c: C, d: D, e: E);
 impl_wrapper!(wrap6 => a: A, b: B, c: C, d: D, e: E, f: F);
 
 #[cfg(test)]
@@ -462,7 +503,7 @@ mod tests {
         let interface = Interface::default();
         let services = Services {
             clock: Arc::new(()),
-            workflows: None,
+            stubs: None,
             tracer: None,
         };
         let data = WorkflowData::new(&interface, ChannelIds::default(), services);

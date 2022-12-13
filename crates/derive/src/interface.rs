@@ -1,7 +1,7 @@
 use darling::{FromDeriveInput, FromMeta};
 use proc_macro::TokenStream;
 use quote::{quote, ToTokens};
-use syn::{spanned::Spanned, DeriveInput};
+use syn::{spanned::Spanned, DeriveInput, Generics};
 
 use std::{env, fs, path::Path};
 
@@ -15,6 +15,24 @@ struct GetInterface {
 }
 
 impl GetInterface {
+    fn check_generics(generics: &Generics) -> darling::Result<()> {
+        if generics.lifetimes().count() > 0 {
+            let message = "lifetime generics are not supported";
+            return Err(darling::Error::custom(message).with_span(generics));
+        }
+        if generics.const_params().count() > 0 {
+            let message = "const params are not supported";
+            return Err(darling::Error::custom(message).with_span(generics));
+        }
+        for type_param in generics.type_params() {
+            if type_param.default.is_none() {
+                let message = "type param must have default value";
+                return Err(darling::Error::custom(message).with_span(type_param));
+            }
+        }
+        Ok(())
+    }
+
     fn get_spec_contents(spec_path: &str) -> darling::Result<Vec<u8>> {
         let manifest_path = env::var_os("CARGO_MANIFEST_DIR").ok_or_else(|| {
             let message = "`CARGO_MANIFEST_DIR` env var not set; please use cargo";
@@ -44,24 +62,23 @@ impl GetInterface {
         let name = &self.input.ident;
         let tr = quote!(tardigrade::workflow::GetInterface);
         let interface = quote!(tardigrade::interface::Interface);
-        let (impl_generics, ty_generics, where_clause) = self.input.generics.split_for_impl();
 
         let init_closure = if self.compressed_spec.is_some() {
             quote! {
                 || {
                     let interface = #interface::from_bytes(&INTERFACE_SPEC);
-                    tardigrade::workflow::interface_by_handle::<#name #ty_generics>()
+                    tardigrade::workflow::interface_by_handle::<#name>()
                         .check_compatibility(&interface)
                         .expect("workflow interface does not match declaration");
                     interface
                 }
             }
         } else {
-            quote!(tardigrade::workflow::interface_by_handle::<#name #ty_generics>)
+            quote!(tardigrade::workflow::interface_by_handle::<#name>)
         };
 
         quote! {
-            impl #impl_generics #tr for #name #ty_generics #where_clause {
+            impl #tr for #name {
                 fn interface() -> std::borrow::Cow<'static, #interface> {
                     static INTERFACE: tardigrade::_reexports::Lazy<#interface>
                         = tardigrade::_reexports::Lazy::new(#init_closure);
@@ -74,6 +91,8 @@ impl GetInterface {
 
 impl FromDeriveInput for GetInterface {
     fn from_derive_input(input: &DeriveInput) -> darling::Result<Self> {
+        Self::check_generics(&input.generics)?;
+
         let attrs = find_meta_attrs("tardigrade", &input.attrs).map_or_else(
             || Ok(DeriveAttrs::default()),
             |meta| DeriveAttrs::from_nested_meta(&meta),

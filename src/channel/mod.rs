@@ -5,7 +5,7 @@
 //! A workflow owns a single end of a channel (either a [`Receiver`] or
 //! [`Sender`]s), while the other end is owned by the host environment or another workflow.
 //!
-//! A `Sender` or `Receiver` can be obtained from the environment using [`TakeHandle`] trait.
+//! A `Sender` or `Receiver` can be obtained from the environment using [`WithHandle`] trait.
 //! This process is usually automated via workflow types. When executed in WASM, channels
 //! are backed by imported functions from the Tardigrade runtime. This is emulated for
 //! the [test environment](crate::test).
@@ -16,17 +16,11 @@ use futures::{Sink, Stream};
 use pin_project_lite::pin_project;
 
 use std::{
+    convert::Infallible,
     fmt,
     marker::PhantomData,
     pin::Pin,
     task::{Context, Poll},
-};
-
-use crate::{
-    codec::{Codec, Raw},
-    interface::{AccessError, HandlePath},
-    workflow::{TakeHandle, WithHandle, WorkflowEnv},
-    ChannelId,
 };
 
 mod broadcast;
@@ -44,6 +38,13 @@ pub use self::{
 };
 pub use crate::error::SendError;
 
+use crate::{
+    codec::{Codec, Raw},
+    handle::{AccessError, AccessErrorKind, Handle, HandlePath, ReceiverAt, SenderAt},
+    workflow::{HandleFormat, InsertHandles, IntoRaw, TakeHandles, TryFromRaw, WithHandle},
+    ChannelId,
+};
+
 pin_project! {
     /// Receiver for a channel provided to the workflow.
     ///
@@ -58,6 +59,23 @@ pin_project! {
 
 /// [`Receiver`] of raw byte messages.
 pub type RawReceiver = Receiver<Vec<u8>, Raw>;
+
+impl<T, C: Codec<T>> TryFromRaw<RawReceiver> for Receiver<T, C> {
+    type Error = Infallible;
+
+    fn try_from_raw(raw: RawReceiver) -> Result<Self, Self::Error> {
+        Ok(Self::from_raw(raw))
+    }
+}
+
+impl<T, C: Codec<T>> IntoRaw<RawReceiver> for Receiver<T, C> {
+    fn into_raw(self) -> RawReceiver {
+        RawReceiver {
+            raw: self.raw,
+            _ty: PhantomData,
+        }
+    }
+}
 
 impl<T, C: fmt::Debug> fmt::Debug for Receiver<T, C> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -76,9 +94,10 @@ impl<T, C: Codec<T>> Receiver<T, C> {
         }
     }
 
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) fn from_env(path: HandlePath<'_>) -> Result<Self, AccessError> {
-        imp::MpscReceiver::from_env(path).map(Self::new)
+    /// Returns a receiver for a closed channel. This can be provided to spawned workflows to avoid
+    /// allocating new channels.
+    pub fn closed() -> Self {
+        Self::new(imp::MpscReceiver::closed())
     }
 
     pub(crate) fn from_raw(raw: RawReceiver) -> Self {
@@ -95,8 +114,13 @@ impl<T, C: Codec<T>> Receiver<T, C> {
 
 impl RawReceiver {
     #[cfg(target_arch = "wasm32")]
-    pub(crate) fn from_resource(resource: externref::Resource<imp::MpscReceiver>) -> Self {
+    pub(crate) fn from_resource(resource: Option<externref::Resource<imp::MpscReceiver>>) -> Self {
         Self::new(resource.into())
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn into_resource(self) -> Option<externref::Resource<imp::MpscReceiver>> {
+        self.raw.into_resource()
     }
 }
 
@@ -117,12 +141,24 @@ impl<T, C: Codec<T>> Stream for Receiver<T, C> {
 }
 
 impl<T, C: Codec<T>> WithHandle for Receiver<T, C> {
-    type Handle<Env: WorkflowEnv> = Env::Receiver<T, C>;
-}
+    type Handle<Fmt: HandleFormat> = Fmt::Receiver<T, C>;
 
-impl<T, C: Codec<T>, Env: WorkflowEnv> TakeHandle<Env> for Receiver<T, C> {
-    fn take_handle(env: &mut Env, path: HandlePath<'_>) -> Result<Self::Handle<Env>, AccessError> {
-        env.take_receiver(path)
+    fn take_from_untyped<Fmt: HandleFormat>(
+        untyped: &mut impl TakeHandles<Fmt>,
+        path: HandlePath<'_>,
+    ) -> Result<Self::Handle<Fmt>, AccessError> {
+        let raw_receiver = untyped.take_receiver(path)?;
+        <Fmt::Receiver<T, C>>::try_from_raw(raw_receiver)
+            .map_err(|err| AccessErrorKind::custom(err.to_string()).with_location(ReceiverAt(path)))
+    }
+
+    fn insert_into_untyped<Fmt: HandleFormat>(
+        handle: Self::Handle<Fmt>,
+        untyped: &mut impl InsertHandles<Fmt>,
+        path: HandlePath<'_>,
+    ) {
+        let raw_receiver = handle.into_raw();
+        untyped.insert_handle(path.to_owned(), Handle::Receiver(raw_receiver));
     }
 }
 
@@ -145,6 +181,23 @@ pin_project! {
 
 /// [`Sender`] of raw byte messages.
 pub type RawSender = Sender<Vec<u8>, Raw>;
+
+impl<T, C: Codec<T>> TryFromRaw<RawSender> for Sender<T, C> {
+    type Error = Infallible;
+
+    fn try_from_raw(raw: RawSender) -> Result<Self, Self::Error> {
+        Ok(Self::from_raw(raw))
+    }
+}
+
+impl<T, C: Codec<T>> IntoRaw<RawSender> for Sender<T, C> {
+    fn into_raw(self) -> RawSender {
+        RawSender {
+            raw: self.raw,
+            _ty: PhantomData,
+        }
+    }
+}
 
 impl<T, C> fmt::Debug for Sender<T, C> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -172,9 +225,10 @@ impl<T, C: Codec<T>> Sender<T, C> {
         }
     }
 
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) fn from_env(path: HandlePath<'_>) -> Result<Self, AccessError> {
-        imp::MpscSender::from_env(path).map(Self::new)
+    /// Returns a sender for a closed channel. This can be provided to spawned workflows to avoid
+    /// allocating new channels.
+    pub fn closed() -> Self {
+        Self::new(imp::MpscSender::closed())
     }
 
     pub(crate) fn from_raw(raw: RawSender) -> Self {
@@ -183,34 +237,39 @@ impl<T, C: Codec<T>> Sender<T, C> {
             _ty: PhantomData,
         }
     }
-
-    pub(crate) fn into_raw(self) -> RawSender {
-        RawSender {
-            raw: self.raw,
-            _ty: PhantomData,
-        }
-    }
 }
 
 impl RawSender {
     #[cfg(target_arch = "wasm32")]
-    pub(crate) fn from_resource(resource: externref::Resource<imp::MpscSender>) -> Self {
+    pub(crate) fn from_resource(resource: Option<externref::Resource<imp::MpscSender>>) -> Self {
         Self::new(resource.into())
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub(crate) fn as_resource(&self) -> &externref::Resource<imp::MpscSender> {
+    pub(crate) fn as_resource(&self) -> Option<&externref::Resource<imp::MpscSender>> {
         self.raw.as_resource()
     }
 }
 
 impl<T, C: Codec<T>> WithHandle for Sender<T, C> {
-    type Handle<Env: WorkflowEnv> = Env::Sender<T, C>;
-}
+    type Handle<Fmt: HandleFormat> = Fmt::Sender<T, C>;
 
-impl<T, C: Codec<T>, Env: WorkflowEnv> TakeHandle<Env> for Sender<T, C> {
-    fn take_handle(env: &mut Env, path: HandlePath<'_>) -> Result<Self::Handle<Env>, AccessError> {
-        env.take_sender(path)
+    fn take_from_untyped<Fmt: HandleFormat>(
+        untyped: &mut impl TakeHandles<Fmt>,
+        path: HandlePath<'_>,
+    ) -> Result<Self::Handle<Fmt>, AccessError> {
+        let raw_sender = untyped.take_sender(path)?;
+        <Fmt::Sender<T, C>>::try_from_raw(raw_sender)
+            .map_err(|err| AccessErrorKind::custom(err.to_string()).with_location(SenderAt(path)))
+    }
+
+    fn insert_into_untyped<Fmt: HandleFormat>(
+        handle: Self::Handle<Fmt>,
+        untyped: &mut impl InsertHandles<Fmt>,
+        path: HandlePath<'_>,
+    ) {
+        let raw_sender = handle.into_raw();
+        untyped.insert_handle(path.to_owned(), Handle::Sender(raw_sender));
     }
 }
 
@@ -234,4 +293,10 @@ impl<T, C: Codec<T>> Sink<T> for Sender<T, C> {
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.project().raw.poll_close(cx)
     }
+}
+
+/// Creates a new channel and returns its sender and receiver halves.
+pub async fn channel<T, C: Codec<T>>() -> (Sender<T, C>, Receiver<T, C>) {
+    let (raw_sender, raw_receiver) = imp::raw_channel().await;
+    (Sender::new(raw_sender), Receiver::new(raw_receiver))
 }

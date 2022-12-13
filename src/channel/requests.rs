@@ -18,17 +18,19 @@ use std::{collections::HashMap, future::Future, marker::PhantomData};
 use crate::{
     channel::{Receiver, Sender},
     task::{self, JoinHandle},
-    workflow::{InEnv, TakeHandle, Wasm, WorkflowEnv},
+    workflow::{HandleFormat, InEnv, Wasm, WithHandle},
     ChannelId, Codec,
 };
 
-/// Container for a request.
+/// Container for a [request](Requests) that can also be used to cancel the pending request
+/// from the client side.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Request<T> {
     /// New request.
     New {
-        /// Identifier associated with the value.
+        /// Identifier of the request unique within the [`Requests`] instance generating
+        /// requests.
         #[serde(rename = "@id")]
         id: u64,
         /// Payload of the request.
@@ -39,19 +41,19 @@ pub enum Request<T> {
     },
     /// Request cancellation.
     Cancel {
-        /// Identifier associated with the value.
+        /// Identifier of a [previously created](Self::New) request.
         #[serde(rename = "@id")]
         id: u64,
     },
 }
 
-/// Container for a response to the request.
+/// Container for the response to a [`Request`].
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Response<T> {
-    /// Identifier associated with the value.
+    /// Identifier of the request that this response corresponds to.
     #[serde(rename = "@id")]
     pub id: u64,
-    /// Wrapped value.
+    /// Wrapped response payload.
     pub data: T,
 }
 
@@ -182,11 +184,13 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
     }
 }
 
-/// Request sender based on a pair of channels. Can be used to call to external task executors.
+/// [`Request`] sender based on a pair of channels: an outbound channel to send requests,
+/// and the corresponding inbound channel to listen to responses.
+/// Can be used to call to external task executors.
 ///
 /// # Examples
 ///
-/// `Requests` instance can be built from a pair of sender / receiver channel halves:
+/// A `Requests` instance can be built from a pair of sender / receiver channel halves:
 ///
 /// ```
 /// # use async_trait::async_trait;
@@ -196,7 +200,7 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 /// #     channel::{Request, Requests, Response, Sender, Receiver},
 /// #     task::{TaskResult, ErrorContextExt},
 /// #     workflow::{
-/// #         GetInterface, InEnv, SpawnWorkflow, TaskHandle, TakeHandle, Wasm, WorkflowEnv,
+/// #         GetInterface, InEnv, SpawnWorkflow, TaskHandle, WithHandle, Wasm, HandleFormat,
 /// #         WorkflowFn,
 /// #     },
 /// #     Json,
@@ -210,15 +214,11 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 ///     // response fields...
 /// }
 ///
-/// #[derive(Debug, GetInterface, TakeHandle)]
-/// # #[tardigrade(handle = "MyHandle", auto_interface)]
-/// pub struct MyWorkflow(());
-///
-/// #[derive(TakeHandle)]
-/// #[tardigrade(derive(Debug))]
-/// pub struct MyHandle<Env: WorkflowEnv> {
-///     pub requests: InEnv<Sender<Request<MyRequest>, Json>, Env>,
-///     pub responses: InEnv<Receiver<Response<MyResponse>, Json>, Env>,
+/// #[derive(WithHandle, GetInterface)]
+/// #[tardigrade(derive(Debug), auto_interface)]
+/// pub struct MyWorkflow<Fmt: HandleFormat = Wasm> {
+///     pub requests: InEnv<Sender<Request<MyRequest>, Json>, Fmt>,
+///     pub responses: InEnv<Receiver<Response<MyResponse>, Json>, Fmt>,
 /// }
 /// # impl WorkflowFn for MyWorkflow {
 /// #     type Args = ();
@@ -227,7 +227,7 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 ///
 /// #[async_trait(?Send)]
 /// impl SpawnWorkflow for MyWorkflow {
-///     async fn spawn(_args: (), handle: MyHandle<Wasm>) -> TaskResult {
+///     async fn spawn(_args: (), handle: Self) -> TaskResult {
 ///         let (requests, _) = Requests::builder(handle.requests, handle.responses)
 ///             .with_capacity(4)
 ///             .with_task_name("handling_requests")
@@ -267,6 +267,9 @@ impl<Req: 'static, Resp: 'static> Requests<Req, Resp> {
     }
 
     /// Performs a request and returns a future that resolves to the response.
+    ///
+    /// If the future is dropped before the response arrives,
+    /// a [cancellation signal](Request::Cancel) will be sent to the external executor.
     ///
     /// # Errors
     ///
@@ -314,7 +317,7 @@ where
         self
     }
 
-    /// Specifies a task name to use when [spawning a task](crate::task::spawn()) to support
+    /// Specifies a task name to use when [spawning a task](task::spawn()) to support
     /// request / response processing. The default task name is `_requests`.
     #[must_use]
     pub fn with_task_name(mut self, task_name: &'a str) -> Self {
@@ -344,7 +347,7 @@ where
     }
 }
 
-/// A pair consisting of a sender and a receiver that can be used to handle requests.
+/// A pair consisting of a sender and a receiver that can be used to generate [`Requests`].
 ///
 /// # Examples
 ///
@@ -354,23 +357,23 @@ where
 /// # use serde::{Deserialize, Serialize};
 /// # use std::error::Error;
 /// # use tardigrade::{
-/// #     channel::{SendError, RequestHandles}, workflow::{TakeHandle, Wasm, WorkflowEnv}, Json,
+/// #     channel::{SendError, RequestHandles}, workflow::{WithHandle, Wasm, HandleFormat}, Json,
 /// # };
 /// #[derive(Serialize, Deserialize)]
 /// pub struct MyRequest {
 ///     // request fields...
 /// }
 ///
-/// #[derive(TakeHandle)]
+/// #[derive(WithHandle)]
 /// #[tardigrade(derive(Debug))]
-/// pub struct MyHandle<Env: WorkflowEnv = Wasm> {
-///     pub task: RequestHandles<MyRequest, (), Json, Env>,
+/// pub struct MyWorkflow<Fmt: HandleFormat = Wasm> {
+///     pub task: RequestHandles<MyRequest, (), Json, Fmt>,
 ///     // other handles...
 /// }
 ///
 /// // Usage in workflow code:
-/// # async fn workflow_code(handle: MyHandle) -> Result<(), Box<dyn Error>> {
-/// let handle: MyHandle = // ...
+/// # async fn workflow_code(handle: MyWorkflow) -> Result<(), Box<dyn Error>> {
+/// let handle: MyWorkflow = // ...
 /// # handle;
 /// let (requests, _) =
 ///     handle.task.process_requests().with_capacity(4).build();
@@ -378,16 +381,18 @@ where
 /// # Ok(())
 /// # }
 /// ```
-#[derive(TakeHandle)]
+#[derive(WithHandle)]
 #[tardigrade(crate = "crate", derive(Debug, Clone))]
-pub struct RequestHandles<Req, Resp, C, Env: WorkflowEnv = Wasm>
+pub struct RequestHandles<Req, Resp, C, Fmt: HandleFormat = Wasm>
 where
     C: Codec<Request<Req>> + Codec<Response<Resp>>,
 {
-    /// Requests sender.
-    pub requests: InEnv<Sender<Request<Req>, C>, Env>,
-    /// Responses receiver.
-    pub responses: InEnv<Receiver<Response<Resp>, C>, Env>,
+    /// Requests sender. Will have [path](crate::handle::HandlePath) `requests` relative
+    /// to the `RequestHandles` path.
+    pub requests: InEnv<Sender<Request<Req>, C>, Fmt>,
+    /// Responses receiver. Will have [path](crate::handle::HandlePath) `responses` relative
+    /// to the `RequestHandles` path.
+    pub responses: InEnv<Receiver<Response<Resp>, C>, Fmt>,
 }
 
 impl<Req: 'static, Resp: 'static, C> RequestHandles<Req, Resp, C>

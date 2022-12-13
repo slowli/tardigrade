@@ -6,10 +6,8 @@ use futures::{StreamExt, TryStreamExt};
 
 use std::{collections::HashSet, task::Poll};
 
-use crate::create_module;
 use tardigrade::{
-    interface::{ReceiverAt, SenderAt},
-    spawn::ManageWorkflowsExt,
+    handle::{ReceiverAt, SenderAt, WithIndexing},
     Codec, Json,
 };
 use tardigrade_rt::{
@@ -23,9 +21,9 @@ use tardigrade_rt::{
     test::MockScheduler,
     PersistedWorkflow,
 };
-use tardigrade_test_basic::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOrder};
 
-use super::{create_manager, enable_tracing_assertions, TestResult};
+use super::{create_manager, create_module, enable_tracing_assertions, spawn_workflow, TestResult};
+use tardigrade_test_basic::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOrder};
 
 const DEFINITION_ID: &str = "test::PizzaDelivery";
 
@@ -66,14 +64,12 @@ async fn basic_workflow() -> TestResult {
     let scheduler = MockScheduler::default();
     let manager = create_manager(scheduler.clone()).await?;
 
-    let inputs = Args {
+    let args = Args {
         oven_count: 1,
         deliverer_count: 1,
     };
-    let mut workflow = manager
-        .new_workflow::<PizzaDelivery>(DEFINITION_ID, inputs)?
-        .build()
-        .await?;
+    let (mut workflow, _) =
+        spawn_workflow::<_, PizzaDelivery>(&manager, DEFINITION_ID, args).await?;
     let receipt = manager.tick().await?.drop_handle().into_inner()?;
 
     assert_eq!(receipt.executions().len(), 2);
@@ -114,7 +110,7 @@ async fn basic_workflow() -> TestResult {
     assert_eq!(main_task.spawned_by(), None);
     assert_eq!(persisted.timers().count(), 0);
 
-    let mut handle = workflow.handle();
+    let mut handle = workflow.handle().await;
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,
         delivery_distance: 10,
@@ -265,17 +261,13 @@ fn assert_time_update_receipt(receipt: &Receipt, persisted: &PersistedWorkflow) 
 async fn workflow_with_concurrency() -> TestResult {
     let manager = create_manager(()).await?;
 
-    let inputs = Args {
+    let args = Args {
         oven_count: 2,
         deliverer_count: 1,
     };
-    let mut workflow = manager
-        .new_workflow::<PizzaDelivery>(DEFINITION_ID, inputs)?
-        .build()
-        .await?;
+    let (_, mut handle) = spawn_workflow::<_, PizzaDelivery>(&manager, DEFINITION_ID, args).await?;
     manager.tick().await?.drop_handle().into_inner()?;
 
-    let mut handle = workflow.handle();
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,
         delivery_distance: 10,
@@ -337,16 +329,13 @@ async fn persisting_workflow() -> TestResult {
     let clock = MockScheduler::default();
     let manager = create_manager(clock.clone()).await?;
 
-    let inputs = Args {
+    let args = Args {
         oven_count: 1,
         deliverer_count: 1,
     };
-    let mut workflow = manager
-        .new_workflow::<PizzaDelivery>(DEFINITION_ID, inputs)?
-        .build()
-        .await?;
+    let (workflow, mut handle) =
+        spawn_workflow::<_, PizzaDelivery>(&manager, DEFINITION_ID, args).await?;
     let workflow_id = workflow.id();
-    let mut handle = workflow.handle();
     manager.tick().await?.drop_handle().into_inner()?;
 
     let order = PizzaOrder {
@@ -387,8 +376,8 @@ async fn persisting_workflow() -> TestResult {
 
     // Check that the pizza is ready now.
     let workflow = manager.workflow(workflow_id).await.unwrap();
-    let mut workflow = workflow.downcast::<PizzaDelivery>()?;
-    let mut events_drain = Drain::new(workflow.handle().shared.events);
+    let workflow = workflow.downcast::<PizzaDelivery>()?;
+    let mut events_drain = Drain::new(workflow.handle().await.shared.events);
     events_drain.cursor = events_drain_cursor;
     let events = events_drain.drain().await?;
     assert_eq!(events, [DomainEvent::Baked { index: 1, order }]);
@@ -418,18 +407,15 @@ async fn persisting_workflow() -> TestResult {
 async fn untyped_workflow() -> TestResult {
     let manager = create_manager(()).await?;
 
-    let data = Json::encode_value(Args {
+    let args = Json::encode_value(Args {
         oven_count: 1,
         deliverer_count: 1,
     });
-    let mut workflow = manager
-        .new_workflow::<()>(DEFINITION_ID, data)?
-        .build()
-        .await?;
+    let (workflow, handle) = spawn_workflow::<_, ()>(&manager, DEFINITION_ID, args).await?;
+    let mut handle = handle.with_indexing();
     let receipt = manager.tick().await?.drop_handle().into_inner()?;
     assert_eq!(receipt.executions().len(), 2);
 
-    let mut handle = workflow.handle();
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,
         delivery_distance: 10,
@@ -444,10 +430,12 @@ async fn untyped_workflow() -> TestResult {
     let event: DomainEvent = Json::try_decode_bytes(event.decode().unwrap())?;
     assert_eq!(event, DomainEvent::OrderTaken { index: 1, order });
 
-    let chan = handle[ReceiverAt("orders")].channel_info().await;
+    handle[ReceiverAt("orders")].update().await;
+    let chan = handle[ReceiverAt("orders")].channel_info();
     assert!(!chan.is_closed);
     assert_eq!(chan.received_messages, 1);
-    let chan = handle[SenderAt("events")].channel_info().await;
+    handle[SenderAt("events")].update().await;
+    let chan = handle[SenderAt("events")].channel_info();
     assert_eq!(chan.received_messages, 1);
     Ok(())
 }
@@ -458,15 +446,12 @@ async fn workflow_recovery_after_trap() -> TestResult {
 
     let manager = create_manager(()).await?;
 
-    let data = Json::encode_value(Args {
+    let args = Json::encode_value(Args {
         oven_count: SAMPLES,
         deliverer_count: 1,
     });
-    let mut workflow = manager
-        .new_workflow::<()>(DEFINITION_ID, data)?
-        .build()
-        .await?;
-    let mut handle = workflow.handle();
+    let (_, handle) = spawn_workflow::<_, ()>(&manager, DEFINITION_ID, args).await?;
+    let mut handle = handle.with_indexing();
     let mut events_drain = Drain::new(handle.remove(SenderAt("events")).unwrap());
     manager.tick().await?.drop_handle().into_inner()?;
 

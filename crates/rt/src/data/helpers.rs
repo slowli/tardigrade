@@ -9,13 +9,13 @@ use crate::{
     engine::{CreateWaker, RunWorkflow},
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, PanicInfo, ResourceEvent,
-        ResourceEventKind, ResourceId, WakeUpCause,
+        ResourceEventKind, ResourceId, StubEvent, StubEventKind, StubId, WakeUpCause,
     },
 };
 use tardigrade::{
     abi::PollMessage,
     channel::SendError,
-    interface::ChannelHalf,
+    handle::Handle,
     task::{JoinError, TaskError},
     ChannelId, TaskId, TimerId, WakerId, WorkflowId,
 };
@@ -26,11 +26,13 @@ pub(super) enum WakerPlacement {
     Sender(ChannelId),
     Timer(TimerId),
     TaskCompletion(TaskId),
-    WorkflowInit(WorkflowId),
     WorkflowCompletion(WorkflowId),
 }
 
 /// Polling context for workflows.
+///
+/// Like [`Poll`] from the standard library, this type must be consumed
+/// by calling  [`Self::into_inner()`] in order to handle the `Pending` variant.
 #[derive(Debug)]
 #[must_use = "Needs to be converted to a waker"]
 pub struct WorkflowPoll<T> {
@@ -50,7 +52,9 @@ impl<T> WorkflowPoll<T> {
         }
     }
 
-    /// Saves the waker potentially contained in this context.
+    /// Handles the [`Poll::Pending`] variant by [creating a waker](CreateWaker)
+    /// from the provided context and saving it into [`WorkflowData`], which is also
+    /// contained in the context.
     ///
     /// # Errors
     ///
@@ -64,27 +68,56 @@ impl<T> WorkflowPoll<T> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum WakerOrTask {
+    Waker(WakerId),
+    Task(TaskId),
+}
+
 #[must_use = "Wakers need to be actually woken up"]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Wakers {
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     ids: HashSet<WakerId>,
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    task_ids: HashSet<TaskId>,
     cause: WakeUpCause,
 }
 
 impl Wakers {
     pub fn new(ids: HashSet<WakerId>, cause: WakeUpCause) -> Self {
-        Self { ids, cause }
+        Self {
+            ids,
+            task_ids: HashSet::new(),
+            cause,
+        }
+    }
+
+    pub fn from_task(task_id: TaskId, cause: WakeUpCause) -> Self {
+        Self {
+            ids: HashSet::new(),
+            task_ids: HashSet::from_iter([task_id]),
+            cause,
+        }
     }
 
     pub fn cause(&self) -> &WakeUpCause {
         &self.cause
     }
 
-    pub fn into_iter(self) -> impl Iterator<Item = (WakerId, WakeUpCause)> {
-        let cause = self.cause;
-        self.ids
+    pub fn into_iter(self) -> impl Iterator<Item = (WakerOrTask, WakeUpCause)> {
+        let cause = self.cause.clone();
+        let wakers = self
+            .ids
             .into_iter()
-            .map(move |waker_id| (waker_id, cause.clone()))
+            .map(move |waker_id| (WakerOrTask::Waker(waker_id), cause.clone()));
+
+        let cause = self.cause;
+        let tasks = self
+            .task_ids
+            .into_iter()
+            .map(move |task_id| (WakerOrTask::Task(task_id), cause.clone()));
+        tasks.chain(wakers)
     }
 }
 
@@ -111,12 +144,14 @@ pub(super) struct CurrentExecution {
 impl CurrentExecution {
     pub fn new(function: &ExecutedFunction) -> Self {
         let task_id = function.task_id();
-        let wake_up_cause = if let ExecutedFunction::Waker { wake_up_cause, .. } = function {
-            // Copy the cause; we're not really interested in
-            // `WakeUpCause::Function { task_id: None }` that would result otherwise.
-            wake_up_cause.clone()
-        } else {
-            WakeUpCause::Function { task_id }
+        let wake_up_cause = match function {
+            ExecutedFunction::Waker { wake_up_cause, .. } => {
+                // Copy the cause; we're not really interested in
+                // `WakeUpCause::Function { task_id: None }` that would result otherwise.
+                wake_up_cause.clone()
+            }
+            ExecutedFunction::StubInitialization => WakeUpCause::StubInitialized,
+            _ => WakeUpCause::Function { task_id },
         };
 
         Self {
@@ -151,13 +186,13 @@ impl CurrentExecution {
         });
     }
 
-    pub fn push_channel_closure(&mut self, kind: ChannelHalf, channel_id: ChannelId) {
+    pub fn push_channel_closure(&mut self, id_handle: Handle<ChannelId>) {
         self.push_event(ChannelEvent {
-            kind: match kind {
-                ChannelHalf::Receiver => ChannelEventKind::ReceiverClosed,
-                ChannelHalf::Sender => ChannelEventKind::SenderClosed,
+            kind: match id_handle {
+                Handle::Receiver(_) => ChannelEventKind::ReceiverClosed,
+                Handle::Sender(_) => ChannelEventKind::SenderClosed,
             },
-            channel_id,
+            channel_id: id_handle.factor(),
         });
     }
 
@@ -191,6 +226,10 @@ impl CurrentExecution {
             }
         }
         self.push_event(ResourceEvent { resource_id, kind });
+    }
+
+    pub fn push_stub_event(&mut self, stub_id: StubId, kind: StubEventKind) {
+        self.push_event(StubEvent { kind, stub_id });
     }
 
     pub fn set_panic(&mut self, info: PanicInfo) {
@@ -310,9 +349,6 @@ impl WorkflowData {
             WakerPlacement::TaskCompletion(task) => {
                 persisted.tasks.get_mut(task).unwrap().insert_waker(waker);
             }
-            WakerPlacement::WorkflowInit(stub) => {
-                persisted.child_workflow_stubs.insert_waker(*stub, waker);
-            }
             WakerPlacement::WorkflowCompletion(workflow) => {
                 persisted
                     .child_workflows
@@ -337,19 +373,19 @@ impl WorkflowData {
         self.persisted.timers.remove_wakers(wakers);
     }
 
-    pub(crate) fn take_wakers(&mut self) -> impl Iterator<Item = (WakerId, WakeUpCause)> {
+    pub(crate) fn take_wakers(&mut self) -> impl Iterator<Item = (WakerOrTask, WakeUpCause)> {
         let wakers = mem::take(&mut self.persisted.waker_queue);
         wakers.into_iter().flat_map(Wakers::into_iter)
     }
 
-    pub(crate) fn wake<T: RunWorkflow>(
-        store: &mut T,
-        waker_id: WakerId,
+    pub(crate) fn wake<T: RunWorkflow, R>(
+        workflow: &mut T,
         cause: WakeUpCause,
-    ) -> anyhow::Result<()> {
-        store.data_mut().current_wakeup_cause = Some(cause);
-        let result = store.wake_waker(waker_id);
-        store.data_mut().current_wakeup_cause = None;
+        action: impl FnOnce(&mut T) -> R,
+    ) -> R {
+        workflow.data_mut().current_wakeup_cause = Some(cause);
+        let result = action(workflow);
+        workflow.data_mut().current_wakeup_cause = None;
         result
     }
 }

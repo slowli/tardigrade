@@ -52,7 +52,7 @@
 //! use tardigrade_rt::{
 //!     engine::Wasmtime, manager::WorkflowManager, storage::LocalStorage,
 //! };
-//! use tardigrade::spawn::ManageWorkflowsExt;
+//! use tardigrade::spawn::ManageWorkflows;
 //!
 //! # async fn test_wrapper() -> anyhow::Result<()> {
 //! let module_bytes: Vec<u8> = // e.g., take from a file
@@ -70,13 +70,14 @@
 //!     .build()
 //!     .await?;
 //! manager.insert_module("test", module).await;
+//! let manager = &manager; // simplifies creating a workflow below
 //!
 //! // Workflows are created within a manager that is responsible
 //! // for their persistence and managing channels, time, and child workflows.
-//! let new_workflow = manager
-//!     .new_workflow::<()>("test::Workflow", b"data".to_vec())?
-//!     .build()
-//!     .await?;
+//! let builder = manager.new_workflow::<()>("test::Workflow")?;
+//! let (handles, self_handles) = builder.handles(|_| {}).await;
+//! let new_workflow =
+//!     builder.build(b"data".to_vec(), handles).await?;
 //!
 //! // Let's initialize the workflow.
 //! let receipt = manager.tick().await?.drop_handle().into_inner()?;
@@ -84,6 +85,8 @@
 //! // this will print the executed functions and a list of important
 //! // events for each of executions:
 //! println!("{:?}", receipt.executions());
+//! // It's possible to communicate with the workflow using `self_handles`
+//! // and/or `new_workflow`.
 //! # Ok(())
 //! # }
 //! ```

@@ -96,7 +96,7 @@ pub enum Termination {
 /// ```
 /// use async_std::task;
 /// use futures::prelude::*;
-/// use tardigrade::interface::{ReceiverAt, SenderAt};
+/// use tardigrade::handle::{ReceiverAt, SenderAt, WithIndexing};
 /// # use tardigrade::WorkflowId;
 /// use tardigrade_rt::{driver::Driver, manager::WorkflowManager, AsyncIoScheduler};
 /// # use tardigrade_rt::{engine::Wasmtime, storage::LocalStorage};
@@ -113,7 +113,7 @@ pub enum Termination {
 /// // First, create a driver to execute the workflow in.
 /// let mut driver = Driver::new();
 /// // Take relevant channels from the workflow and convert them to async form.
-/// let mut handle = workflow.handle();
+/// let mut handle = workflow.handle().await.with_indexing();
 /// let mut commands_sx = handle.remove(ReceiverAt("commands"))
 ///     .unwrap()
 ///     .into_sink(&mut driver);

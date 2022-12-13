@@ -18,15 +18,21 @@ extern crate proc_macro;
 use proc_macro::TokenStream;
 
 mod interface;
-mod take_handle;
 mod utils;
+mod with_handle;
+mod workflow_entry;
 
 #[proc_macro_derive(GetInterface, attributes(tardigrade))]
 pub fn get_interface(input: TokenStream) -> TokenStream {
     interface::impl_get_interface(input)
 }
 
-#[proc_macro_derive(TakeHandle, attributes(tardigrade))]
-pub fn take_handle(input: TokenStream) -> TokenStream {
-    take_handle::impl_take_handle(input)
+#[proc_macro_derive(WithHandle, attributes(tardigrade))]
+pub fn with_handle(input: TokenStream) -> TokenStream {
+    with_handle::impl_with_handle(input)
+}
+
+#[proc_macro_derive(WorkflowEntry, attributes(tardigrade))]
+pub fn workflow_entry(input: TokenStream) -> TokenStream {
+    workflow_entry::impl_workflow_entry(input)
 }

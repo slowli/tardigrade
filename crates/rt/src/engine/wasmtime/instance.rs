@@ -4,11 +4,11 @@ use anyhow::{anyhow, ensure, Context};
 use serde::{Deserialize, Serialize};
 use wasmtime::{AsContextMut, ExternRef, Linker, Store, Val};
 
-use std::task::Poll;
 use std::{
     collections::HashMap,
     fmt,
     sync::{Arc, Mutex},
+    task::Poll,
 };
 
 use super::{
@@ -18,8 +18,9 @@ use super::{
 use crate::{
     data::WorkflowData,
     engine::{AsWorkflowData, PersistWorkflow, RunWorkflow},
+    workflow::ChannelIds,
 };
-use tardigrade::{spawn::ChannelsConfig, ChannelId, TaskId, WakerId, WorkflowId};
+use tardigrade::{spawn::HostError, ChannelId, TaskId, WakerId, WorkflowId};
 
 #[derive(Debug)]
 pub(super) struct InstanceData {
@@ -112,14 +113,34 @@ impl RunWorkflow for WasmtimeInstance {
         exports.poll_task(self.store.as_context_mut(), task_id)
     }
 
-    fn drop_task(&mut self, task_id: TaskId) -> anyhow::Result<()> {
+    fn drop_task(&mut self, task_id: TaskId) {
         let exports = self.store.data().exports();
-        exports.drop_task(self.store.as_context_mut(), task_id)
+        if let Err(err) = exports.drop_task(self.store.as_context_mut(), task_id) {
+            tracing::warn!(%err, "failed dropping task");
+        }
     }
 
-    fn wake_waker(&mut self, waker_id: WakerId) -> anyhow::Result<()> {
+    fn wake_waker(&mut self, waker_id: WakerId) {
         let exports = self.store.data().exports();
-        exports.wake_waker(self.store.as_context_mut(), waker_id)
+        if let Err(err) = exports.wake_waker(self.store.as_context_mut(), waker_id) {
+            tracing::warn!(%err, "failed waking waker");
+        }
+    }
+
+    fn initialize_child(&mut self, stub_id: WorkflowId, result: Result<WorkflowId, HostError>) {
+        let exports = self.store.data().exports();
+        if let Err(err) = exports.initialize_child(self.store.as_context_mut(), stub_id, result) {
+            tracing::warn!(%err, "failed initializing child");
+        }
+    }
+
+    fn initialize_channel(&mut self, stub_id: ChannelId, channel_id: ChannelId) {
+        let exports = self.store.data().exports();
+        let init_result =
+            exports.initialize_channel(self.store.as_context_mut(), stub_id, channel_id);
+        if let Err(err) = init_result {
+            tracing::warn!(%err, "failed initializing channel");
+        }
     }
 }
 
@@ -218,9 +239,7 @@ mod serde_compress {
         let mut output = vec![];
         DeflateDecoder::new(reader)
             .read_to_end(&mut output)
-            .map_err(|err| {
-                D::Error::custom(format!("cannot decompress memory snapshot: {}", err))
-            })?;
+            .map_err(|err| D::Error::custom(format!("cannot decompress memory snapshot: {err}")))?;
         Ok(output)
     }
 }
@@ -275,11 +294,17 @@ impl Memory {
     }
 }
 
-type ChannelHandles = ChannelsConfig<ChannelId>;
-
 #[derive(Debug, Clone, Default)]
 pub(super) struct SharedChannelHandles {
-    pub inner: Arc<Mutex<ChannelHandles>>,
+    pub inner: Arc<Mutex<ChannelIds>>,
+}
+
+impl SharedChannelHandles {
+    fn new(ids: ChannelIds) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(ids)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -290,7 +315,6 @@ pub(super) enum HostResource {
     #[serde(skip)] // FIXME: why is this allowed?
     ChannelHandles(SharedChannelHandles),
     Workflow(WorkflowId),
-    WorkflowStub(WorkflowId),
 }
 
 impl HostResource {
@@ -304,6 +328,11 @@ impl HostResource {
 
     pub(crate) fn into_ref(self) -> ExternRef {
         ExternRef::new(self)
+    }
+
+    pub(crate) fn channel_handles(ids: ChannelIds) -> Self {
+        let handles = SharedChannelHandles::new(ids);
+        Self::ChannelHandles(handles)
     }
 
     pub(crate) fn as_receiver(&self) -> anyhow::Result<ChannelId> {
@@ -339,16 +368,6 @@ impl HostResource {
             Ok(*id)
         } else {
             let err = anyhow!("unexpected reference type: expected workflow handle, got {self:?}");
-            Err(err)
-        }
-    }
-
-    pub(crate) fn as_workflow_stub(&self) -> anyhow::Result<WorkflowId> {
-        if let Self::WorkflowStub(id) = self {
-            Ok(*id)
-        } else {
-            let err =
-                anyhow!("unexpected reference type: expected workflow stub handle, got {self:?}");
             Err(err)
         }
     }

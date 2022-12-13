@@ -5,28 +5,36 @@ use futures::{stream, SinkExt, StreamExt, TryStreamExt};
 
 use std::collections::HashSet;
 
-use crate::{TestHandle, TestedWorkflow};
+use crate::TestedWorkflow;
 use tardigrade::{
     channel::Sender,
-    spawn::{ManageWorkflowsExt, Workflows},
+    spawn::{ManageWorkflows, Workflows},
     task::TaskResult,
     test::Runtime,
-    workflow::{GetInterface, SpawnWorkflow, TakeHandle, Wasm, WorkflowFn},
+    workflow::{DelegateHandle, GetInterface, SpawnWorkflow, WorkflowFn},
     Json,
 };
 
-#[derive(Debug, GetInterface, TakeHandle)]
-#[tardigrade(handle = "TestHandle", auto_interface)]
+#[derive(Debug, GetInterface)]
+#[tardigrade(auto_interface)]
 struct ParentWorkflow;
+
+impl DelegateHandle for ParentWorkflow {
+    type Delegate = TestedWorkflow;
+}
 
 impl ParentWorkflow {
     async fn spawn_child(command: i32, events: Sender<i32, Json>) -> TaskResult {
-        let builder = Workflows.new_workflow::<TestedWorkflow>("child", ())?;
-        builder.handle().events.copy_from(events);
-        let mut child = builder.build().await?;
-        child.api.commands.send(command).await?;
-        drop(child.api.commands); // Should terminate the child workflow
-        child.workflow.await?;
+        let builder = Workflows.new_workflow::<TestedWorkflow>("child")?;
+        let (child_handles, mut self_handles) = builder
+            .handles(|config| {
+                config.events.copy_from(events);
+            })
+            .await;
+        let child = builder.build((), child_handles).await?;
+        self_handles.commands.send(command).await?;
+        drop(self_handles.commands); // Should terminate the child workflow
+        child.await?;
         Ok(())
     }
 }
@@ -38,7 +46,7 @@ impl WorkflowFn for ParentWorkflow {
 
 #[async_trait(?Send)]
 impl SpawnWorkflow for ParentWorkflow {
-    async fn spawn(concurrency: u32, handle: TestHandle<Wasm>) -> TaskResult {
+    async fn spawn(concurrency: u32, handle: TestedWorkflow) -> TaskResult {
         let concurrency = concurrency as usize;
         handle
             .commands

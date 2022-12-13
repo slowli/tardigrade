@@ -1,5 +1,6 @@
 //! Functionality to manage channel state.
 
+use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 
 use std::{
@@ -13,21 +14,17 @@ use super::{
     helpers::{WakerPlacement, Wakers, WorkflowPoll},
     PersistedWorkflowData, WorkflowData,
 };
-use crate::{receipt::WakeUpCause, utils::Message, workflow::ChannelIds};
-use tardigrade::interface::AccessErrorKind;
+use crate::{
+    receipt::{StubEventKind, StubId, WakeUpCause},
+    utils::Message,
+    workflow::ChannelIds,
+};
 use tardigrade::{
     channel::SendError,
-    interface::{
-        AccessError, ChannelHalf, Handle, HandleMap, HandleMapKey, HandlePath, Interface,
-        ReceiverAt, SenderAt,
-    },
-    spawn::{ChannelSpawnConfig, ChannelsConfig},
-    ChannelId, WakerId, WorkflowId,
+    handle::{AccessError, AccessErrorKind, Handle, HandleMapKey, HandlePath, SenderAt},
+    interface::Interface,
+    ChannelId, WakerId,
 };
-
-/// Errors for channels that cannot be acquired by the workflow.
-#[derive(Debug)]
-struct AlreadyAcquired;
 
 /// Errors that can occur when consuming messages in a workflow.
 #[derive(Debug)]
@@ -49,53 +46,6 @@ impl fmt::Display for ConsumeError {
 }
 
 impl error::Error for ConsumeError {}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub(super) struct ChannelMappingState {
-    id: ChannelId,
-    is_acquired: bool,
-}
-
-impl ChannelMappingState {
-    fn new(id: ChannelId) -> Self {
-        Self {
-            id,
-            is_acquired: false,
-        }
-    }
-
-    fn acquire(&mut self) -> Result<ChannelId, AlreadyAcquired> {
-        if mem::replace(&mut self.is_acquired, true) {
-            Err(AlreadyAcquired)
-        } else {
-            Ok(self.id)
-        }
-    }
-}
-
-/// Mapping of channels (from names to IDs) for a workflow.
-pub(super) type ChannelMapping = HandleMap<ChannelMappingState>;
-
-pub(super) fn new_channel_mapping(ids: ChannelIds) -> ChannelMapping {
-    let it = ids.into_iter().map(|(path, id)| {
-        let mapping = id.map(ChannelMappingState::new);
-        (path, mapping)
-    });
-    it.collect()
-}
-
-pub(super) fn acquire_non_captured_channels(
-    mapping: &mut ChannelMapping,
-    config: &ChannelsConfig<ChannelId>,
-) {
-    for (path, channel_config) in config {
-        let channel_config = channel_config.as_ref().factor();
-        if matches!(channel_config, ChannelSpawnConfig::Existing(_)) {
-            let state = mapping.get_mut(path).unwrap();
-            state.as_mut().factor().is_acquired = true;
-        }
-    }
-}
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // required by serde
 fn flip_bool(&flag: &bool) -> bool {
@@ -218,39 +168,38 @@ impl SenderState {
 pub(super) struct ChannelStates {
     pub receivers: HashMap<ChannelId, ReceiverState>,
     pub senders: HashMap<ChannelId, SenderState>,
-    pub mapping: ChannelMapping,
+    pub mapping: ChannelIds,
 }
 
 impl ChannelStates {
     pub fn new(channel_ids: ChannelIds, interface: &Interface) -> Self {
         let mut this = Self::default();
-        this.insert_channels(&channel_ids, |path| {
-            interface.handle(SenderAt(path)).unwrap().capacity
-        });
-        this.mapping = new_channel_mapping(channel_ids);
-        this
-    }
-
-    pub fn insert_channels<F>(&mut self, channel_ids: &ChannelIds, sender_cap_fn: F)
-    where
-        F: Fn(HandlePath<'_>) -> Option<usize>,
-    {
-        for (path, &id_handle) in channel_ids {
+        for (path, id_handle) in &channel_ids {
             match id_handle {
                 Handle::Receiver(id) => {
-                    self.receivers.entry(id).or_insert_with(ReceiverState::new);
+                    this.insert_receiver(*id);
                 }
                 Handle::Sender(id) => {
-                    let capacity = sender_cap_fn(path.as_ref());
-                    let state = self
-                        .senders
-                        .entry(id)
-                        .or_insert_with(|| SenderState::new(capacity));
-                    state.ensure_capacity(capacity);
-                    state.ref_count += 1;
+                    let capacity = interface.handle(SenderAt(path)).unwrap().capacity;
+                    this.insert_sender(*id, capacity);
                 }
             }
         }
+        this.mapping = channel_ids;
+        this
+    }
+
+    fn insert_receiver(&mut self, id: ChannelId) {
+        self.receivers.entry(id).or_insert_with(ReceiverState::new);
+    }
+
+    fn insert_sender(&mut self, id: ChannelId, capacity: Option<usize>) {
+        let state = self
+            .senders
+            .entry(id)
+            .or_insert_with(|| SenderState::new(capacity));
+        state.ensure_capacity(capacity);
+        state.ref_count += 1;
     }
 }
 
@@ -260,20 +209,20 @@ type ChannelState<'a> = Handle<&'a ReceiverState, &'a SenderState>;
 #[derive(Debug, Clone, Copy)]
 pub struct Channels<'a> {
     states: &'a ChannelStates,
-    mapping: &'a ChannelMapping,
+    mapping: &'a ChannelIds,
 }
 
 impl<'a> Channels<'a> {
-    pub(super) fn new(states: &'a ChannelStates, mapping: &'a ChannelMapping) -> Self {
+    pub(super) fn new(states: &'a ChannelStates, mapping: &'a ChannelIds) -> Self {
         Self { states, mapping }
     }
 
-    /// Returns the channel ID of the receiver with the specified name, or `None` if the receiver
+    /// Returns the channel ID of the channel half with the specified name, or `None` if the receiver
     /// is not present.
     pub fn channel_id<'p, P: Into<HandlePath<'p>>>(&self, path: P) -> Option<ChannelId> {
         self.mapping
             .get(&path.into())
-            .map(|state| state.as_ref().factor().id)
+            .map(|state| *state.as_ref().factor())
     }
 
     /// Returns information about a channel handle with the specified path.
@@ -285,13 +234,29 @@ impl<'a> Channels<'a> {
         &self,
         key: K,
     ) -> Result<K::Output<&'a ReceiverState, &'a SenderState>, AccessError> {
+        const ERROR_MSG: &str = "handle is not captured by the workflow";
+
         let mapping = key
             .with_path(|path| self.mapping.get(&path))
-            .ok_or_else(|| AccessErrorKind::Unknown.with_location(key))?;
-        let state = mapping
-            .as_ref()
-            .map_receiver(|mapping| &self.states.receivers[&mapping.id])
-            .map_sender(|mapping| &self.states.senders[&mapping.id]);
+            .ok_or_else(|| AccessErrorKind::Missing.with_location(key))?;
+        let state = match mapping {
+            Handle::Receiver(id) => {
+                let state = self
+                    .states
+                    .receivers
+                    .get(id)
+                    .ok_or_else(|| AccessErrorKind::custom(ERROR_MSG).with_location(key))?;
+                Handle::Receiver(state)
+            }
+            Handle::Sender(id) => {
+                let state = self
+                    .states
+                    .senders
+                    .get(id)
+                    .ok_or_else(|| AccessErrorKind::custom(ERROR_MSG).with_location(key))?;
+                Handle::Sender(state)
+            }
+        };
         K::from_handle(state).ok_or_else(|| AccessErrorKind::KindMismatch.with_location(key))
     }
 
@@ -300,20 +265,14 @@ impl<'a> Channels<'a> {
         self.mapping.iter().map(|(path, mapping)| {
             let state = mapping
                 .as_ref()
-                .map_receiver(|mapping| &self.states.receivers[&mapping.id])
-                .map_sender(|mapping| &self.states.senders[&mapping.id]);
+                .map_receiver(|id| &self.states.receivers[id])
+                .map_sender(|id| &self.states.senders[id]);
             (path.as_ref(), state)
         })
     }
 
     pub(crate) fn to_ids(self) -> ChannelIds {
-        let handles = self.mapping.iter();
-        handles
-            .map(|(name, state)| {
-                let id = state.map(|mapping| mapping.id);
-                (name.clone(), id)
-            })
-            .collect()
+        self.mapping.clone()
     }
 }
 
@@ -379,18 +338,6 @@ impl PersistedWorkflowData {
 
     pub(crate) fn channels(&self) -> Channels<'_> {
         Channels::new(&self.channels, &self.channels.mapping)
-    }
-
-    fn channel_mapping(&mut self, child_id: Option<WorkflowId>) -> &mut ChannelMapping {
-        if let Some(child_id) = child_id {
-            let workflow = self
-                .child_workflows
-                .get_mut(&child_id)
-                .unwrap_or_else(|| panic!("unknown child workflow ID {child_id}"));
-            &mut workflow.channels
-        } else {
-            &mut self.channels.mapping
-        }
     }
 
     pub(crate) fn receiver(&self, channel_id: ChannelId) -> Option<&ReceiverState> {
@@ -481,7 +428,7 @@ impl ReceiverActions<'_> {
             channel_state.is_closed = true;
             self.data
                 .current_execution()
-                .push_channel_closure(ChannelHalf::Receiver, self.id);
+                .push_channel_closure(Handle::Receiver(self.id));
         }
         wakers
     }
@@ -536,7 +483,7 @@ impl SenderActions<'_> {
             let wakers = mem::take(&mut state.wakes_on_flush);
             self.data
                 .current_execution()
-                .push_channel_closure(ChannelHalf::Sender, self.id);
+                .push_channel_closure(Handle::Sender(self.id));
             wakers
         } else {
             HashSet::new()
@@ -577,32 +524,48 @@ impl SenderActions<'_> {
 
 /// Channel-related functionality.
 impl WorkflowData {
-    /// Acquires a receiver with the specified "coordinates" (an optional ID of the child
-    /// workflow holding the corresponding sender, and the name of the receiver
-    /// in the workflow interface).
+    pub(crate) fn notify_on_channel_init(&mut self, local_id: ChannelId, id: ChannelId) {
+        self.persisted.channels.insert_receiver(id);
+        self.persisted.channels.insert_sender(id, Some(1));
+        // TODO: what is the appropriate capacity?
+
+        self.current_execution()
+            .push_stub_event(StubId::Channel(local_id), StubEventKind::Mapped(Ok(id)));
+    }
+
+    /// Starts creating a channel. When the channel initialization is complete,
+    /// it will be reported via [`initialize_channel()`].
+    ///
+    /// As of right now, channel initialization cannot fail, nor can it be cancelled
+    /// by the workflow logic.
+    ///
+    /// [`initialize_channel()`]: crate::engine::RunWorkflow::initialize_channel()
+    ///
+    /// # Arguments
+    ///
+    /// - `stub_id` must be unique across all invocations of `create_channel_stub()`
+    ///   for a single workflow. E.g., it can be implemented as an incrementing static.
     ///
     /// # Errors
     ///
-    /// Returns an error if the receiver is already acquired, or if it's not present
-    /// at the specified coordinates. If the specified receiver is present in the workflow interface
-    /// but cannot be captured (because during the child creation the corresponding sender was copied),
-    /// this method returns `Ok(None)`.
-    #[tracing::instrument(level = "debug", skip(self))]
-    pub fn acquire_receiver(
-        &mut self,
-        child_id: Option<WorkflowId>,
-        path: HandlePath<'_>,
-    ) -> Result<Option<ChannelId>, AccessError> {
-        let mapping = self.persisted.channel_mapping(child_id);
-        let mapping = ReceiverAt(path).get_mut(mapping)?;
-        Ok(mapping.acquire().ok())
+    /// Returns an error if a channel cannot be created.
+    pub fn create_channel_stub(&mut self, stub_id: ChannelId) -> anyhow::Result<()> {
+        let workflows = self.services_mut().stubs.as_deref_mut();
+        let workflows = workflows.ok_or_else(|| anyhow!("cannot create new channel"))?;
+        workflows.stash_channel(stub_id);
+        self.current_execution()
+            .push_stub_event(StubId::Channel(stub_id), StubEventKind::Created);
+        Ok(())
     }
 
     /// Returns an action handle for the receiver with the specified ID.
     ///
     /// # Panics
     ///
-    /// Panics if the receiver with `id` does not exist in the workflow.
+    /// Panics if the receiver with `id` is not owned by the workflow. Note that
+    /// receivers for the channel with ID 0 (the "pre-closed" channel) are not considered to be owned
+    /// by any workflow, despite a workflow potentially acquiring receiver(s) for this channel
+    /// on initialization.
     pub fn receiver(&mut self, id: ChannelId) -> ReceiverActions<'_> {
         assert!(
             self.persisted.channels.receivers.contains_key(&id),
@@ -611,32 +574,14 @@ impl WorkflowData {
         ReceiverActions { data: self, id }
     }
 
-    /// Acquires a sender with the specified "coordinates" (an optional ID of the child
-    /// workflow holding the corresponding receiver, and the name of the sender
-    /// in the workflow interface).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the sender is already acquired, or if it's not present
-    /// at the specified coordinates. If the specified sender is present in the workflow interface
-    /// but cannot be captured (because during the child creation the corresponding receiver
-    /// was moved), this method returns `Ok(None)`.
-    #[tracing::instrument(level = "debug", skip(self))]
-    pub fn acquire_sender(
-        &mut self,
-        child_id: Option<WorkflowId>,
-        path: HandlePath<'_>,
-    ) -> Result<Option<ChannelId>, AccessError> {
-        let mapping = self.persisted.channel_mapping(child_id);
-        let mapping = SenderAt(path).get_mut(mapping)?;
-        Ok(mapping.acquire().ok())
-    }
-
     /// Returns an action handle for the sender with the specified ID.
     ///
     /// # Panics
     ///
-    /// Panics if the sender with `id` does not exist in the workflow.
+    /// Panics if a sender with `id` is not owned by the workflow. Note that
+    /// senders for the channel with ID 0 (the "pre-closed" channel) are not considered to be owned
+    /// by any workflow, despite a workflow potentially acquiring sender(s) for this channel
+    /// on initialization.
     pub fn sender(&mut self, id: ChannelId) -> SenderActions<'_> {
         assert!(
             self.persisted.channels.senders.contains_key(&id),

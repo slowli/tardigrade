@@ -13,19 +13,16 @@ use tardigrade::{
     channel::{Receiver, Sender},
     task::TaskResult,
     test::TestInstance,
-    workflow::{GetInterface, InEnv, SpawnWorkflow, TakeHandle, Wasm, WorkflowEnv, WorkflowFn},
+    workflow::{GetInterface, HandleFormat, InEnv, SpawnWorkflow, Wasm, WithHandle, WorkflowFn},
     Json,
 };
 
-#[derive(TakeHandle)]
-struct TestHandle<Env: WorkflowEnv> {
-    commands: InEnv<Receiver<i32, Json>, Env>,
-    events: InEnv<Sender<i32, Json>, Env>,
+#[derive(WithHandle, GetInterface)]
+#[tardigrade(auto_interface)]
+struct TestedWorkflow<Fmt: HandleFormat = Wasm> {
+    commands: InEnv<Receiver<i32, Json>, Fmt>,
+    events: InEnv<Sender<i32, Json>, Fmt>,
 }
-
-#[derive(Debug, GetInterface, TakeHandle)]
-#[tardigrade(handle = "TestHandle", auto_interface)]
-struct TestedWorkflow;
 
 impl WorkflowFn for TestedWorkflow {
     type Args = ();
@@ -34,7 +31,7 @@ impl WorkflowFn for TestedWorkflow {
 
 #[async_trait(?Send)]
 impl SpawnWorkflow for TestedWorkflow {
-    async fn spawn(_args: (), handle: TestHandle<Wasm>) -> TaskResult {
+    async fn spawn(_args: (), handle: Self) -> TaskResult {
         let commands = handle.commands.map(Ok);
         commands.forward(handle.events).await?;
         Ok(())
