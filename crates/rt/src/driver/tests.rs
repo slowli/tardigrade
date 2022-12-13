@@ -12,6 +12,7 @@ use super::*;
 use crate::{
     backends::MockScheduler,
     engine::{AsWorkflowData, MockAnswers, MockEngine, MockInstance, MockPollFn},
+    handle::StorageRef,
     manager::{
         tests::{create_test_manager_with_storage, create_test_workflow, is_consumption},
         WorkflowManager,
@@ -20,10 +21,10 @@ use crate::{
 };
 use tardigrade::handle::{ReceiverAt, SenderAt, WithIndexing};
 
-type ReactiveStorage = Streaming<Arc<LocalStorage>>;
-type ReactiveManager = WorkflowManager<MockEngine, MockScheduler, ReactiveStorage>;
+type StreamingStorage = Streaming<Arc<LocalStorage>>;
+type StreamingManager = WorkflowManager<MockEngine, MockScheduler, StreamingStorage>;
 
-async fn create_test_manager(poll_fns: MockAnswers) -> (ReactiveManager, ReactiveStorage) {
+async fn create_test_manager(poll_fns: MockAnswers) -> (StreamingManager, StreamingStorage) {
     let storage = Arc::new(LocalStorage::default());
     let (storage, router_task) = Streaming::new(storage);
     task::spawn(router_task);
@@ -69,8 +70,8 @@ async fn completing_workflow_via_driver() {
     let driver = Driver::new(commits_rx);
     let driver_task = task::spawn(async move { driver.drive(&mut manager).await });
 
-    let manager_api = create_test_manager_with_storage(MockAnswers::default(), (), storage).await;
-    let workflow = manager_api.workflow(workflow_id).await.unwrap();
+    let storage = StorageRef::from(&storage);
+    let workflow = storage.workflow(workflow_id).await.unwrap();
     let mut handle = workflow.handle().await.with_indexing();
     let orders_sx = handle.remove(ReceiverAt("orders")).unwrap();
     let events_rx = handle.remove(SenderAt("events")).unwrap();
@@ -82,8 +83,7 @@ async fn completing_workflow_via_driver() {
     orders_sx.send(b"order".to_vec()).await.unwrap();
     orders_sx.close().await;
 
-    let driver_result = driver_task.await;
-    assert_matches!(driver_result, Termination::Finished);
+    assert_matches!(driver_task.await, Termination::Finished);
     let events: Vec<_> = events_rx.collect().await;
     assert_eq!(events.len(), 1);
     assert_eq!(events[0], b"event #1");
@@ -112,8 +112,8 @@ async fn test_driver_with_multiple_messages(start_after_tick: bool) {
     let driver = Driver::new(commits_rx);
     let workflow_id = create_test_workflow(&manager).await.id();
 
-    let manager_api = create_test_manager_with_storage(MockAnswers::default(), (), storage).await;
-    let workflow = manager_api.workflow(workflow_id).await.unwrap();
+    let storage = StorageRef::from(&storage);
+    let workflow = storage.workflow(workflow_id).await.unwrap();
     let mut handle = workflow.handle().await.with_indexing();
     let events_rx = handle.remove(SenderAt("events")).unwrap();
     let mut events_rx = events_rx
@@ -169,8 +169,8 @@ async fn selecting_from_driver_and_other_future() {
     let mut driver = Driver::new(commits_rx);
     let mut tick_results = driver.tick_results();
 
-    let manager_api = create_test_manager_with_storage(MockAnswers::default(), (), storage).await;
-    let workflow = manager_api.workflow(workflow_id).await.unwrap();
+    let storage = StorageRef::from(&storage);
+    let workflow = storage.workflow(workflow_id).await.unwrap();
     let mut handle = workflow.handle().await.with_indexing();
     let orders_sx = handle.remove(ReceiverAt("orders")).unwrap();
     let orders_id = orders_sx.channel_id();
@@ -212,7 +212,7 @@ async fn selecting_from_driver_and_other_future() {
     assert_eq!(event, b"event #1");
 
     // The `manager` can be used again.
-    let mut workflow = manager.workflow(workflow_id).await.unwrap();
+    let mut workflow = manager.storage().workflow(workflow_id).await.unwrap();
     let mut handle = workflow.handle().await.with_indexing();
     let orders = handle.remove(ReceiverAt("orders")).unwrap();
     orders.send(b"order #2".to_vec()).await.unwrap();
