@@ -94,8 +94,17 @@ impl<'a, T, C: Codec<T>, S: Storage> MessageSender<T, C, S> {
     ///
     /// Returns an error if the channel is full or closed.
     pub async fn send(&self, message: T) -> Result<(), SendError> {
-        let raw_message = C::encode_value(message);
-        helper::send_message(&self.storage, self.channel_id, raw_message).await
+        self.send_all([message]).await
+    }
+
+    /// Sends the provided messages over the channel in a single transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the channel is full or closed.
+    pub async fn send_all(&self, messages: impl IntoIterator<Item = T>) -> Result<(), SendError> {
+        let raw_messages: Vec<_> = messages.into_iter().map(C::encode_value).collect();
+        helper::send_messages(&self.storage, self.channel_id, raw_messages).await
     }
 
     /// Closes this channel from the host side.

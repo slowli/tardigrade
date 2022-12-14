@@ -341,7 +341,7 @@ async fn test_closing_receiver_from_host_side(with_message: bool) {
         .await
         .unwrap();
     if with_message {
-        helper::send_message(&manager.storage, orders_id, b"order #1".to_vec())
+        helper::send_messages(&manager.storage, orders_id, vec![b"order #1".to_vec()])
             .await
             .unwrap();
     }
@@ -463,7 +463,7 @@ async fn sending_message_to_workflow() {
         .async_scope(tick_workflow(&manager, workflow_id))
         .await
         .unwrap();
-    helper::send_message(&manager.storage, orders_id, b"order #1".to_vec())
+    helper::send_messages(&manager.storage, orders_id, vec![b"order #1".to_vec()])
         .await
         .unwrap();
 
@@ -522,7 +522,7 @@ async fn error_processing_inbound_message_in_workflow() {
         .async_scope(tick_workflow(&manager, workflow_id))
         .await
         .unwrap();
-    helper::send_message(&manager.storage, orders_id, b"test".to_vec())
+    helper::send_messages(&manager.storage, orders_id, vec![b"test".to_vec()])
         .await
         .unwrap();
     let err = poll_fn_sx
@@ -577,7 +577,7 @@ async fn workflow_not_consuming_inbound_message() {
         .async_scope(tick_workflow(&manager, workflow_id))
         .await
         .unwrap();
-    helper::send_message(&manager.storage, orders_id, b"order #1".to_vec())
+    helper::send_messages(&manager.storage, orders_id, vec![b"order #1".to_vec()])
         .await
         .unwrap();
     let tick_result = poll_fn_sx

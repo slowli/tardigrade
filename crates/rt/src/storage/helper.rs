@@ -244,31 +244,31 @@ impl Receipt {
     }
 }
 
-pub(crate) fn send_message<S: Storage>(
+pub(crate) fn send_messages<S: Storage>(
     storage: &S,
     channel_id: ChannelId,
-    message: Vec<u8>,
+    messages: Vec<Vec<u8>>,
 ) -> impl Future<Output = Result<(), SendError>> + Send + '_ {
     // A separate function to make Rust properly infer that the returned future is `Send`
     // (otherwise, it's only `Send` for `S: 'static`, bizarrely enough).
     async fn do_send_message<T: StorageTransaction>(
         mut transaction: T,
         channel_id: ChannelId,
-        message: Vec<u8>,
+        messages: Vec<Vec<u8>>,
     ) -> Result<(), SendError> {
         let channel = transaction.channel(channel_id).await.unwrap();
         if channel.is_closed {
             return Err(SendError::Closed);
         }
 
-        transaction.push_messages(channel_id, vec![message]).await;
+        transaction.push_messages(channel_id, messages).await;
         transaction.commit().await;
         Ok(())
     }
 
     storage
         .transaction()
-        .then(move |transaction| do_send_message(transaction, channel_id, message))
+        .then(move |transaction| do_send_message(transaction, channel_id, messages))
 }
 
 pub(crate) fn close_host_sender<S: Storage>(
@@ -426,7 +426,7 @@ mod tests {
 
     #[allow(dead_code)]
     async fn helper_futures_are_send<S: Storage>(storage: &S) {
-        assert_send(send_message(storage, 1, b"test".to_vec()))
+        assert_send(send_messages(storage, 1, vec![b"test".to_vec()]))
             .await
             .ok();
         assert_send(close_host_sender(storage, 1)).await;

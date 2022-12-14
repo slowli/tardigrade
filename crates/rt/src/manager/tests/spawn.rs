@@ -179,7 +179,7 @@ async fn send_message_from_child(
         .async_scope(tick_workflow(manager, CHILD_ID))
         .await
         .unwrap();
-    helper::send_message(&manager.storage, traces_id, b"trace".to_vec())
+    helper::send_messages(&manager.storage, traces_id, vec![b"trace".to_vec()])
         .await
         .unwrap();
 
