@@ -112,8 +112,7 @@ struct Shared<D> {
 /// ```
 /// # use tardigrade_rt::{
 /// #     engine::{Wasmtime, WasmtimeModule},
-/// #     manager::{WorkflowHandle, WorkflowManager},
-/// #     storage::LocalStorage, AsyncIoScheduler,
+/// #     handle::WorkflowHandle, manager::WorkflowManager, storage::LocalStorage, AsyncIoScheduler,
 /// # };
 /// #
 /// # async fn test_wrapper(module: WasmtimeModule) -> anyhow::Result<()> {
@@ -132,19 +131,19 @@ struct Shared<D> {
 /// // trait from the `tardigrade` crate:
 /// use tardigrade::spawn::CreateWorkflow;
 ///
-/// let manager = &manager;
-/// let definition_id = "test/Workflow";
+/// let spawner = manager.spawner();
+/// let definition_id = "test::Workflow";
 /// // ^ The definition ID is the ID of the module and the name of a workflow
-/// //   within the module separated by `/`.
+/// //   within the module separated by `::`.
 /// let args = b"test_args".to_vec();
-/// let builder = manager.new_workflow::<()>(definition_id)?;
+/// let builder = spawner.new_workflow::<()>(definition_id)?;
 /// let (handles, self_handles) = builder.handles(|_| {}).await;
 /// let mut workflow = builder.build(args, handles).await?;
 /// // Do something with `workflow`, e.g., write something to its channels
 /// // using `self_handles`...
 ///
 /// // Initialize the workflow:
-/// let receipt = manager.tick().await?.drop_handle().into_inner()?;
+/// let receipt = manager.tick().await?.into_inner()?;
 /// println!("{receipt:?}");
 /// // Check the workflow state:
 /// workflow.update().await?;

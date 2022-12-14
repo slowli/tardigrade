@@ -70,17 +70,17 @@
 //!     .build()
 //!     .await?;
 //! manager.insert_module("test", module).await;
-//! let manager = &manager; // simplifies creating a workflow below
+//! let spawner = manager.spawner();
 //!
 //! // Workflows are created within a manager that is responsible
 //! // for their persistence and managing channels, time, and child workflows.
-//! let builder = manager.new_workflow::<()>("test::Workflow")?;
+//! let builder = spawner.new_workflow::<()>("test::Workflow")?;
 //! let (handles, self_handles) = builder.handles(|_| {}).await;
 //! let new_workflow =
 //!     builder.build(b"data".to_vec(), handles).await?;
 //!
 //! // Let's initialize the workflow.
-//! let receipt = manager.tick().await?.drop_handle().into_inner()?;
+//! let receipt = manager.tick().await?.into_inner()?;
 //! // `receipt` contains information about WASM code execution. E.g.,
 //! // this will print the executed functions and a list of important
 //! // events for each of executions:
@@ -108,7 +108,7 @@
 //! # ) -> anyhow::Result<()> {
 //! let manager: WorkflowManager<Wasmtime, (), LocalStorage> = // ...
 //! #   manager;
-//! let workflow = manager.workflow(workflow_id).await.unwrap();
+//! let workflow = manager.storage().workflow(workflow_id).await.unwrap();
 //! let persisted: &PersistedWorkflow = workflow.persisted();
 //! // The persisted workflow can be serialized:
 //! let json = serde_json::to_string(persisted)?;

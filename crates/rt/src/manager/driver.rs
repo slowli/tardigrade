@@ -67,40 +67,52 @@ impl Default for CachedTimer {
 /// ```
 /// use async_std::task;
 /// use futures::prelude::*;
+/// # use std::sync::Arc;
 /// use tardigrade::handle::{ReceiverAt, SenderAt, WithIndexing};
 /// # use tardigrade::WorkflowId;
-/// use tardigrade_rt::{driver::Driver, manager::WorkflowManager, AsyncIoScheduler};
-/// # use tardigrade_rt::{engine::Wasmtime, storage::LocalStorage};
-/// #
+/// use tardigrade_rt::{
+///     manager::{DriveConfig, WorkflowManager},
+///     storage::{LocalStorage, Streaming, CommitStream},
+///     AsyncIoScheduler,
+/// };
+/// # use tardigrade_rt::engine::Wasmtime;
+///
+/// // We need a storage that can stream commit / message events;
+/// // this one is based on `LocalStorage`.
+/// type StreamingStorage = Streaming<Arc<LocalStorage>>;
+///
 /// # async fn test_wrapper(
-/// #     manager: WorkflowManager<Wasmtime, AsyncIoScheduler, LocalStorage>,
+/// #     manager: WorkflowManager<Wasmtime, AsyncIoScheduler, StreamingStorage>,
+/// #     commits_rx: CommitStream,
 /// #     workflow_id: WorkflowId,
 /// # ) -> anyhow::Result<()> {
 /// // Assume we have a dynamically typed workflow:
-/// let mut manager: WorkflowManager<_, AsyncIoScheduler, _> = // ...
+/// let manager: WorkflowManager<_, AsyncIoScheduler, StreamingStorage> = // ...
 /// #   manager;
-/// let mut workflow = manager.workflow(workflow_id).await.unwrap();
+/// let manager = Arc::new(manager);
+/// let workflow = manager.storage().workflow(workflow_id).await.unwrap();
+/// // ...and a commits stream from the storage:
+/// let mut commits_rx: CommitStream = // ...
+/// #   commits_rx;
 ///
-/// // First, create a driver to execute the workflow in.
-/// let mut driver = Driver::new();
 /// // Take relevant channels from the workflow and convert them to async form.
 /// let mut handle = workflow.handle().await.with_indexing();
-/// let mut commands_sx = handle.remove(ReceiverAt("commands"))
-///     .unwrap()
-///     .into_sink(&mut driver);
-/// let events_rx = handle.remove(SenderAt("events"))
-///     .unwrap()
-///     .into_stream(&mut driver);
-/// drop(handle);
+/// let commands_sx = handle.remove(ReceiverAt("commands")).unwrap();
+/// let events_rx = handle.remove(SenderAt("events")).unwrap();
+/// let events_rx = events_rx.stream_messages(0);
 ///
-/// // Run the environment in a separate task.
-/// task::spawn(async move { driver.drive(&mut manager).await });
+/// // Run the manager in a separate task. To retain handles, we clone
+/// // the manager (recall that it was wrapped in `Arc`).
+/// let manager = manager.clone();
+/// task::spawn(async move {
+///     manager.drive(&mut commits_rx, DriveConfig::new()).await
+/// });
 /// // Let's send a message via an inbound channel...
 /// let message = b"hello".to_vec();
 /// commands_sx.send(message).await?;
 ///
 /// // ...and wait for some outbound messages
-/// let events: Vec<Vec<u8>> = events_rx.take(2).try_collect().await?;
+/// let events: Vec<_> = events_rx.take(2).collect().await;
 /// # Ok(())
 /// # }
 /// ```

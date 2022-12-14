@@ -36,17 +36,17 @@ use tardigrade::{
 ///
 /// ```
 /// use tardigrade::handle::{ReceiverAt, SenderAt, WithIndexing};
-/// use tardigrade_rt::manager::WorkflowHandle;
-/// # use tardigrade_rt::manager::AsManager;
+/// use tardigrade_rt::handle::WorkflowHandle;
+/// # use tardigrade_rt::storage::Storage;
 ///
-/// # async fn test_wrapper<M: AsManager>(
-/// #     workflow: WorkflowHandle<'_, (), M>,
+/// # async fn test_wrapper<S: Storage>(
+/// #     workflow: WorkflowHandle<(), &S>,
 /// # ) -> anyhow::Result<()> {
 /// // Assume we have a dynamically typed workflow:
-/// let mut workflow: WorkflowHandle<(), _> = // ...
+/// let workflow: WorkflowHandle<(), _> = // ...
 /// #   workflow;
 /// // We can create a handle to manipulate the workflow.
-/// let mut handle = workflow.handle().await.with_indexing();
+/// let handle = workflow.handle().await.with_indexing();
 ///
 /// // Let's send a message via a channel.
 /// let message = b"hello".to_vec();
@@ -218,19 +218,19 @@ impl<'a, W: WithHandle, S: Storage> WorkflowHandle<W, &'a S> {
 /// # Examples
 ///
 /// ```
-/// # use tardigrade_rt::{engine::Wasmtime, manager::WorkflowManager, storage::LocalStorage};
+/// # use tardigrade_rt::{engine::Wasmtime, handle::StorageRef, storage::LocalStorage};
 /// # use tardigrade::WorkflowId;
 /// #
 /// # fn is_bogus(bytes: &[u8]) -> bool { bytes.is_empty() }
 /// #
 /// # async fn test_wrapper(
-/// #     manager: WorkflowManager<Wasmtime, (), LocalStorage>,
+/// #     storage: StorageRef<'_, LocalStorage>,
 /// # ) -> anyhow::Result<()> {
-/// let manager: WorkflowManager<_, _, _> = // ...
-/// #   manager;
+/// let storage: StorageRef<'_, LocalStorage> = // ...
+/// #   storage;
 /// let workflow_id: WorkflowId = // ...
 /// #   0;
-/// let workflow = manager.any_workflow(workflow_id).await.unwrap();
+/// let workflow = storage.any_workflow(workflow_id).await.unwrap();
 /// let workflow = workflow.unwrap_errored();
 /// // Let's inspect the execution error.
 /// let panic_info = workflow.error().panic_info().unwrap();
