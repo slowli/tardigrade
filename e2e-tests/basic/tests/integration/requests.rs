@@ -2,17 +2,21 @@
 
 use assert_matches::assert_matches;
 use async_std::task;
-use futures::{channel::mpsc, future, stream, FutureExt, SinkExt, StreamExt, TryStreamExt};
+use futures::{channel::mpsc, future, FutureExt, StreamExt, TryStreamExt};
 
 use std::cmp;
 
 use tardigrade::channel::{Request, Response};
 use tardigrade_rt::{
-    driver::{Driver, Termination},
+    manager::{DriveConfig, Termination},
     AsyncIoScheduler,
 };
 
-use crate::spawn_workflow;
+use crate::{
+    create_streaming_manager, spawn_workflow,
+    tasks::{assert_event_completeness, assert_event_concurrency, send_orders},
+    TestResult,
+};
 use tardigrade_test_basic::{
     requests::{Args, PizzaDeliveryWithRequests},
     DomainEvent, PizzaKind, PizzaOrder,
@@ -20,29 +24,27 @@ use tardigrade_test_basic::{
 
 const DEFINITION_ID: &str = "test::PizzaDeliveryWithRequests";
 
-use crate::{
-    create_manager,
-    tasks::{assert_event_completeness, assert_event_concurrency, send_orders},
-    TestResult,
-};
-
 async fn test_external_tasks(
     oven_count: usize,
     order_count: usize,
     task_concurrency: Option<usize>,
 ) -> TestResult {
-    let mut manager = create_manager(AsyncIoScheduler).await?;
+    let (manager, mut commits_rx) = create_streaming_manager(AsyncIoScheduler).await?;
 
     let args = Args { oven_count };
     let (_, handle) =
         spawn_workflow::<_, PizzaDeliveryWithRequests>(&manager, DEFINITION_ID, args).await?;
-    let mut driver = Driver::new();
-    let responses_id = handle.baking.responses.channel_id();
-    let responses_sx = handle.baking.responses.into_sink(&mut driver);
-    let baking_tasks_rx = handle.baking.requests.into_stream(&mut driver);
-    let orders_sx = handle.orders.into_sink(&mut driver);
-    let events_rx = handle.shared.events.into_stream(&mut driver);
-    let join_handle = task::spawn(async move { driver.drive(&mut manager).await });
+    let responses_sx = handle.baking.responses.into_owned();
+    let responses_id = responses_sx.channel_id();
+    let baking_tasks_rx = handle.baking.requests.into_owned().stream_messages(0);
+    let baking_tasks_rx = baking_tasks_rx.map(|message| message.decode());
+    let orders_sx = handle.orders;
+    let events_rx = handle.shared.events.stream_messages(0);
+    let events_rx = events_rx.map(|message| message.decode());
+
+    let manager = manager.clone();
+    let join_handle =
+        task::spawn(async move { manager.drive(&mut commits_rx, DriveConfig::new()).await });
 
     let (executor_events_sx, executor_events_rx) = mpsc::unbounded();
     let tasks_stream = baking_tasks_rx.try_for_each_concurrent(task_concurrency, move |request| {
@@ -51,7 +53,7 @@ async fn test_external_tasks(
         };
         assert_eq!(response_channel_id, responses_id);
 
-        let mut responses = responses_sx.clone();
+        let responses = responses_sx.clone();
         let executor_events_sx = executor_events_sx.clone();
         let index = id as usize;
         async move {
@@ -70,7 +72,6 @@ async fn test_external_tasks(
     let tasks_handle = task::spawn(tasks_stream);
 
     send_orders(orders_sx, order_count).await?;
-
     let events: Vec<_> = events_rx.try_collect().await?;
     assert_eq!(events.len(), 2 * order_count, "{:?}", events);
     assert_event_completeness(&events, order_count);
@@ -110,63 +111,67 @@ async fn closing_task_responses_on_host() -> TestResult {
     const ORDER_COUNT: usize = 10;
     const SUCCESSFUL_TASK_COUNT: usize = 3;
 
-    let mut manager = create_manager(AsyncIoScheduler).await?;
+    let (manager, mut commits_rx) = create_streaming_manager(AsyncIoScheduler).await?;
     let args = Args { oven_count: 2 };
     let (_, handle) =
         spawn_workflow::<_, PizzaDeliveryWithRequests>(&manager, DEFINITION_ID, args).await?;
 
-    let mut driver = Driver::new();
-    let responses_sx = handle.baking.responses.into_sink(&mut driver);
-    let baking_tasks_rx = handle.baking.requests.into_stream(&mut driver);
-    let mut orders_sx = handle.orders.into_sink(&mut driver);
-    let events_rx = handle.shared.events.into_stream(&mut driver);
-    let join_handle = task::spawn(async move { driver.drive(&mut manager).await });
+    let responses_sx = handle.baking.responses.into_owned();
+    let baking_tasks = handle.baking.requests.into_owned();
+    let orders_sx = handle.orders;
+    let events_rx = handle.shared.events.stream_messages(0);
+    let events_rx = events_rx.map(|message| message.decode());
 
-    let tasks_stream = baking_tasks_rx.map(move |res| {
-        let Request::New { id, data: order, .. } = res.unwrap() else {
-            return future::ready(()).left_future();
-        };
+    let manager = manager.clone();
+    let join_handle =
+        task::spawn(async move { manager.drive(&mut commits_rx, DriveConfig::default()).await });
 
-        let mut responses_sx = responses_sx.clone();
-        async move {
-            task::sleep(order.kind.baking_time()).await;
-            responses_sx.send(Response { id, data: () }).await.ok();
-        }
-        .right_future()
+    // Complete first `SUCCESSFUL_TASK_COUNT` tasks, then close the responses channel.
+    let tasks_handle = task::spawn(async move {
+        let baking_tasks_rx = baking_tasks.stream_messages(0);
+        let tasks_stream = baking_tasks_rx.map(move |message| {
+            let Request::New { id, data: order, .. } = message.decode().unwrap() else {
+                return future::ready(()).left_future();
+            };
+
+            let responses_sx = responses_sx.clone();
+            async move {
+                task::sleep(order.kind.baking_time()).await;
+                responses_sx.send(Response { id, data: () }).await.ok();
+            }
+            .right_future()
+        });
+        tasks_stream
+            .buffer_unordered(SUCCESSFUL_TASK_COUNT)
+            .take(SUCCESSFUL_TASK_COUNT)
+            .for_each(future::ready)
+            .await;
+        baking_tasks.close().await;
     });
-    // Complete first `SUCCESSFUL_TASK_COUNT` tasks, then drop the executor.
-    let tasks_stream = tasks_stream
-        .buffer_unordered(SUCCESSFUL_TASK_COUNT)
-        .take(SUCCESSFUL_TASK_COUNT)
-        .for_each(future::ready);
-    let tasks_handle = task::spawn(tasks_stream);
 
-    let orders = (0..ORDER_COUNT).map(|i| {
-        Ok(PizzaOrder {
-            kind: match i % 3 {
-                0 => PizzaKind::Margherita,
-                1 => PizzaKind::Pepperoni,
-                2 => PizzaKind::FourCheese,
-                _ => unreachable!(),
-            },
-            delivery_distance: 10,
-        })
+    let orders = (0..ORDER_COUNT).map(|i| PizzaOrder {
+        kind: match i % 3 {
+            0 => PizzaKind::Margherita,
+            1 => PizzaKind::Pepperoni,
+            2 => PizzaKind::FourCheese,
+            _ => unreachable!(),
+        },
+        delivery_distance: 10,
     });
-    orders_sx.send_all(&mut stream::iter(orders)).await?;
-    drop(orders_sx);
+    orders_sx.send_all(orders).await?;
+    orders_sx.close().await;
 
     let events: Vec<_> = events_rx.try_collect().await?;
     assert_eq!(
         events.len(),
         ORDER_COUNT + SUCCESSFUL_TASK_COUNT,
-        "{:?}",
-        events
+        "{events:?}"
     );
     let baked_count = events
         .iter()
         .filter(|event| matches!(event, DomainEvent::Baked { .. }))
         .count();
-    assert_eq!(baked_count, SUCCESSFUL_TASK_COUNT, "{:?}", events);
+    assert_eq!(baked_count, SUCCESSFUL_TASK_COUNT, "{events:?}");
 
     tasks_handle.await;
     assert_matches!(join_handle.await, Termination::Finished);
