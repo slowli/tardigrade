@@ -1,4 +1,31 @@
-//! Handles for workflows in a `WorkflowManager` and their components (e.g., channels).
+//! Handles for workflows in a [`WorkflowManager`] and their components (e.g., channels).
+//!
+//! The root of the handle hierarchy is [`StorageRef`], a thin wrapper around a [`Storage`].
+//! Its methods allow accessing workflows and channels contained in the storage.
+//!
+//! # Examples
+//!
+//! ```
+//! # use tardigrade::{handle::{ReceiverAt, SenderAt, WithIndexing}, workflow::TryFromRaw, Json};
+//! # use tardigrade_rt::{handle::{MessageSender, StorageRef}, storage::Storage};
+//! # async fn storage<S: Storage>(storage: StorageRef<'_, S>) -> anyhow::Result<()> {
+//! let storage: StorageRef<_> = // ...
+//! #   storage;
+//! let workflow = storage.workflow(1).await.unwrap();
+//! // Workflow channels can be accessed via the `workflow` handle:
+//! let handle = workflow.handle().await.with_indexing();
+//! handle[ReceiverAt("commands")].send(b"test".to_vec()).await?;
+//! let message = handle[SenderAt("events")].receive_message(0).await?;
+//!
+//! // Channel handles also can be accessed directly:
+//! let sender = storage.sender(1).await.unwrap();
+//! let sender = MessageSender::<u64, Json, _>::try_from_raw(sender)?;
+//! sender.send_all([42, 555]).await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! [`WorkflowManager`]: crate::manager::WorkflowManager
 
 use async_trait::async_trait;
 use futures::{Future, FutureExt};
@@ -28,9 +55,10 @@ use tardigrade::{
 
 type Channel<'a, S> = (RawMessageSender<&'a S>, RawMessageReceiver<&'a S>);
 
-/// [`HandleFormat`] for handles returned by a [`WorkflowManager`].
+/// Thin wrapper around a [`Storage`] that provides methods for accessing and manipulating
+/// channels and workflows.
 ///
-/// [`WorkflowManager`]: crate::manager::WorkflowManager
+/// Also acts as a [`HandleFormat`] for the returned handles.
 #[derive(Debug)]
 pub struct StorageRef<'a, S> {
     inner: &'a S,
@@ -51,7 +79,7 @@ impl<'a, S: Storage> From<&'a S> for StorageRef<'a, S> {
 
 // The convoluted implementations for methods are required to properly infer the `Send` bound
 // for the `async fn` futures for all `S: Storage`. If done normally, this bound is only inferred
-// for `S: 'static` (probably related to GAT limitations).
+// for `S: 'static` (probably related to the current GAT limitations).
 impl<'a, S: Storage> StorageRef<'a, S> {
     /// Returns current information about the channel with the specified ID, or `None` if a channel
     /// with this ID does not exist.
@@ -178,9 +206,9 @@ impl<'a, S: Storage> StorageRef<'a, S> {
 }
 
 /// Host handles of a shape specified by a workflow [`Interface`] and provided
-/// by a [`WorkflowManager`].
+/// by a [`Storage`].
 ///
-/// [`WorkflowManager`]: crate::manager::WorkflowManager
+/// [`Interface`]: tardigrade::interface::Interface
 pub type HostHandles<'a, W, S> = InEnv<W, Inverse<StorageRef<'a, S>>>;
 
 #[async_trait]

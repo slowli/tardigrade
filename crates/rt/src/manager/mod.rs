@@ -82,23 +82,25 @@ struct Shared<D> {
 /// and channels connected to the workflows. In particular, a manager supports the following
 /// operations:
 ///
-/// - Spawning new workflows (including from the workflow code)
-/// - Writing messages to channels and reading messages from channels
+/// - Spawning new workflows (including from the workflow code) using a [`ManagerSpawner`] handle
+///   obtained via [`Self::spawner()`]
+/// - Manipulating channels (writing / reading messages) and workflows using a [`StorageRef`] handle
+///   obtained via [`Self::storage()`]
 /// - Driving the contained workflows to completion, either [manually](Self::tick()) or
-///   using a [`Driver`]
-///
-/// [`Driver`]: crate::driver::Driver
+///   using a [driver](Self::drive()) if the underlying storage
+///   [supports event streaming](Streaming)
 ///
 /// # Workflow lifecycle
 ///
 /// A workflow can be in one of the following states:
 ///
-/// - [**Active.**](WorkflowHandle) This is the initial state, provided that the workflow
-///   successfully initialized. In this state, the workflow can execute,
+/// - [**Active.**](crate::handle::WorkflowHandle) This is the initial state,
+///   provided that the workflow successfully initialized. In this state, the workflow can execute,
 ///   receive and send messages etc.
-/// - [**Completed.**](CompletedWorkflowHandle) This is the terminal state after the workflow
-///   completes as a result of its execution or is aborted.
-/// - [**Errored.**](ErroredWorkflowHandle) A workflow reaches this state after it panics.
+/// - [**Completed.**](crate::handle::CompletedWorkflowHandle) This is the terminal state
+///   after the workflow completes as a result of its execution or is aborted.
+/// - [**Errored.**](crate::handle::ErroredWorkflowHandle) A workflow reaches this state
+///   after it panics.
 ///   The panicking execution is reverted, but this is usually not enough to fix the error;
 ///   since workflows are largely deterministic, if nothing changes, a repeated execution
 ///   would most probably lead to the same panic. An errored workflow cannot execute

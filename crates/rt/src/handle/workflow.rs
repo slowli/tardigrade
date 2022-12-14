@@ -27,10 +27,7 @@ use tardigrade::{
 /// allow interacting with the workflow by [sending messages](MessageSender)
 /// and/or [receiving messages](MessageReceiver).
 ///
-/// See [`Driver`] for a more high-level alternative.
-///
 /// [`WorkflowManager`]: crate::manager::WorkflowManager
-/// [`Driver`]: crate::driver::Driver
 ///
 /// # Examples
 ///

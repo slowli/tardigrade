@@ -363,7 +363,7 @@ where
     }
 }
 
-/// Message or end of stream received from a workflow channel.
+/// Message received from a workflow channel.
 #[derive(Debug)]
 pub struct ReceivedMessage<T, C> {
     index: usize,
@@ -380,12 +380,12 @@ impl<T, C: Codec<T>> ReceivedMessage<T, C> {
         }
     }
 
-    /// Returns zero-based message index.
+    /// Returns the zero-based message index.
     pub fn index(&self) -> usize {
         self.index
     }
 
-    /// Tries to decode the message. Returns `None` if this is the end of stream marker.
+    /// Tries to decode the message.
     ///
     /// # Errors
     ///
@@ -402,7 +402,8 @@ impl ReceivedMessage<Vec<u8>, Raw> {
     }
 
     /// Downcasts the message to have the specified payload type and codec. No checks are performed
-    /// that this downcast is actually correct.
+    /// that this downcast is actually correct; it is caller's responsibility to ensure
+    /// correctness.
     pub fn downcast<T, C: Codec<T>>(self) -> ReceivedMessage<T, C> {
         ReceivedMessage {
             index: self.index,

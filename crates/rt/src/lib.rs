@@ -3,8 +3,7 @@
 //! The runtime provides a [`WorkflowManager`] in which workflows defined in a WASM module
 //! can be executed and [persisted](PersistedWorkflow) / restored. Interaction with a workflow
 //! (e.g., submitting messages to channel receivers or taking messages from senders)
-//! can be performed using low-level, synchronous [`WorkflowHandle`], or by driving the manager
-//! with the [`Driver`].
+//! can be performed using [`WorkflowHandle`]s.
 //!
 //! # Components
 //!
@@ -21,8 +20,7 @@
 //! See the linked module docs for more details on abstractions.
 //!
 //! [`WorkflowManager`]: manager::WorkflowManager
-//! [`WorkflowHandle`]: manager::WorkflowHandle
-//! [`Driver`]: driver::Driver
+//! [`WorkflowHandle`]: handle::WorkflowHandle
 //! [`wasmtime`]: https://docs.rs/wasmtime/
 //! [(de)serialize]: https://docs.rs/serde/
 //!
@@ -41,7 +39,6 @@
 //! Implements [`Schedule`] trait, necessary to instantiate async workflow handles,
 //! using the [`async-io`] crate.
 //!
-//! [`Schedule`]: crate::Schedule
 //! [`async-io`]: https://docs.rs/async-io/
 //!
 //! # Examples
@@ -70,10 +67,10 @@
 //!     .build()
 //!     .await?;
 //! manager.insert_module("test", module).await;
-//! let spawner = manager.spawner();
 //!
 //! // Workflows are created within a manager that is responsible
 //! // for their persistence and managing channels, time, and child workflows.
+//! let spawner = manager.spawner();
 //! let builder = spawner.new_workflow::<()>("test::Workflow")?;
 //! let (handles, self_handles) = builder.handles(|_| {}).await;
 //! let new_workflow =
@@ -91,8 +88,7 @@
 //! # }
 //! ```
 //!
-//! See [`WorkflowManager`] and [`Driver`] docs for examples of what to do with workflows
-//! after instantiation.
+//! See [`WorkflowManager`] docs for examples of what to do with workflows after instantiation.
 //!
 //! ## Persisting and restoring workflow
 //!

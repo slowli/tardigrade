@@ -18,9 +18,10 @@ use crate::{
 };
 use tardigrade::WorkflowId;
 
-/// Terminal status of a [`WorkflowManager`].
+/// Terminal status of [driving] a [`WorkflowManager`].
 ///
-/// [`WorkflowManager`]: manager::WorkflowManager
+/// [driving]: crate::manager::WorkflowManager::drive()
+/// [`WorkflowManager`]: crate::manager::WorkflowManager
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Termination {
@@ -45,22 +46,23 @@ impl Default for CachedTimer {
     }
 }
 
-/// Environment for driving workflow execution in a [`WorkflowManager`].
+/// Configuration for driving workflow execution in a [`WorkflowManager`].
 ///
-/// [`WorkflowManager`]: manager::WorkflowManager
+/// [`WorkflowManager`]: crate::manager::WorkflowManager
 ///
 /// # Error handling
 ///
-/// Erroneous workflow executions in [`Self::drive()`] lead to the corresponding workflow
+/// Erroneous workflow executions in [`WorkflowManager::drive()`] lead to the corresponding workflow
 /// getting the [errored state], so that it will not be executed again.
 /// To drop incoming messages that may have led to an error,
-/// call [`Self::drop_erroneous_messages()`] before [`Self::drive()`]. Dropping a message
+/// call [`Self::drop_erroneous_messages()`]. Dropping a message
 /// means that from the workflow perspective, the message was never received in the first place,
 /// and all progress resulting from receiving the message is lost (new tasks, timers, etc.).
 /// Whether this makes sense, depends on a use case; e.g., it seems reasonable to roll back
 /// deserialization errors for dynamically typed workflows.
 ///
-/// [errored state]: manager::WorkflowManager#workflow-lifecycle
+/// [`WorkflowManager::drive()`]: crate::manager::WorkflowManager::drive()
+/// [errored state]: crate::manager::WorkflowManager#workflow-lifecycle
 ///
 /// # Examples
 ///

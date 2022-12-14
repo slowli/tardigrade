@@ -305,7 +305,9 @@ impl<S: DefineWorkflow> StashStub for Stubs<S> {
     }
 }
 
-/// Handle to a [`WorkflowManager`] allowing to spawn new workflows.
+/// Specialized handle to a [`WorkflowManager`] allowing to spawn new workflows.
+///
+/// [`WorkflowManager`]: crate::manager::WorkflowManager
 #[derive(Debug)]
 pub struct ManagerSpawner<'a, M> {
     inner: &'a M,
@@ -333,7 +335,7 @@ impl<'a, M: AsManager> ManagerSpawner<'a, M> {
 
     /// Instructs the spawner to close senders from the host side for the channels supplied
     /// to the new workflows. By default, senders are copied to the workflow; i.e., the host
-    /// retains a  sender handle after a workflow is created.
+    /// retains a sender handle after a workflow is created.
     #[must_use]
     pub fn close_senders(mut self) -> Self {
         self.close_senders = true;

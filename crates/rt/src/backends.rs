@@ -17,9 +17,10 @@ mod mock {
     ///
     /// # Examples
     ///
-    /// A primary use case is to use the scheduler with a [`Driver`] for integration testing:
+    /// A primary use case is to use the scheduler with a [`WorkflowManager`]
+    /// for integration testing:
     ///
-    /// [`Driver`]: crate::driver::Driver
+    /// [`WorkflowManager`]: crate::manager::WorkflowManager
     ///
     /// ```
     /// # use async_std::task;

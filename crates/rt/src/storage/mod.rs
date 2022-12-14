@@ -32,6 +32,15 @@
 //! Besides the [`Storage`] trait, the module provides its local in-memory implementation:
 //! [`LocalStorage`]. It has [`LocalTransaction`] transactions and provides
 //! [`LocalStorageSnapshot`] as a way to get (de)serializable snapshot of the storage.
+//!
+//! # See also
+//!
+//! - [`StorageRef`](crate::handle::StorageRef), a wrapper around a `Storage` that allows
+//!   accessing [workflow](crate::handle::WorkflowHandle) and channel [sender] / [receiver]
+//!   handles
+//!
+//! [sender]: crate::handle::MessageSender
+//! [receiver]: crate::handle::MessageReceiver
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};

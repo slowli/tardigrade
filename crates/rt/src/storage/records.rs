@@ -54,6 +54,8 @@ pub struct DefinitionRecord {
 
 /// Error retrieving a message from a workflow channel. Returned by
 /// [`ReadChannels::channel_message()`].
+///
+/// [`ReadChannels::channel_message()`]: crate::storage::ReadChannels::channel_message()
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum MessageError {
@@ -277,7 +279,7 @@ pub struct ErroneousMessageRef {
 
 /// Workflow selection criteria used in [`insert_waker_for_matching_workflows()`].
 ///
-/// [`insert_waker_for_matching_workflows()`]: WriteWorkflowWakers::insert_waker_for_matching_workflows()
+/// [`insert_waker_for_matching_workflows()`]: crate::storage::WriteWorkflowWakers::insert_waker_for_matching_workflows()
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum WorkflowSelectionCriteria {
