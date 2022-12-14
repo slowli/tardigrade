@@ -4,7 +4,6 @@ use async_trait::async_trait;
 use futures::{
     channel::mpsc,
     future::{self, BoxFuture, Future},
-    lock::Mutex,
     sink,
     stream::{self, FusedStream, FuturesUnordered},
     FutureExt, SinkExt, Stream, StreamExt,
@@ -15,7 +14,6 @@ use tracing_tunnel::PersistedMetadata;
 use std::{
     collections::{HashMap, HashSet},
     pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -73,6 +71,14 @@ pin_project! {
     }
 }
 
+impl CommitStream {
+    fn new() -> (mpsc::Sender<()>, Self) {
+        let (commits_sx, commits_rx) = mpsc::channel(0);
+        let this = CommitStream { inner: commits_rx };
+        (commits_sx, this)
+    }
+}
+
 impl Stream for CommitStream {
     type Item = ();
 
@@ -125,9 +131,14 @@ pub struct Streaming<S> {
 }
 
 impl<S: Storage + Clone> Streaming<S> {
-    /// Creates a new streaming storage based on the provided storage and the sink for
-    /// [`MessageEvent`]s.
+    /// Creates a new streaming storage based on the provided storage.
+    ///
+    /// # Return value
+    ///
+    /// Returns the created storage and a routing task that handles message streaming. This task
+    /// should be run in the background.
     pub fn new(storage: S) -> (Self, impl Future<Output = ()>) {
+        // TODO: what is the reasonable value for channel capacity? Should it be configurable?
         let (message_events_sx, message_events_rx) = mpsc::channel(128);
         let (message_streams_sx, message_streams_rx) = mpsc::unbounded();
 
@@ -149,9 +160,9 @@ impl<S: Storage + Clone> Streaming<S> {
     /// is disconnected after the call. Streaming propagates to storages cloned from this storage;
     /// if this is undesirable, call `stream_commits()` on the cloned storage and drop the output.
     pub fn stream_commits(&mut self) -> CommitStream {
-        let (commits_sx, commits_rx) = mpsc::channel(0);
+        let (commits_sx, commits_rx) = CommitStream::new();
         self.commits_sx = commits_sx;
-        CommitStream { inner: commits_rx }
+        commits_rx
     }
 }
 
@@ -361,83 +372,71 @@ impl<T: StorageTransaction> StorageTransaction for StreamingTransaction<T> {
 }
 
 #[derive(Debug)]
-struct SubscriptionData {
-    cursor: usize,
-    sent_eof: bool,
-}
-
-#[derive(Debug)]
 struct Subscription {
     message_sx: mpsc::Sender<MessageOrEof>,
     channel_id: ChannelId,
-    data: Arc<Mutex<SubscriptionData>>,
+    cursor: usize,
+    commits_rx: CommitStream,
 }
 
 impl Subscription {
-    // For some bizarre reason, the method doesn't work if provided with `&impl Storage`;
-    // it requires a 'static boundary on the storage impl.
-    fn relay_messages<'a, T, Fut>(
-        &self,
-        subscription_id: usize,
-        transaction_fn: impl FnOnce() -> Fut + Send + 'a,
-    ) -> SubscriptionFuture<'a>
-    where
-        T: ReadonlyStorageTransaction + 'a,
-        Fut: Future<Output = T> + Send + 'a,
-    {
-        let data = Arc::clone(&self.data);
+    /// Returns true if the future should be terminated.
+    async fn do_send_messages<T: ReadonlyStorageTransaction>(&mut self, transaction: T) -> bool {
         let id = self.channel_id;
-        let mut message_sx = self.message_sx.clone();
-
-        let future = async move {
-            // Ensure that we don't execute tasks for the same subscription concurrently,
-            // and at the same time don't forget about new tasks.
-            let mut data = data.lock().await;
-            // Quick check whether the message channel is still alive, and we didn't terminate
-            // in another task.
-            if message_sx.is_closed() || data.sent_eof {
+        let Some(record) = transaction.channel(id).await else {
+            return false; // Channel may be created in the future
+        };
+        if record.received_messages > self.cursor {
+            let mut messages = transaction
+                .channel_messages(id, self.cursor..=record.received_messages)
+                .map(|(index, message)| {
+                    self.cursor = index + 1;
+                    Ok(MessageOrEof::Message(index, message))
+                });
+            if self.message_sx.send_all(&mut messages).await.is_err() {
+                // The messages are no longer listened by the client.
                 return true;
             }
+        }
+        drop(transaction);
 
-            let transaction = transaction_fn().await;
-            let Some(record) = transaction.channel(id).await else {
-                return false; // Channel may be created in the future
-            };
-            if record.received_messages > data.cursor {
-                let mut messages = transaction
-                    .channel_messages(id, data.cursor..=record.received_messages)
-                    .map(|(index, message)| {
-                        data.cursor = index + 1;
-                        Ok(MessageOrEof::Message(index, message))
-                    });
-                if message_sx.send_all(&mut messages).await.is_err() {
-                    // The messages are no longer listened by the client.
-                    return true;
-                }
+        if record.is_closed {
+            self.message_sx.send(MessageOrEof::Eof).await.ok();
+        }
+        record.is_closed
+    }
+
+    fn send_messages<'s, T: 's + ReadonlyStorageTransaction>(
+        &'s mut self,
+        transaction: T,
+    ) -> impl Future<Output = bool> + Send + 's {
+        self.do_send_messages(transaction)
+    }
+
+    async fn subscription_task<S: Storage>(mut self, storage: &S) {
+        while let Some(()) = self.commits_rx.next().await {
+            // Quick check whether the message channel is still alive.
+            if self.message_sx.is_closed() {
+                break;
             }
-            drop(transaction);
 
-            if record.is_closed {
-                message_sx.send(MessageOrEof::Eof).await.ok();
-                // ^ we're going to finish anyway, so ignoring an error is fine
-                data.sent_eof = true;
+            let is_completed = storage
+                .readonly_transaction()
+                .then(|transaction| self.send_messages(transaction));
+            if is_completed.await {
+                break;
             }
-            record.is_closed
-        };
-
-        future
-            .map(move |is_completed| is_completed.then_some(subscription_id))
-            .boxed()
+        }
     }
 }
 
-type SubscriptionFuture<'a> = BoxFuture<'a, Option<usize>>;
+type SubscriptionFuture<'a> = BoxFuture<'a, (usize, ChannelId)>;
 
 #[derive(Debug)]
 struct MessageRouter {
     message_events_rx: mpsc::Receiver<MessageEvent>,
     message_streams_rx: mpsc::UnboundedReceiver<MessageStreamRequest>,
-    subscriptions: HashMap<usize, Subscription>,
+    subscriptions: HashMap<usize, mpsc::Sender<()>>,
     next_subscription_id: usize,
     subscriptions_by_channel: HashMap<ChannelId, HashSet<usize>>,
 }
@@ -468,16 +467,17 @@ impl MessageRouter {
                     self.insert_subscription(request, &storage, &mut tasks);
                 }
                 completion = next_task_completion => {
-                    if let Some(completed_id) = completion {
-                        self.remove_subscription(completed_id);
-                    }
+                    let (id, channel_id) = completion;
+                    self.remove_subscription(id, channel_id);
                 }
                 maybe_event = next_event => {
                     if let Some(MessageEvent { channel_id }) = maybe_event {
-                        self.notify_subscriptions(channel_id, &storage, &mut tasks);
+                        self.notify_subscriptions(channel_id);
                     } else {
-                        drop(self.message_streams_rx);
-                        // ^ Signal that we don't take new requests as soon as possible.
+                        drop(self);
+                        // ^ Signal that we don't take new requests as soon as possible
+                        // and drop `self.subscriptions` in order to terminate
+                        // all subscription tasks.
                         tasks.map(Ok).forward(sink::drain()).await.unwrap();
                         // ^ Wait for all existing tasks to complete.
                         break;
@@ -496,55 +496,44 @@ impl MessageRouter {
     ) {
         let id = self.next_subscription_id;
         self.next_subscription_id += 1;
-
+        let (mut commits_sx, commits_rx) = CommitStream::new();
         let subscription = Subscription {
             message_sx: request.message_sx,
             channel_id: request.channel_id,
-            data: Arc::new(Mutex::new(SubscriptionData {
-                cursor: request.start_index,
-                sent_eof: false,
-            })),
+            cursor: request.start_index,
+            commits_rx,
         };
-        let task = subscription.relay_messages(id, || storage.readonly_transaction());
+        let task = subscription
+            .subscription_task(storage)
+            .map(move |()| (id, request.channel_id))
+            .boxed();
         tasks.push(task);
 
-        self.subscriptions.insert(id, subscription);
+        self.subscriptions.insert(id, commits_sx.clone());
+        commits_sx.try_send(()).ok(); // Perform the initial scan
         let subscriptions = self.subscriptions_by_channel.entry(request.channel_id);
         subscriptions.or_default().insert(id);
     }
 
-    fn remove_subscription(&mut self, id: usize) {
-        let Some(subscription) = self.subscriptions.remove(&id) else {
-            return; // was already removed
-        };
+    fn remove_subscription(&mut self, id: usize, channel_id: ChannelId) {
+        self.subscriptions.remove(&id);
 
-        let subs_for_channel = self
-            .subscriptions_by_channel
-            .get_mut(&subscription.channel_id)
-            .unwrap();
+        let subs_for_channel = self.subscriptions_by_channel.get_mut(&channel_id).unwrap();
         subs_for_channel.remove(&id);
         if subs_for_channel.is_empty() {
-            self.subscriptions_by_channel
-                .remove(&subscription.channel_id);
+            self.subscriptions_by_channel.remove(&channel_id);
         }
     }
 
-    fn notify_subscriptions<'a, S: Storage>(
-        &self,
-        channel_id: ChannelId,
-        storage: &'a S,
-        tasks: &mut FuturesUnordered<SubscriptionFuture<'a>>,
-    ) {
+    fn notify_subscriptions(&self, channel_id: ChannelId) {
         let Some(ids) = self.subscriptions_by_channel.get(&channel_id) else {
             return;
         };
-
-        let new_tasks = ids.iter().filter_map(|&id| {
-            let subscription = self.subscriptions.get(&id)?;
-            let task = subscription.relay_messages(id, || storage.readonly_transaction());
-            Some(task)
-        });
-        tasks.extend(new_tasks);
+        for &id in ids {
+            if let Some(subscription) = self.subscriptions.get(&id) {
+                subscription.clone().try_send(()).ok();
+            }
+        }
     }
 }
 
@@ -553,6 +542,8 @@ mod tests {
     use assert_matches::assert_matches;
     use async_std::task;
     use futures::future;
+
+    use std::sync::Arc;
 
     use super::*;
     use crate::storage::LocalStorage;
