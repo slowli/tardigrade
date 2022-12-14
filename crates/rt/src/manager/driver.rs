@@ -13,7 +13,7 @@ use std::mem;
 use crate::{
     handle::{AnyWorkflowHandle, StorageRef},
     manager::{AsManager, TickResult},
-    storage::{CommitStream, Storage},
+    storage::{CommitStream, Storage, Streaming},
     Schedule, TimerFuture,
 };
 use tardigrade::WorkflowId;
@@ -138,18 +138,20 @@ impl DriveConfig {
     ///
     /// [`WorkflowManager`]: manager::WorkflowManager
     /// [`select`]: futures::select
-    pub(super) async fn run<M: AsManager>(
+    pub(super) async fn run<S, M: AsManager<Storage = Streaming<S>>>(
         mut self,
         manager: &M,
         commits_rx: &mut CommitStream,
     ) -> Termination
     where
+        S: Storage + Clone,
         M::Clock: Schedule,
-        M::Storage: Clone,
     {
         // Clone the storage to prevent echoing commit events. This is ugly, but seems
         // the easiest solution.
-        let storage = manager.as_manager().storage.clone();
+        let mut storage = manager.as_manager().storage.clone();
+        drop(storage.stream_commits());
+
         let mut cached_timer = CachedTimer::default();
         loop {
             if let Some(termination) = self

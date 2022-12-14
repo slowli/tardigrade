@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use futures::{
     channel::mpsc,
-    future::{BoxFuture, Future},
+    future::{self, BoxFuture, Future},
     lock::Mutex,
     sink,
     stream::{self, FusedStream, FuturesUnordered},
@@ -29,7 +29,6 @@ use tardigrade::{ChannelId, WakerId, WorkflowId};
 /// Event signalling that one or more messages were added to the channel.
 #[derive(Debug)]
 pub struct MessageEvent {
-    /// Channel ID.
     pub(crate) channel_id: ChannelId,
 }
 
@@ -42,35 +41,32 @@ pub enum MessageOrEof {
     Eof,
 }
 
-/// FIXME
-#[async_trait]
+/// Allows streaming messages from a certain channel as they are written to it.
 pub trait StreamMessages: Storage {
     /// Streams messages to the provided sink.
-    async fn stream_messages(
+    fn stream_messages(
         &self,
         channel_id: ChannelId,
         start_index: usize,
         sink: mpsc::Sender<MessageOrEof>,
-    );
+    ) -> BoxFuture<'static, ()>;
 }
 
-#[async_trait]
 impl<S: StreamMessages + ?Sized> StreamMessages for &S {
-    async fn stream_messages(
+    fn stream_messages(
         &self,
         channel_id: ChannelId,
         start_index: usize,
         sink: mpsc::Sender<MessageOrEof>,
-    ) {
-        (**self)
-            .stream_messages(channel_id, start_index, sink)
-            .await;
+    ) -> BoxFuture<'static, ()> {
+        (**self).stream_messages(channel_id, start_index, sink)
     }
 }
 
 pin_project! {
     /// Stream of commits returned from [`Streaming::stream_commits()`].
     #[derive(Debug)]
+    #[must_use = "should be plugged into `WorkflowManager::drive()`"]
     pub struct CommitStream {
         #[pin]
         inner: mpsc::Receiver<()>,
@@ -116,23 +112,16 @@ struct MessageStreamRequest {
 }
 
 /// Storage that streams [events](MessageEvent) about new messages when they are committed.
-#[derive(Debug)]
+///
+/// This storage can be cheaply cloned, provided that the underlying storage is cloneable.
+/// Clones will stream [message](StreamMessages) and [commit](Self::stream_commits()) events
+/// to the streams configured in their parent.
+#[derive(Debug, Clone)]
 pub struct Streaming<S> {
     inner: S,
     message_events_sx: mpsc::Sender<MessageEvent>,
     commits_sx: mpsc::Sender<()>,
     message_streams_sx: mpsc::UnboundedSender<MessageStreamRequest>,
-}
-
-impl<S: Storage + Clone> Clone for Streaming<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            message_events_sx: self.message_events_sx.clone(),
-            commits_sx: mpsc::channel(1).0, // intentionally not cloned
-            message_streams_sx: self.message_streams_sx.clone(),
-        }
-    }
 }
 
 impl<S: Storage + Clone> Streaming<S> {
@@ -153,8 +142,12 @@ impl<S: Storage + Clone> Streaming<S> {
         (this, router_task)
     }
 
-    /// Returns a stream of commit events specific to this storage. A previous stream returned
-    /// from this method, if any, is disconnected after the call.
+    /// Returns a stream of commit events. Only commits that produce at least one new message
+    /// or channel closure are taken into account.
+    ///
+    /// A previous stream returned from this method, if any,
+    /// is disconnected after the call. Streaming propagates to storages cloned from this storage;
+    /// if this is undesirable, call `stream_commits()` on the cloned storage and drop the output.
     pub fn stream_commits(&mut self) -> CommitStream {
         let (commits_sx, commits_rx) = mpsc::channel(0);
         self.commits_sx = commits_sx;
@@ -189,20 +182,20 @@ impl<S: Storage> Storage for Streaming<S> {
     }
 }
 
-#[async_trait]
 impl<S: Storage> StreamMessages for Streaming<S> {
-    async fn stream_messages(
+    fn stream_messages(
         &self,
         channel_id: ChannelId,
         start_index: usize,
         sink: mpsc::Sender<MessageOrEof>,
-    ) {
+    ) -> BoxFuture<'static, ()> {
         let request = MessageStreamRequest {
             channel_id,
             start_index,
             message_sx: sink,
         };
         self.message_streams_sx.unbounded_send(request).ok();
+        future::ready(()).boxed()
     }
 }
 
@@ -353,7 +346,7 @@ impl<T: StorageTransaction> StorageTransaction for StreamingTransaction<T> {
         if !self.new_messages.is_empty() {
             // If sending fails, the consumer has an unprocessed event, which is OK
             // for our purposes.
-            dbg!(self.commits_sx.try_send(()).ok());
+            self.commits_sx.try_send(()).ok();
         }
 
         let events = self
@@ -720,5 +713,28 @@ mod tests {
         future::join(commits_rx.next(), commits_sx.send(()).map(Result::unwrap)).await;
         drop(commits_sx);
         assert!(commits_rx.next().await.is_none());
+    }
+
+    #[async_std::test]
+    async fn events_are_streamed_from_storage_clones() {
+        let storage = Arc::new(LocalStorage::default());
+        let (mut storage, router_task) = Streaming::new(storage);
+        task::spawn(router_task);
+        let mut commits_rx = storage.stream_commits();
+        let (messages_sx, mut messages_rx) = mpsc::channel(4);
+        storage.stream_messages(1, 0, messages_sx).await;
+
+        let storage_clone = storage.clone();
+        let mut transaction = storage_clone.transaction().await;
+        let channel_state = create_channel_record();
+        transaction.insert_channel(1, channel_state).await;
+        transaction.push_messages(1, vec![b"test".to_vec()]).await;
+        transaction.commit().await;
+
+        commits_rx.next().await.unwrap();
+        assert_matches!(
+            messages_rx.next().await.unwrap(),
+            MessageOrEof::Message(0, message) if message == b"test"
+        );
     }
 }

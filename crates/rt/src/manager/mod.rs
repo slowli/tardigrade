@@ -31,7 +31,7 @@ use crate::{
     handle::StorageRef,
     storage::{
         helper::StorageHelper, CommitStream, DefinitionRecord, ModuleRecord, ReadModules, Storage,
-        StorageTransaction, WriteModules,
+        StorageTransaction, Streaming, WriteModules,
     },
 };
 use tardigrade::WorkflowId;
@@ -259,7 +259,12 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
     }
 }
 
-impl<E: WorkflowEngine, C: Schedule, S: Storage + Clone> WorkflowManager<E, C, S> {
+impl<E, C, S> WorkflowManager<E, C, Streaming<S>>
+where
+    E: WorkflowEngine,
+    C: Schedule,
+    S: Storage + Clone,
+{
     /// Drives this manager using the provided config.
     pub async fn drive(&self, commits_rx: &mut CommitStream, config: DriveConfig) -> Termination {
         config.run(self, commits_rx).await

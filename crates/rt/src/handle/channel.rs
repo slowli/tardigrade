@@ -104,6 +104,18 @@ impl<'a, T, C: Codec<T>, S: Storage> MessageSender<T, C, S> {
     }
 }
 
+impl<T, C: Codec<T>, S: Storage + Clone> MessageSender<T, C, &S> {
+    /// Converts the storage referenced by this sender to an owned form.
+    pub fn into_owned(self) -> MessageSender<T, C, S> {
+        MessageSender {
+            storage: self.storage.clone(),
+            channel_id: self.channel_id,
+            record: self.record,
+            _ty: PhantomData,
+        }
+    }
+}
+
 impl<T, C, S> TryFromRaw<RawMessageSender<S>> for MessageSender<T, C, S>
 where
     C: Codec<T>,
@@ -273,18 +285,30 @@ impl<T, C: Codec<T>, S: Storage> MessageReceiver<T, C, S> {
     }
 }
 
-impl<T, C: Codec<T>, S: StreamMessages> MessageReceiver<T, C, S> {
+impl<T, C: Codec<T>, S: Storage + Clone> MessageReceiver<T, C, &S> {
+    /// Converts the storage referenced by this receiver to an owned form.
+    pub fn into_owned(self) -> MessageReceiver<T, C, S> {
+        MessageReceiver {
+            storage: self.storage.clone(),
+            channel_id: self.channel_id,
+            record: self.record,
+            _ty: PhantomData,
+        }
+    }
+}
+
+impl<'s, T: 'static, C: Codec<T>, S: 's + StreamMessages> MessageReceiver<T, C, S> {
     /// Streams messages from this channel starting from the specified index.
     pub fn stream_messages(
         &self,
         start_index: usize,
-    ) -> impl Stream<Item = ReceivedMessage<T, C>> + '_ {
+    ) -> impl Stream<Item = ReceivedMessage<T, C>> + 's {
         let (sx, rx) = mpsc::channel(16);
-        let messages = self
+        let stream_registration = self
             .storage
-            .stream_messages(self.channel_id, start_index, sx)
-            .map(|()| rx)
-            .flatten_stream();
+            .stream_messages(self.channel_id, start_index, sx);
+
+        let messages = stream_registration.map(|()| rx).flatten_stream();
         messages.filter_map(|message_or_eof| {
             future::ready(match message_or_eof {
                 MessageOrEof::Message(index, raw_message) => Some(ReceivedMessage {
@@ -359,5 +383,22 @@ impl<T, C: Codec<T>> ReceivedMessage<T, C> {
     /// Returns a decoding error, if any.
     pub fn decode(self) -> Result<T, C::Error> {
         C::try_decode_bytes(self.raw_message)
+    }
+}
+
+impl ReceivedMessage<Vec<u8>, Raw> {
+    /// Returns the raw message bytes.
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.raw_message
+    }
+
+    /// Downcasts the message to have the specified payload type and codec. No checks are performed
+    /// that this downcast is actually correct.
+    pub fn downcast<T, C: Codec<T>>(self) -> ReceivedMessage<T, C> {
+        ReceivedMessage {
+            index: self.index,
+            raw_message: self.raw_message,
+            _ty: PhantomData,
+        }
     }
 }
