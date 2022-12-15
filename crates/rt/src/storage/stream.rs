@@ -117,6 +117,12 @@ struct MessageStreamRequest {
     message_sx: mpsc::Sender<MessageOrEof>,
 }
 
+#[derive(Debug)]
+enum Request {
+    MessageStream(MessageStreamRequest),
+    Shutdown,
+}
+
 /// Storage that streams [events](MessageEvent) about new messages when they are committed.
 ///
 /// This storage can be cheaply cloned, provided that the underlying storage is cloneable.
@@ -127,7 +133,7 @@ pub struct Streaming<S> {
     inner: S,
     message_events_sx: mpsc::Sender<MessageEvent>,
     commits_sx: mpsc::Sender<()>,
-    message_streams_sx: mpsc::UnboundedSender<MessageStreamRequest>,
+    requests_sx: mpsc::UnboundedSender<Request>,
 }
 
 impl<S: Storage + Clone> Streaming<S> {
@@ -140,15 +146,15 @@ impl<S: Storage + Clone> Streaming<S> {
     pub fn new(storage: S) -> (Self, impl Future<Output = ()>) {
         // TODO: what is the reasonable value for channel capacity? Should it be configurable?
         let (message_events_sx, message_events_rx) = mpsc::channel(128);
-        let (message_streams_sx, message_streams_rx) = mpsc::unbounded();
+        let (requests_sx, request_rx) = mpsc::unbounded();
 
         let this = Self {
             inner: storage.clone(),
             commits_sx: mpsc::channel(0).0,
             message_events_sx,
-            message_streams_sx,
+            requests_sx,
         };
-        let router = MessageRouter::new(message_events_rx, message_streams_rx);
+        let router = MessageRouter::new(message_events_rx, request_rx);
         let router_task = router.run(storage);
         (this, router_task)
     }
@@ -163,6 +169,15 @@ impl<S: Storage + Clone> Streaming<S> {
         let (commits_sx, commits_rx) = CommitStream::new();
         self.commits_sx = commits_sx;
         commits_rx
+    }
+
+    /// Gracefully shuts down routing messages to streams. Existing routing tasks are allowed to
+    /// complete, but no new tasks are accepted. If routing is already shut down, does nothing.
+    ///
+    /// This method has the same effect when called from any `Streaming` instance
+    /// cloned from the original storage.
+    pub fn shutdown_routing(&self) {
+        self.requests_sx.unbounded_send(Request::Shutdown).ok();
     }
 }
 
@@ -205,7 +220,9 @@ impl<S: Storage> StreamMessages for Streaming<S> {
             start_index,
             message_sx: sink,
         };
-        self.message_streams_sx.unbounded_send(request).ok();
+        self.requests_sx
+            .unbounded_send(Request::MessageStream(request))
+            .ok();
         future::ready(()).boxed()
     }
 }
@@ -435,7 +452,7 @@ type SubscriptionFuture<'a> = BoxFuture<'a, (usize, ChannelId)>;
 #[derive(Debug)]
 struct MessageRouter {
     message_events_rx: mpsc::Receiver<MessageEvent>,
-    message_streams_rx: mpsc::UnboundedReceiver<MessageStreamRequest>,
+    requests_rx: mpsc::UnboundedReceiver<Request>,
     subscriptions: HashMap<usize, mpsc::Sender<()>>,
     next_subscription_id: usize,
     subscriptions_by_channel: HashMap<ChannelId, HashSet<usize>>,
@@ -444,11 +461,11 @@ struct MessageRouter {
 impl MessageRouter {
     fn new(
         message_events_rx: mpsc::Receiver<MessageEvent>,
-        message_streams_rx: mpsc::UnboundedReceiver<MessageStreamRequest>,
+        requests_rx: mpsc::UnboundedReceiver<Request>,
     ) -> Self {
         Self {
             message_events_rx,
-            message_streams_rx,
+            requests_rx,
             subscriptions: HashMap::new(),
             next_subscription_id: 0,
             subscriptions_by_channel: HashMap::new(),
@@ -459,13 +476,10 @@ impl MessageRouter {
         let mut tasks = FuturesUnordered::<SubscriptionFuture>::new();
         loop {
             let mut next_event = self.message_events_rx.next();
-            let mut next_request = self.message_streams_rx.select_next_some();
+            let mut next_request = self.requests_rx.select_next_some();
             let mut next_task_completion = tasks.select_next_some();
 
-            futures::select! {
-                request = next_request => {
-                    self.insert_subscription(request, &storage, &mut tasks);
-                }
+            futures::select_biased! {
                 completion = next_task_completion => {
                     let (id, channel_id) = completion;
                     self.remove_subscription(id, channel_id);
@@ -483,6 +497,18 @@ impl MessageRouter {
                         break;
                     }
                 }
+
+                // Should be selected after `next_event` in order to allow events come through
+                // before shutdown.
+                request = next_request => match request {
+                    Request::MessageStream(req) => {
+                        self.insert_subscription(req, &storage, &mut tasks);
+                    }
+                    Request::Shutdown => {
+                        self.message_events_rx.close();
+                        // ^ Will trigger shutdown on the next loop iteration
+                    }
+                },
                 complete => break,
             }
         }
