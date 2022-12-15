@@ -145,8 +145,7 @@ async fn test_async_handle_with_concurrency(args: Args) -> TestResult {
     let (_, handle) =
         spawn_workflow::<_, PizzaDelivery>(&manager, "test::PizzaDelivery", args).await?;
     let orders_sx = handle.orders;
-    let events_rx = handle.shared.events.stream_messages(0);
-    let events_rx = events_rx.map(|message| message.decode());
+    let mut events_rx = handle.shared.events.stream_messages(0);
 
     let manager = manager.clone();
     let join_handle =
@@ -160,8 +159,10 @@ async fn test_async_handle_with_concurrency(args: Args) -> TestResult {
     orders_sx.close().await; // will terminate the workflow eventually
     join_handle.await;
 
-    let events: Vec<_> = events_rx.try_collect().await?;
+    let events = events_rx.by_ref().map(|message| message.decode());
+    let events: Vec<_> = events.try_collect().await?;
     assert_eq!(events.len(), ORDER_COUNT * 4, "{events:#?}");
+    assert!(events_rx.is_closed());
 
     for i in 1..=ORDER_COUNT {
         let order_events: Vec<_> = events.iter().filter(|event| event.index() == i).collect();

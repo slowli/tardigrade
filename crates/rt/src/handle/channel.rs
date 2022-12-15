@@ -1,8 +1,15 @@
 //! Channel handles for sending / receiving messages.
 
-use futures::{channel::mpsc, future, FutureExt, Stream, StreamExt};
+use futures::{channel::mpsc, stream::BoxStream, FutureExt, Stream, StreamExt};
 
-use std::{convert::Infallible, marker::PhantomData, ops};
+use std::{
+    convert::Infallible,
+    fmt,
+    marker::PhantomData,
+    ops,
+    pin::Pin,
+    task::{ready, Context, Poll},
+};
 
 use crate::{
     storage::{
@@ -306,28 +313,16 @@ impl<T, C: Codec<T>, S: Storage + Clone> MessageReceiver<T, C, &S> {
     }
 }
 
-impl<'s, T: 'static, C: Codec<T>, S: 's + StreamMessages> MessageReceiver<T, C, S> {
+impl<T: 'static, C: Codec<T>, S: StreamMessages> MessageReceiver<T, C, S> {
     /// Streams messages from this channel starting from the specified index.
-    pub fn stream_messages(
-        &self,
-        start_index: usize,
-    ) -> impl Stream<Item = ReceivedMessage<T, C>> + 's {
+    pub fn stream_messages(&self, start_index: usize) -> MessageStream<T, C> {
         let (sx, rx) = mpsc::channel(16);
         let stream_registration = self
             .storage
             .stream_messages(self.channel_id, start_index, sx);
 
-        let messages = stream_registration.map(|()| rx).flatten_stream();
-        messages.filter_map(|message_or_eof| {
-            future::ready(match message_or_eof {
-                MessageOrEof::Message(index, raw_message) => Some(ReceivedMessage {
-                    index,
-                    raw_message,
-                    _ty: PhantomData,
-                }),
-                MessageOrEof::Eof => None, // TODO: signal the termination somehow
-            })
-        })
+        let messages = stream_registration.map(|()| rx).flatten_stream().boxed();
+        MessageStream::new(messages)
     }
 }
 
@@ -409,6 +404,130 @@ impl ReceivedMessage<Vec<u8>, Raw> {
             index: self.index,
             raw_message: self.raw_message,
             _ty: PhantomData,
+        }
+    }
+}
+
+/// Stream of messages returned from [`MessageReceiver::stream_messages()`] that allows
+/// checking whether the underlying channel was closed.
+#[must_use = "streams do nothing unless polled"]
+pub struct MessageStream<T, C> {
+    inner: BoxStream<'static, MessageOrEof>,
+    is_closed: bool,
+    _ty: PhantomData<(C, fn() -> T)>,
+}
+
+impl<T, C: Codec<T>> Unpin for MessageStream<T, C> {}
+
+impl<T, C: Codec<T>> fmt::Debug for MessageStream<T, C> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MessageStream")
+            .field("is_closed", &self.is_closed)
+            .finish()
+    }
+}
+
+impl<T, C: Codec<T>> MessageStream<T, C> {
+    fn new(inner: BoxStream<'static, MessageOrEof>) -> Self {
+        Self {
+            inner,
+            is_closed: false,
+            _ty: PhantomData,
+        }
+    }
+
+    /// Checks if the channel this stream takes messages from has closed. This only
+    /// makes sense to check after the channel was completely consumed; before that,
+    /// the method will return `false`.
+    pub fn is_closed(&self) -> bool {
+        self.is_closed
+    }
+}
+
+impl<T, C: Codec<T>> Stream for MessageStream<T, C> {
+    type Item = ReceivedMessage<T, C>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if this.is_closed {
+            return Poll::Ready(None);
+        }
+
+        let Some(message) = ready!(this.inner.poll_next_unpin(cx)) else {
+            return Poll::Ready(None);
+        };
+        Poll::Ready(match message {
+            MessageOrEof::Message(index, raw_message) => {
+                Some(ReceivedMessage::new(index, raw_message))
+            }
+            MessageOrEof::Eof => {
+                this.is_closed = true;
+                None
+            }
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use async_std::task;
+
+    use std::{collections::HashSet, sync::Arc};
+
+    use super::*;
+    use crate::storage::{LocalStorage, Streaming};
+
+    fn create_channel_record() -> ChannelRecord {
+        ChannelRecord {
+            receiver_workflow_id: None,
+            sender_workflow_ids: HashSet::new(),
+            has_external_sender: true,
+            is_closed: false,
+            received_messages: 0,
+        }
+    }
+
+    async fn test_message_stream_basics(close_channel: bool) {
+        let storage = Arc::new(LocalStorage::default());
+        let (storage, router_task) = Streaming::new(storage);
+        let router_task = task::spawn(router_task);
+
+        let mut transaction = storage.transaction().await;
+        let record = create_channel_record();
+        transaction.insert_channel(1, record.clone()).await;
+        transaction.commit().await;
+
+        let sender = RawMessageSender::new(&storage, 1, record.clone());
+        let receiver = RawMessageReceiver::new(&storage, 1, record);
+        let mut messages = receiver.stream_messages(0);
+
+        sender.send(vec![1]).await.unwrap();
+        let received = messages.next().await.unwrap();
+        assert_eq!(received.index(), 0);
+        assert_eq!(received.decode().unwrap().as_slice(), [1]);
+        sender.send_all([vec![2], vec![3]]).await.unwrap();
+        if close_channel {
+            sender.close().await;
+        } else {
+            storage.shutdown_routing();
+            router_task.await;
+        }
+
+        assert_eq!(messages.by_ref().count().await, 2);
+        assert_eq!(messages.is_closed(), close_channel);
+    }
+
+    #[async_std::test]
+    async fn message_stream_with_channel_closure() {
+        test_message_stream_basics(true).await;
+    }
+
+    #[async_std::test]
+    async fn message_stream_with_halted_routing() {
+        // Repeat in order to catch possible deadlocks etc.
+        for _ in 0..1_000 {
+            test_message_stream_basics(false).await;
         }
     }
 }
