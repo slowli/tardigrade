@@ -66,7 +66,7 @@ async fn completing_workflow_via_driver() {
     let orders_sx = handle.remove(ReceiverAt("orders")).unwrap();
     let events_rx = handle.remove(SenderAt("events")).unwrap();
     let events_rx = events_rx
-        .stream_messages(0)
+        .stream_messages(0..)
         .map(|message| message.decode().unwrap());
     drop(handle);
 
@@ -103,7 +103,7 @@ async fn test_driver_with_multiple_messages(start_after_tick: bool) {
     let mut handle = workflow.handle().await.with_indexing();
     let events_rx = handle.remove(SenderAt("events")).unwrap();
     let mut events_rx = events_rx
-        .stream_messages(0)
+        .stream_messages(0..)
         .map(|message| message.decode().unwrap());
     let orders_sx = handle.remove(ReceiverAt("orders")).unwrap();
     drop(handle);
@@ -162,7 +162,7 @@ async fn selecting_from_driver_and_other_future() {
     let orders_id = orders_sx.channel_id();
     let events_rx = handle.remove(SenderAt("events")).unwrap();
     let mut events_rx = events_rx
-        .stream_messages(0)
+        .stream_messages(0..)
         .map(|message| message.decode().unwrap());
     drop(handle);
 

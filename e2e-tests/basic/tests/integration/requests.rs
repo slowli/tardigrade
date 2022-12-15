@@ -36,10 +36,10 @@ async fn test_external_tasks(
         spawn_workflow::<_, PizzaDeliveryWithRequests>(&manager, DEFINITION_ID, args).await?;
     let responses_sx = handle.baking.responses.into_owned();
     let responses_id = responses_sx.channel_id();
-    let baking_tasks_rx = handle.baking.requests.into_owned().stream_messages(0);
+    let baking_tasks_rx = handle.baking.requests.into_owned().stream_messages(0..);
     let baking_tasks_rx = baking_tasks_rx.map(|message| message.decode());
     let orders_sx = handle.orders;
-    let events_rx = handle.shared.events.stream_messages(0);
+    let events_rx = handle.shared.events.stream_messages(0..);
     let events_rx = events_rx.map(|message| message.decode());
 
     let manager = manager.clone();
@@ -119,7 +119,7 @@ async fn closing_task_responses_on_host() -> TestResult {
     let responses_sx = handle.baking.responses.into_owned();
     let baking_tasks = handle.baking.requests.into_owned();
     let orders_sx = handle.orders;
-    let events_rx = handle.shared.events.stream_messages(0);
+    let events_rx = handle.shared.events.stream_messages(0..);
     let events_rx = events_rx.map(|message| message.decode());
 
     let manager = manager.clone();
@@ -128,7 +128,7 @@ async fn closing_task_responses_on_host() -> TestResult {
 
     // Complete first `SUCCESSFUL_TASK_COUNT` tasks, then close the responses channel.
     let tasks_handle = task::spawn(async move {
-        let baking_tasks_rx = baking_tasks.stream_messages(0);
+        let baking_tasks_rx = baking_tasks.stream_messages(0..);
         let tasks_stream = baking_tasks_rx.map(move |message| {
             let Request::New { id, data: order, .. } = message.decode().unwrap() else {
                 return future::ready(()).left_future();

@@ -246,18 +246,7 @@ impl<T, C: Codec<T>, S: Storage> MessageReceiver<T, C, S> {
         &self,
         indices: impl ops::RangeBounds<usize>,
     ) -> impl Stream<Item = ReceivedMessage<T, C>> + '_ {
-        let start_idx = match indices.start_bound() {
-            ops::Bound::Unbounded => 0,
-            ops::Bound::Included(i) => *i,
-            ops::Bound::Excluded(i) => *i + 1,
-        };
-        let end_idx = match indices.end_bound() {
-            ops::Bound::Unbounded => usize::MAX,
-            ops::Bound::Included(i) => *i,
-            ops::Bound::Excluded(i) => i.saturating_sub(1),
-        };
-        let indices = start_idx..=end_idx;
-
+        let indices = unify_index_range(indices);
         let messages_future = async {
             let tx = self.storage.readonly_transaction().await;
             RefStream::from_source(tx, |tx| tx.channel_messages(self.channel_id, indices))
@@ -301,6 +290,20 @@ impl<T, C: Codec<T>, S: Storage> MessageReceiver<T, C, S> {
     }
 }
 
+fn unify_index_range(indices: impl ops::RangeBounds<usize>) -> ops::RangeInclusive<usize> {
+    let start_idx = match indices.start_bound() {
+        ops::Bound::Unbounded => 0,
+        ops::Bound::Included(i) => *i,
+        ops::Bound::Excluded(i) => *i + 1,
+    };
+    let end_idx = match indices.end_bound() {
+        ops::Bound::Unbounded => usize::MAX,
+        ops::Bound::Included(i) => *i,
+        ops::Bound::Excluded(i) => i.saturating_sub(1),
+    };
+    start_idx..=end_idx
+}
+
 impl<T, C: Codec<T>, S: Storage + Clone> MessageReceiver<T, C, &S> {
     /// Converts the storage referenced by this receiver to an owned form.
     pub fn into_owned(self) -> MessageReceiver<T, C, S> {
@@ -315,11 +318,12 @@ impl<T, C: Codec<T>, S: Storage + Clone> MessageReceiver<T, C, &S> {
 
 impl<T: 'static, C: Codec<T>, S: StreamMessages> MessageReceiver<T, C, S> {
     /// Streams messages from this channel starting from the specified index.
-    pub fn stream_messages(&self, start_index: usize) -> MessageStream<T, C> {
+    pub fn stream_messages(&self, indices: ops::RangeFrom<usize>) -> MessageStream<T, C> {
+        // TODO: what is the reasonable value for channel capacity? Should it be configurable?
         let (sx, rx) = mpsc::channel(16);
         let stream_registration = self
             .storage
-            .stream_messages(self.channel_id, start_index, sx);
+            .stream_messages(self.channel_id, indices.start, sx);
 
         let messages = stream_registration.map(|()| rx).flatten_stream().boxed();
         MessageStream::new(messages)
@@ -500,7 +504,7 @@ mod tests {
 
         let sender = RawMessageSender::new(&storage, 1, record.clone());
         let receiver = RawMessageReceiver::new(&storage, 1, record);
-        let mut messages = receiver.stream_messages(0);
+        let mut messages = receiver.stream_messages(0..);
 
         sender.send(vec![1]).await.unwrap();
         let received = messages.next().await.unwrap();

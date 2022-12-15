@@ -101,7 +101,7 @@ impl Default for CachedTimer {
 /// let mut handle = workflow.handle().await.with_indexing();
 /// let commands_sx = handle.remove(ReceiverAt("commands")).unwrap();
 /// let events_rx = handle.remove(SenderAt("events")).unwrap();
-/// let events_rx = events_rx.stream_messages(0);
+/// let events_rx = events_rx.stream_messages(0..);
 ///
 /// // Run the manager in a separate task. To retain handles, we clone
 /// // the manager (recall that it was wrapped in `Arc`).

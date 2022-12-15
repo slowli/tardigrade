@@ -59,7 +59,7 @@ mod mock {
     /// // Spin up the driver to execute the `workflow`.
     /// let mut self_handles = self_handles.with_indexing();
     /// let events_rx = self_handles.remove(SenderAt("events")).unwrap();
-    /// let mut events_rx = events_rx.stream_messages(0);
+    /// let mut events_rx = events_rx.stream_messages(0..);
     ///
     /// let manager = manager.clone();
     /// task::spawn(async move {

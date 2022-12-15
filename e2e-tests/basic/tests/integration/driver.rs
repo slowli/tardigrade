@@ -59,11 +59,8 @@ async fn test_async_handle(cancel_workflow: bool) -> TestResult {
         spawn_workflow::<_, PizzaDelivery>(&manager, "test::PizzaDelivery", args).await?;
     let workflow_id = workflow.id();
     let orders_sx = handle.orders;
-    let events_rx = handle
-        .shared
-        .events
-        .stream_messages(0)
-        .map(|message| message.decode());
+    let events_rx = handle.shared.events.stream_messages(0..);
+    let events_rx = events_rx.map(|message| message.decode());
 
     let (cancel_sx, mut cancel_rx) = oneshot::channel::<()>();
     let manager = manager.clone();
@@ -145,7 +142,7 @@ async fn test_async_handle_with_concurrency(args: Args) -> TestResult {
     let (_, handle) =
         spawn_workflow::<_, PizzaDelivery>(&manager, "test::PizzaDelivery", args).await?;
     let orders_sx = handle.orders;
-    let mut events_rx = handle.shared.events.stream_messages(0);
+    let mut events_rx = handle.shared.events.stream_messages(0..);
 
     let manager = manager.clone();
     let join_handle =
@@ -257,7 +254,7 @@ async fn initialize_workflow() -> TestResult<AsyncRig> {
     let (_, handle) =
         spawn_workflow::<_, PizzaDelivery>(&manager, "test::PizzaDelivery", args).await?;
     let orders_sx = handle.orders;
-    let events_rx = handle.shared.events.into_owned().stream_messages(0);
+    let events_rx = handle.shared.events.into_owned().stream_messages(0..);
     let mut events_rx = events_rx.map(|message| message.decode());
 
     let mut config = DriveConfig::new();
@@ -420,7 +417,7 @@ async fn spawn_cancellable_workflow() -> TestResult<CancellableWorkflow> {
     let (_, handle) =
         spawn_workflow::<_, PizzaDelivery>(&manager, "test::PizzaDelivery", args).await?;
     let orders_sx = handle.orders;
-    let events_rx = handle.shared.events.into_owned().stream_messages(0);
+    let events_rx = handle.shared.events.into_owned().stream_messages(0..);
     let events_rx = events_rx.map(|message| message.decode());
 
     let order = PizzaOrder {
@@ -512,7 +509,7 @@ async fn dynamically_typed_async_handle() -> TestResult {
     let events_rx = handle.remove(SenderAt("events")).unwrap();
     let events_id = events_rx.channel_id();
     let events_rx = events_rx
-        .stream_messages(0)
+        .stream_messages(0..)
         .map(|message| message.downcast::<DomainEvent, Json>().decode());
 
     let manager_for_task = manager.clone();

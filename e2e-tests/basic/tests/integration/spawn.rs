@@ -38,7 +38,7 @@ async fn spawning_child_workflows() -> TestResult {
     let (_, handle) =
         spawn_workflow::<_, PizzaDeliveryWithSpawning>(&manager, PARENT_DEF, args).await?;
     let orders_sx = handle.orders;
-    let events_rx = handle.shared.events.stream_messages(0);
+    let events_rx = handle.shared.events.stream_messages(0..);
     let events_rx = events_rx.map(|message| message.decode());
 
     let mut config = DriveConfig::new();
@@ -181,7 +181,7 @@ async fn accessing_handles_in_child_workflows() -> TestResult {
         assert_matches!(event.decode()?, DomainEvent::OrderTaken { .. });
         let child_events_rx = child_handle
             .events
-            .stream_messages(2)
+            .stream_messages(2..)
             .map(|message| message.decode());
         child_events_rxs.push(child_events_rx);
 

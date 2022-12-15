@@ -116,7 +116,7 @@ async fn setup_workflow(
     let (_, handle) =
         spawn_workflow::<_, PizzaDeliveryWithTasks>(&manager, DEFINITION_ID, args).await?;
     let orders_sx = handle.orders;
-    let events_rx = handle.shared.events.stream_messages(0);
+    let events_rx = handle.shared.events.stream_messages(0..);
     let events_rx = events_rx.map(|message| message.decode());
 
     let mut config = DriveConfig::new();
