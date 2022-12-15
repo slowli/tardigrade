@@ -35,6 +35,17 @@ impl<T> Default for ChannelSpawnConfig<T> {
     }
 }
 
+#[cfg(feature = "tracing")]
+impl<T> ChannelSpawnConfig<T> {
+    fn drop_payload(&self) -> ChannelSpawnConfig<()> {
+        match self {
+            Self::New => ChannelSpawnConfig::New,
+            Self::Closed => ChannelSpawnConfig::Closed,
+            Self::Existing(_) => ChannelSpawnConfig::Existing(()),
+        }
+    }
+}
+
 type SharedSpawnConfig<T> = Rc<Cell<ChannelSpawnConfig<T>>>;
 
 type ChannelsConfig<Fmt> = HandleMap<
@@ -265,10 +276,22 @@ impl<Fmt: HandleFormat> HandlesBuilder<Fmt> {
             let pair = match config {
                 Handle::Receiver(config) => {
                     let config = config.take();
+                    #[cfg(feature = "tracing")]
+                    tracing::debug!(
+                        %path, remote = "receiver", config = ?config.drop_payload(),
+                        "creating channel"
+                    );
+
                     Handle::Receiver(ChannelPair::for_remote_receiver(config, manager).await)
                 }
                 Handle::Sender(config) => {
                     let config = config.take();
+                    #[cfg(feature = "tracing")]
+                    tracing::debug!(
+                        %path, remote = "sender", config = ?config.drop_payload(),
+                        "creating channel"
+                    );
+
                     Handle::Sender(ChannelPair::for_remote_sender(config, manager).await)
                 }
             };

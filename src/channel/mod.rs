@@ -296,7 +296,11 @@ impl<T, C: Codec<T>> Sink<T> for Sender<T, C> {
 }
 
 /// Creates a new channel and returns its sender and receiver halves.
+#[cfg_attr(feature = "tracing", tracing::instrument(level = "debug"))]
 pub async fn channel<T, C: Codec<T>>() -> (Sender<T, C>, Receiver<T, C>) {
     let (raw_sender, raw_receiver) = imp::raw_channel().await;
+    #[cfg(feature = "tracing")]
+    tracing::debug!(ret.channel_id = raw_receiver.channel_id());
+
     (Sender::new(raw_sender), Receiver::new(raw_receiver))
 }

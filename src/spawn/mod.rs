@@ -144,6 +144,10 @@ pub trait CreateWorkflow: ManageInterfaces + CreateChannel {
     ///
     /// Returns an error on interface mismatch between `W` and the workflow definition
     /// contained in this manager under `definition_id`.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(level = "debug", skip(self), err)
+    )]
     fn new_workflow<'a, W: WorkflowFn + GetInterface>(
         &'a self,
         definition_id: &'a str,
@@ -211,8 +215,16 @@ where
     W: WorkflowFn + WithHandle,
 {
     /// Builds the handles pair allowing to configure handles in the process.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            level = "debug",
+            skip_all,
+            fields(self.definition_id = self.definition_id)
+        )
+    )]
     #[allow(clippy::missing_panics_doc)] // false positive
-    pub async fn handles<F>(&self, config_fn: F) -> (InEnv<W, M::Fmt>, InEnv<W, Inverse<M::Fmt>>)
+    pub async fn handles<F>(&self, config_fn: F) -> HandlesPair<W, M::Fmt>
     where
         F: FnOnce(&InEnv<W, Spawner<M::Fmt>>),
     {
@@ -227,6 +239,9 @@ where
         (child_handles, self_handles)
     }
 }
+
+/// Pair of handles with a certain interface in a certain format and the inverse format.
+pub type HandlesPair<W, Fmt> = (InEnv<W, Fmt>, InEnv<W, Inverse<Fmt>>);
 
 /// Client-side connection to a [workflow manager][`ManageWorkflows`].
 #[derive(Debug)]
@@ -253,6 +268,10 @@ impl CreateWorkflow for Workflows {
     type Spawned<W: WorkflowFn + WithHandle> = RemoteWorkflow;
     type Error = HostError;
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(level = "debug", skip(self, args, handles))
+    )]
     fn new_workflow_unchecked<W: WorkflowFn + WithHandle>(
         &self,
         definition_id: &str,
