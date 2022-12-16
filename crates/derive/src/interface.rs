@@ -40,7 +40,7 @@ impl GetInterface {
         })?;
         let full_spec_path = Path::new(&manifest_path).join(spec_path);
 
-        fs::read(&full_spec_path).map_err(|err| {
+        fs::read(full_spec_path).map_err(|err| {
             let message = format!("cannot read workflow spec at `{spec_path}`: {err}");
             darling::Error::custom(message)
         })

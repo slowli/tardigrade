@@ -379,8 +379,8 @@ impl<T: StorageTransaction> StorageTransaction for StreamingTransaction<T> {
 
         let events = self
             .new_messages
-            .into_iter()
-            .map(|(channel_id, _)| Ok(MessageEvent { channel_id }));
+            .into_keys()
+            .map(|channel_id| Ok(MessageEvent { channel_id }));
         self.message_events_sx
             .send_all(&mut stream::iter(events))
             .await

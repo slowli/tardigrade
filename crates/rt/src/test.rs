@@ -191,7 +191,7 @@ impl ModuleCompiler {
 
         let mut ref_wasm_file = PathBuf::from(wasm_file);
         ref_wasm_file.set_extension("ref.wasm");
-        fs::write(&ref_wasm_file, &processed_bytes).unwrap_or_else(|err| {
+        fs::write(&ref_wasm_file, processed_bytes).unwrap_or_else(|err| {
             panic!(
                 "Error writing externref-processed module to file `{}`: {err}",
                 wasm_file.to_string_lossy()
