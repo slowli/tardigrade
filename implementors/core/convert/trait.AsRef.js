@@ -1,0 +1,3 @@
+(function() {var implementors = {
+"tardigrade_rt":[["impl&lt;T:&nbsp;<a class=\"trait\" href=\"tardigrade_rt/storage/trait.ReadonlyStorageTransaction.html\" title=\"trait tardigrade_rt::storage::ReadonlyStorageTransaction\">ReadonlyStorageTransaction</a>&gt; <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/convert/trait.AsRef.html\" title=\"trait core::convert::AsRef\">AsRef</a>&lt;T&gt; for <a class=\"struct\" href=\"tardigrade_rt/storage/struct.Readonly.html\" title=\"struct tardigrade_rt::storage::Readonly\">Readonly</a>&lt;T&gt;"]]
+};if (window.register_implementors) {window.register_implementors(implementors);} else {window.pending_implementors = implementors;}})()

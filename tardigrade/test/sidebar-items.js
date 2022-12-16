@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":[["MockScheduler","Mock workflow scheduler."],["Runtime","Mock runtime allowing to execute workflows."],["TestInstance","Instance of a workflow combined with a [`Runtime`]."],["Timers","Handle allowing to manipulate time in the test environment."],["WorkflowRegistry","Mock registry for workflows."]]};

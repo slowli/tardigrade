@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":[["handle","[`Handle`] management for workflows."],["interface","Types related to workflow interface definition."]]};

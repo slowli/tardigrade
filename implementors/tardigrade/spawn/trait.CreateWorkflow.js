@@ -1,0 +1,4 @@
+(function() {var implementors = {
+"tardigrade":[],
+"tardigrade_rt":[["impl&lt;'a, M:&nbsp;<a class=\"trait\" href=\"tardigrade_rt/manager/trait.AsManager.html\" title=\"trait tardigrade_rt::manager::AsManager\">AsManager</a>&gt; <a class=\"trait\" href=\"tardigrade/spawn/trait.CreateWorkflow.html\" title=\"trait tardigrade::spawn::CreateWorkflow\">CreateWorkflow</a> for <a class=\"struct\" href=\"tardigrade_rt/manager/struct.ManagerSpawner.html\" title=\"struct tardigrade_rt::manager::ManagerSpawner\">ManagerSpawner</a>&lt;'a, M&gt;"]]
+};if (window.register_implementors) {window.register_implementors(implementors);} else {window.pending_implementors = implementors;}})()
