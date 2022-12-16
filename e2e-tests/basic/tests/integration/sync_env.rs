@@ -12,12 +12,13 @@ use tardigrade::{
 };
 use tardigrade_rt::{
     engine::{WasmtimeDefinition, WasmtimeInstance, WasmtimeModule, WorkflowEngine},
-    manager::{AsManager, MessageReceiver, WorkflowManager},
+    handle::MessageReceiver,
+    manager::WorkflowManager,
     receipt::{
-        ChannelEvent, ChannelEventKind, Event, ExecutedFunction, Receipt, ResourceEvent,
-        ResourceEventKind, ResourceId, WakeUpCause,
+        ChannelEvent, ChannelEventKind, Event, ExecutedFunction, ExecutionError, Receipt,
+        ResourceEvent, ResourceEventKind, ResourceId, WakeUpCause,
     },
-    storage::{LocalStorageSnapshot, ModuleRecord},
+    storage::{LocalStorageSnapshot, ModuleRecord, Storage},
     test::MockScheduler,
     PersistedWorkflow,
 };
@@ -28,17 +29,13 @@ use tardigrade_test_basic::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOr
 const DEFINITION_ID: &str = "test::PizzaDelivery";
 
 #[derive(Debug)]
-struct Drain<'a, T, C, M> {
-    receiver: MessageReceiver<'a, T, C, M>,
+struct Drain<T, C, S> {
+    receiver: MessageReceiver<T, C, S>,
     cursor: usize,
 }
 
-impl<'a, T, C, M> Drain<'a, T, C, M>
-where
-    C: Codec<T>,
-    M: AsManager,
-{
-    fn new(receiver: MessageReceiver<'a, T, C, M>) -> Self {
+impl<T, C: Codec<T>, S: Storage> Drain<T, C, S> {
+    fn new(receiver: MessageReceiver<T, C, S>) -> Self {
         Self {
             receiver,
             cursor: 0,
@@ -70,7 +67,7 @@ async fn basic_workflow() -> TestResult {
     };
     let (mut workflow, _) =
         spawn_workflow::<_, PizzaDelivery>(&manager, DEFINITION_ID, args).await?;
-    let receipt = manager.tick().await?.drop_handle().into_inner()?;
+    let receipt = manager.tick().await?.into_inner()?;
 
     assert_eq!(receipt.executions().len(), 2);
     let init_execution = &receipt.executions()[0];
@@ -110,13 +107,13 @@ async fn basic_workflow() -> TestResult {
     assert_eq!(main_task.spawned_by(), None);
     assert_eq!(persisted.timers().count(), 0);
 
-    let mut handle = workflow.handle().await;
+    let handle = workflow.handle().await;
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,
         delivery_distance: 10,
     };
     handle.orders.send(order).await?;
-    let receipt = manager.tick().await?.drop_handle().into_inner()?;
+    let receipt = manager.tick().await?.into_inner()?;
     workflow.update().await?;
     assert_send_receipt(&receipt, workflow.persisted());
 
@@ -133,7 +130,7 @@ async fn basic_workflow() -> TestResult {
         WakeUpCause::Flush { channel_id, .. } if *channel_id == events_id
     );
 
-    manager.tick().await?.drop_handle().into_inner()?;
+    manager.tick().await?.into_inner()?;
     {
         let storage = tracing_storage.lock();
         let baking_timer = storage
@@ -159,7 +156,7 @@ async fn basic_workflow() -> TestResult {
     scheduler.set_now(new_time);
     manager.set_current_time(new_time).await;
 
-    let receipt = manager.tick().await?.drop_handle().into_inner()?;
+    let receipt = manager.tick().await?.into_inner()?;
     assert_time_update_receipt(&receipt, workflow.persisted());
     let events = handle.shared.events.receive_message(1).await?;
     assert_eq!(events.decode()?, DomainEvent::Baked { index: 1, order });
@@ -265,8 +262,8 @@ async fn workflow_with_concurrency() -> TestResult {
         oven_count: 2,
         deliverer_count: 1,
     };
-    let (_, mut handle) = spawn_workflow::<_, PizzaDelivery>(&manager, DEFINITION_ID, args).await?;
-    manager.tick().await?.drop_handle().into_inner()?;
+    let (_, handle) = spawn_workflow::<_, PizzaDelivery>(&manager, DEFINITION_ID, args).await?;
+    manager.tick().await?.into_inner()?;
 
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,
@@ -281,7 +278,7 @@ async fn workflow_with_concurrency() -> TestResult {
 
     let mut message_indices = HashSet::new();
     while let Ok(result) = manager.tick().await {
-        let receipt = result.drop_handle().into_inner()?;
+        let receipt = result.into_inner()?;
         let new_indices = receipt.executions().iter().filter_map(|execution| {
             if let Some(WakeUpCause::InboundMessage { message_index, .. }) = execution.cause() {
                 Some(*message_index)
@@ -333,17 +330,17 @@ async fn persisting_workflow() -> TestResult {
         oven_count: 1,
         deliverer_count: 1,
     };
-    let (workflow, mut handle) =
+    let (workflow, handle) =
         spawn_workflow::<_, PizzaDelivery>(&manager, DEFINITION_ID, args).await?;
     let workflow_id = workflow.id();
-    manager.tick().await?.drop_handle().into_inner()?;
+    manager.tick().await?.into_inner()?;
 
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,
         delivery_distance: 10,
     };
     handle.orders.send(order).await?;
-    manager.tick().await?.drop_handle().into_inner()?;
+    manager.tick().await?.into_inner()?;
 
     let mut events_drain = Drain::new(handle.shared.events);
     let events = events_drain.drain().await?;
@@ -357,7 +354,7 @@ async fn persisting_workflow() -> TestResult {
         module.set_bytes(vec![]);
     }
     let persisted_json = serde_json::to_string(&snapshot)?;
-    assert!(persisted_json.len() < 6_000, "{persisted_json}");
+    assert!(persisted_json.len() < 10_000, "{persisted_json}");
     let snapshot: LocalStorageSnapshot<'_> = serde_json::from_str(&persisted_json)?;
     storage = snapshot.into();
 
@@ -366,16 +363,16 @@ async fn persisting_workflow() -> TestResult {
         .build()
         .await?;
 
-    let receipt = manager.tick().await?.drop_handle().into_inner()?;
+    let receipt = manager.tick().await?.into_inner()?;
     assert!(!receipt.executions().is_empty());
     let new_time = clock.now() + chrono::Duration::milliseconds(100);
     clock.set_now(new_time);
     manager.set_current_time(new_time).await;
-    let receipt = manager.tick().await?.drop_handle().into_inner()?;
+    let receipt = manager.tick().await?.into_inner()?;
     assert!(!receipt.executions().is_empty());
 
     // Check that the pizza is ready now.
-    let workflow = manager.workflow(workflow_id).await.unwrap();
+    let workflow = manager.storage().workflow(workflow_id).await.unwrap();
     let workflow = workflow.downcast::<PizzaDelivery>()?;
     let mut events_drain = Drain::new(workflow.handle().await.shared.events);
     events_drain.cursor = events_drain_cursor;
@@ -383,11 +380,11 @@ async fn persisting_workflow() -> TestResult {
     assert_eq!(events, [DomainEvent::Baked { index: 1, order }]);
 
     // We need to flush a second time to get the "started delivering" event.
-    manager.tick().await?.drop_handle().into_inner()?;
+    manager.tick().await?.into_inner()?;
     let events = events_drain.drain().await?;
     assert_eq!(events, [DomainEvent::StartedDelivering { index: 1, order }]);
     // ...and flush again to activate the delivery timer
-    manager.tick().await?.drop_handle().into_inner()?;
+    manager.tick().await?.into_inner()?;
 
     // Check that the delivery timer is now active.
     {
@@ -413,7 +410,7 @@ async fn untyped_workflow() -> TestResult {
     });
     let (workflow, handle) = spawn_workflow::<_, ()>(&manager, DEFINITION_ID, args).await?;
     let mut handle = handle.with_indexing();
-    let receipt = manager.tick().await?.drop_handle().into_inner()?;
+    let receipt = manager.tick().await?.into_inner()?;
     assert_eq!(receipt.executions().len(), 2);
 
     let order = PizzaOrder {
@@ -423,7 +420,7 @@ async fn untyped_workflow() -> TestResult {
     handle[ReceiverAt("orders")]
         .send(Json::encode_value(order))
         .await?;
-    let receipt = manager.tick().await?.drop_handle().into_inner()?;
+    let receipt = manager.tick().await?.into_inner()?;
     assert_send_receipt(&receipt, workflow.persisted());
 
     let event = handle[SenderAt("events")].receive_message(0).await?;
@@ -445,7 +442,6 @@ async fn workflow_recovery_after_trap() -> TestResult {
     const SAMPLES: usize = 5;
 
     let manager = create_manager(()).await?;
-
     let args = Json::encode_value(Args {
         oven_count: SAMPLES,
         deliverer_count: 1,
@@ -453,7 +449,7 @@ async fn workflow_recovery_after_trap() -> TestResult {
     let (_, handle) = spawn_workflow::<_, ()>(&manager, DEFINITION_ID, args).await?;
     let mut handle = handle.with_indexing();
     let mut events_drain = Drain::new(handle.remove(SenderAt("events")).unwrap());
-    manager.tick().await?.drop_handle().into_inner()?;
+    manager.tick().await?.into_inner()?;
 
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,
@@ -472,20 +468,19 @@ async fn workflow_recovery_after_trap() -> TestResult {
 
         let result = loop {
             let tick_result = manager.tick().await?;
-            let receipt = tick_result
-                .as_ref()
-                .unwrap_or_else(|handle| handle.error().receipt());
+            let receipt = tick_result.as_ref().unwrap_or_else(ExecutionError::receipt);
             let consumed_message = receipt.executions().iter().any(|execution| {
                 matches!(execution.cause(), Some(WakeUpCause::InboundMessage { .. }))
             });
             if consumed_message {
-                break tick_result.into_inner();
+                break tick_result;
             }
         };
+        let workflow_id = result.workflow_id();
+        let result = result.into_inner();
 
         if i % 2 == 0 {
-            let err_handle = result.unwrap_err();
-            let err = err_handle.error();
+            let err = result.unwrap_err();
             let panic_info = err.panic_info().unwrap();
             let panic_message = panic_info.message.as_ref().unwrap();
             assert!(
@@ -502,6 +497,8 @@ async fn workflow_recovery_after_trap() -> TestResult {
             assert!(err.contains("workflow execution failed"), "{err}");
             assert!(err.contains("Cannot decode bytes"), "{err}");
 
+            let err_handle = manager.storage().any_workflow(workflow_id).await;
+            let err_handle = err_handle.unwrap().unwrap_errored();
             let mut err_messages: Vec<_> = err_handle.messages().collect();
             assert_eq!(err_messages.len(), 1);
             let err_message = err_messages.pop().unwrap();

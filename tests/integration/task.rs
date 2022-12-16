@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::TestedWorkflow;
 use tardigrade::{
     channel::SendError,
-    spawn::{ManageWorkflows, Workflows},
+    spawn::{CreateWorkflow, Workflows},
     task::{self, JoinError, TaskError, TaskResult},
     test::Runtime,
     workflow::{DelegateHandle, GetInterface, SpawnWorkflow, WorkflowFn},
@@ -88,7 +88,7 @@ fn test_workflow_termination(args: Args) {
 fn into_task_error(err: JoinError) -> TaskError {
     match err {
         JoinError::Err(err) => err,
-        other => panic!("unexpected error: {:?}", other),
+        other => panic!("unexpected error: {other:?}"),
     }
 }
 

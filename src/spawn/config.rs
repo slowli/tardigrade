@@ -10,7 +10,7 @@ use crate::{
         SenderAt,
     },
     interface::Interface,
-    spawn::ManageChannels,
+    spawn::CreateChannel,
     workflow::{
         HandleFormat, InEnv, IntoRaw, Inverse, TakeHandles, TryFromRaw, UntypedHandles, Wasm,
         WithHandle,
@@ -32,6 +32,17 @@ enum ChannelSpawnConfig<T> {
 impl<T> Default for ChannelSpawnConfig<T> {
     fn default() -> Self {
         Self::New
+    }
+}
+
+#[cfg(feature = "tracing")]
+impl<T> ChannelSpawnConfig<T> {
+    fn drop_payload(&self) -> ChannelSpawnConfig<()> {
+        match self {
+            Self::New => ChannelSpawnConfig::New,
+            Self::Closed => ChannelSpawnConfig::Closed,
+            Self::Existing(_) => ChannelSpawnConfig::Existing(()),
+        }
     }
 }
 
@@ -257,7 +268,7 @@ impl<Fmt: HandleFormat> HandlesBuilder<Fmt> {
 impl<Fmt: HandleFormat> HandlesBuilder<Fmt> {
     pub async fn build<M>(self, manager: &M) -> ForSelf<Fmt>
     where
-        M: ManageChannels<Fmt = Fmt>,
+        M: CreateChannel<Fmt = Fmt>,
     {
         let channels = self.spawner.channels;
 
@@ -265,10 +276,22 @@ impl<Fmt: HandleFormat> HandlesBuilder<Fmt> {
             let pair = match config {
                 Handle::Receiver(config) => {
                     let config = config.take();
+                    #[cfg(feature = "tracing")]
+                    tracing::debug!(
+                        %path, remote = "receiver", config = ?config.drop_payload(),
+                        "creating channel"
+                    );
+
                     Handle::Receiver(ChannelPair::for_remote_receiver(config, manager).await)
                 }
                 Handle::Sender(config) => {
                     let config = config.take();
+                    #[cfg(feature = "tracing")]
+                    tracing::debug!(
+                        %path, remote = "sender", config = ?config.drop_payload(),
+                        "creating channel"
+                    );
+
                     Handle::Sender(ChannelPair::for_remote_sender(config, manager).await)
                 }
             };
@@ -298,10 +321,10 @@ impl<Fmt: HandleFormat> ChannelPair<Fmt> {
 
     async fn for_remote_receiver(
         config: ChannelSpawnConfig<Fmt::RawReceiver>,
-        manager: &impl ManageChannels<Fmt = Fmt>,
+        manager: &impl CreateChannel<Fmt = Fmt>,
     ) -> Self {
         let (sender, receiver) = match config {
-            ChannelSpawnConfig::New => manager.create_channel().await,
+            ChannelSpawnConfig::New => manager.new_channel().await,
             ChannelSpawnConfig::Closed => (manager.closed_sender(), manager.closed_receiver()),
             ChannelSpawnConfig::Existing(rx) => (manager.closed_sender(), rx),
         };
@@ -310,10 +333,10 @@ impl<Fmt: HandleFormat> ChannelPair<Fmt> {
 
     async fn for_remote_sender(
         config: ChannelSpawnConfig<Fmt::RawSender>,
-        manager: &impl ManageChannels<Fmt = Fmt>,
+        manager: &impl CreateChannel<Fmt = Fmt>,
     ) -> Self {
         let (sender, receiver) = match config {
-            ChannelSpawnConfig::New => manager.create_channel().await,
+            ChannelSpawnConfig::New => manager.new_channel().await,
             ChannelSpawnConfig::Closed => (manager.closed_sender(), manager.closed_receiver()),
             ChannelSpawnConfig::Existing(sx) => (sx, manager.closed_receiver()),
         };

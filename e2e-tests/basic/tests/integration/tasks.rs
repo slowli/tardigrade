@@ -2,7 +2,7 @@
 
 use assert_matches::assert_matches;
 use async_std::task;
-use futures::{stream, SinkExt, StreamExt, TryStreamExt};
+use futures::{StreamExt, TryStreamExt};
 
 use std::{
     cmp,
@@ -12,14 +12,15 @@ use std::{
 
 use tardigrade::{Json, TaskId};
 use tardigrade_rt::{
-    driver::{Driver, MessageSender, Termination},
+    handle::MessageSender,
+    manager::{DriveConfig, Termination},
     receipt::{
         Event, ExecutedFunction, Execution, Receipt, ResourceEvent, ResourceEventKind, ResourceId,
     },
     test::MockScheduler,
 };
 
-use crate::{create_manager, spawn_workflow, TestResult};
+use crate::{create_streaming_manager, spawn_workflow, StreamingStorage, TestResult};
 use tardigrade_test_basic::{
     tasks::{Args, PizzaDeliveryWithTasks},
     DomainEvent, PizzaKind, PizzaOrder,
@@ -28,21 +29,20 @@ use tardigrade_test_basic::{
 const DEFINITION_ID: &str = "test::PizzaDeliveryWithTasks";
 
 pub(crate) async fn send_orders(
-    mut orders_sx: MessageSender<PizzaOrder, Json>,
+    orders_sx: MessageSender<PizzaOrder, Json, &StreamingStorage>,
     count: usize,
 ) -> TestResult {
-    let orders = (0..count).map(|i| {
-        Ok(PizzaOrder {
-            kind: match i % 3 {
-                0 => PizzaKind::Margherita,
-                1 => PizzaKind::Pepperoni,
-                2 => PizzaKind::FourCheese,
-                _ => unreachable!(),
-            },
-            delivery_distance: 10,
-        })
+    let orders = (0..count).map(|i| PizzaOrder {
+        kind: match i % 3 {
+            0 => PizzaKind::Margherita,
+            1 => PizzaKind::Pepperoni,
+            2 => PizzaKind::FourCheese,
+            _ => unreachable!(),
+        },
+        delivery_distance: 10,
     });
-    orders_sx.send_all(&mut stream::iter(orders)).await?;
+    orders_sx.send_all(orders).await?;
+    orders_sx.close().await;
     Ok(())
 }
 
@@ -111,17 +111,20 @@ async fn setup_workflow(
     order_count: usize,
 ) -> TestResult<(Vec<DomainEvent>, Vec<Receipt>)> {
     let (scheduler, mut expirations) = MockScheduler::with_expirations();
-    let mut manager = create_manager(scheduler.clone()).await?;
+    let (manager, mut commits_rx) = create_streaming_manager(scheduler.clone()).await?;
 
     let (_, handle) =
         spawn_workflow::<_, PizzaDeliveryWithTasks>(&manager, DEFINITION_ID, args).await?;
-    let mut driver = Driver::new();
-    let orders_sx = handle.orders.into_sink(&mut driver);
-    let events_rx = handle.shared.events.into_stream(&mut driver);
-    let receipts_rx = driver
+    let orders_sx = handle.orders;
+    let events_rx = handle.shared.events.stream_messages(0..);
+    let events_rx = events_rx.map(|message| message.decode());
+
+    let mut config = DriveConfig::new();
+    let receipts_rx = config
         .tick_results()
         .map(|result| result.into_inner().unwrap());
-    let join_handle = task::spawn(async move { driver.drive(&mut manager).await });
+    let manager = manager.clone();
+    let join_handle = task::spawn(async move { manager.drive(&mut commits_rx, config).await });
 
     // We want to have precise control over time (in order to deterministically fail subtasks).
     task::spawn(async move {

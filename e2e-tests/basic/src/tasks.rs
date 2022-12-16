@@ -46,7 +46,7 @@ impl SpawnWorkflow for PizzaDeliveryWithTasks {
         while let Some(order) = handle.orders.next().await {
             index += 1;
             let shared = handle.shared.clone();
-            let task_name = format!("order #{}", index);
+            let task_name = format!("order #{index}");
             let fail = args.fail_kinds.contains(&order.kind);
             let mut events = handle.shared.events.clone();
 

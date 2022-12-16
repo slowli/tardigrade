@@ -40,8 +40,8 @@ impl GetInterface {
         })?;
         let full_spec_path = Path::new(&manifest_path).join(spec_path);
 
-        fs::read(&full_spec_path).map_err(|err| {
-            let message = format!("cannot read workflow spec at `{}`: {}", spec_path, err);
+        fs::read(full_spec_path).map_err(|err| {
+            let message = format!("cannot read workflow spec at `{spec_path}`: {err}");
             darling::Error::custom(message)
         })
     }
@@ -106,11 +106,11 @@ impl FromDeriveInput for GetInterface {
                 Self::get_spec_contents(spec).map_err(|err| err.with_span(&input.ident))?;
 
             let interface: Interface = serde_json::from_slice(&contents).map_err(|err| {
-                let message = format!("error deserializing workflow spec: {}", err);
+                let message = format!("error deserializing workflow spec: {err}");
                 darling::Error::custom(message).with_span(&input.ident)
             })?;
             let spec = serde_json::to_vec(&interface).map_err(|err| {
-                let message = format!("error serializing workflow spec: {}", err);
+                let message = format!("error serializing workflow spec: {err}");
                 darling::Error::custom(message).with_span(&input.ident)
             })?;
             Some(spec)

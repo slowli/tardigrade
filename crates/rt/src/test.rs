@@ -78,8 +78,7 @@ impl WasmOpt {
         let exit_status = command.wait().expect("failed waiting for wasm-opt");
         assert!(
             exit_status.success(),
-            "Optimizing WASM module finished abnormally: {}",
-            exit_status
+            "Optimizing WASM module finished abnormally: {exit_status}"
         );
         opt_wasm_file
     }
@@ -173,8 +172,7 @@ impl ModuleCompiler {
         let exit_status = command.wait().expect("failed waiting for cargo");
         assert!(
             exit_status.success(),
-            "Compiling WASM module finished abnormally: {}",
-            exit_status
+            "Compiling WASM module finished abnormally: {exit_status}"
         );
         self.wasm_file()
     }
@@ -193,7 +191,7 @@ impl ModuleCompiler {
 
         let mut ref_wasm_file = PathBuf::from(wasm_file);
         ref_wasm_file.set_extension("ref.wasm");
-        fs::write(&ref_wasm_file, &processed_bytes).unwrap_or_else(|err| {
+        fs::write(&ref_wasm_file, processed_bytes).unwrap_or_else(|err| {
             panic!(
                 "Error writing externref-processed module to file `{}`: {err}",
                 wasm_file.to_string_lossy()

@@ -155,10 +155,13 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
             });
 
             #[cfg(feature = "tracing")]
-            tracing::debug!(
-                requests = pending_requests.len(),
-                "removed cancelled pending requests"
-            );
+            if !canceled_ids.is_empty() {
+                tracing::debug!(
+                    cancelled.len = canceled_ids.len(),
+                    requests.len = pending_requests.len(),
+                    "removed cancelled pending requests"
+                );
+            }
             let canceled_ids = canceled_ids
                 .into_iter()
                 .map(|id| Ok(Request::Cancel { id }));

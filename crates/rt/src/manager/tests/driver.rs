@@ -1,18 +1,32 @@
 //! Tests for `Driver`.
 
 use assert_matches::assert_matches;
+use async_std::task;
 use futures::{
     future::{self, Either},
-    SinkExt, TryStreamExt,
+    FutureExt, StreamExt,
 };
 
+use std::{sync::Arc, task::Poll};
+
 use super::*;
-use crate::{
-    backends::MockScheduler,
-    engine::{AsWorkflowData, MockAnswers, MockInstance, MockPollFn},
-    manager::tests::{create_test_manager, create_test_workflow, is_consumption},
-};
-use tardigrade::handle::{ReceiverAt, SenderAt, WithIndexing};
+use crate::{backends::MockScheduler, storage::Streaming};
+
+type StreamingStorage = Streaming<Arc<LocalStorage>>;
+type StreamingManager = WorkflowManager<MockEngine, MockScheduler, StreamingStorage>;
+
+fn create_storage() -> (StreamingStorage, CommitStream) {
+    let storage = Arc::new(LocalStorage::default());
+    let (mut storage, router_task) = Streaming::new(storage);
+    task::spawn(router_task);
+    let commits_rx = storage.stream_commits();
+    (storage, commits_rx)
+}
+
+async fn create_test_manager(storage: StreamingStorage, poll_fns: MockAnswers) -> StreamingManager {
+    let clock = MockScheduler::default();
+    create_test_manager_with_storage(poll_fns, clock, storage).await
+}
 
 fn poll_orders(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     let channels = ctx.data().persisted.channels();
@@ -41,24 +55,26 @@ fn handle_order(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
 #[async_std::test]
 async fn completing_workflow_via_driver() {
     let poll_fns = MockAnswers::from_values([poll_orders, handle_order]);
-
-    let mut manager = create_test_manager(poll_fns, MockScheduler::default()).await;
+    let (storage, mut commits_rx) = create_storage();
+    let manager = Arc::new(create_test_manager(storage, poll_fns).await);
     let workflow = create_test_workflow(&manager).await;
+    let manager = Arc::clone(&manager);
+    let driver_task =
+        task::spawn(async move { manager.drive(&mut commits_rx, DriveConfig::new()).await });
+
     let mut handle = workflow.handle().await.with_indexing();
-    let mut driver = Driver::new();
     let orders_sx = handle.remove(ReceiverAt("orders")).unwrap();
-    let mut orders_sx = orders_sx.into_sink(&mut driver);
     let events_rx = handle.remove(SenderAt("events")).unwrap();
-    let events_rx = events_rx.into_stream(&mut driver);
+    let events_rx = events_rx
+        .stream_messages(0..)
+        .map(|message| message.decode().unwrap());
     drop(handle);
 
-    let input_actions = async move {
-        orders_sx.send(b"order".to_vec()).await.unwrap();
-    };
-    let (_, driver_result) = future::join(input_actions, driver.drive(&mut manager)).await;
+    orders_sx.send(b"order".to_vec()).await.unwrap();
+    orders_sx.close().await;
 
-    assert_matches!(driver_result, Termination::Finished);
-    let events: Vec<_> = events_rx.try_collect().await.unwrap();
+    assert_matches!(driver_task.await, Termination::Finished);
+    let events: Vec<_> = events_rx.collect().await;
     assert_eq!(events.len(), 1);
     assert_eq!(events[0], b"event #1");
 }
@@ -80,30 +96,33 @@ async fn test_driver_with_multiple_messages(start_after_tick: bool) {
     };
     let poll_fns = MockAnswers::from_values([poll_orders_and_send_event, handle_order]);
 
-    let mut manager = create_test_manager(poll_fns, MockScheduler::default()).await;
+    let (storage, mut commits_rx) = create_storage();
+    let manager = create_test_manager(storage, poll_fns).await;
     let workflow = create_test_workflow(&manager).await;
+
     let mut handle = workflow.handle().await.with_indexing();
     let events_rx = handle.remove(SenderAt("events")).unwrap();
+    let mut events_rx = events_rx
+        .stream_messages(0..)
+        .map(|message| message.decode().unwrap());
     let orders_sx = handle.remove(ReceiverAt("orders")).unwrap();
     drop(handle);
 
     if start_after_tick {
         manager.tick().await.unwrap().into_inner().unwrap();
-        let event = events_rx.receive_message(0).await.unwrap();
-        assert_eq!(event.decode().unwrap(), b"event #0");
+        let event = events_rx.next().await.unwrap();
+        assert_eq!(event, b"event #0");
     }
 
-    let mut driver = Driver::new();
-    let mut orders_sx = orders_sx.into_sink(&mut driver);
-    let events_rx = events_rx.into_stream(&mut driver);
-
-    let input_actions = async move {
+    let orders_task = async move {
         orders_sx.send(b"order".to_vec()).await.unwrap();
+        orders_sx.close().await;
     };
-    let (_, driver_result) = future::join(input_actions, driver.drive(&mut manager)).await;
+    let drive_task = manager.drive(&mut commits_rx, DriveConfig::new());
+    let (_, termination) = future::join(orders_task, drive_task).await;
+    assert_matches!(termination, Termination::Finished);
 
-    assert_matches!(driver_result, Termination::Finished);
-    let events: Vec<_> = events_rx.try_collect().await.unwrap();
+    let events: Vec<_> = events_rx.collect().await;
     assert_eq!(events.last().unwrap(), b"event #1");
     if start_after_tick {
         assert_eq!(events.len(), 1);
@@ -132,20 +151,22 @@ async fn selecting_from_driver_and_other_future() {
     let poll_fns =
         MockAnswers::from_values([poll_orders, handle_order_and_poll_order, handle_order]);
 
-    let mut manager = create_test_manager(poll_fns, MockScheduler::default()).await;
-    let workflow = create_test_workflow(&manager).await;
-    let workflow_id = workflow.id();
+    let (storage, mut commits_rx) = create_storage();
+    let manager = Arc::new(create_test_manager(storage, poll_fns).await);
+    let mut workflow = create_test_workflow(&manager).await;
+    let mut drive_config = DriveConfig::new();
+    let mut tick_results = drive_config.tick_results();
+
     let mut handle = workflow.handle().await.with_indexing();
-    let mut driver = Driver::new();
-    let mut tick_results = driver.tick_results();
     let orders_sx = handle.remove(ReceiverAt("orders")).unwrap();
     let orders_id = orders_sx.channel_id();
-    let mut orders_sx = orders_sx.into_sink(&mut driver);
     let events_rx = handle.remove(SenderAt("events")).unwrap();
-    let events_rx = events_rx.into_stream(&mut driver);
+    let mut events_rx = events_rx
+        .stream_messages(0..)
+        .map(|message| message.decode().unwrap());
     drop(handle);
 
-    let input_actions = orders_sx.send(b"order".to_vec()).map(Result::unwrap);
+    let api_actions = orders_sx.send(b"order".to_vec()).map(Result::unwrap);
     let until_consumed_order = async move {
         let mut consumed_order = false;
         while let Some(tick_result) = tick_results.next().await {
@@ -163,25 +184,23 @@ async fn selecting_from_driver_and_other_future() {
     futures::pin_mut!(until_consumed_order);
 
     {
-        let driver_task = driver.drive(&mut manager);
+        let driver_task = manager.drive(&mut commits_rx, drive_config);
         futures::pin_mut!(driver_task);
         let select_task = future::select(driver_task, until_consumed_order);
 
-        let (_, select_result) = future::join(input_actions, select_task).await;
+        let (_, select_result) = future::join(api_actions, select_task).await;
         match select_result {
             Either::Right(((), _)) => { /* just as expected */ }
             Either::Left((driver_result, _)) => panic!("{driver_result:?}"),
         }
     }
-    let events: Vec<_> = events_rx.try_collect().await.unwrap();
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0], b"event #1");
+    let event = events_rx.next().await.unwrap();
+    assert_eq!(event, b"event #1");
 
     // The `manager` can be used again.
-    let mut workflow = manager.workflow(workflow_id).await.unwrap();
     let mut handle = workflow.handle().await.with_indexing();
-    let mut orders = handle.remove(ReceiverAt("orders")).unwrap();
+    let orders = handle.remove(ReceiverAt("orders")).unwrap();
     orders.send(b"order #2".to_vec()).await.unwrap();
     manager.tick().await.unwrap().into_inner().unwrap();
-    workflow.update().await.unwrap_err();
+    workflow.update().await.unwrap_err(); // should be completed
 }

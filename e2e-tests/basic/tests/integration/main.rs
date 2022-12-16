@@ -8,17 +8,18 @@ use tracing_subscriber::{
     filter::Targets, layer::SubscriberExt, registry::LookupSpan, FmtSubscriber,
 };
 
-use std::{collections::HashMap, error};
+use std::{collections::HashMap, error, sync::Arc};
 
 use tardigrade::{
     handle::ReceiverAt,
-    spawn::ManageWorkflows,
+    spawn::CreateWorkflow,
     workflow::{GetInterface, WorkflowFn},
 };
 use tardigrade_rt::{
     engine::{Wasmtime, WasmtimeModule},
-    manager::{HostHandles, WorkflowHandle, WorkflowManager},
-    storage::LocalStorage,
+    handle::{HostHandles, WorkflowHandle},
+    manager::WorkflowManager,
+    storage::{CommitStream, LocalStorage, Storage, Streaming},
     test::{ModuleCompiler, WasmOpt},
     Clock,
 };
@@ -30,7 +31,9 @@ mod sync_env;
 mod tasks;
 
 type TestResult<T = ()> = Result<T, Box<dyn error::Error>>;
-type LocalManager<C> = WorkflowManager<Wasmtime, C, LocalStorage>;
+type LocalManager<C, S = LocalStorage> = WorkflowManager<Wasmtime, C, S>;
+type StreamingStorage = Streaming<Arc<LocalStorage>>;
+type StreamingManager<C> = Arc<LocalManager<C, StreamingStorage>>;
 
 static MODULE: Lazy<WasmtimeModule> = Lazy::new(|| {
     // Since this closure is called once, it is a good place to do other initialization
@@ -49,10 +52,11 @@ async fn create_module() -> WasmtimeModule {
     task::spawn_blocking(|| &*MODULE).await.clone()
 }
 
-async fn create_manager<C: Clock>(clock: C) -> TestResult<LocalManager<C>> {
+async fn do_create_manager<C: Clock, S: Storage>(
+    clock: C,
+    storage: S,
+) -> TestResult<LocalManager<C, S>> {
     let module = create_module().await;
-    let mut storage = LocalStorage::default();
-    storage.truncate_workflow_messages();
     let mut manager = WorkflowManager::builder(Wasmtime::default(), storage)
         .with_clock(clock)
         .build()
@@ -61,21 +65,38 @@ async fn create_manager<C: Clock>(clock: C) -> TestResult<LocalManager<C>> {
     Ok(manager)
 }
 
-type WorkflowAndHandles<'m, C, W> = (
-    WorkflowHandle<'m, W, LocalManager<C>>,
-    HostHandles<'m, W, LocalManager<C>>,
-);
+async fn create_manager<C: Clock>(clock: C) -> TestResult<LocalManager<C>> {
+    let mut storage = LocalStorage::default();
+    storage.truncate_workflow_messages();
+    do_create_manager(clock, storage).await
+}
 
-async fn spawn_workflow<'m, C, W>(
-    manager: &'m LocalManager<C>,
+async fn create_streaming_manager<C: Clock>(
+    clock: C,
+) -> TestResult<(StreamingManager<C>, CommitStream)> {
+    let mut storage = LocalStorage::default();
+    storage.truncate_workflow_messages();
+    let (mut storage, router_task) = Streaming::new(Arc::new(storage));
+    task::spawn(router_task);
+    let commits_rx = storage.stream_commits();
+
+    let manager = do_create_manager(clock, storage).await?;
+    Ok((Arc::new(manager), commits_rx))
+}
+
+type WorkflowAndHandles<'m, W, S> = (WorkflowHandle<W, &'m S>, HostHandles<'m, W, S>);
+
+async fn spawn_workflow<'m, S, W>(
+    manager: &'m LocalManager<impl Clock, S>,
     definition_id: &str,
     args: W::Args,
-) -> TestResult<WorkflowAndHandles<'m, C, W>>
+) -> TestResult<WorkflowAndHandles<'m, W, S>>
 where
-    C: Clock,
+    S: Storage,
     W: WorkflowFn + GetInterface,
 {
-    let builder = manager.new_workflow(definition_id)?;
+    let spawner = manager.spawner().close_senders();
+    let builder = spawner.new_workflow(definition_id)?;
     let (child_handles, self_handles) = builder.handles(|_| { /* use default config */ }).await;
     let workflow = builder.build(args, child_handles).await?;
     Ok((workflow, self_handles))

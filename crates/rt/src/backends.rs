@@ -17,48 +17,60 @@ mod mock {
     ///
     /// # Examples
     ///
-    /// A primary use case is to use the scheduler with a [`Driver`] for integration testing:
+    /// A primary use case is to use the scheduler with a [`WorkflowManager`]
+    /// for integration testing:
     ///
-    /// [`Driver`]: crate::driver::Driver
+    /// [`WorkflowManager`]: crate::manager::WorkflowManager
     ///
     /// ```
     /// # use async_std::task;
-    /// # use futures::TryStreamExt;
-    /// # use tardigrade::{handle::{SenderAt, WithIndexing}, spawn::ManageWorkflows};
+    /// # use futures::StreamExt;
+    /// # use std::sync::Arc;
+    /// #
+    /// # use tardigrade::{handle::{SenderAt, WithIndexing}, spawn::CreateWorkflow};
     /// # use tardigrade_rt::{
-    /// #     driver::Driver, engine::{Wasmtime, WasmtimeModule},
-    /// #     manager::{WorkflowHandle, WorkflowManager}, storage::LocalStorage, test::MockScheduler,
+    /// #     engine::{Wasmtime, WasmtimeModule},
+    /// #     manager::{DriveConfig, WorkflowManager},
+    /// #     storage::{LocalStorage, Streaming},
+    /// #     handle::WorkflowHandle, test::MockScheduler,
     /// # };
     /// # async fn test_wrapper(module: WasmtimeModule) -> anyhow::Result<()> {
-    /// let scheduler = MockScheduler::default();
+    /// // We need `Streaming` storage to drive a `WorkflowManager`.
+    /// let storage = Arc::new(LocalStorage::default());
+    /// let (mut storage, storage_task) = Streaming::new(storage);
+    /// let mut commits_rx = storage.stream_commits();
+    /// task::spawn(storage_task);
+    ///
     /// // Set the mocked wall clock for the workflow manager.
-    /// let storage = LocalStorage::default();
+    /// let scheduler = MockScheduler::default();
     /// let mut manager = WorkflowManager::builder(Wasmtime::default(), storage)
     ///     .with_clock(scheduler.clone())
     ///     .build()
     ///     .await?;
-    /// let manager_ref = &manager;
+    /// let manager = Arc::new(manager); // to simplify handle management
     ///
     /// let inputs: Vec<u8> = // ...
     /// #   vec![];
-    /// let builder = manager_ref.new_workflow::<()>("test::Workflow")?;
+    /// let spawner = manager.spawner();
+    /// let builder = spawner.new_workflow::<()>("test::Workflow")?;
     /// let (handles, self_handles) = builder.handles(|_| {}).await;
     /// builder.build(inputs, handles).await?;
     ///
     /// // Spin up the driver to execute the `workflow`.
-    /// let mut driver = Driver::new();
     /// let mut self_handles = self_handles.with_indexing();
-    /// let mut events_rx = self_handles.remove(SenderAt("events"))
-    ///     .unwrap()
-    ///     .into_stream(&mut driver);
-    /// drop(self_handles);
-    /// task::spawn(async move { driver.drive(&mut manager).await });
+    /// let events_rx = self_handles.remove(SenderAt("events")).unwrap();
+    /// let mut events_rx = events_rx.stream_messages(0..);
+    ///
+    /// let manager = manager.clone();
+    /// task::spawn(async move {
+    ///     manager.drive(&mut commits_rx, DriveConfig::new()).await
+    /// });
     ///
     /// // Advance mocked wall clock.
     /// let now = scheduler.now();
     /// scheduler.set_now(now + chrono::Duration::seconds(1));
     /// // This can lead to the workflow progressing, e.g., by emitting messages
-    /// let message: Option<Vec<u8>> = events_rx.try_next().await?;
+    /// let message = events_rx.next().await.unwrap();
     /// // Assert on `message`...
     /// # Ok(())
     /// # }

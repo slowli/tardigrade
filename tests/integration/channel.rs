@@ -104,7 +104,7 @@ where
 #[test]
 fn broadcast_with_yields() {
     for capacity in tested_capacities() {
-        println!("Testing with capacity {}", capacity);
+        println!("Testing with capacity {capacity}");
 
         let mut pool = LocalPool::new();
         let spawner = pool.spawner();
@@ -123,7 +123,7 @@ fn broadcast_with_delays() {
     };
 
     for capacity in tested_capacities() {
-        println!("Testing with capacity {}", capacity);
+        println!("Testing with capacity {capacity}");
 
         let mut pool = LocalPool::new();
         let spawner = pool.spawner();

@@ -6,7 +6,8 @@ use chrono::{DateTime, Utc};
 use futures::{
     channel::{mpsc, oneshot},
     future::{self, Either},
-    stream, FutureExt, SinkExt, Stream, StreamExt, TryStreamExt,
+    stream::BoxStream,
+    FutureExt, Stream, StreamExt, TryStreamExt,
 };
 use tracing::instrument::WithSubscriber;
 use tracing_capture::Storage;
@@ -21,14 +22,17 @@ use tardigrade::{
     Codec, Json, TimerId,
 };
 use tardigrade_rt::{
-    driver::{Driver, MessageReceiver, MessageSender, Termination},
-    manager::TickResult,
+    manager::{DriveConfig, Termination, TickResult},
     receipt::{Event, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
+    storage::CommitStream,
     test::MockScheduler,
     AsyncIoScheduler,
 };
 
-use super::{create_manager, enable_tracing_assertions, spawn_workflow, LocalManager, TestResult};
+use super::{
+    create_streaming_manager, enable_tracing_assertions, spawn_workflow, StreamingManager,
+    TestResult,
+};
 use tardigrade_test_basic::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOrder};
 
 pub(crate) fn spawn_traced_task<T: Send + 'static>(
@@ -45,7 +49,7 @@ fn drain_stream(stream: &mut (impl Stream + Unpin)) {
 
 async fn test_async_handle(cancel_workflow: bool) -> TestResult {
     let (_guard, tracing_storage) = enable_tracing_assertions();
-    let mut manager = create_manager(AsyncIoScheduler).await?;
+    let (manager, mut commits_rx) = create_streaming_manager(AsyncIoScheduler).await?;
 
     let args = Args {
         oven_count: 1,
@@ -54,14 +58,16 @@ async fn test_async_handle(cancel_workflow: bool) -> TestResult {
     let (workflow, handle) =
         spawn_workflow::<_, PizzaDelivery>(&manager, "test::PizzaDelivery", args).await?;
     let workflow_id = workflow.id();
-    let mut driver = Driver::new();
-    let mut orders = handle.orders.into_sink(&mut driver);
-    let events = handle.shared.events.into_stream(&mut driver);
+    let orders_sx = handle.orders;
+    let events_rx = handle.shared.events.stream_messages(0..);
+    let events_rx = events_rx.map(|message| message.decode());
 
     let (cancel_sx, mut cancel_rx) = oneshot::channel::<()>();
+    let manager = manager.clone();
     let join_handle = spawn_traced_task(async move {
+        let drive_task = manager.drive(&mut commits_rx, DriveConfig::new());
         futures::select! {
-            term = driver.drive(&mut manager).fuse() => Either::Left(term),
+            term = drive_task.fuse() => Either::Left(term),
             _ = cancel_rx => Either::Right(manager),
         }
     });
@@ -70,9 +76,9 @@ async fn test_async_handle(cancel_workflow: bool) -> TestResult {
         kind: PizzaKind::Pepperoni,
         delivery_distance: 10,
     };
-    orders.send(order).await?;
+    orders_sx.send(order).await?;
 
-    let events: Vec<_> = events.take(4).try_collect().await?;
+    let events: Vec<_> = events_rx.take(4).try_collect().await?;
     assert_matches!(
         events.as_slice(),
         [
@@ -87,14 +93,14 @@ async fn test_async_handle(cancel_workflow: bool) -> TestResult {
         cancel_sx.send(()).unwrap();
         let manager = match join_handle.await {
             Either::Right(manager) => manager,
-            other => panic!("expected cancelled workflow, got {:?}", other),
+            other => panic!("expected cancelled workflow, got {other:?}"),
         };
 
-        let workflow = manager.workflow(workflow_id).await.unwrap();
+        let workflow = manager.storage().workflow(workflow_id).await.unwrap();
         let persisted = workflow.persisted();
         assert_eq!(persisted.timers().count(), 0);
     } else {
-        drop(orders); // should terminate the workflow
+        orders_sx.close().await; // should terminate the workflow
         assert_matches!(join_handle.await, Either::Left(Termination::Finished));
         assert_completed_spans(&tracing_storage.lock());
     }
@@ -132,25 +138,28 @@ async fn test_async_handle_with_concurrency(args: Args) -> TestResult {
 
     println!("testing async handle with {args:?}");
 
-    let mut manager = create_manager(AsyncIoScheduler).await?;
+    let (manager, mut commits_rx) = create_streaming_manager(AsyncIoScheduler).await?;
     let (_, handle) =
         spawn_workflow::<_, PizzaDelivery>(&manager, "test::PizzaDelivery", args).await?;
-    let mut driver = Driver::new();
-    let mut orders_sx = handle.orders.into_sink(&mut driver);
-    let events_rx = handle.shared.events.into_stream(&mut driver);
-    let join_handle = spawn_traced_task(async move { driver.drive(&mut manager).await });
+    let orders_sx = handle.orders;
+    let mut events_rx = handle.shared.events.stream_messages(0..);
+
+    let manager = manager.clone();
+    let join_handle =
+        spawn_traced_task(async move { manager.drive(&mut commits_rx, DriveConfig::new()).await });
 
     let orders = (0..ORDER_COUNT).map(|i| PizzaOrder {
         kind: PizzaKind::Pepperoni,
         delivery_distance: i as u64,
     });
-    let mut orders = stream::iter(orders).map(Ok);
-    orders_sx.send_all(&mut orders).await?;
-    drop(orders_sx); // will terminate the workflow eventually
+    orders_sx.send_all(orders).await?;
+    orders_sx.close().await; // will terminate the workflow eventually
     join_handle.await;
 
-    let events: Vec<_> = events_rx.try_collect().await?;
+    let events = events_rx.by_ref().map(|message| message.decode());
+    let events: Vec<_> = events.try_collect().await?;
     assert_eq!(events.len(), ORDER_COUNT * 4, "{events:#?}");
+    assert!(events_rx.is_closed());
 
     for i in 1..=ORDER_COUNT {
         let order_events: Vec<_> = events.iter().filter(|event| event.index() == i).collect();
@@ -229,14 +238,14 @@ async fn wait_timer(
 
 struct AsyncRig {
     scheduler: MockScheduler,
-    scheduler_expirations: Box<dyn Stream<Item = DateTime<Utc>> + Unpin>,
-    events: MessageReceiver<DomainEvent, Json>,
+    scheduler_expirations: BoxStream<'static, DateTime<Utc>>,
+    events: BoxStream<'static, serde_json::Result<DomainEvent>>,
     results: mpsc::UnboundedReceiver<TickResult>,
 }
 
 async fn initialize_workflow() -> TestResult<AsyncRig> {
     let (scheduler, expirations) = MockScheduler::with_expirations();
-    let mut manager = create_manager(scheduler.clone()).await?;
+    let (manager, mut commits_rx) = create_streaming_manager(scheduler.clone()).await?;
 
     let args = Args {
         oven_count: 2,
@@ -244,11 +253,14 @@ async fn initialize_workflow() -> TestResult<AsyncRig> {
     };
     let (_, handle) =
         spawn_workflow::<_, PizzaDelivery>(&manager, "test::PizzaDelivery", args).await?;
-    let mut driver = Driver::new();
-    let mut orders_sx = handle.orders.into_sink(&mut driver);
-    let mut events_rx = handle.shared.events.into_stream(&mut driver);
-    let results = driver.tick_results();
-    spawn_traced_task(async move { driver.drive(&mut manager).await });
+    let orders_sx = handle.orders;
+    let events_rx = handle.shared.events.into_owned().stream_messages(0..);
+    let mut events_rx = events_rx.map(|message| message.decode());
+
+    let mut config = DriveConfig::new();
+    let results = config.tick_results();
+    let manager = manager.clone();
+    spawn_traced_task(async move { manager.drive(&mut commits_rx, config).await });
 
     let orders = [
         PizzaOrder {
@@ -260,10 +272,8 @@ async fn initialize_workflow() -> TestResult<AsyncRig> {
             delivery_distance: 5,
         },
     ];
-    orders_sx
-        .send_all(&mut stream::iter(orders).map(Ok))
-        .await?;
-    drop(orders_sx);
+    orders_sx.send_all(orders).await?;
+    orders_sx.close().await;
 
     let events: Vec<_> = events_rx.by_ref().take(2).try_collect().await?;
     assert_matches!(
@@ -276,8 +286,8 @@ async fn initialize_workflow() -> TestResult<AsyncRig> {
 
     Ok(AsyncRig {
         scheduler,
-        scheduler_expirations: Box::new(expirations),
-        events: events_rx,
+        scheduler_expirations: expirations.boxed(),
+        events: events_rx.boxed(),
         results,
     })
 }
@@ -389,17 +399,16 @@ async fn async_handle_with_mock_scheduler_and_bulk_update() -> TestResult {
 }
 
 struct CancellableWorkflow {
-    orders_sx: MessageSender<PizzaOrder, Json>,
-    events_rx: MessageReceiver<DomainEvent, Json>,
-    join_handle: task::JoinHandle<LocalManager<MockScheduler>>,
+    events_rx: BoxStream<'static, serde_json::Result<DomainEvent>>,
+    join_handle: task::JoinHandle<(StreamingManager<MockScheduler>, CommitStream)>,
     scheduler: MockScheduler,
-    scheduler_expirations: Box<dyn Stream<Item = DateTime<Utc>> + Unpin>,
+    scheduler_expirations: BoxStream<'static, DateTime<Utc>>,
     cancel_sx: oneshot::Sender<()>,
 }
 
 async fn spawn_cancellable_workflow() -> TestResult<CancellableWorkflow> {
     let (scheduler, expirations) = MockScheduler::with_expirations();
-    let mut manager = create_manager(scheduler.clone()).await?;
+    let (manager, mut commits_rx) = create_streaming_manager(scheduler.clone()).await?;
 
     let args = Args {
         oven_count: 1,
@@ -407,25 +416,31 @@ async fn spawn_cancellable_workflow() -> TestResult<CancellableWorkflow> {
     };
     let (_, handle) =
         spawn_workflow::<_, PizzaDelivery>(&manager, "test::PizzaDelivery", args).await?;
-    let mut driver = Driver::new();
-    let orders_sx = handle.orders.into_sink(&mut driver);
-    let events_rx = handle.shared.events.into_stream(&mut driver);
+    let orders_sx = handle.orders;
+    let events_rx = handle.shared.events.into_owned().stream_messages(0..);
+    let events_rx = events_rx.map(|message| message.decode());
+
+    let order = PizzaOrder {
+        kind: PizzaKind::Pepperoni,
+        delivery_distance: 10,
+    };
+    orders_sx.send(order).await?;
 
     let (cancel_sx, mut cancel_rx) = oneshot::channel::<()>();
+    let manager = manager.clone();
     let join_handle = spawn_traced_task(async move {
         futures::select! {
-            _ = driver.drive(&mut manager).fuse() =>
+            _ = manager.drive(&mut commits_rx, DriveConfig::new()).fuse() =>
                 unreachable!("workflow should not be completed"),
-            _ = cancel_rx => manager,
+            _ = cancel_rx => (manager, commits_rx),
         }
     });
 
     Ok(CancellableWorkflow {
-        orders_sx,
-        events_rx,
+        events_rx: events_rx.boxed(),
         join_handle,
         scheduler,
-        scheduler_expirations: Box::new(expirations),
+        scheduler_expirations: expirations.boxed(),
         cancel_sx,
     })
 }
@@ -435,19 +450,12 @@ async fn launching_env_after_pause() -> TestResult {
     let (_guard, tracing_storage) = enable_tracing_assertions();
 
     let CancellableWorkflow {
-        mut orders_sx,
         mut events_rx,
         join_handle,
         scheduler,
         mut scheduler_expirations,
         cancel_sx,
     } = spawn_cancellable_workflow().await?;
-
-    let order = PizzaOrder {
-        kind: PizzaKind::Pepperoni,
-        delivery_distance: 10,
-    };
-    orders_sx.send(order).await?;
 
     let next_timer = scheduler_expirations.next().await.unwrap();
     scheduler.set_now(next_timer);
@@ -460,21 +468,25 @@ async fn launching_env_after_pause() -> TestResult {
 
     // Cancel the workflow.
     cancel_sx.send(()).unwrap();
-    let mut manager = join_handle.await;
+    let (manager, mut commits_rx) = join_handle.await;
 
     // Restore the persisted workflow and launch it again.
-    let workflow = manager
-        .workflow(0)
-        .await
-        .unwrap()
-        .downcast::<PizzaDelivery>()?;
-    let mut env = Driver::new();
+    let workflow = manager.storage().workflow(0).await.unwrap();
+    let workflow = workflow.downcast::<PizzaDelivery>()?;
     let handle = workflow.handle().await;
-    let orders_sx = handle.orders.into_sink(&mut env);
-    let join_handle = spawn_traced_task(async move { env.drive(&mut manager).await });
+    let orders_sx = handle.orders;
 
-    drop(orders_sx); // should terminate the workflow once the delivery timer is expired
-    let next_timer = scheduler_expirations.next().await.unwrap();
+    let manager = manager.clone();
+    let join_handle =
+        spawn_traced_task(async move { manager.drive(&mut commits_rx, DriveConfig::new()).await });
+
+    orders_sx.close().await; // should terminate the workflow once the delivery timer is expired
+    let next_timer = loop {
+        let next_timer = scheduler_expirations.next().await.unwrap();
+        if next_timer > scheduler.now() {
+            break next_timer;
+        }
+    };
     scheduler.set_now(next_timer);
     assert_matches!(join_handle.await, Termination::Finished);
 
@@ -484,7 +496,7 @@ async fn launching_env_after_pause() -> TestResult {
 
 #[async_std::test]
 async fn dynamically_typed_async_handle() -> TestResult {
-    let mut manager = create_manager(AsyncIoScheduler).await?;
+    let (manager, mut commits_rx) = create_streaming_manager(AsyncIoScheduler).await?;
 
     let args = Json::encode_value(Args {
         oven_count: 1,
@@ -492,18 +504,19 @@ async fn dynamically_typed_async_handle() -> TestResult {
     });
     let (_, handle) = spawn_workflow::<_, ()>(&manager, "test::PizzaDelivery", args).await?;
     let mut handle = handle.with_indexing();
-    let mut env = Driver::new();
     let orders_sx = handle.remove(ReceiverAt("orders")).unwrap();
     let orders_id = orders_sx.channel_id();
-    let mut orders_sx = orders_sx.into_sink(&mut env);
     let events_rx = handle.remove(SenderAt("events")).unwrap();
     let events_id = events_rx.channel_id();
-    let events_rx = events_rx.into_stream(&mut env);
-    drop(handle);
+    let events_rx = events_rx
+        .stream_messages(0..)
+        .map(|message| message.downcast::<DomainEvent, Json>().decode());
 
+    let manager_for_task = manager.clone();
     let join_handle = spawn_traced_task(async move {
-        env.drive(&mut manager).await;
-        manager
+        manager_for_task
+            .drive(&mut commits_rx, DriveConfig::new())
+            .await;
     });
 
     let order = PizzaOrder {
@@ -511,12 +524,9 @@ async fn dynamically_typed_async_handle() -> TestResult {
         delivery_distance: 10,
     };
     orders_sx.send(Json::encode_value(order)).await?;
-    drop(orders_sx); // to terminate the workflow
+    orders_sx.close().await; // to terminate the workflow
 
-    let events: Vec<_> = events_rx
-        .map(|res| <Json as Codec<DomainEvent>>::try_decode_bytes(res.unwrap()))
-        .try_collect()
-        .await?;
+    let events: Vec<_> = events_rx.try_collect().await?;
     assert_matches!(
         events.as_slice(),
         [
@@ -527,18 +537,18 @@ async fn dynamically_typed_async_handle() -> TestResult {
         ]
     );
 
-    let manager = join_handle.await;
-    let chan = manager.channel(orders_id).await.unwrap();
+    join_handle.await;
+    let chan = manager.storage().channel(orders_id).await.unwrap();
     assert!(chan.is_closed);
     assert_eq!(chan.received_messages, 1);
-    let chan = manager.channel(events_id).await.unwrap();
+    let chan = manager.storage().channel(events_id).await.unwrap();
     assert_eq!(chan.received_messages, 4);
     Ok(())
 }
 
 #[async_std::test]
 async fn rollbacks_on_trap() -> TestResult {
-    let mut manager = create_manager(AsyncIoScheduler).await?;
+    let (manager, mut commits_rx) = create_streaming_manager(AsyncIoScheduler).await?;
 
     let args = Json::encode_value(Args {
         oven_count: 1,
@@ -546,17 +556,17 @@ async fn rollbacks_on_trap() -> TestResult {
     });
     let (_, handle) = spawn_workflow::<_, ()>(&manager, "test::PizzaDelivery", args).await?;
     let mut handle = handle.with_indexing();
-    let mut env = Driver::new();
-    env.drop_erroneous_messages();
     let orders_sx = handle.remove(ReceiverAt("orders")).unwrap();
-    let mut orders_sx = orders_sx.into_sink(&mut env);
-    drop(handle);
 
-    let results = env.tick_results();
-    let join_handle = spawn_traced_task(async move { env.drive(&mut manager).await });
+    let mut config = DriveConfig::new();
+    config.drop_erroneous_messages();
+    let results = config.tick_results();
+    let manager = manager.clone();
+    let join_handle =
+        spawn_traced_task(async move { manager.drive(&mut commits_rx, config).await });
 
     orders_sx.send(b"invalid".to_vec()).await?;
-    drop(orders_sx); // to terminate the workflow
+    orders_sx.close().await; // to terminate the workflow
 
     let results: Vec<_> = results.map(TickResult::into_inner).collect().await;
     let err = match results.as_slice() {
@@ -571,14 +581,12 @@ async fn rollbacks_on_trap() -> TestResult {
     let panic_message = panic_info.message.as_ref().unwrap();
     assert!(
         panic_message.starts_with("Cannot decode bytes"),
-        "{}",
-        panic_message
+        "{panic_message}"
     );
     let panic_location = panic_info.location.as_ref().unwrap();
     assert!(
         panic_location.filename.ends_with("codec.rs"),
-        "{:?}",
-        panic_location
+        "{panic_location:?}"
     );
 
     join_handle.await;

@@ -2,7 +2,7 @@
 
 use anyhow::{anyhow, ensure, Context as _};
 use async_trait::async_trait;
-use futures::future::{BoxFuture, FutureExt};
+use futures::future::{BoxFuture, Future, FutureExt};
 use tracing_tunnel::PersistedSpans;
 
 use std::{
@@ -13,15 +13,14 @@ use std::{
     sync::Arc,
 };
 
-use super::{
-    AsManager, Clock, ManagerHandles, RawMessageReceiver, RawMessageSender, Services, Shared,
-    StashStub, WorkflowDefinitions, WorkflowHandle, WorkflowManager,
-};
+use super::{AsManager, Services, Shared, StashStub, WorkflowDefinitions};
 use crate::{
     data::WorkflowData,
-    engine::{DefineWorkflow, RunWorkflow, WorkflowEngine},
+    engine::{DefineWorkflow, RunWorkflow},
+    handle::{RawMessageReceiver, RawMessageSender, StorageRef, WorkflowHandle},
     receipt::Receipt,
     storage::{
+        helper::{self, ChannelSide, StorageHelper},
         ActiveWorkflowState, ChannelRecord, Storage, StorageTransaction, WorkflowRecord,
         WorkflowWaker,
     },
@@ -30,45 +29,10 @@ use crate::{
 use tardigrade::{
     handle::{Handle, HandlePath, HandlePathBuf},
     interface::Interface,
-    spawn::{HostError, ManageChannels, ManageInterfaces, ManageWorkflows},
+    spawn::{CreateChannel, CreateWorkflow, HostError, ManageInterfaces},
     workflow::{InsertHandles, WithHandle, WorkflowFn},
     ChannelId, Codec, WorkflowId,
 };
-
-impl ChannelRecord {
-    fn owned_by_host() -> Self {
-        Self {
-            receiver_workflow_id: None,
-            sender_workflow_ids: HashSet::new(),
-            has_external_sender: true,
-            is_closed: false,
-            received_messages: 0,
-        }
-    }
-
-    fn owned_by_workflow(workflow_id: WorkflowId) -> Self {
-        Self {
-            receiver_workflow_id: Some(workflow_id),
-            sender_workflow_ids: HashSet::from_iter([workflow_id]),
-            has_external_sender: false,
-            is_closed: false,
-            received_messages: 0,
-        }
-    }
-}
-
-async fn commit_channel<T: StorageTransaction>(
-    executed_workflow_id: Option<WorkflowId>,
-    transaction: &mut T,
-) -> (ChannelId, ChannelRecord) {
-    let channel_id = transaction.allocate_channel_id().await;
-    let state = executed_workflow_id.map_or_else(
-        ChannelRecord::owned_by_host,
-        ChannelRecord::owned_by_workflow,
-    );
-    transaction.insert_channel(channel_id, state.clone()).await;
-    (channel_id, state)
-}
 
 #[derive(Debug)]
 struct WorkflowStub {
@@ -130,7 +94,7 @@ impl<S: DefineWorkflow> Stubs<S> {
         let executed_workflow_id = self.executing_workflow_id;
 
         for local_id in self.new_channels {
-            let (channel_id, _) = commit_channel(executed_workflow_id, transaction).await;
+            let (channel_id, _) = helper::commit_channel(executed_workflow_id, transaction).await;
             parent.notify_on_channel_init(local_id, channel_id, receipt);
         }
 
@@ -146,15 +110,36 @@ impl<S: DefineWorkflow> Stubs<S> {
         }
     }
 
-    async fn commit_external<T: StorageTransaction>(
+    #[inline]
+    async fn do_commit_external<T: StorageTransaction>(
         self,
-        transaction: &mut T,
+        mut transaction: T,
+        senders_to_close: Vec<ChannelId>,
     ) -> anyhow::Result<WorkflowId> {
         debug_assert!(self.executing_workflow_id.is_none());
         debug_assert_eq!(self.new_workflows.len(), 1);
+
         let (_, mut child_stub) = self.new_workflows.into_iter().next().unwrap();
-        let child = Self::commit_child(None, &self.shared, transaction, &mut child_stub);
-        Ok(child.await?.workflow_id)
+        let child = Self::commit_child(None, &self.shared, &mut transaction, &mut child_stub);
+        let child = child.await.map(|ids| ids.workflow_id);
+
+        if child.is_ok() {
+            for channel_id in senders_to_close {
+                StorageHelper::new(&mut transaction)
+                    .close_channel_side(channel_id, ChannelSide::HostSender)
+                    .await;
+            }
+            transaction.commit().await;
+        }
+        child
+    }
+
+    fn commit_external<'a, T: 'a + StorageTransaction>(
+        self,
+        transaction: T,
+        senders_to_close: Vec<ChannelId>,
+    ) -> impl Future<Output = anyhow::Result<WorkflowId>> + Send + 'a {
+        self.do_commit_external(transaction, senders_to_close)
     }
 
     async fn commit_child<T: StorageTransaction>(
@@ -320,59 +305,79 @@ impl<S: DefineWorkflow> StashStub for Stubs<S> {
     }
 }
 
-impl<E, C, S> ManageInterfaces for &WorkflowManager<E, C, S>
-where
-    E: WorkflowEngine,
-    C: Clock,
-    S: Storage,
-{
+/// Specialized handle to a [`WorkflowManager`] allowing to spawn new workflows.
+///
+/// [`WorkflowManager`]: crate::manager::WorkflowManager
+#[derive(Debug)]
+pub struct ManagerSpawner<'a, M> {
+    inner: &'a M,
+    close_senders: bool,
+}
+
+impl<M> Clone for ManagerSpawner<'_, M> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner,
+            close_senders: self.close_senders,
+        }
+    }
+}
+
+impl<M> Copy for ManagerSpawner<'_, M> {}
+
+impl<'a, M: AsManager> ManagerSpawner<'a, M> {
+    pub(super) fn new(inner: &'a M) -> Self {
+        Self {
+            inner,
+            close_senders: false,
+        }
+    }
+
+    /// Instructs the spawner to close senders from the host side for the channels supplied
+    /// to the new workflows. By default, senders are copied to the workflow; i.e., the host
+    /// retains a sender handle after a workflow is created.
+    #[must_use]
+    pub fn close_senders(mut self) -> Self {
+        self.close_senders = true;
+        self
+    }
+}
+
+impl<M: AsManager> ManageInterfaces for ManagerSpawner<'_, M> {
     fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
-        let definition = self.definitions.for_full_id(definition_id)?;
+        let manager = self.inner.as_manager();
+        let definition = manager.definitions.for_full_id(definition_id)?;
         Some(Cow::Borrowed(definition.interface()))
     }
 }
 
 #[async_trait]
-impl<'a, E, C, S> ManageChannels for &'a WorkflowManager<E, C, S>
-where
-    E: WorkflowEngine,
-    C: Clock,
-    S: Storage,
-{
-    type Fmt = ManagerHandles<'a, WorkflowManager<E, C, S>>;
+impl<'a, M: AsManager> CreateChannel for ManagerSpawner<'a, M> {
+    type Fmt = StorageRef<'a, M::Storage>;
 
-    fn closed_receiver(&self) -> RawMessageReceiver<'a, WorkflowManager<E, C, S>> {
-        RawMessageReceiver::closed(self)
+    fn closed_receiver(&self) -> RawMessageReceiver<&'a M::Storage> {
+        let manager = self.inner.as_manager();
+        manager.storage().closed_receiver()
     }
 
-    fn closed_sender(&self) -> RawMessageSender<'a, WorkflowManager<E, C, S>> {
-        RawMessageSender::closed(self)
+    fn closed_sender(&self) -> RawMessageSender<&'a M::Storage> {
+        let manager = self.inner.as_manager();
+        manager.storage().closed_sender()
     }
 
-    async fn create_channel(
+    async fn new_channel(
         &self,
     ) -> (
-        RawMessageSender<'a, WorkflowManager<E, C, S>>,
-        RawMessageReceiver<'a, WorkflowManager<E, C, S>>,
+        RawMessageSender<&'a M::Storage>,
+        RawMessageReceiver<&'a M::Storage>,
     ) {
-        let mut transaction = self.storage.transaction().await;
-        let (channel_id, record) = commit_channel(None, &mut transaction).await;
-        transaction.commit().await;
-        (
-            RawMessageSender::new(self, channel_id, record.clone()),
-            RawMessageReceiver::new(self, channel_id, record),
-        )
+        let manager = self.inner.as_manager();
+        manager.storage().new_channel().await
     }
 }
 
-#[async_trait]
-impl<'a, E, C, S> ManageWorkflows for &'a WorkflowManager<E, C, S>
-where
-    E: WorkflowEngine,
-    C: Clock,
-    S: Storage,
-{
-    type Spawned<W: WorkflowFn + WithHandle> = WorkflowHandle<'a, W, WorkflowManager<E, C, S>>;
+impl<'a, M: AsManager> CreateWorkflow for ManagerSpawner<'a, M> {
+    type Spawned<W: WorkflowFn + WithHandle> = WorkflowHandle<W, &'a M::Storage>;
     type Error = anyhow::Error;
 
     fn new_workflow_unchecked<W: WorkflowFn + WithHandle>(
@@ -384,15 +389,34 @@ where
         let raw_args = <W::Codec>::encode_value(args);
         let mut channel_ids = ChannelIdsCollector::default();
         W::insert_into_untyped(handles, &mut channel_ids, HandlePath::EMPTY);
+        let channel_ids = channel_ids.0;
 
-        let mut stubs = Stubs::new(None, self.shared());
-        let result = stubs.stash_workflow(0, definition_id, raw_args, channel_ids.0);
+        let senders_to_close: Vec<_> = if self.close_senders {
+            let senders_to_close = channel_ids.values().filter_map(|&handle| {
+                if let Handle::Sender(id) = handle {
+                    Some(id)
+                } else {
+                    None
+                }
+            });
+            senders_to_close.collect()
+        } else {
+            vec![]
+        };
+
+        let manager = self.inner.as_manager();
+        let mut stubs = Stubs::new(None, manager.shared());
+        let result = stubs.stash_workflow(0, definition_id, raw_args, channel_ids);
         async move {
             result?;
-            let mut transaction = self.storage.transaction().await;
-            let workflow_id = stubs.commit_external(&mut transaction).await?;
-            transaction.commit().await;
-            Ok(self
+            let workflow_id = manager
+                .storage
+                .transaction()
+                .then(|transaction| stubs.commit_external(transaction, senders_to_close))
+                .await?;
+
+            Ok(manager
+                .storage()
                 .workflow(workflow_id)
                 .await
                 .unwrap()
@@ -405,11 +429,11 @@ where
 #[derive(Debug, Default)]
 struct ChannelIdsCollector(ChannelIds);
 
-impl<'a, M: AsManager> InsertHandles<ManagerHandles<'a, M>> for ChannelIdsCollector {
+impl<'a, S: Storage> InsertHandles<StorageRef<'a, S>> for ChannelIdsCollector {
     fn insert_handle(
         &mut self,
         path: HandlePathBuf,
-        handle: Handle<RawMessageReceiver<'a, M>, RawMessageSender<'a, M>>,
+        handle: Handle<RawMessageReceiver<&'a S>, RawMessageSender<&'a S>>,
     ) {
         let id = handle
             .map_receiver(|handle| handle.channel_id())

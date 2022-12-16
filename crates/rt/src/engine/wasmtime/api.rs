@@ -217,7 +217,7 @@ impl ModuleExports {
     {
         let ty = module
             .get_export(fn_name)
-            .ok_or_else(|| anyhow!("module does not export `{}` function", fn_name))?;
+            .ok_or_else(|| anyhow!("module does not export `{fn_name}` function"))?;
         ensure_func_ty::<Args, Out>(&ty, fn_name)
     }
 
@@ -227,7 +227,7 @@ impl ModuleExports {
         let global_base = Self::extract_u32_global(&mut *store, instance, "__global_base");
         let heap_base = Self::extract_u32_global(&mut *store, instance, "__heap_base");
         let data_location = global_base.and_then(|start| heap_base.map(|end| (start, end)));
-        let main_fn_name = format!("tardigrade_rt::spawn::{}", workflow_name);
+        let main_fn_name = format!("tardigrade_rt::spawn::{workflow_name}");
 
         Self {
             memory,
@@ -270,9 +270,9 @@ impl ModuleExports {
     {
         instance
             .get_func(&mut *store, fn_name)
-            .unwrap_or_else(|| panic!("function `{}` is not exported", fn_name))
+            .unwrap_or_else(|| panic!("function `{fn_name}` is not exported"))
             .typed(&*store)
-            .with_context(|| format!("Function `{}` has incorrect signature", fn_name))
+            .with_context(|| format!("Function `{fn_name}` has incorrect signature"))
             .unwrap()
     }
 }
@@ -331,9 +331,8 @@ impl ModuleImports {
 
             other => {
                 bail!(
-                    "Unknown import from `{}` module: `{}`",
-                    Self::RT_MODULE,
-                    other
+                    "Unknown import from `{}` module: `{other}`",
+                    Self::RT_MODULE
                 );
             }
         }
@@ -422,9 +421,8 @@ impl SpawnFunctions {
 
             other => {
                 bail!(
-                    "Unknown import from `{}` module: `{}`",
-                    ModuleImports::RT_MODULE,
-                    other
+                    "Unknown import from `{}` module: `{other}`",
+                    ModuleImports::RT_MODULE
                 );
             }
         }

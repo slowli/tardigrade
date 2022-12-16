@@ -66,7 +66,7 @@ impl WasmtimeModule {
 
             remaining_bytes = &remaining_bytes[section_len..];
         }
-        bail!("WASM lacks `{}` custom section", INTERFACE_SECTION);
+        bail!("WASM lacks `{INTERFACE_SECTION}` custom section");
     }
 
     fn read_section(mut bytes: &[u8]) -> anyhow::Result<(&[u8], &[u8])> {
@@ -97,14 +97,13 @@ impl WasmtimeModule {
             let interface_spec = section
                 .get(0..interface_len)
                 .ok_or_else(|| anyhow!("interface spec is out of bounds"))?;
-            let interface_spec = Interface::try_from_bytes(interface_spec).with_context(|| {
-                format!("failed parsing interface spec for workflow `{}`", name)
-            })?;
+            let interface_spec = Interface::try_from_bytes(interface_spec)
+                .with_context(|| format!("failed parsing interface spec for workflow `{name}`"))?;
             Self::check_internal_validity(&interface_spec)?;
             section = &section[interface_len..];
 
             if interfaces.insert(name.to_owned(), interface_spec).is_some() {
-                bail!("Interface for workflow `{}` is redefined", name);
+                bail!("Interface for workflow `{name}` is redefined");
             }
         }
         Ok(interfaces)
@@ -115,9 +114,8 @@ impl WasmtimeModule {
 
         ensure!(
             interface.version() == EXPECTED_VERSION,
-            "Unsupported interface version: {}, expected {}",
-            interface.version(),
-            EXPECTED_VERSION
+            "Unsupported interface version: {}, expected {EXPECTED_VERSION}",
+            interface.version()
         );
         Ok(())
     }

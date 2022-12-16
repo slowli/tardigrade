@@ -23,9 +23,9 @@ use std::{
 
 use super::{
     ActiveWorkflowState, ChannelRecord, MessageError, ModuleRecord, ReadChannels, ReadModules,
-    ReadWorkflows, Readonly, Storage, StorageTransaction, WorkflowRecord,
-    WorkflowSelectionCriteria, WorkflowState, WorkflowWaker, WorkflowWakerRecord, WriteChannels,
-    WriteModules, WriteWorkflowWakers, WriteWorkflows,
+    ReadWorkflows, Storage, StorageTransaction, WorkflowRecord, WorkflowSelectionCriteria,
+    WorkflowState, WorkflowWaker, WorkflowWakerRecord, WriteChannels, WriteModules,
+    WriteWorkflowWakers, WriteWorkflows,
 };
 use crate::{utils::Message, PersistedWorkflow};
 use tardigrade::{ChannelId, WakerId, WorkflowId};
@@ -220,25 +220,16 @@ impl From<LocalStorageSnapshot<'_>> for LocalStorage {
     }
 }
 
-/// Transaction used by [`LocalStorage`].
-#[derive(Debug)]
-pub struct LocalTransaction<'a> {
-    // Alternatively, we could manipulate the guarded data directly.
-    // This wouldn't break isolation because of the `Mutex`, and wouldn't break atomicity
-    // in `WorkflowManager` because there are no rollbacks, and all storage operations
-    // are synchronous. That is, there are no wait points in the `WorkflowManager`-produced futures
-    // at which the future may be cancelled to observe a partially applied transaction.
-    // However, this approach is hard to reason about in the general case; it is not cancel-safe
-    // if used together with "true" async operations. Hence, foolproof cloning of `Inner`.
-    target: MutexGuard<'a, Inner>,
+/// Readonly transaction used by [`LocalStorage`].
+#[derive(Debug, Clone)]
+pub struct LocalReadonlyTransaction<'a> {
     inner: Inner,
     next_channel_id: &'a AtomicU64,
     next_workflow_id: &'a AtomicU64,
     next_waker_id: &'a AtomicU64,
-    truncate_messages: bool,
 }
 
-impl LocalTransaction<'_> {
+impl LocalReadonlyTransaction<'_> {
     fn active_workflow_states(&self) -> impl Iterator<Item = &PersistedWorkflow> + '_ {
         self.inner.workflows.values().filter_map(|record| {
             if let WorkflowState::Active(state) = &record.state {
@@ -247,23 +238,6 @@ impl LocalTransaction<'_> {
                 None
             }
         })
-    }
-
-    /// Ensures that the specified workflow will be polled.
-    #[cfg(test)]
-    pub(crate) fn prepare_wakers_for_workflow(&mut self, workflow_id: WorkflowId) {
-        let wakers = &mut self.inner.workflow_wakers;
-        let pos = wakers
-            .iter()
-            .position(|record| record.workflow_id == workflow_id);
-        if let Some(pos) = pos {
-            wakers.swap(0, pos);
-        } else {
-            assert!(
-                wakers.is_empty(),
-                "no wakers for workflow {workflow_id}: {wakers:?}"
-            );
-        }
     }
 
     #[cfg(test)]
@@ -282,7 +256,7 @@ impl LocalTransaction<'_> {
 }
 
 #[async_trait]
-impl ReadModules for LocalTransaction<'_> {
+impl ReadModules for LocalReadonlyTransaction<'_> {
     async fn module(&self, id: &str) -> Option<ModuleRecord> {
         self.inner.modules.get(id).cloned()
     }
@@ -293,19 +267,7 @@ impl ReadModules for LocalTransaction<'_> {
 }
 
 #[async_trait]
-impl WriteModules for LocalTransaction<'_> {
-    async fn insert_module(&mut self, module: ModuleRecord) {
-        self.inner.modules.insert(module.id.clone(), module);
-    }
-
-    async fn update_tracing_metadata(&mut self, module_id: &str, metadata: PersistedMetadata) {
-        let module = self.inner.modules.get_mut(module_id).unwrap();
-        module.tracing_metadata.extend(metadata);
-    }
-}
-
-#[async_trait]
-impl ReadChannels for LocalTransaction<'_> {
+impl ReadChannels for LocalReadonlyTransaction<'_> {
     async fn channel(&self, id: ChannelId) -> Option<ChannelRecord> {
         let channel = self.inner.channels.get(&id)?;
         Some(channel.record.clone())
@@ -356,48 +318,7 @@ impl ReadChannels for LocalTransaction<'_> {
 }
 
 #[async_trait]
-impl WriteChannels for LocalTransaction<'_> {
-    async fn allocate_channel_id(&mut self) -> ChannelId {
-        self.next_channel_id.fetch_add(1, Ordering::SeqCst)
-    }
-
-    async fn insert_channel(&mut self, id: ChannelId, record: ChannelRecord) {
-        self.inner
-            .channels
-            .entry(id)
-            .or_insert_with(|| LocalChannel::new(record));
-    }
-
-    async fn manipulate_channel<F: FnOnce(&mut ChannelRecord) + Send>(
-        &mut self,
-        id: ChannelId,
-        action: F,
-    ) -> ChannelRecord {
-        let channel = self.inner.channels.get_mut(&id).unwrap();
-        action(&mut channel.record);
-        channel.record.clone()
-    }
-
-    async fn push_messages(&mut self, id: ChannelId, messages: Vec<Vec<u8>>) {
-        let channel = self.inner.channels.get_mut(&id).unwrap();
-        debug_assert!(!channel.record.is_closed);
-
-        let len = messages.len();
-        channel
-            .messages
-            .extend(messages.into_iter().map(Message::from));
-        channel.record.received_messages += len;
-    }
-
-    async fn truncate_channel(&mut self, id: ChannelId, min_index: usize) {
-        if let Some(channel) = self.inner.channels.get_mut(&id) {
-            channel.truncate(min_index);
-        }
-    }
-}
-
-#[async_trait]
-impl ReadWorkflows for LocalTransaction<'_> {
+impl ReadWorkflows for LocalReadonlyTransaction<'_> {
     async fn count_active_workflows(&self) -> usize {
         self.active_workflow_states().count()
     }
@@ -420,14 +341,113 @@ impl ReadWorkflows for LocalTransaction<'_> {
     }
 }
 
+/// Transaction used by [`LocalStorage`].
+#[derive(Debug)]
+pub struct LocalTransaction<'a> {
+    // Alternatively, we could manipulate the guarded data directly.
+    // This wouldn't break isolation because of the `Mutex`, and wouldn't break atomicity
+    // in `WorkflowManager` because there are no rollbacks, and all storage operations
+    // are synchronous. That is, there are no wait points in the `WorkflowManager`-produced futures
+    // at which the future may be cancelled to observe a partially applied transaction.
+    // However, this approach is hard to reason about in the general case; it is not cancel-safe
+    // if used together with "true" async operations. Hence, foolproof cloning of `Inner`.
+    target: MutexGuard<'a, Inner>,
+    readonly: LocalReadonlyTransaction<'a>,
+    truncate_messages: bool,
+}
+
+impl LocalTransaction<'_> {
+    fn inner(&self) -> &Inner {
+        &self.readonly.inner
+    }
+
+    fn inner_mut(&mut self) -> &mut Inner {
+        &mut self.readonly.inner
+    }
+
+    /// Ensures that the specified workflow will be polled.
+    #[cfg(test)]
+    pub(crate) fn prepare_wakers_for_workflow(&mut self, workflow_id: WorkflowId) {
+        let wakers = &mut self.inner_mut().workflow_wakers;
+        let pos = wakers
+            .iter()
+            .position(|record| record.workflow_id == workflow_id);
+        if let Some(pos) = pos {
+            wakers.swap(0, pos);
+        } else {
+            assert!(
+                wakers.is_empty(),
+                "no wakers for workflow {workflow_id}: {wakers:?}"
+            );
+        }
+    }
+}
+
+delegate_read_traits!(LocalTransaction<'_> { readonly });
+
+#[async_trait]
+impl WriteModules for LocalTransaction<'_> {
+    async fn insert_module(&mut self, module: ModuleRecord) {
+        self.inner_mut().modules.insert(module.id.clone(), module);
+    }
+
+    async fn update_tracing_metadata(&mut self, module_id: &str, metadata: PersistedMetadata) {
+        let module = self.inner_mut().modules.get_mut(module_id).unwrap();
+        module.tracing_metadata.extend(metadata);
+    }
+}
+
+#[async_trait]
+impl WriteChannels for LocalTransaction<'_> {
+    async fn allocate_channel_id(&mut self) -> ChannelId {
+        self.readonly.next_channel_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    async fn insert_channel(&mut self, id: ChannelId, record: ChannelRecord) {
+        self.inner_mut()
+            .channels
+            .entry(id)
+            .or_insert_with(|| LocalChannel::new(record));
+    }
+
+    async fn manipulate_channel<F: FnOnce(&mut ChannelRecord) + Send>(
+        &mut self,
+        id: ChannelId,
+        action: F,
+    ) -> ChannelRecord {
+        let channel = self.inner_mut().channels.get_mut(&id).unwrap();
+        action(&mut channel.record);
+        channel.record.clone()
+    }
+
+    async fn push_messages(&mut self, id: ChannelId, messages: Vec<Vec<u8>>) {
+        let channel = self.inner_mut().channels.get_mut(&id).unwrap();
+        debug_assert!(!channel.record.is_closed);
+
+        let len = messages.len();
+        channel
+            .messages
+            .extend(messages.into_iter().map(Message::from));
+        channel.record.received_messages += len;
+    }
+
+    async fn truncate_channel(&mut self, id: ChannelId, min_index: usize) {
+        if let Some(channel) = self.inner_mut().channels.get_mut(&id) {
+            channel.truncate(min_index);
+        }
+    }
+}
+
 #[async_trait]
 impl WriteWorkflows for LocalTransaction<'_> {
     async fn allocate_workflow_id(&mut self) -> WorkflowId {
-        self.next_workflow_id.fetch_add(1, Ordering::SeqCst)
+        self.readonly
+            .next_workflow_id
+            .fetch_add(1, Ordering::SeqCst)
     }
 
     async fn insert_workflow(&mut self, state: WorkflowRecord) {
-        self.inner.workflows.insert(state.id, state);
+        self.inner_mut().workflows.insert(state.id, state);
     }
 
     async fn workflow_for_update(&mut self, id: WorkflowId) -> Option<WorkflowRecord> {
@@ -435,15 +455,15 @@ impl WriteWorkflows for LocalTransaction<'_> {
     }
 
     async fn update_workflow(&mut self, id: WorkflowId, state: WorkflowState) {
-        let record = self.inner.workflows.get_mut(&id).unwrap();
+        let record = self.inner_mut().workflows.get_mut(&id).unwrap();
         record.state = state;
     }
 
     async fn workflow_with_wakers_for_update(
         &mut self,
     ) -> Option<WorkflowRecord<ActiveWorkflowState>> {
-        let workflows = &self.inner.workflows;
-        self.inner.workflow_wakers.iter().find_map(|record| {
+        let workflows = &self.readonly.inner.workflows;
+        self.inner().workflow_wakers.iter().find_map(|record| {
             let workflow = &workflows[&record.workflow_id];
             if matches!(workflow.state, WorkflowState::Active(_)) {
                 return workflow.clone().into_active();
@@ -455,7 +475,7 @@ impl WriteWorkflows for LocalTransaction<'_> {
     async fn workflow_with_consumable_channel_for_update(
         &self,
     ) -> Option<WorkflowRecord<ActiveWorkflowState>> {
-        let workflows = self.inner.workflows.values().filter_map(|record| {
+        let workflows = self.inner().workflows.values().filter_map(|record| {
             if let WorkflowState::Active(state) = &record.state {
                 Some((record, &state.persisted))
             } else {
@@ -471,7 +491,7 @@ impl WriteWorkflows for LocalTransaction<'_> {
         all_channels.find_map(|(record, channel_id, state)| {
             if state.waits_for_message() {
                 let next_message_idx = state.received_message_count();
-                let channel = &self.inner.channels[&channel_id];
+                let channel = &self.inner().channels[&channel_id];
                 if channel.contains_index(next_message_idx) {
                     return record.clone().into_active();
                 }
@@ -484,8 +504,8 @@ impl WriteWorkflows for LocalTransaction<'_> {
 #[async_trait]
 impl WriteWorkflowWakers for LocalTransaction<'_> {
     async fn insert_waker(&mut self, workflow_id: WorkflowId, waker: WorkflowWaker) {
-        let waker_id = self.next_waker_id.fetch_add(1, Ordering::SeqCst);
-        self.inner.workflow_wakers.push(WorkflowWakerRecord {
+        let waker_id = self.readonly.next_waker_id.fetch_add(1, Ordering::SeqCst);
+        self.inner_mut().workflow_wakers.push(WorkflowWakerRecord {
             workflow_id,
             waker_id,
             waker,
@@ -497,7 +517,8 @@ impl WriteWorkflowWakers for LocalTransaction<'_> {
         criteria: WorkflowSelectionCriteria,
         waker: WorkflowWaker,
     ) {
-        for (&id, record) in &self.inner.workflows {
+        let wakers = &mut self.readonly.inner.workflow_wakers;
+        for (&id, record) in &self.readonly.inner.workflows {
             let persisted = match &record.state {
                 WorkflowState::Active(state) => &state.persisted,
                 WorkflowState::Errored(state) => &state.persisted,
@@ -505,8 +526,8 @@ impl WriteWorkflowWakers for LocalTransaction<'_> {
             };
 
             if criteria.matches(persisted) {
-                let waker_id = self.next_waker_id.fetch_add(1, Ordering::SeqCst);
-                self.inner.workflow_wakers.push(WorkflowWakerRecord {
+                let waker_id = self.readonly.next_waker_id.fetch_add(1, Ordering::SeqCst);
+                wakers.push(WorkflowWakerRecord {
                     workflow_id: id,
                     waker_id,
                     waker: waker.clone(),
@@ -516,7 +537,7 @@ impl WriteWorkflowWakers for LocalTransaction<'_> {
     }
 
     async fn wakers_for_workflow(&self, workflow_id: WorkflowId) -> Vec<WorkflowWakerRecord> {
-        let filtered = self.inner.workflow_wakers.iter().filter_map(|record| {
+        let filtered = self.inner().workflow_wakers.iter().filter_map(|record| {
             Some(record)
                 .filter(|&it| it.workflow_id == workflow_id)
                 .cloned()
@@ -525,7 +546,7 @@ impl WriteWorkflowWakers for LocalTransaction<'_> {
     }
 
     async fn delete_wakers(&mut self, workflow_id: WorkflowId, waker_ids: &[WakerId]) {
-        self.inner.workflow_wakers.retain(|record| {
+        self.inner_mut().workflow_wakers.retain(|record| {
             record.workflow_id != workflow_id || !waker_ids.contains(&record.waker_id)
         });
     }
@@ -535,7 +556,7 @@ impl WriteWorkflowWakers for LocalTransaction<'_> {
 impl StorageTransaction for LocalTransaction<'_> {
     async fn commit(mut self) {
         if self.truncate_messages {
-            let inner = &mut self.inner;
+            let inner = self.inner_mut();
             for (&id, channel) in &mut inner.channels {
                 if let Some(workflow_id) = channel.record.receiver_workflow_id {
                     let workflow = match &inner.workflows[&workflow_id].state {
@@ -547,29 +568,36 @@ impl StorageTransaction for LocalTransaction<'_> {
                 }
             }
         }
-        *self.target = self.inner;
+        *self.target = self.readonly.inner;
     }
 }
 
 #[async_trait]
 impl Storage for LocalStorage {
     type Transaction<'a> = LocalTransaction<'a>;
-    type ReadonlyTransaction<'a> = Readonly<LocalTransaction<'a>>;
+    type ReadonlyTransaction<'a> = LocalReadonlyTransaction<'a>;
 
     async fn transaction(&self) -> Self::Transaction<'_> {
         let target = self.inner.lock().await;
         LocalTransaction {
-            inner: target.clone(),
+            readonly: LocalReadonlyTransaction {
+                inner: target.clone(),
+                next_channel_id: &self.next_channel_id,
+                next_workflow_id: &self.next_workflow_id,
+                next_waker_id: &self.next_waker_id,
+            },
             target,
-            next_channel_id: &self.next_channel_id,
-            next_workflow_id: &self.next_workflow_id,
-            next_waker_id: &self.next_waker_id,
             truncate_messages: self.truncate_messages,
         }
     }
 
     async fn readonly_transaction(&self) -> Self::ReadonlyTransaction<'_> {
-        Readonly::from(self.transaction().await)
+        LocalReadonlyTransaction {
+            inner: self.inner.lock().await.clone(),
+            next_channel_id: &self.next_channel_id,
+            next_workflow_id: &self.next_workflow_id,
+            next_waker_id: &self.next_waker_id,
+        }
     }
 }
 

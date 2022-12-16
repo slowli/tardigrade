@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::{DomainEvent, PizzaDelivery, PizzaOrder, SharedHandle};
 use tardigrade::{
     channel::Sender,
-    spawn::{ManageWorkflows, Workflows},
+    spawn::{CreateWorkflow, Workflows},
     task::{TaskError, TaskResult},
     workflow::{
         DelegateHandle, GetInterface, HandleFormat, InEnv, SpawnWorkflow, Wasm, WithHandle,

@@ -5,32 +5,28 @@ use tracing_tunnel::TracingEventReceiver;
 
 use std::{error, fmt, sync::Arc};
 
-use super::{
-    persistence::StorageHelper, stubs::Stubs, AsManager, Clock, ConcurrencyError,
-    ErroredWorkflowHandle, Services, WorkflowManager,
-};
+use super::{stubs::Stubs, Clock, Services, WorkflowManager};
 use crate::{
     engine::{DefineWorkflow, WorkflowEngine},
     receipt::{ExecutionError, Receipt},
     storage::{
-        ActiveWorkflowState, ErroneousMessageRef, MessageError, ReadChannels, ReadModules,
-        ReadWorkflows, Storage, StorageTransaction, WorkflowRecord, WorkflowWaker, WriteModules,
-        WriteWorkflowWakers, WriteWorkflows,
+        helper::StorageHelper, ActiveWorkflowState, ErroneousMessageRef, MessageError,
+        ReadChannels, ReadModules, ReadWorkflows, Storage, StorageTransaction, WorkflowRecord,
+        WorkflowWaker, WriteModules, WriteWorkflowWakers, WriteWorkflows,
     },
-    workflow::Workflow,
-    PersistedWorkflow,
+    workflow::{PersistedWorkflow, Workflow},
 };
 use tardigrade::{handle::Handle, ChannelId, WorkflowId};
 
 /// Result of [ticking](WorkflowManager::tick()) a [`WorkflowManager`].
 #[derive(Debug)]
 #[must_use = "Result can contain an execution error which should be handled"]
-pub struct TickResult<E = ExecutionError> {
+pub struct TickResult {
     workflow_id: WorkflowId,
-    result: Result<Receipt, E>,
+    result: Result<Receipt, ExecutionError>,
 }
 
-impl<E> TickResult<E> {
+impl TickResult {
     /// Returns the ID of the executed workflow.
     pub fn workflow_id(&self) -> WorkflowId {
         self.workflow_id
@@ -38,24 +34,14 @@ impl<E> TickResult<E> {
 
     /// Returns a reference to the underlying execution result.
     #[allow(clippy::missing_errors_doc)] // doesn't make sense semantically
-    pub fn as_ref(&self) -> Result<&Receipt, &E> {
+    pub fn as_ref(&self) -> Result<&Receipt, &ExecutionError> {
         self.result.as_ref()
     }
 
     /// Returns the underlying execution result.
     #[allow(clippy::missing_errors_doc)] // doesn't make sense semantically
-    pub fn into_inner(self) -> Result<Receipt, E> {
+    pub fn into_inner(self) -> Result<Receipt, ExecutionError> {
         self.result
-    }
-}
-
-impl<M: AsManager> TickResult<ErroredWorkflowHandle<'_, M>> {
-    /// Replaces the associated errored workflow handle with the corresponding [`ExecutionError`].
-    pub fn drop_handle(self) -> TickResult {
-        TickResult {
-            workflow_id: self.workflow_id,
-            result: self.result.map_err(|handle| handle.error),
-        }
     }
 }
 
@@ -76,7 +62,7 @@ impl fmt::Display for WouldBlock {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "cannot progress workflow manager")?;
         if let Some(expiration) = self.nearest_timer_expiration {
-            write!(formatter, " (nearest timer expiration: {})", expiration)?;
+            write!(formatter, " (nearest timer expiration: {expiration})")?;
         }
         Ok(())
     }
@@ -325,10 +311,14 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
     ///
     /// Returns an error if the manager cannot be progressed.
     #[allow(clippy::missing_panics_doc)] // false positive
-    pub async fn tick(&self) -> Result<TickResult<ErroredWorkflowHandle<'_, Self>>, WouldBlock> {
+    pub async fn tick(&self) -> Result<TickResult, WouldBlock> {
+        self.do_tick(&self.storage).await
+    }
+
+    pub(super) async fn do_tick(&self, storage: &S) -> Result<TickResult, WouldBlock> {
         let span = tracing::info_span!("tick");
         let _entered = span.enter();
-        let mut transaction = self.storage.transaction().await;
+        let mut transaction = storage.transaction().await;
 
         let mut workflow = transaction.workflow_with_wakers_for_update().await;
         let waker_records = if let Some(workflow) = &workflow {
@@ -361,20 +351,15 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
                 transaction.delete_wakers(workflow_id, &waker_ids).await;
                 Ok(receipt)
             }
-            Err(error) => {
+            Err(err) => {
                 let erroneous_messages: Vec<_> = pending_channel
                     .into_iter()
                     .map(PendingChannel::into_message_ref)
                     .collect();
                 StorageHelper::new(&mut transaction)
-                    .persist_workflow_error(workflow_id, error.clone(), erroneous_messages.clone())
+                    .persist_workflow_error(workflow_id, err.clone(), erroneous_messages.clone())
                     .await;
-                Err(ErroredWorkflowHandle::new(
-                    self,
-                    workflow_id,
-                    error,
-                    erroneous_messages,
-                ))
+                Err(err)
             }
         };
         transaction.commit().await;
@@ -383,31 +368,5 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
             workflow_id,
             result,
         })
-    }
-
-    pub(super) async fn drop_message(
-        &self,
-        workflow_id: WorkflowId,
-        message_ref: &ErroneousMessageRef,
-    ) -> Result<(), ConcurrencyError> {
-        let mut transaction = self.storage.transaction().await;
-        let record = transaction
-            .workflow_for_update(workflow_id)
-            .await
-            .ok_or_else(ConcurrencyError::new)?;
-        let mut record = record.into_errored().ok_or_else(ConcurrencyError::new)?;
-        let persisted = &mut record.state.persisted;
-        let state = persisted.receiver(message_ref.channel_id).unwrap();
-        if state.received_message_count() == message_ref.index {
-            persisted.drop_message_for_receiver(message_ref.channel_id);
-            transaction
-                .update_workflow(workflow_id, record.state.into())
-                .await;
-        } else {
-            tracing::warn!(?message_ref, workflow_id, "failed dropping inbound message");
-            return Err(ConcurrencyError::new());
-        }
-        transaction.commit().await;
-        Ok(())
     }
 }

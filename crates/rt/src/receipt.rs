@@ -128,13 +128,13 @@ impl ExecutedFunction {
         match self {
             Self::Entry { .. } => formatter.write_str("spawning workflow"),
             Self::Task { task_id, .. } => {
-                write!(formatter, "polling task {}", task_id)
+                write!(formatter, "polling task {task_id}")
             }
             Self::Waker { waker_id, .. } => {
-                write!(formatter, "waking up waker {}", waker_id)
+                write!(formatter, "waking up waker {waker_id}")
             }
             Self::TaskDrop { task_id } => {
-                write!(formatter, "dropping task {}", task_id)
+                write!(formatter, "dropping task {task_id}")
             }
             Self::StubInitialization => formatter.write_str("initializing stubs"),
         }
@@ -440,10 +440,10 @@ impl fmt::Display for PanicInfo {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match (&self.message, &self.location) {
             (Some(message), Some(location)) => {
-                write!(formatter, "panic at {}: {}", location, message)
+                write!(formatter, "panic at {location}: {message}")
             }
             (Some(message), None) => formatter.write_str(message),
-            (None, Some(location)) => write!(formatter, "panic at {}", location),
+            (None, Some(location)) => write!(formatter, "panic at {location}"),
             (None, None) => formatter.write_str("panic at unknown location"),
         }
     }

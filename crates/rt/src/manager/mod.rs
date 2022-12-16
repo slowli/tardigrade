@@ -4,12 +4,11 @@
 
 use chrono::{DateTime, Utc};
 use futures::{lock::Mutex, StreamExt};
-use tracing_tunnel::{LocalSpans, PersistedMetadata, PersistedSpans};
+use tracing_tunnel::{LocalSpans, PersistedMetadata};
 
 use std::{collections::HashMap, sync::Arc};
 
-mod handle;
-mod persistence;
+mod driver;
 mod services;
 mod stubs;
 mod tick;
@@ -20,25 +19,22 @@ pub(crate) mod tests;
 
 pub(crate) use self::services::{Services, StashStub};
 pub use self::{
-    handle::{
-        AnyWorkflowHandle, CompletedWorkflowHandle, ConcurrencyError, ErroneousMessage,
-        ErroredWorkflowHandle, HostHandles, ManagerHandles, MessageReceiver, MessageSender,
-        RawMessageReceiver, RawMessageSender, ReceivedMessage, WorkflowHandle,
-    },
+    driver::{DriveConfig, Termination},
     services::{Clock, Schedule, TimerFuture},
+    stubs::ManagerSpawner,
     tick::{TickResult, WouldBlock},
     traits::AsManager,
 };
 
-use self::persistence::StorageHelper;
 use crate::{
     engine::{DefineWorkflow, WorkflowEngine, WorkflowModule},
+    handle::StorageRef,
     storage::{
-        ChannelRecord, ModuleRecord, ReadChannels, ReadModules, ReadWorkflows, Storage,
-        StorageTransaction, WorkflowState, WriteChannels, WriteModules, WriteWorkflows,
+        helper::StorageHelper, CommitStream, DefinitionRecord, ModuleRecord, ReadModules, Storage,
+        StorageTransaction, Streaming, WriteModules,
     },
 };
-use tardigrade::{channel::SendError, ChannelId, WorkflowId};
+use tardigrade::WorkflowId;
 
 #[derive(Debug)]
 struct WorkflowDefinitions<D> {
@@ -80,37 +76,31 @@ struct Shared<D> {
     definitions: Arc<WorkflowDefinitions<D>>,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum ChannelSide {
-    HostSender,
-    WorkflowSender(WorkflowId),
-    HostReceiver,
-    Receiver(WorkflowId),
-}
-
 /// Manager for workflow modules, workflows and channels.
 ///
 /// A workflow manager is responsible for managing the state and interfacing with workflows
 /// and channels connected to the workflows. In particular, a manager supports the following
 /// operations:
 ///
-/// - Spawning new workflows (including from the workflow code)
-/// - Writing messages to channels and reading messages from channels
+/// - Spawning new workflows (including from the workflow code) using a [`ManagerSpawner`] handle
+///   obtained via [`Self::spawner()`]
+/// - Manipulating channels (writing / reading messages) and workflows using a [`StorageRef`] handle
+///   obtained via [`Self::storage()`]
 /// - Driving the contained workflows to completion, either [manually](Self::tick()) or
-///   using a [`Driver`]
-///
-/// [`Driver`]: crate::driver::Driver
+///   using a [driver](Self::drive()) if the underlying storage
+///   [supports event streaming](Streaming)
 ///
 /// # Workflow lifecycle
 ///
 /// A workflow can be in one of the following states:
 ///
-/// - [**Active.**](WorkflowHandle) This is the initial state, provided that the workflow
-///   successfully initialized. In this state, the workflow can execute,
+/// - [**Active.**](crate::handle::WorkflowHandle) This is the initial state,
+///   provided that the workflow successfully initialized. In this state, the workflow can execute,
 ///   receive and send messages etc.
-/// - [**Completed.**](CompletedWorkflowHandle) This is the terminal state after the workflow
-///   completes as a result of its execution or is aborted.
-/// - [**Errored.**](ErroredWorkflowHandle) A workflow reaches this state after it panics.
+/// - [**Completed.**](crate::handle::CompletedWorkflowHandle) This is the terminal state
+///   after the workflow completes as a result of its execution or is aborted.
+/// - [**Errored.**](crate::handle::ErroredWorkflowHandle) A workflow reaches this state
+///   after it panics.
 ///   The panicking execution is reverted, but this is usually not enough to fix the error;
 ///   since workflows are largely deterministic, if nothing changes, a repeated execution
 ///   would most probably lead to the same panic. An errored workflow cannot execute
@@ -124,8 +114,7 @@ enum ChannelSide {
 /// ```
 /// # use tardigrade_rt::{
 /// #     engine::{Wasmtime, WasmtimeModule},
-/// #     manager::{WorkflowHandle, WorkflowManager},
-/// #     storage::LocalStorage, AsyncIoScheduler,
+/// #     handle::WorkflowHandle, manager::WorkflowManager, storage::LocalStorage, AsyncIoScheduler,
 /// # };
 /// #
 /// # async fn test_wrapper(module: WasmtimeModule) -> anyhow::Result<()> {
@@ -142,21 +131,21 @@ enum ChannelSide {
 ///
 /// // After that, new workflows can be spawned using `ManageWorkflowsExt`
 /// // trait from the `tardigrade` crate:
-/// use tardigrade::spawn::ManageWorkflows;
+/// use tardigrade::spawn::CreateWorkflow;
 ///
-/// let manager = &manager;
-/// let definition_id = "test/Workflow";
+/// let spawner = manager.spawner();
+/// let definition_id = "test::Workflow";
 /// // ^ The definition ID is the ID of the module and the name of a workflow
-/// //   within the module separated by `/`.
+/// //   within the module separated by `::`.
 /// let args = b"test_args".to_vec();
-/// let builder = manager.new_workflow::<()>(definition_id)?;
+/// let builder = spawner.new_workflow::<()>(definition_id)?;
 /// let (handles, self_handles) = builder.handles(|_| {}).await;
 /// let mut workflow = builder.build(args, handles).await?;
 /// // Do something with `workflow`, e.g., write something to its channels
 /// // using `self_handles`...
 ///
 /// // Initialize the workflow:
-/// let receipt = manager.tick().await?.drop_handle().into_inner()?;
+/// let receipt = manager.tick().await?.into_inner()?;
 /// println!("{receipt:?}");
 /// // Check the workflow state:
 /// workflow.update().await?;
@@ -209,90 +198,38 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
 
     /// Inserts the specified module into the manager.
     pub async fn insert_module(&mut self, id: &str, module: E::Module) {
-        let mut transaction = self.storage.transaction().await;
+        let bytes = module.bytes();
+        let mut definitions = HashMap::new();
+        for (name, def) in module {
+            definitions.insert(
+                name.clone(),
+                DefinitionRecord {
+                    interface: def.interface().clone(),
+                },
+            );
+            let self_definitions = Arc::get_mut(&mut self.definitions).expect("leaked definitions");
+            self_definitions.insert(id.to_owned(), name, def);
+        }
+
         let module_record = ModuleRecord {
             id: id.to_owned(),
-            bytes: module.bytes(),
+            bytes,
+            definitions,
             tracing_metadata: PersistedMetadata::default(),
         };
+        let mut transaction = self.storage.transaction().await;
         transaction.insert_module(module_record).await;
-
-        for (name, def) in module {
-            let definitions = Arc::get_mut(&mut self.definitions).expect("leaked definitions");
-            definitions.insert(id.to_owned(), name, def);
-        }
         transaction.commit().await;
     }
 
-    /// Returns current information about the channel with the specified ID, or `None` if a channel
-    /// with this ID does not exist.
-    pub async fn channel(&self, channel_id: ChannelId) -> Option<ChannelRecord> {
-        let transaction = self.storage.readonly_transaction().await;
-        let record = transaction.channel(channel_id).await?;
-        Some(record)
+    /// Returns a reference to the underlying storage.
+    pub fn storage(&self) -> StorageRef<'_, S> {
+        StorageRef::from(&self.storage)
     }
 
-    /// Returns a sender handle for the specified channel, or `None` if the channel does not exist.
-    pub async fn sender(&self, channel_id: ChannelId) -> Option<RawMessageSender<'_, Self>> {
-        let record = self.channel(channel_id).await?;
-        Some(RawMessageSender::new(self, channel_id, record))
-    }
-
-    /// Returns a receiver handle for the specified channel, or `None` if the channel does not exist.
-    pub async fn receiver(&self, channel_id: ChannelId) -> Option<RawMessageReceiver<'_, Self>> {
-        let record = self.channel(channel_id).await?;
-        Some(RawMessageReceiver::new(self, channel_id, record))
-    }
-
-    /// Returns a handle to an active workflow with the specified ID. If the workflow is
-    /// not active or does not exist, returns `None`.
-    pub async fn workflow(&self, workflow_id: WorkflowId) -> Option<WorkflowHandle<'_, (), Self>> {
-        let handle = self.any_workflow(workflow_id).await?;
-        match handle {
-            AnyWorkflowHandle::Active(handle) => Some(*handle),
-            _ => None,
-        }
-    }
-
-    /// Returns a handle to a workflow with the specified ID. The workflow may have any state.
-    /// If the workflow does not exist, returns `None`.
-    pub async fn any_workflow(
-        &self,
-        workflow_id: WorkflowId,
-    ) -> Option<AnyWorkflowHandle<'_, Self>> {
-        let transaction = self.storage.readonly_transaction().await;
-        let record = transaction.workflow(workflow_id).await?;
-        match record.state {
-            WorkflowState::Active(state) => {
-                let interface = self
-                    .definitions
-                    .get(&record.module_id, &record.name_in_module)
-                    .interface();
-                let handle = WorkflowHandle::new(self, workflow_id, interface, *state);
-                Some(handle.into())
-            }
-
-            WorkflowState::Errored(state) => {
-                let handle = ErroredWorkflowHandle::new(
-                    self,
-                    workflow_id,
-                    state.error,
-                    state.erroneous_messages,
-                );
-                Some(handle.into())
-            }
-
-            WorkflowState::Completed(state) => {
-                let handle = CompletedWorkflowHandle::new(workflow_id, state);
-                Some(handle.into())
-            }
-        }
-    }
-
-    /// Returns the number of active workflows.
-    pub async fn workflow_count(&self) -> usize {
-        let transaction = self.storage.readonly_transaction().await;
-        transaction.count_active_workflows().await
+    /// Returns a spawner handle that can be used to create new workflows.
+    pub fn spawner(&self) -> ManagerSpawner<'_, Self> {
+        ManagerSpawner::new(self)
     }
 
     /// Returns the encapsulated storage.
@@ -307,87 +244,31 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         }
     }
 
-    pub(crate) async fn send_message(
-        &self,
-        channel_id: ChannelId,
-        message: Vec<u8>,
-    ) -> Result<(), SendError> {
-        let mut transaction = self.storage.transaction().await;
-        let channel = transaction.channel(channel_id).await.unwrap();
-        if channel.is_closed {
-            return Err(SendError::Closed);
-        }
-
-        transaction.push_messages(channel_id, vec![message]).await;
-        transaction.commit().await;
-        Ok(())
-    }
-
-    pub(crate) async fn close_host_sender(&self, channel_id: ChannelId) {
-        let mut transaction = self.storage.transaction().await;
-        StorageHelper::new(&mut transaction)
-            .close_channel_side(channel_id, ChannelSide::HostSender)
-            .await;
-        transaction.commit().await;
-    }
-
-    pub(crate) async fn close_host_receiver(&self, channel_id: ChannelId) {
-        let mut transaction = self.storage.transaction().await;
-        StorageHelper::new(&mut transaction)
-            .close_channel_side(channel_id, ChannelSide::HostReceiver)
-            .await;
-        transaction.commit().await;
-    }
-
     /// Sets the current time for this manager. This may expire timers in some of the contained
     /// workflows.
     #[tracing::instrument(skip(self))]
     pub async fn set_current_time(&self, time: DateTime<Utc>) {
-        let mut transaction = self.storage.transaction().await;
+        self.do_set_current_time(&self.storage, time).await;
+    }
+
+    pub(super) async fn do_set_current_time(&self, storage: &S, time: DateTime<Utc>) {
+        let mut transaction = storage.transaction().await;
         StorageHelper::new(&mut transaction)
             .set_current_time(time)
             .await;
         transaction.commit().await;
     }
+}
 
-    /// Aborts the workflow with the specified ID. The parent workflow, if any, will be notified,
-    /// and all channel handles owned by the workflow will be properly disposed.
-    #[tracing::instrument(skip(self))]
-    async fn abort_workflow(&self, workflow_id: WorkflowId) -> Result<(), ConcurrencyError> {
-        let mut transaction = self.storage.transaction().await;
-        let record = transaction
-            .workflow_for_update(workflow_id)
-            .await
-            .ok_or_else(ConcurrencyError::new)?;
-        let (parent_id, mut persisted) = match record.state {
-            WorkflowState::Active(state) => (record.parent_id, state.persisted),
-            WorkflowState::Errored(state) => (record.parent_id, state.persisted),
-            WorkflowState::Completed(_) => return Err(ConcurrencyError::new()),
-        };
-
-        persisted.abort();
-        let spans = PersistedSpans::default();
-        StorageHelper::new(&mut transaction)
-            .persist_workflow(workflow_id, parent_id, persisted, spans)
-            .await;
-        transaction.commit().await;
-        Ok(())
-    }
-
-    #[tracing::instrument(skip(self))]
-    async fn repair_workflow(&self, workflow_id: WorkflowId) -> Result<(), ConcurrencyError> {
-        let mut transaction = self.storage.transaction().await;
-        let record = transaction
-            .workflow_for_update(workflow_id)
-            .await
-            .ok_or_else(ConcurrencyError::new)?;
-        let record = record.into_errored().ok_or_else(ConcurrencyError::new)?;
-        let repaired_state = record.state.repair();
-        transaction
-            .update_workflow(workflow_id, repaired_state.into())
-            .await;
-        transaction.commit().await;
-        Ok(())
+impl<E, C, S> WorkflowManager<E, C, Streaming<S>>
+where
+    E: WorkflowEngine,
+    C: Schedule,
+    S: Storage + Clone,
+{
+    /// Drives this manager using the provided config.
+    pub async fn drive(&self, commits_rx: &mut CommitStream, config: DriveConfig) -> Termination {
+        config.run(self, commits_rx).await
     }
 }
 

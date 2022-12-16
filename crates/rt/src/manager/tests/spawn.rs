@@ -10,7 +10,7 @@ use crate::{
         ChannelEventKind, ResourceEvent, ResourceEventKind, ResourceId, StubEvent, StubEventKind,
         StubId,
     },
-    storage::{LocalTransaction, Readonly, WorkflowWaker},
+    storage::{LocalReadonlyTransaction, WorkflowWaker},
     workflow::ChannelIds,
 };
 use tardigrade::{
@@ -26,14 +26,13 @@ async fn wakers_for_workflow(
 ) -> Vec<WorkflowWaker> {
     let transaction = manager.storage.readonly_transaction().await;
     transaction
-        .as_ref()
         .wakers_for_workflow(workflow_id)
         .cloned()
         .collect()
 }
 
 async fn peek_channel(
-    transaction: &Readonly<LocalTransaction<'_>>,
+    transaction: &LocalReadonlyTransaction<'_>,
     channel_id: ChannelId,
 ) -> Vec<Vec<u8>> {
     let channel = transaction.channel(channel_id).await.unwrap();
@@ -180,8 +179,7 @@ async fn send_message_from_child(
         .async_scope(tick_workflow(manager, CHILD_ID))
         .await
         .unwrap();
-    manager
-        .send_message(traces_id, b"trace".to_vec())
+    helper::send_messages(&manager.storage, traces_id, vec![b"trace".to_vec()])
         .await
         .unwrap();
 
@@ -214,7 +212,7 @@ async fn send_message_from_child(
     );
 
     // Check channel handles for child workflow
-    let workflow = manager.workflow(CHILD_ID).await.unwrap();
+    let workflow = manager.storage().workflow(CHILD_ID).await.unwrap();
     let mut handle = workflow.handle().await.with_indexing();
     let child_orders = handle.remove(ReceiverAt("orders")).unwrap();
     let child_orders_id = child_orders.channel_id();
@@ -258,7 +256,7 @@ async fn sending_message_to_child() {
         .await
         .unwrap();
 
-    let child = manager.workflow(CHILD_ID).await.unwrap();
+    let child = manager.storage().workflow(CHILD_ID).await.unwrap();
     let child_channels = child.persisted().channels();
     let child_orders_id = child_channels.channel_id("orders").unwrap();
     {
@@ -367,9 +365,9 @@ async fn test_child_workflow_channel_management(complete_child: bool) {
         .await
         .unwrap();
 
-    let channel_info = manager.channel(orders_id).await.unwrap();
+    let channel_info = manager.storage().channel(orders_id).await.unwrap();
     assert!(channel_info.is_closed);
-    let channel_info = manager.channel(traces_id).await.unwrap();
+    let channel_info = manager.storage().channel(traces_id).await.unwrap();
     assert!(channel_info.is_closed);
 
     let wakers = wakers_for_workflow(&manager, workflow_id).await;
@@ -393,7 +391,7 @@ async fn test_child_resources_after_drop(
     complete_child: bool,
 ) {
     let workflow_id = 0;
-    let mut workflow = manager.workflow(workflow_id).await.unwrap();
+    let mut workflow = manager.storage().workflow(workflow_id).await.unwrap();
 
     let test_child_resources: MockPollFn = if complete_child {
         |ctx| {
@@ -521,12 +519,12 @@ async fn spawning_child_with_copied_sender() {
 
     init_workflow_with_copied_child_channel(&manager, workflow_id, &mut poll_fn_sx).await;
 
-    let events_channel = manager.channel(events_id).await.unwrap();
+    let events_channel = manager.storage().channel(events_id).await.unwrap();
     assert_eq!(
         events_channel.sender_workflow_ids,
         HashSet::from_iter([workflow_id, CHILD_ID])
     );
-    let child = manager.workflow(CHILD_ID).await.unwrap();
+    let child = manager.storage().workflow(CHILD_ID).await.unwrap();
     let child_events_id = child.persisted().channels().channel_id("events").unwrap();
     assert_eq!(child_events_id, events_id);
 
@@ -543,7 +541,7 @@ async fn spawning_child_with_copied_sender() {
         .await
         .unwrap();
 
-    let events_channel = manager.channel(events_id).await.unwrap();
+    let events_channel = manager.storage().channel(events_id).await.unwrap();
     assert_eq!(
         events_channel.sender_workflow_ids,
         HashSet::from_iter([workflow_id])
@@ -563,11 +561,11 @@ async fn test_child_with_copied_closed_sender(close_before_spawn: bool) {
     let events_id = channel_id(workflow.ids(), "events");
 
     if close_before_spawn {
-        manager.close_host_receiver(events_id).await;
+        helper::close_host_receiver(&manager.storage, events_id).await;
     }
     init_workflow_with_copied_child_channel(&manager, workflow_id, &mut poll_fn_sx).await;
     if !close_before_spawn {
-        manager.close_host_receiver(events_id).await;
+        helper::close_host_receiver(&manager.storage, events_id).await;
     }
 
     let test_writing_event_in_child: MockPollFn = |ctx| {
@@ -617,12 +615,12 @@ async fn test_child_with_aliased_sender(complete_child: bool) {
         })
         .await;
 
-    let events_channel = manager.channel(events_id).await.unwrap();
+    let events_channel = manager.storage().channel(events_id).await.unwrap();
     assert_eq!(
         events_channel.sender_workflow_ids,
         HashSet::from_iter([workflow_id, CHILD_ID])
     );
-    let child = manager.workflow(CHILD_ID).await.unwrap();
+    let child = manager.storage().workflow(CHILD_ID).await.unwrap();
     assert_eq!(channel_id(child.ids(), "events"), events_id);
     assert_eq!(channel_id(child.ids(), "traces"), events_id);
 
@@ -647,7 +645,7 @@ async fn test_child_with_aliased_sender(complete_child: bool) {
         .await
         .unwrap();
 
-    let events_channel = manager.channel(events_id).await.unwrap();
+    let events_channel = manager.storage().channel(events_id).await.unwrap();
     assert_eq!(
         events_channel.sender_workflow_ids,
         HashSet::from_iter([workflow_id, CHILD_ID])
@@ -672,7 +670,7 @@ async fn test_child_with_aliased_sender(complete_child: bool) {
         .await
         .unwrap();
 
-    let events_channel = manager.channel(events_id).await.unwrap();
+    let events_channel = manager.storage().channel(events_id).await.unwrap();
     assert_eq!(
         events_channel.sender_workflow_ids,
         HashSet::from_iter([workflow_id])
@@ -711,7 +709,7 @@ async fn completing_child_with_error() {
         })
         .await;
 
-    let child = manager.any_workflow(CHILD_ID).await.unwrap();
+    let child = manager.storage().any_workflow(CHILD_ID).await.unwrap();
     assert!(child.is_completed());
     let child = child.unwrap_completed();
     assert_matches!(
@@ -791,7 +789,7 @@ async fn completing_child_with_panic() {
         .await;
     assert_eq!(tick_result.workflow_id(), workflow_id);
     tick_result.into_inner().unwrap();
-    let child = manager.workflow(CHILD_ID).await.unwrap();
+    let child = manager.storage().workflow(CHILD_ID).await.unwrap();
     let child_events_id = channel_id(child.ids(), "events");
 
     let tick_result = poll_fn_sx
@@ -806,12 +804,13 @@ async fn completing_child_with_panic() {
     assert_eq!(tick_result.workflow_id(), CHILD_ID);
     let err_handle = tick_result.into_inner().unwrap_err();
     assert_eq!(
-        err_handle.error().panic_info().unwrap().message.as_deref(),
+        err_handle.panic_info().unwrap().message.as_deref(),
         Some("panic message")
     );
-    assert_eq!(err_handle.messages().count(), 0);
+    let err_handle = manager.storage().any_workflow(CHILD_ID).await.unwrap();
+    let err_handle = err_handle.unwrap_errored();
 
-    let child = manager.any_workflow(CHILD_ID).await.unwrap();
+    let child = manager.storage().any_workflow(CHILD_ID).await.unwrap();
     assert!(child.is_errored());
     let other_err_handle = child.unwrap_errored();
     assert_eq!(other_err_handle.id(), err_handle.id());
@@ -819,7 +818,7 @@ async fn completing_child_with_panic() {
     // The aliased handle now cannot be used for any actions:
     other_err_handle.consider_repaired().await.unwrap_err();
 
-    let child = manager.any_workflow(CHILD_ID).await.unwrap();
+    let child = manager.storage().any_workflow(CHILD_ID).await.unwrap();
     assert!(child.is_completed());
     let child = child.unwrap_completed();
     assert_matches!(child.result(), Err(JoinError::Aborted));
@@ -834,7 +833,7 @@ async fn assert_child_abort(
     child_events_id: ChannelId,
 ) {
     // Check that the event emitted by the panicking workflow was not committed.
-    let child_events = manager.channel(child_events_id).await.unwrap();
+    let child_events = manager.storage().channel(child_events_id).await.unwrap();
     assert_eq!(child_events.received_messages, 0);
     assert!(child_events.is_closed);
 
@@ -872,7 +871,7 @@ async fn test_aborting_child(initialize_child: bool) {
 
     init_workflow_with_child(&manager, workflow_id, &mut poll_fn_sx).await;
 
-    let child = manager.workflow(CHILD_ID).await.unwrap();
+    let child = manager.storage().workflow(CHILD_ID).await.unwrap();
     let child_events_id = channel_id(child.ids(), "events");
     if initialize_child {
         poll_fn_sx
@@ -881,7 +880,9 @@ async fn test_aborting_child(initialize_child: bool) {
             .await
             .unwrap();
     }
-    manager.abort_workflow(CHILD_ID).await.unwrap();
+    helper::abort_workflow(&manager.storage, CHILD_ID)
+        .await
+        .unwrap();
 
     assert_child_abort(&manager, &mut poll_fn_sx, workflow_id, child_events_id).await;
 }
@@ -904,13 +905,15 @@ async fn aborting_parent() {
 
     init_workflow_with_child(&manager, workflow_id, &mut poll_fn_sx).await;
 
-    let child = manager.workflow(CHILD_ID).await.unwrap();
+    let child = manager.storage().workflow(CHILD_ID).await.unwrap();
     let child_events_id = channel_id(child.ids(), "events");
     let child_orders_id = channel_id(child.ids(), "orders");
-    manager.abort_workflow(workflow_id).await.unwrap();
-    let child_events = manager.channel(child_events_id).await.unwrap();
+    helper::abort_workflow(&manager.storage, workflow_id)
+        .await
+        .unwrap();
+    let child_events = manager.storage().channel(child_events_id).await.unwrap();
     assert!(child_events.is_closed);
-    let child_orders = manager.channel(child_orders_id).await.unwrap();
+    let child_orders = manager.storage().channel(child_orders_id).await.unwrap();
     assert!(child_orders.is_closed);
 
     let check_child_channels: MockPollFn = |ctx| {
@@ -933,5 +936,5 @@ async fn aborting_parent() {
         .await
         .unwrap();
 
-    assert!(manager.workflow(CHILD_ID).await.is_none());
+    assert!(manager.storage().workflow(CHILD_ID).await.is_none());
 }
