@@ -52,7 +52,7 @@
 //!     ) {
 //!         match command {
 //!             Command::Ping(ping) => {
-//!                 let pong = format!("{}, counter={}", ping, *counter);
+//!                 let pong = format!("{ping}, counter={}", *counter);
 //!                 *counter += 1;
 //!                 self.events.send(Event::Pong(pong)).await.ok();
 //!             }

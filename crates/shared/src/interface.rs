@@ -130,7 +130,7 @@ impl Interface {
     ///
     /// Panics if `bytes` do not represent a valid interface definition.
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        Self::try_from_bytes(bytes).unwrap_or_else(|err| panic!("Cannot deserialize spec: {}", err))
+        Self::try_from_bytes(bytes).unwrap_or_else(|err| panic!("Cannot deserialize spec: {err}"))
     }
 
     /// Serializes this interface.

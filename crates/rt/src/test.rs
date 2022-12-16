@@ -78,8 +78,7 @@ impl WasmOpt {
         let exit_status = command.wait().expect("failed waiting for wasm-opt");
         assert!(
             exit_status.success(),
-            "Optimizing WASM module finished abnormally: {}",
-            exit_status
+            "Optimizing WASM module finished abnormally: {exit_status}"
         );
         opt_wasm_file
     }
@@ -173,8 +172,7 @@ impl ModuleCompiler {
         let exit_status = command.wait().expect("failed waiting for cargo");
         assert!(
             exit_status.success(),
-            "Compiling WASM module finished abnormally: {}",
-            exit_status
+            "Compiling WASM module finished abnormally: {exit_status}"
         );
         self.wasm_file()
     }

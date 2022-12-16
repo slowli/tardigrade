@@ -88,7 +88,7 @@ fn test_workflow_termination(args: Args) {
 fn into_task_error(err: JoinError) -> TaskError {
     match err {
         JoinError::Err(err) => err,
-        other => panic!("unexpected error: {:?}", other),
+        other => panic!("unexpected error: {other:?}"),
     }
 }
 

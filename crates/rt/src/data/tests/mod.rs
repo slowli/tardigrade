@@ -329,7 +329,7 @@ fn trap_when_starting_workflow() {
         .unwrap_err()
         .to_string();
 
-    assert!(err.contains("failed while polling task 0"), "{}", err);
+    assert!(err.contains("failed while polling task 0"), "{err}");
 }
 
 fn initialize_and_spawn_task(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
@@ -472,7 +472,7 @@ fn rolling_back_task_spawning() {
         ]
     );
     let err_message = err.trap().to_string();
-    assert!(err_message.contains("boom"), "{}", err_message);
+    assert!(err_message.contains("boom"), "{err_message}");
     assert!(workflow.data().persisted.task(1).is_none());
 }
 
@@ -495,7 +495,7 @@ fn rolling_back_task_abort() {
         .unwrap_err();
     assert_eq!(err.receipt().executions().len(), 2);
     let err_message = err.trap().to_string();
-    assert!(err_message.contains("boom"), "{}", err_message);
+    assert!(err_message.contains("boom"), "{err_message}");
 
     assert_matches!(
         workflow.data().persisted.task(1).unwrap().result(),
@@ -556,7 +556,7 @@ fn rolling_back_placing_waker_on_trap() {
     let wakers: Vec<_> = senders
         .flat_map(|state| state.wakes_on_flush.iter().copied())
         .collect();
-    assert!(wakers.is_empty(), "{:?}", wakers);
+    assert!(wakers.is_empty(), "{wakers:?}");
 }
 
 #[test]
@@ -600,7 +600,7 @@ fn timers_basics() {
         .scope(|| create_workflow_with_scheduler(poll_fns, scheduler.clone()));
 
     let timers: HashMap<_, _> = workflow.data().persisted.timers.iter().collect();
-    assert_eq!(timers.len(), 2, "{:?}", timers);
+    assert_eq!(timers.len(), 2, "{timers:?}");
     assert!(timers[&0].completed_at().is_some());
     assert!(timers[&1].completed_at().is_none());
 
@@ -674,7 +674,7 @@ fn completing_main_task_with_error() {
 fn assert_task_error(task_state: &TaskState, has_context: bool) {
     let err = match task_state.result() {
         Poll::Ready(Err(JoinError::Err(err))) => err,
-        other => panic!("unexpected task result: {:?}", other),
+        other => panic!("unexpected task result: {other:?}"),
     };
 
     assert_eq!(err.cause().to_string(), "error message");

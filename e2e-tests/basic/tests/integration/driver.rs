@@ -93,7 +93,7 @@ async fn test_async_handle(cancel_workflow: bool) -> TestResult {
         cancel_sx.send(()).unwrap();
         let manager = match join_handle.await {
             Either::Right(manager) => manager,
-            other => panic!("expected cancelled workflow, got {:?}", other),
+            other => panic!("expected cancelled workflow, got {other:?}"),
         };
 
         let workflow = manager.storage().workflow(workflow_id).await.unwrap();

@@ -393,7 +393,7 @@ impl fmt::Display for JoinError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Aborted => formatter.write_str("task was aborted"),
-            Self::Err(err) => write!(formatter, "task failed at {}", err),
+            Self::Err(err) => write!(formatter, "task failed at {err}"),
         }
     }
 }

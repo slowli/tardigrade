@@ -225,7 +225,7 @@ mod serde_compress {
         let mut output = vec![];
         compressor
             .read_to_end(&mut output)
-            .map_err(|err| S::Error::custom(format!("cannot compress memory snapshot: {}", err)))?;
+            .map_err(|err| S::Error::custom(format!("cannot compress memory snapshot: {err}")))?;
 
         serde_b64::serialize(&output, serializer)
     }

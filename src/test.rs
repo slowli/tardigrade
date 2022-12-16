@@ -309,7 +309,7 @@ impl WorkflowRegistry {
         remote_handles: UntypedHandles<Wasm>,
     ) -> TaskHandle {
         let definition = self.definitions.get(definition_id).unwrap_or_else(|| {
-            panic!("workflow `{}` is not defined", definition_id);
+            panic!("workflow `{definition_id}` is not defined");
         });
         let context = TaskContext {
             workflow_id: self.next_workflow_id,

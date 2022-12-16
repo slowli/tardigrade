@@ -62,7 +62,7 @@ impl fmt::Display for WouldBlock {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "cannot progress workflow manager")?;
         if let Some(expiration) = self.nearest_timer_expiration {
-            write!(formatter, " (nearest timer expiration: {})", expiration)?;
+            write!(formatter, " (nearest timer expiration: {expiration})")?;
         }
         Ok(())
     }

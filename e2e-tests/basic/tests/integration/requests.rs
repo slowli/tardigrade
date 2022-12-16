@@ -73,7 +73,7 @@ async fn test_external_tasks(
 
     send_orders(orders_sx, order_count).await?;
     let events: Vec<_> = events_rx.try_collect().await?;
-    assert_eq!(events.len(), 2 * order_count, "{:?}", events);
+    assert_eq!(events.len(), 2 * order_count, "{events:?}");
     assert_event_completeness(&events, order_count);
 
     // Check that concurrency is properly controlled by the workflow.
