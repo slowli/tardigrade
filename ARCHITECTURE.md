@@ -138,4 +138,4 @@ is also flexible enough to allow workflows with the interface not known at compi
 
 ### Other stuff
 
-- [Sample workflow](e2e-tests/basic) tests all other crates end-to-end.
+- [Sample workflow](e2e-tests/pizza) tests all other crates end-to-end.

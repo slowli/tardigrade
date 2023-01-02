@@ -25,7 +25,7 @@ use tardigrade_rt::{
 };
 
 use super::{create_manager, create_module, enable_tracing_assertions, spawn_workflow, TestResult};
-use tardigrade_test_basic::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOrder};
+use tardigrade_pizza::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOrder};
 
 const DEFINITION_ID: &str = "test::PizzaDelivery";
 

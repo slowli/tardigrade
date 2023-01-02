@@ -22,7 +22,7 @@ use tardigrade_rt::{
 };
 
 use crate::{create_streaming_manager, spawn_workflow, StreamingStorage, TestResult};
-use tardigrade_test_basic::{
+use tardigrade_pizza::{
     tasks::{Args, PizzaDeliveryWithTasks},
     DomainEvent, PizzaKind, PizzaOrder,
 };

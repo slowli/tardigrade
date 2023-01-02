@@ -18,7 +18,7 @@ use crate::{
     create_streaming_manager, driver::spawn_traced_task, enable_tracing_assertions, spawn_workflow,
     tasks::send_orders, TestResult,
 };
-use tardigrade_test_basic::{
+use tardigrade_pizza::{
     spawn::{Args, Baking, PizzaDeliveryWithSpawning},
     DomainEvent, PizzaKind, PizzaOrder,
 };

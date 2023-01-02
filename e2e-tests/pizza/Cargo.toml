@@ -1,5 +1,5 @@
 [package]
-name = "tardigrade-test-basic"
+name = "tardigrade-pizza"
 version = "0.0.0"
 edition = "2021"
 publish = false
@@ -8,7 +8,7 @@ license = "MIT OR Apache-2.0"
 readme = "README.md"
 keywords = ["orchestration", "workflow", "business process"]
 categories = ["asynchronous", "wasm"]
-description = "Example of a Tardigrade workflow"
+description = "Example of a Tardigrade workflow that emulates pizza baking and delivery"
 repository = "https://github.com/slowli/tardigrade"
 
 [lib]

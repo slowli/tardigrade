@@ -34,7 +34,7 @@ use super::{
     create_streaming_manager, enable_tracing_assertions, spawn_workflow, StreamingManager,
     TestResult,
 };
-use tardigrade_test_basic::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOrder};
+use tardigrade_pizza::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOrder};
 
 pub(crate) fn spawn_traced_task<T: Send + 'static>(
     future: impl Future<Output = T> + Send + 'static,

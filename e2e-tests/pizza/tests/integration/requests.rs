@@ -18,7 +18,7 @@ use crate::{
     tasks::{assert_event_completeness, assert_event_concurrency, send_orders},
     TestResult,
 };
-use tardigrade_test_basic::{
+use tardigrade_pizza::{
     requests::{Args, PizzaDeliveryWithRequests},
     DomainEvent, PizzaKind, PizzaOrder,
 };

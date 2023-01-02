@@ -42,7 +42,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: build
-          args: -p tardigrade-test-basic --lib --target wasm32-unknown-unknown --profile wasm
+          args: -p tardigrade-pizza --lib --target wasm32-unknown-unknown --profile wasm
 
       - name: Run tests
         uses: actions-rs/cargo@v1
@@ -110,7 +110,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: build
-          args: -p tardigrade-test-basic --lib --target wasm32-unknown-unknown --profile wasm
+          args: -p tardigrade-pizza --lib --target wasm32-unknown-unknown --profile wasm
 
       - name: Run tests
         uses: actions-rs/cargo@v1
