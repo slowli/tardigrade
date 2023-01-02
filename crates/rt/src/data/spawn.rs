@@ -103,6 +103,7 @@ impl PersistedWorkflowData {
         Some(ChildWorkflow::new(state, &self.channels))
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     pub fn notify_on_child_completion(&mut self, id: WorkflowId, result: Result<(), JoinError>) {
         let state = self.child_workflows.get_mut(&id).unwrap();
         debug_assert!(state.completion_result.is_pending());

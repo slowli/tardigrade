@@ -9,7 +9,7 @@ mod persistence;
 pub use self::persistence::PersistedWorkflow;
 
 use crate::{
-    data::{WakerOrTask, WorkflowData},
+    data::{PersistedWorkflowData, WakerOrTask, WorkflowData},
     engine::{DefineWorkflow, PersistWorkflow, RunWorkflow},
     manager::Services,
     receipt::{
@@ -79,6 +79,10 @@ impl<T: RunWorkflow> Workflow<T> {
     #[cfg(test)]
     pub(crate) fn data_mut(&mut self) -> &mut WorkflowData {
         self.inner.data_mut()
+    }
+
+    pub(crate) fn persisted_mut(&mut self) -> &mut PersistedWorkflowData {
+        &mut self.inner.data_mut().persisted
     }
 
     pub(crate) fn is_initialized(&self) -> bool {
@@ -287,6 +291,10 @@ impl<T: RunWorkflow> Workflow<T> {
         self.inner
             .data_mut()
             .take_pending_inbound_message(channel_id)
+    }
+
+    pub(crate) fn set_services(&mut self, services: Services) {
+        self.inner.data_mut().set_services(services);
     }
 
     pub(crate) fn take_services(&mut self) -> Services {

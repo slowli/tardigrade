@@ -160,6 +160,10 @@ async fn instantiating_workflow() {
 }
 
 async fn test_initializing_workflow(manager: &LocalManager<()>, ids: &WorkflowAndChannelIds) {
+    let workflow_cache = manager.cached_workflows.lock().await;
+    assert!(workflow_cache.inner.is_empty());
+    drop(workflow_cache);
+
     let receipt = manager.tick().await.unwrap().into_inner().unwrap();
     assert_eq!(receipt.executions().len(), 2);
     let main_execution = &receipt.executions()[0];
@@ -171,6 +175,9 @@ async fn test_initializing_workflow(manager: &LocalManager<()>, ids: &WorkflowAn
     assert_eq!(traces.received_messages, 1);
     let message = transaction.channel_message(traces_id, 0).await.unwrap();
     assert_eq!(message, b"trace #1");
+
+    let workflow_cache = manager.cached_workflows.lock().await;
+    assert_eq!(workflow_cache.inner.len(), 1);
 }
 
 #[async_std::test]

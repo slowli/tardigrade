@@ -110,6 +110,11 @@ impl WorkflowData {
             .expect("services accessed after taken out")
     }
 
+    pub(crate) fn set_services(&mut self, services: Services) {
+        debug_assert!(self.services.is_none(), "services set repeatedly");
+        self.services = Some(services);
+    }
+
     pub(crate) fn take_services(&mut self) -> Services {
         self.services.take().expect("services already taken out")
     }

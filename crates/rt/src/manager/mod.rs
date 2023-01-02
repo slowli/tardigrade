@@ -4,9 +4,10 @@
 
 use chrono::{DateTime, Utc};
 use futures::{lock::Mutex, StreamExt};
+use lru::LruCache;
 use tracing_tunnel::{LocalSpans, PersistedMetadata};
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
 
 mod driver;
 mod services;
@@ -33,6 +34,7 @@ use crate::{
         helper::StorageHelper, CommitStream, DefinitionRecord, ModuleRecord, ReadModules, Storage,
         StorageTransaction, Streaming, WriteModules,
     },
+    workflow::Workflow,
 };
 use tardigrade::WorkflowId;
 
@@ -74,6 +76,44 @@ impl<D> WorkflowDefinitions<D> {
 struct Shared<D> {
     clock: Arc<dyn Clock>,
     definitions: Arc<WorkflowDefinitions<D>>,
+}
+
+/// In-memory LRU cache for recently executed `Workflow`s.
+///
+/// # Assumptions
+///
+/// - Workflows are never modified outside of `WorkflowManager` methods (e.g., no manual storage
+///   edits). This is used when checking cache staleness.
+/// - A specific workflow is never executed concurrently. This should be enforced by the storage
+///   implementation.
+#[derive(Debug)]
+struct CachedWorkflows<I> {
+    // FIXME: check staleness
+    inner: LruCache<WorkflowId, Workflow<I>>,
+}
+
+impl<I> CachedWorkflows<I> {
+    fn new(capacity: NonZeroUsize) -> Self {
+        Self {
+            inner: LruCache::new(capacity),
+        }
+    }
+
+    #[tracing::instrument(
+        level = "debug",
+        skip(self, workflow),
+        fields(self.len = self.inner.len())
+    )]
+    fn insert(&mut self, id: WorkflowId, workflow: Workflow<I>) {
+        self.inner.push(id, workflow);
+    }
+
+    #[tracing::instrument(level = "debug", skip(self))]
+    fn take(&mut self, id: WorkflowId) -> Option<Workflow<I>> {
+        let cached = self.inner.pop(&id);
+        tracing::debug!(is_cached = cached.is_some(), "accessing workflow cache");
+        cached
+    }
 }
 
 /// Manager for workflow modules, workflows and channels.
@@ -158,10 +198,11 @@ pub struct WorkflowManager<E: WorkflowEngine, C, S> {
     pub(crate) clock: Arc<C>,
     pub(crate) storage: S,
     definitions: Arc<WorkflowDefinitions<E::Definition>>,
+    cached_workflows: Mutex<CachedWorkflows<E::Instance>>,
     local_spans: Mutex<HashMap<WorkflowId, LocalSpans>>,
 }
 
-#[allow(clippy::mismatching_type_param_order)] // false positive
+#[allow(clippy::mismatching_type_param_order, clippy::missing_panics_doc)] // false positive
 impl<E: WorkflowEngine, S: Storage> WorkflowManager<E, (), S> {
     /// Creates a builder that will use the specified storage.
     pub fn builder(engine: E, storage: S) -> WorkflowManagerBuilder<E, (), S> {
@@ -169,12 +210,18 @@ impl<E: WorkflowEngine, S: Storage> WorkflowManager<E, (), S> {
             engine,
             clock: (),
             storage,
+            workflow_cache_capacity: NonZeroUsize::new(16).unwrap(),
         }
     }
 }
 
 impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
-    async fn new(engine: E, clock: C, storage: S) -> anyhow::Result<Self> {
+    async fn new(
+        engine: E,
+        clock: C,
+        storage: S,
+        workflow_cache_capacity: NonZeroUsize,
+    ) -> anyhow::Result<Self> {
         let definitions = {
             let transaction = storage.readonly_transaction().await;
             let mut definitions = WorkflowDefinitions::default();
@@ -192,6 +239,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
             clock: Arc::new(clock),
             definitions: Arc::new(definitions),
             storage,
+            cached_workflows: Mutex::new(CachedWorkflows::new(workflow_cache_capacity)),
             local_spans: Mutex::default(),
         })
     }
@@ -278,6 +326,7 @@ pub struct WorkflowManagerBuilder<E, C, S> {
     engine: E,
     clock: C,
     storage: S,
+    workflow_cache_capacity: NonZeroUsize,
 }
 
 #[allow(clippy::mismatching_type_param_order)] // false positive
@@ -289,17 +338,37 @@ impl<E: WorkflowEngine, S: Storage> WorkflowManagerBuilder<E, (), S> {
             engine: self.engine,
             clock,
             storage: self.storage,
+            workflow_cache_capacity: self.workflow_cache_capacity,
         }
     }
 }
 
 impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManagerBuilder<E, C, S> {
+    /// Sets the capacity of the LRU cache of the recently executed workflows. Depending
+    /// on the workflow engine, caching workflows can significantly speed up workflow execution.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the provided capacity is 0.
+    #[must_use]
+    pub fn cache_workflows(mut self, capacity: usize) -> Self {
+        self.workflow_cache_capacity =
+            NonZeroUsize::new(capacity).expect("cannot set workflow cache capacity to 0");
+        self
+    }
+
     /// Finishes building the manager.
     ///
     /// # Errors
     ///
     /// Returns an error if [module instantiation](WorkflowEngine::create_module()) fails.
     pub async fn build(self) -> anyhow::Result<WorkflowManager<E, C, S>> {
-        WorkflowManager::new(self.engine, self.clock, self.storage).await
+        let manager_future = WorkflowManager::new(
+            self.engine,
+            self.clock,
+            self.storage,
+            self.workflow_cache_capacity,
+        );
+        manager_future.await
     }
 }

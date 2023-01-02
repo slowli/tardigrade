@@ -89,7 +89,7 @@ pub trait AsWorkflowData {
 /// a next item for a channel receiver). Thus, `WorkflowData` methods conceptually map to
 /// WASM module imports. Conversely, methods in the `RunWorkflow` trait conceptually map
 /// to WASM module exports.
-pub trait RunWorkflow: AsWorkflowData {
+pub trait RunWorkflow: AsWorkflowData + Send {
     /// Creates the main workflow task and returns its ID.
     ///
     /// # Errors

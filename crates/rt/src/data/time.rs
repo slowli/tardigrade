@@ -139,6 +139,7 @@ impl Timers {
 }
 
 impl PersistedWorkflowData {
+    #[tracing::instrument(level = "debug", skip(self))]
     pub(crate) fn set_current_time(&mut self, time: DateTime<Utc>) {
         let wakers_by_timer = self.timers.set_current_time(time);
         for (id, wakers) in wakers_by_timer {
