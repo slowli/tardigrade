@@ -136,6 +136,8 @@ pub struct WorkflowRecord<T = WorkflowState> {
     pub module_id: String,
     /// Name of the workflow in the module.
     pub name_in_module: String,
+    /// Number of the workflow executions.
+    pub execution_count: usize,
     /// Current state of the workflow.
     pub state: T,
 }
@@ -148,6 +150,7 @@ impl WorkflowRecord {
                 parent_id: self.parent_id,
                 module_id: self.module_id,
                 name_in_module: self.name_in_module,
+                execution_count: self.execution_count,
                 state: *state,
             }),
             WorkflowState::Completed(_) | WorkflowState::Errored(_) => None,
@@ -161,6 +164,7 @@ impl WorkflowRecord {
                 parent_id: self.parent_id,
                 module_id: self.module_id,
                 name_in_module: self.name_in_module,
+                execution_count: self.execution_count,
                 state,
             }),
             WorkflowState::Completed(_) | WorkflowState::Active(_) => None,

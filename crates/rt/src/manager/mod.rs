@@ -78,6 +78,12 @@ struct Shared<D> {
     definitions: Arc<WorkflowDefinitions<D>>,
 }
 
+#[derive(Debug)]
+struct CachedWorkflow<I> {
+    inner: Workflow<I>,
+    execution_count: usize,
+}
+
 /// In-memory LRU cache for recently executed `Workflow`s.
 ///
 /// # Assumptions
@@ -88,8 +94,7 @@ struct Shared<D> {
 ///   implementation.
 #[derive(Debug)]
 struct CachedWorkflows<I> {
-    // FIXME: check staleness
-    inner: LruCache<WorkflowId, Workflow<I>>,
+    inner: LruCache<WorkflowId, CachedWorkflow<I>>,
 }
 
 impl<I> CachedWorkflows<I> {
@@ -104,15 +109,32 @@ impl<I> CachedWorkflows<I> {
         skip(self, workflow),
         fields(self.len = self.inner.len())
     )]
-    fn insert(&mut self, id: WorkflowId, workflow: Workflow<I>) {
-        self.inner.push(id, workflow);
+    fn insert(&mut self, id: WorkflowId, workflow: Workflow<I>, execution_count: usize) {
+        self.inner.push(
+            id,
+            CachedWorkflow {
+                inner: workflow,
+                execution_count,
+            },
+        );
     }
 
-    #[tracing::instrument(level = "debug", skip(self))]
-    fn take(&mut self, id: WorkflowId) -> Option<Workflow<I>> {
+    #[tracing::instrument(level = "debug", skip(self), fields(self.len = self.inner.len()))]
+    fn take(&mut self, id: WorkflowId, execution_count: usize) -> Option<Workflow<I>> {
         let cached = self.inner.pop(&id);
         tracing::debug!(is_cached = cached.is_some(), "accessing workflow cache");
-        cached
+        let cached = cached?;
+        if cached.execution_count == execution_count {
+            Some(cached.inner)
+        } else {
+            tracing::info!(
+                id,
+                cached.execution_count,
+                execution_count,
+                "cached workflow is stale"
+            );
+            None
+        }
     }
 }
 

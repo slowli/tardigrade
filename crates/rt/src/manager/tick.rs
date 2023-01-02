@@ -247,8 +247,12 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         transaction: &S::Transaction<'a>,
         record: WorkflowRecord<ActiveWorkflowState>,
     ) -> (WorkflowSeed<E::Definition>, TracingEventReceiver) {
-        let cached_workflow = self.cached_workflows.lock().await.take(record.id);
         let state = record.state;
+        let cached_workflow = {
+            let mut cache = self.cached_workflows.lock().await;
+            cache.take(record.id, record.execution_count)
+        };
+
         let inner = if let Some(workflow) = cached_workflow {
             WorkflowSeedInner::Cached(workflow)
         } else {
@@ -295,6 +299,8 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         let workflow_id = workflow.id;
         let parent_id = workflow.parent_id;
         let module_id = workflow.module_id.clone();
+        let execution_count = workflow.execution_count;
+
         let (mut seed, tracer) = self.restore_workflow(transaction, workflow).await;
         seed.apply_wakers(transaction, wakers).await;
         let pending_channel = seed.update_inbound_channels(transaction).await;
@@ -333,7 +339,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
                 .update_tracing_metadata(&module_id, tracing_metadata)
                 .await;
             let mut cached_workflows = self.cached_workflows.lock().await;
-            cached_workflows.insert(workflow_id, workflow);
+            cached_workflows.insert(workflow_id, workflow, execution_count + 1);
         } else {
             let err = result.as_ref().unwrap_err();
             tracing::warn!(%err, "workflow execution failed");

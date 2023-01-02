@@ -192,6 +192,7 @@ impl<S: DefineWorkflow> Stubs<S> {
             parent_id: executed_workflow_id,
             module_id: module_id.to_owned(),
             name_in_module: name_in_module.to_owned(),
+            execution_count: 0,
             state: state.into(),
         };
         transaction.insert_workflow(child_workflow).await;

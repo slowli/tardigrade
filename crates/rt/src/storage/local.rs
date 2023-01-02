@@ -457,6 +457,7 @@ impl WriteWorkflows for LocalTransaction<'_> {
     async fn update_workflow(&mut self, id: WorkflowId, state: WorkflowState) {
         let record = self.inner_mut().workflows.get_mut(&id).unwrap();
         record.state = state;
+        record.execution_count += 1;
     }
 
     async fn workflow_with_wakers_for_update(

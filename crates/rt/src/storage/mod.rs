@@ -267,7 +267,8 @@ pub trait WriteWorkflows: ReadWorkflows {
     /// Returns a workflow record for the specified ID for update.
     async fn workflow_for_update(&mut self, id: WorkflowId) -> Option<WorkflowRecord>;
 
-    /// Updates the state of a workflow with the specified ID.
+    /// Updates the state of a workflow with the specified ID. This method must increase
+    /// `execution_count` in the [`WorkflowRecord`] by one.
     async fn update_workflow(&mut self, id: WorkflowId, state: WorkflowState);
 
     /// Finds an active workflow with wakers and selects it for update.
