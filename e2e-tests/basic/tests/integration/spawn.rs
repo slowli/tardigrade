@@ -3,6 +3,7 @@
 use assert_matches::assert_matches;
 use async_std::task;
 use futures::{StreamExt, TryStreamExt};
+use test_casing::test_casing;
 
 use std::{collections::HashMap, task::Poll};
 
@@ -15,7 +16,7 @@ use tardigrade_rt::{
 
 use crate::{
     create_streaming_manager, driver::spawn_traced_task, enable_tracing_assertions, spawn_workflow,
-    TestResult,
+    tasks::send_orders, TestResult,
 };
 use tardigrade_test_basic::{
     spawn::{Args, Baking, PizzaDeliveryWithSpawning},
@@ -24,15 +25,14 @@ use tardigrade_test_basic::{
 
 const PARENT_DEF: &str = "test::PizzaDeliveryWithSpawning";
 
+#[test_casing(4, [(2, 2), (1, 5), (2, 5), (5, 2)])]
 #[async_std::test]
-async fn spawning_child_workflows() -> TestResult {
-    const READY: Poll<()> = Poll::Ready(());
-
+async fn spawning_child_workflows(oven_count: usize, order_count: usize) -> TestResult {
     let (_guard, tracing_storage) = enable_tracing_assertions();
     let (manager, mut commits_rx) = create_streaming_manager(AsyncIoScheduler).await?;
 
     let args = Args {
-        oven_count: 2,
+        oven_count,
         collect_metrics: true,
     };
     let (_, handle) =
@@ -47,26 +47,14 @@ async fn spawning_child_workflows() -> TestResult {
     let join_handle =
         spawn_traced_task(async move { manager.drive(&mut commits_rx, config).await });
 
-    let orders = [
-        PizzaOrder {
-            kind: PizzaKind::Pepperoni,
-            delivery_distance: 10,
-        },
-        PizzaOrder {
-            kind: PizzaKind::FourCheese,
-            delivery_distance: 5,
-        },
-    ];
-    orders_sx.send_all(orders).await?;
-    orders_sx.close().await;
-
+    send_orders(orders_sx, order_count).await?;
     let termination = join_handle.await;
     assert_matches!(termination, Termination::Finished);
 
     // Check domain events produced by child workflows
     let events: Vec<_> = events_rx.try_collect().await?;
-    assert_eq!(events.len(), orders.len() * 2, "{events:?}");
-    for i in 1..=orders.len() {
+    assert_eq!(events.len(), order_count * 2, "{events:?}");
+    for i in 1..=order_count {
         let order_events: Vec<_> = events.iter().filter(|event| event.index() == i).collect();
         assert_matches!(
             order_events.as_slice(),
@@ -91,15 +79,21 @@ async fn spawning_child_workflows() -> TestResult {
             }
         });
         let durations: Vec<_> = durations.collect();
-        assert_eq!(durations.len(), orders.len());
+        assert_eq!(durations.len(), order_count);
         assert!(
             durations.iter().copied().all(|dur| dur < 1_000),
             "{durations:?}"
         );
     }
 
-    // Check that child-related events are complete.
-    let workflow_events_by_kind = receipts.iter().flat_map(Receipt::events).fold(
+    assert_child_events(&receipts, order_count);
+    Ok(())
+}
+
+fn assert_child_events(receipts: &[Receipt], order_count: usize) {
+    const READY: Poll<()> = Poll::Ready(());
+
+    let events_by_kind = receipts.iter().flat_map(Receipt::events).fold(
         HashMap::<_, usize>::new(),
         |mut acc, event| {
             if let Event::Resource(ResourceEvent {
@@ -114,14 +108,12 @@ async fn spawning_child_workflows() -> TestResult {
         },
     );
 
-    assert_eq!(workflow_events_by_kind[&ResourceEventKind::Created], 2);
-    assert_eq!(workflow_events_by_kind[&ResourceEventKind::Dropped], 2);
+    assert_eq!(events_by_kind[&ResourceEventKind::Created], order_count);
+    assert_eq!(events_by_kind[&ResourceEventKind::Dropped], order_count);
     assert_eq!(
-        workflow_events_by_kind[&ResourceEventKind::Polled(READY)],
-        2
+        events_by_kind[&ResourceEventKind::Polled(READY)],
+        order_count
     );
-
-    Ok(())
 }
 
 #[async_std::test]

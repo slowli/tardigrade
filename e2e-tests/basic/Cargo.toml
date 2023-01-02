@@ -32,6 +32,11 @@ serde_json = "1.0"
 tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 tracing-capture = "0.1.0"
 
+[dev-dependencies.test-casing]
+version = "0.1.0"
+git = "https://github.com/slowli/test-casing.git"
+rev = "c778c3119990a041d03cfa435138d21c174013cc"
+
 [dev-dependencies.tardigrade-rt]
 version = "0.1.0"
 path = "../../crates/rt"

@@ -3,6 +3,7 @@
 use assert_matches::assert_matches;
 use async_std::task;
 use futures::{StreamExt, TryStreamExt};
+use test_casing::{cases, test_casing};
 
 use std::{
     cmp,
@@ -166,19 +167,15 @@ async fn task_basics() -> TestResult {
     Ok(())
 }
 
+#[test_casing(5, cases!([2_usize, 3, 5, 8, 13]))]
 #[async_std::test]
-async fn tasks_with_concurrency() -> TestResult {
+async fn tasks_with_concurrency(order_count: usize) -> TestResult {
     let args = Args {
         oven_count: 3,
         fail_kinds: HashSet::new(),
         propagate_errors: false,
     };
-
-    for order_count in [2, 3, 5, 8, 13] {
-        println!("Testing with {order_count} order(s)");
-        test_workflow_with_tasks(args.clone(), order_count).await?;
-    }
-    Ok(())
+    test_workflow_with_tasks(args.clone(), order_count).await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

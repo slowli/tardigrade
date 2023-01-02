@@ -3,6 +3,7 @@
 use assert_matches::assert_matches;
 use async_trait::async_trait;
 use futures::{StreamExt, TryStreamExt};
+use test_casing::test_casing;
 
 use std::{collections::HashSet, task::Poll};
 
@@ -254,12 +255,13 @@ fn assert_time_update_receipt(receipt: &Receipt, persisted: &PersistedWorkflow) 
     assert!(is_event_sent, "{receipt:#?}");
 }
 
+#[test_casing(4, [2_usize, 3, 5, 10])]
 #[async_std::test]
-async fn workflow_with_concurrency() -> TestResult {
+async fn workflow_with_concurrency(oven_count: usize) -> TestResult {
     let manager = create_manager(()).await?;
 
     let args = Args {
-        oven_count: 2,
+        oven_count,
         deliverer_count: 1,
     };
     let (_, handle) = spawn_workflow::<_, PizzaDelivery>(&manager, DEFINITION_ID, args).await?;

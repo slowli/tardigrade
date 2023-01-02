@@ -3,6 +3,7 @@
 use assert_matches::assert_matches;
 use async_std::task;
 use futures::{channel::mpsc, future, FutureExt, StreamExt, TryStreamExt};
+use test_casing::{test_casing, Product};
 
 use std::cmp;
 
@@ -91,26 +92,29 @@ async fn external_task_basics() -> TestResult {
     test_external_tasks(1, 1, None).await
 }
 
+const CONCURRENCY_CASES: [Option<usize>; 4] = [None, Some(1), Some(2), Some(3)];
+
+#[test_casing(4, CONCURRENCY_CASES)]
 #[async_std::test]
-async fn sequential_external_tasks() -> TestResult {
-    test_external_tasks(1, 4, None).await
+async fn sequential_external_tasks(task_concurrency: Option<usize>) -> TestResult {
+    test_external_tasks(1, 4, task_concurrency).await
 }
 
+#[test_casing(12, Product((2..=4, CONCURRENCY_CASES)))]
 #[async_std::test]
-async fn concurrent_external_tasks() -> TestResult {
-    test_external_tasks(3, 10, None).await
+async fn concurrent_external_tasks(
+    oven_count: usize,
+    task_concurrency: Option<usize>,
+) -> TestResult {
+    test_external_tasks(oven_count, 10, task_concurrency).await
 }
 
+#[test_casing(4, [(5, 2), (5, 4), (10, 3), (10, 7)])]
 #[async_std::test]
-async fn tasks_with_concurrency_limited_by_executor() -> TestResult {
-    test_external_tasks(3, 10, Some(1)).await
-}
-
-#[async_std::test]
-async fn closing_task_responses_on_host() -> TestResult {
-    const ORDER_COUNT: usize = 10;
-    const SUCCESSFUL_TASK_COUNT: usize = 3;
-
+async fn closing_task_responses_on_host(
+    order_count: usize,
+    successful_task_count: usize,
+) -> TestResult {
     let (manager, mut commits_rx) = create_streaming_manager(AsyncIoScheduler).await?;
     let args = Args { oven_count: 2 };
     let (_, handle) =
@@ -126,9 +130,10 @@ async fn closing_task_responses_on_host() -> TestResult {
     let join_handle =
         task::spawn(async move { manager.drive(&mut commits_rx, DriveConfig::default()).await });
 
-    // Complete first `SUCCESSFUL_TASK_COUNT` tasks, then close the responses channel.
+    // Complete first `successful_task_count` tasks, then close the responses channel.
     let tasks_handle = task::spawn(async move {
         let baking_tasks_rx = baking_tasks.stream_messages(0..);
+        let responses_sx_to_close = responses_sx.clone();
         let tasks_stream = baking_tasks_rx.map(move |message| {
             let Request::New { id, data: order, .. } = message.decode().unwrap() else {
                 return future::ready(()).left_future();
@@ -142,14 +147,14 @@ async fn closing_task_responses_on_host() -> TestResult {
             .right_future()
         });
         tasks_stream
-            .buffer_unordered(SUCCESSFUL_TASK_COUNT)
-            .take(SUCCESSFUL_TASK_COUNT)
+            .buffer_unordered(successful_task_count)
+            .take(successful_task_count)
             .for_each(future::ready)
             .await;
-        baking_tasks.close().await;
+        responses_sx_to_close.close().await;
     });
 
-    let orders = (0..ORDER_COUNT).map(|i| PizzaOrder {
+    let orders = (0..order_count).map(|i| PizzaOrder {
         kind: match i % 3 {
             0 => PizzaKind::Margherita,
             1 => PizzaKind::Pepperoni,
@@ -164,14 +169,14 @@ async fn closing_task_responses_on_host() -> TestResult {
     let events: Vec<_> = events_rx.try_collect().await?;
     assert_eq!(
         events.len(),
-        ORDER_COUNT + SUCCESSFUL_TASK_COUNT,
+        order_count + successful_task_count,
         "{events:?}"
     );
     let baked_count = events
         .iter()
         .filter(|event| matches!(event, DomainEvent::Baked { .. }))
         .count();
-    assert_eq!(baked_count, SUCCESSFUL_TASK_COUNT, "{events:?}");
+    assert_eq!(baked_count, successful_task_count, "{events:?}");
 
     tasks_handle.await;
     assert_matches!(join_handle.await, Termination::Finished);
