@@ -36,7 +36,7 @@ use crate::{
     },
     workflow::Workflow,
 };
-use tardigrade::WorkflowId;
+use tardigrade::{interface::Interface, WorkflowId};
 
 #[derive(Debug)]
 struct WorkflowDefinitions<D> {
@@ -51,17 +51,19 @@ impl<D> Default for WorkflowDefinitions<D> {
     }
 }
 
+impl WorkflowDefinitions<()> {
+    fn split_full_id(full_id: &str) -> Option<(&str, &str)> {
+        full_id.split_once("::")
+    }
+}
+
 impl<D> WorkflowDefinitions<D> {
     fn get(&self, module_id: &str, name_in_module: &str) -> &D {
         &self.inner[module_id][name_in_module]
     }
 
-    fn split_full_id(full_id: &str) -> Option<(&str, &str)> {
-        full_id.split_once("::")
-    }
-
     fn for_full_id(&self, full_id: &str) -> Option<&D> {
-        let (module_id, name_in_module) = Self::split_full_id(full_id)?;
+        let (module_id, name_in_module) = WorkflowDefinitions::split_full_id(full_id)?;
         self.inner.get(module_id)?.get(name_in_module)
     }
 
@@ -71,11 +73,18 @@ impl<D> WorkflowDefinitions<D> {
     }
 }
 
-/// Part of the manager used during workflow instantiation.
-#[derive(Debug, Clone)]
-struct Shared<D> {
-    clock: Arc<dyn Clock>,
-    definitions: Arc<WorkflowDefinitions<D>>,
+impl<D: DefineWorkflow> WorkflowDefinitions<D> {
+    fn extract_interfaces(&self) -> WorkflowDefinitions<Interface> {
+        let it = self.inner.iter().map(|(module_id, module_defs)| {
+            let interfaces = module_defs
+                .iter()
+                .map(|(name, def)| (name.clone(), def.interface().clone()));
+            (module_id.clone(), interfaces.collect())
+        });
+        WorkflowDefinitions {
+            inner: it.collect(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -219,7 +228,8 @@ impl<I> CachedWorkflows<I> {
 pub struct WorkflowManager<E: WorkflowEngine, C, S> {
     pub(crate) clock: Arc<C>,
     pub(crate) storage: S,
-    definitions: Arc<WorkflowDefinitions<E::Definition>>,
+    // FIXME: rework as a caching layer
+    definitions: Mutex<WorkflowDefinitions<E::Definition>>,
     cached_workflows: Mutex<CachedWorkflows<E::Instance>>,
     local_spans: Mutex<HashMap<WorkflowId, LocalSpans>>,
 }
@@ -259,7 +269,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
 
         Ok(Self {
             clock: Arc::new(clock),
-            definitions: Arc::new(definitions),
+            definitions: Mutex::new(definitions),
             storage,
             cached_workflows: Mutex::new(CachedWorkflows::new(workflow_cache_capacity)),
             local_spans: Mutex::default(),
@@ -267,7 +277,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
     }
 
     /// Inserts the specified module into the manager.
-    pub async fn insert_module(&mut self, id: &str, module: E::Module) {
+    pub async fn insert_module(&self, id: &str, module: E::Module) {
         let bytes = module.bytes();
         let mut definitions = HashMap::new();
         for (name, def) in module {
@@ -277,7 +287,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
                     interface: def.interface().clone(),
                 },
             );
-            let self_definitions = Arc::get_mut(&mut self.definitions).expect("leaked definitions");
+            let mut self_definitions = self.definitions.lock().await;
             self_definitions.insert(id.to_owned(), name, def);
         }
 
@@ -307,11 +317,9 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         self.storage
     }
 
-    fn shared(&self) -> Shared<E::Definition> {
-        Shared {
-            clock: Arc::clone(&self.clock) as Arc<dyn Clock>,
-            definitions: Arc::clone(&self.definitions),
-        }
+    async fn definition_interfaces(&self) -> WorkflowDefinitions<Interface> {
+        let definitions = self.definitions.lock().await;
+        definitions.extract_interfaces()
     }
 
     /// Sets the current time for this manager. This may expire timers in some of the contained

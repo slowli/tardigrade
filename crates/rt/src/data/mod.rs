@@ -1,5 +1,6 @@
 //! Workflow state.
 
+use chrono::{TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use tracing_tunnel::TracingEvent;
 
@@ -77,7 +78,7 @@ pub struct WorkflowData {
 }
 
 impl WorkflowData {
-    pub(crate) fn new(interface: &Interface, channel_ids: ChannelIds, services: Services) -> Self {
+    pub(crate) fn new(interface: &Interface, channel_ids: ChannelIds) -> Self {
         debug_assert_eq!(
             interface
                 .handles()
@@ -90,8 +91,8 @@ impl WorkflowData {
         );
 
         Self {
-            persisted: PersistedWorkflowData::new(interface, channel_ids, services.clock.now()),
-            services: Some(services),
+            persisted: PersistedWorkflowData::new(interface, channel_ids, Utc.timestamp_nanos(0)),
+            services: None,
             current_execution: None,
             task_queue: TaskQueue::default(),
             current_wakeup_cause: None,

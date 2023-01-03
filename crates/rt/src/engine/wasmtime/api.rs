@@ -487,24 +487,16 @@ impl_wrapper!(wrap6 => a: A, b: B, c: C, d: D, e: E, f: F);
 mod tests {
     use wasmtime::{Engine, Linker};
 
-    use std::sync::Arc;
-
     use super::*;
     use crate::{
-        data::WorkflowData, engine::wasmtime::module::LowLevelExtendLinker, manager::Services,
-        workflow::ChannelIds,
+        data::WorkflowData, engine::wasmtime::module::LowLevelExtendLinker, workflow::ChannelIds,
     };
     use tardigrade::interface::Interface;
 
     #[test]
     fn import_checks_are_consistent() {
         let interface = Interface::default();
-        let services = Services {
-            clock: Arc::new(()),
-            stubs: None,
-            tracer: None,
-        };
-        let data = WorkflowData::new(&interface, ChannelIds::default(), services);
+        let data = WorkflowData::new(&interface, ChannelIds::default());
         let data = InstanceData::from(data);
         let engine = Engine::default();
         let mut store = Store::new(&engine, data);

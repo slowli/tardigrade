@@ -131,12 +131,12 @@ fn create_workflow_with_scheduler(
 ) -> (Receipt, Workflow<MockInstance>) {
     let definition = MockDefinition::new(poll_fns);
     let channel_ids = mock_channel_ids(definition.interface(), &mut 1);
-    let services = Services {
+    let mut data = WorkflowData::new(definition.interface(), channel_ids);
+    data.set_services(Services {
         clock: Arc::new(scheduler),
         stubs: None,
         tracer: None,
-    };
-    let data = WorkflowData::new(definition.interface(), channel_ids, services);
+    });
     let args = vec![].into();
     let mut workflow = Workflow::new(&definition, data, Some(args)).unwrap();
     (workflow.initialize().unwrap(), workflow)
@@ -315,12 +315,12 @@ fn trap_when_starting_workflow() {
     let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
     let definition = MockDefinition::new(poll_fns);
     let channel_ids = mock_channel_ids(definition.interface(), &mut 1);
-    let services = Services {
+    let mut data = WorkflowData::new(definition.interface(), channel_ids);
+    data.set_services(Services {
         clock: Arc::new(MockScheduler::default()),
         stubs: None,
         tracer: None,
-    };
-    let data = WorkflowData::new(definition.interface(), channel_ids, services);
+    });
     let args = vec![].into();
     let mut workflow = Workflow::new(&definition, data, Some(args)).unwrap();
     let err = poll_fn_sx

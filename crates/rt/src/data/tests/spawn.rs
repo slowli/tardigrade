@@ -7,7 +7,7 @@ use crate::{engine::DefineWorkflow, manager::StashStub, workflow::WorkflowAndCha
 use tardigrade::{
     handle::{Handle, ReceiverAt, SenderAt},
     interface::Interface,
-    spawn::{HostError, ManageInterfaces},
+    spawn::HostError,
 };
 
 #[derive(Debug)]
@@ -61,7 +61,7 @@ impl MockWorkflowManager {
     }
 }
 
-impl ManageInterfaces for MockWorkflowManager {
+impl StashStub for MockWorkflowManager {
     fn interface(&self, id: &str) -> Option<Cow<'_, Interface>> {
         if id == "test:latest" {
             Some(Cow::Borrowed(&self.interface))
@@ -69,9 +69,7 @@ impl ManageInterfaces for MockWorkflowManager {
             None
         }
     }
-}
 
-impl StashStub for MockWorkflowManager {
     fn stash_workflow(
         &mut self,
         stub_id: WorkflowId,
@@ -93,12 +91,12 @@ impl StashStub for MockWorkflowManager {
 fn create_workflow_with_manager(poll_fns: MockAnswers) -> Workflow<MockInstance> {
     let definition = MockDefinition::new(poll_fns);
     let channel_ids = mock_channel_ids(definition.interface(), &mut 1);
-    let services = Services {
+    let mut data = WorkflowData::new(definition.interface(), channel_ids);
+    data.set_services(Services {
         clock: Arc::new(MockScheduler::default()),
         stubs: Some(Box::new(MockWorkflowManager::new())),
         tracer: None,
-    };
-    let data = WorkflowData::new(definition.interface(), channel_ids, services);
+    });
     let args = vec![].into();
     let mut workflow = Workflow::new(&definition, data, Some(args)).unwrap();
     workflow.initialize().unwrap();

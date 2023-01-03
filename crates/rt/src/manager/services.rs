@@ -5,6 +5,7 @@ use tracing_tunnel::TracingEventReceiver;
 
 use std::{
     any::{Any, TypeId},
+    borrow::Cow,
     fmt,
     future::Future,
     pin::Pin,
@@ -12,7 +13,7 @@ use std::{
 };
 
 use crate::workflow::ChannelIds;
-use tardigrade::{spawn::ManageInterfaces, ChannelId, WorkflowId};
+use tardigrade::{interface::Interface, ChannelId, WorkflowId};
 
 /// Wall clock.
 ///
@@ -55,7 +56,10 @@ pub type TimerFuture = Pin<Box<dyn Future<Output = DateTime<Utc>> + Send>>;
 /// Similar to [`tardigrade::ManageWorkflows`], but mutable and synchronous.
 /// The returned handle is stored in a `Workflow` and, before it's persisted, exchanged for
 /// a `WorkflowId`.
-pub(crate) trait StashStub: Any + Send + Sync + ManageInterfaces {
+pub(crate) trait StashStub: Any + Send + Sync {
+    /// Returns an interface for the specified definition ID.
+    fn interface(&self, id: &str) -> Option<Cow<'_, Interface>>;
+
     /// Stashes a workflow stub with the specified params.
     ///
     /// # Errors
