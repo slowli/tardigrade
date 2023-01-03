@@ -260,12 +260,13 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         let inner = if let Some(workflow) = cached_workflow {
             WorkflowSeedInner::Cached(workflow)
         } else {
-            let mut definitions = self.definitions.lock().await;
+            let mut definitions = self.definitions().await;
             let definition = definitions
-                .get(&record.module_id, &record.name_in_module)
-                .unwrap();
+                .get(&record.module_id, &record.name_in_module, transaction)
+                .await
+                .expect("definition missing for an existing workflow");
             WorkflowSeedInner::Persisted {
-                definition: Arc::clone(definition),
+                definition,
                 persisted: state.persisted,
             }
         };
@@ -322,9 +323,10 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
             let (stubs, tracer) =
                 WorkflowSeed::<E::Definition>::extract_services(workflow.take_services());
             let messages = workflow.drain_messages();
-            let definitions = self.definitions.lock().await;
-            stubs.commit(transaction, &mut workflow, receipt).await;
-            drop(definitions);
+            let definitions = self.definitions().await;
+            stubs
+                .commit(definitions, transaction, &mut workflow, receipt)
+                .await;
             let tracing_metadata = tracer.persist_metadata();
             let (spans, local_spans) = tracer.persist();
 

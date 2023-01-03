@@ -59,8 +59,7 @@ async fn do_create_manager<C: Clock, S: Storage>(
     let module = create_module().await;
     let manager = WorkflowManager::builder(Wasmtime::default(), storage)
         .with_clock(clock)
-        .build()
-        .await?;
+        .build();
     manager.insert_module("test", module).await;
     Ok(manager)
 }

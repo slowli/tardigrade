@@ -362,8 +362,7 @@ async fn persisting_workflow() -> TestResult {
 
     let manager = WorkflowManager::builder(SingleModuleEngine, storage)
         .with_clock(clock.clone())
-        .build()
-        .await?;
+        .build();
 
     let receipt = manager.tick().await?.into_inner()?;
     assert!(!receipt.executions().is_empty());

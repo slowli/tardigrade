@@ -25,6 +25,7 @@ use crate::{
 
 #[async_trait]
 impl ManageInterfaces for Workflows {
+    // FIXME: make async
     async fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {

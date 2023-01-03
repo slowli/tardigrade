@@ -3,7 +3,7 @@
 //! See `WorkflowManager` docs for an overview and examples of usage.
 
 use chrono::{DateTime, Utc};
-use futures::{lock::Mutex, StreamExt};
+use futures::lock::{Mutex, MutexGuard};
 use lru::LruCache;
 use tracing_tunnel::{LocalSpans, PersistedMetadata};
 
@@ -52,12 +52,6 @@ impl<D> CachedDefinitions<D> {
         self.inner.get(&key)
     }
 
-    fn for_full_id(&mut self, full_id: &str) -> Option<&Arc<D>> {
-        let (module_id, name_in_module) = CachedDefinitionsView::split_full_id(full_id)?;
-        let key = (module_id.to_owned(), name_in_module.to_owned());
-        self.inner.get(&key)
-    }
-
     fn insert(&mut self, module_id: String, name_in_module: String, definition: D) {
         self.inner
             .push((module_id, name_in_module), Arc::new(definition));
@@ -95,6 +89,52 @@ impl<D> CachedDefinitionsView<D> {
     fn for_full_id(&self, full_id: &str) -> Option<&Arc<D>> {
         let (module_id, name_in_module) = CachedDefinitionsView::split_full_id(full_id)?;
         self.peek(module_id, name_in_module)
+    }
+}
+
+#[derive(Debug)]
+struct Definitions<'a, E: WorkflowEngine> {
+    cached: MutexGuard<'a, CachedDefinitions<E::Definition>>,
+    engine: &'a E,
+}
+
+impl<E: WorkflowEngine> Definitions<'_, E> {
+    #[tracing::instrument(
+        level = "debug",
+        skip(self, transaction),
+        fields(self.len = self.cached.inner.len())
+    )]
+    async fn get(
+        &mut self,
+        module_id: &str,
+        name_in_module: &str,
+        transaction: &impl ReadModules,
+    ) -> Option<Arc<E::Definition>> {
+        if let Some(def) = self.cached.get(module_id, name_in_module) {
+            tracing::debug!(is_cached = true, "accessing definition cache");
+            return Some(Arc::clone(def));
+        }
+        tracing::debug!(is_cached = false, "accessing definition cache");
+        let span = tracing::debug_span!("restore_module", module_id);
+        let entered = span.enter();
+
+        let module = transaction.module(module_id).await?;
+        let module = self.engine.create_module(&module).await;
+        let module = match module {
+            Ok(module) => module,
+            Err(err) => {
+                tracing::warn!(%err, module_id, "cannot restore persisted module");
+                return None;
+            }
+        };
+        drop(entered);
+
+        let definition = module
+            .into_iter()
+            .find_map(|(name, def)| (name == name_in_module).then_some(def))?;
+        self.cached
+            .insert(module_id.to_owned(), name_in_module.to_owned(), definition);
+        self.cached.get(module_id, name_in_module).cloned()
     }
 }
 
@@ -237,6 +277,7 @@ impl<I> CachedWorkflows<I> {
 /// ```
 #[derive(Debug)]
 pub struct WorkflowManager<E: WorkflowEngine, C, S> {
+    engine: E,
     pub(crate) clock: Arc<C>,
     pub(crate) storage: S,
     definitions: Mutex<CachedDefinitions<E::Definition>>,
@@ -258,40 +299,26 @@ impl<E: WorkflowEngine, S: Storage> WorkflowManager<E, (), S> {
 }
 
 impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
-    async fn new(
-        engine: E,
-        clock: C,
-        storage: S,
-        workflow_cache_capacity: NonZeroUsize,
-    ) -> anyhow::Result<Self> {
-        let definitions = {
-            let transaction = storage.readonly_transaction().await;
-            let mut definitions = CachedDefinitions {
-                inner: LruCache::unbounded(), // FIXME: support bounded cache
-            };
-            let mut module_records = transaction.modules();
-            while let Some(record) = module_records.next().await {
-                let module = engine.create_module(&record).await?;
-                for (name, def) in module {
-                    definitions.insert(record.id.clone(), name, def);
-                }
-            }
-            definitions
+    fn new(engine: E, clock: C, storage: S, workflow_cache_capacity: NonZeroUsize) -> Self {
+        let definitions = CachedDefinitions {
+            inner: LruCache::unbounded(), // FIXME: support bounded cache
         };
 
-        Ok(Self {
+        Self {
+            engine,
             clock: Arc::new(clock),
             definitions: Mutex::new(definitions),
             storage,
             cached_workflows: Mutex::new(CachedWorkflows::new(workflow_cache_capacity)),
             local_spans: Mutex::default(),
-        })
+        }
     }
 
     /// Inserts the specified module into the manager.
     pub async fn insert_module(&self, id: &str, module: E::Module) {
         let bytes = module.bytes();
         let mut definitions = HashMap::new();
+        let mut cached_definitions = self.definitions.lock().await;
         for (name, def) in module {
             definitions.insert(
                 name.clone(),
@@ -299,9 +326,9 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
                     interface: def.interface().clone(),
                 },
             );
-            let mut self_definitions = self.definitions.lock().await;
-            self_definitions.insert(id.to_owned(), name, def);
+            cached_definitions.insert(id.to_owned(), name, def);
         }
+        drop(cached_definitions);
 
         let module_record = ModuleRecord {
             id: id.to_owned(),
@@ -327,6 +354,13 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
     /// Returns the encapsulated storage.
     pub fn into_storage(self) -> S {
         self.storage
+    }
+
+    async fn definitions(&self) -> Definitions<'_, E> {
+        Definitions {
+            cached: self.definitions.lock().await,
+            engine: &self.engine,
+        }
     }
 
     async fn cached_definitions(&self) -> CachedDefinitionsView<E::Definition> {
@@ -400,17 +434,12 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManagerBuilder<E, C, S> {
     }
 
     /// Finishes building the manager.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if [module instantiation](WorkflowEngine::create_module()) fails.
-    pub async fn build(self) -> anyhow::Result<WorkflowManager<E, C, S>> {
-        let manager_future = WorkflowManager::new(
+    pub fn build(self) -> WorkflowManager<E, C, S> {
+        WorkflowManager::new(
             self.engine,
             self.clock,
             self.storage,
             self.workflow_cache_capacity,
-        );
-        manager_future.await
+        )
     }
 }

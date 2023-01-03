@@ -51,9 +51,7 @@ pub(crate) async fn create_test_manager_with_storage<S: Storage, C: Clock>(
 
     let manager = WorkflowManager::builder(engine, storage)
         .with_clock(clock)
-        .build()
-        .await
-        .unwrap();
+        .build();
     manager.insert_module("test@latest", module).await;
     manager
 }
