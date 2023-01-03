@@ -1,15 +1,14 @@
 //! Tick logic for `WorkflowManager`.
 
 use chrono::{DateTime, Utc};
-use futures::lock::Mutex;
 use tracing_tunnel::TracingEventReceiver;
 
 use std::{error, fmt, sync::Arc};
 
-use super::{stubs::Stubs, Clock, Services, WorkflowDefinitions, WorkflowManager};
+use super::{stubs::Stubs, Clock, Services, WorkflowManager};
 use crate::{
     data::PersistedWorkflowData,
-    engine::{DefineWorkflow, RunWorkflow, WorkflowEngine},
+    engine::{DefineWorkflow, WorkflowEngine},
     receipt::{ExecutionError, Receipt},
     storage::{
         helper::StorageHelper, ActiveWorkflowState, ErroneousMessageRef, MessageError,
@@ -101,32 +100,38 @@ impl PendingChannel {
 }
 
 #[derive(Debug)]
-enum WorkflowSeedInner<I> {
+enum WorkflowSeedInner<D: DefineWorkflow> {
     Persisted {
-        module_id: String,
-        name_in_module: String,
+        definition: Arc<D>,
         persisted: PersistedWorkflow,
     },
-    Cached(Workflow<I>),
+    Cached(Workflow<D::Instance>),
 }
 
 /// Temporary value holding parts necessary to restore a `Workflow`.
-#[derive(Debug)]
-struct WorkflowSeed<I> {
+struct WorkflowSeed<D: DefineWorkflow> {
     clock: Arc<dyn Clock>,
-    inner: WorkflowSeedInner<I>,
+    inner: WorkflowSeedInner<D>,
 }
 
-impl WorkflowSeed<()> {
-    fn extract_services(services: Services) -> (Stubs, TracingEventReceiver) {
-        let stubs = services.stubs.unwrap();
-        let stubs = *stubs.downcast::<Stubs>();
-        let receiver = services.tracer.unwrap();
-        (stubs, receiver)
+impl<D> fmt::Debug for WorkflowSeed<D>
+where
+    D: DefineWorkflow + fmt::Debug,
+    D::Instance: fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.inner, formatter)
     }
 }
 
-impl<I: RunWorkflow> WorkflowSeed<I> {
+impl<D: DefineWorkflow> WorkflowSeed<D> {
+    fn extract_services(services: Services) -> (Stubs<D>, TracingEventReceiver) {
+        let stubs = services.stubs.unwrap();
+        let stubs = *stubs.downcast::<Stubs<D>>();
+        let receiver = services.tracer.unwrap();
+        (stubs, receiver)
+    }
+
     fn persisted_mut(&mut self) -> &mut PersistedWorkflowData {
         match &mut self.inner {
             WorkflowSeedInner::Persisted { persisted, .. } => persisted.data_mut(),
@@ -207,12 +212,7 @@ impl<I: RunWorkflow> WorkflowSeed<I> {
         pending_channel
     }
 
-    async fn restore<D: DefineWorkflow<Instance = I>>(
-        self,
-        definitions: &Mutex<WorkflowDefinitions<D>>,
-        stubs: Stubs,
-        tracer: TracingEventReceiver,
-    ) -> Workflow<I> {
+    fn restore(self, stubs: Stubs<D>, tracer: TracingEventReceiver) -> Workflow<D::Instance> {
         let services = Services {
             clock: self.clock,
             stubs: Some(Box::new(stubs)),
@@ -222,13 +222,10 @@ impl<I: RunWorkflow> WorkflowSeed<I> {
         match self.inner {
             WorkflowSeedInner::Persisted {
                 persisted,
-                module_id,
-                name_in_module,
+                definition,
             } => {
-                let definitions = definitions.lock().await;
-                let definition = definitions.get(&module_id, &name_in_module);
                 tracing::debug!(?definition, "using definition to restore workflow");
-                persisted.restore(definition, services).unwrap()
+                persisted.restore(definition.as_ref(), services).unwrap()
             }
 
             WorkflowSeedInner::Cached(mut workflow) => {
@@ -253,7 +250,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         &'a self,
         transaction: &S::Transaction<'a>,
         record: WorkflowRecord<ActiveWorkflowState>,
-    ) -> (WorkflowSeed<E::Instance>, TracingEventReceiver) {
+    ) -> (WorkflowSeed<E::Definition>, TracingEventReceiver) {
         let state = record.state;
         let cached_workflow = {
             let mut cache = self.cached_workflows.lock().await;
@@ -263,9 +260,12 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         let inner = if let Some(workflow) = cached_workflow {
             WorkflowSeedInner::Cached(workflow)
         } else {
+            let mut definitions = self.definitions.lock().await;
+            let definition = definitions
+                .get(&record.module_id, &record.name_in_module)
+                .unwrap();
             WorkflowSeedInner::Persisted {
-                module_id: record.module_id.clone(),
-                name_in_module: record.name_in_module,
+                definition: Arc::clone(definition),
                 persisted: state.persisted,
             }
         };
@@ -307,8 +307,8 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         let (mut seed, tracer) = self.restore_workflow(transaction, workflow).await;
         seed.apply_wakers(transaction, wakers).await;
         let pending_channel = seed.update_inbound_channels(transaction).await;
-        let stubs = Stubs::new(Some(workflow_id), self.definition_interfaces().await);
-        let mut workflow = seed.restore(&self.definitions, stubs, tracer).await;
+        let stubs = Stubs::new(Some(workflow_id), self.cached_definitions().await);
+        let mut workflow = seed.restore(stubs, tracer);
 
         let mut result = workflow.tick();
         if let Ok(receipt) = &mut result {
@@ -319,12 +319,11 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
             let span = tracing::debug_span!("persist_workflow_and_messages", workflow_id);
             let _entered = span.enter();
 
-            let (stubs, tracer) = WorkflowSeed::extract_services(workflow.take_services());
+            let (stubs, tracer) =
+                WorkflowSeed::<E::Definition>::extract_services(workflow.take_services());
             let messages = workflow.drain_messages();
             let definitions = self.definitions.lock().await;
-            stubs
-                .commit(&definitions, transaction, &mut workflow, receipt)
-                .await;
+            stubs.commit(transaction, &mut workflow, receipt).await;
             drop(definitions);
             let tracing_metadata = tracer.persist_metadata();
             let (spans, local_spans) = tracer.persist();

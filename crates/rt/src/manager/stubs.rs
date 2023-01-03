@@ -12,7 +12,7 @@ use std::{
     mem,
 };
 
-use super::{AsManager, StashStub, WorkflowDefinitions};
+use super::{AsManager, CachedDefinitionsView, StashStub};
 use crate::{
     data::WorkflowData,
     engine::DefineWorkflow,
@@ -44,13 +44,13 @@ impl WorkflowStub {
     // **NB.** Should be called only once per instance because `args` are taken out.
     fn spawn<D: DefineWorkflow>(
         &mut self,
-        definitions: &WorkflowDefinitions<D>,
+        definitions: &CachedDefinitionsView<D>,
     ) -> anyhow::Result<(PersistedWorkflow, ChannelIds)> {
         let definition = definitions.for_full_id(&self.definition_id).unwrap();
         let args = mem::take(&mut self.args);
         let channel_ids = mem::take(&mut self.channel_ids);
         let data = WorkflowData::new(definition.interface(), channel_ids.clone());
-        let mut workflow = Workflow::new(definition, data, Some(args.into()))?;
+        let mut workflow = Workflow::new(definition.as_ref(), data, Some(args.into()))?;
         let persisted = workflow.persist();
         Ok((persisted, channel_ids))
     }
@@ -58,38 +58,33 @@ impl WorkflowStub {
 
 /// Storage for channel / workflow stubs created by a transaction.
 #[derive(Debug)]
-pub(super) struct Stubs {
+pub(super) struct Stubs<D> {
     executing_workflow_id: Option<WorkflowId>,
-    interfaces: WorkflowDefinitions<Interface>,
+    cached_definitions: CachedDefinitionsView<D>,
     new_workflows: HashMap<WorkflowId, WorkflowStub>,
     new_channels: HashSet<ChannelId>,
 }
 
-impl Stubs {
+impl<D: DefineWorkflow> Stubs<D> {
     pub fn new(
         executing_workflow_id: Option<WorkflowId>,
-        interfaces: WorkflowDefinitions<Interface>,
+        cached_definitions: CachedDefinitionsView<D>,
     ) -> Self {
         Self {
             executing_workflow_id,
-            interfaces,
+            cached_definitions,
             new_workflows: HashMap::new(),
             new_channels: HashSet::new(),
         }
     }
 
-    pub async fn commit<D, T>(
+    pub async fn commit<T: StorageTransaction>(
         self,
-        definitions: &WorkflowDefinitions<D>,
         transaction: &mut T,
         parent: &mut Workflow<D::Instance>,
         receipt: &mut Receipt,
-    ) where
-        D: DefineWorkflow,
-        T: StorageTransaction,
-    {
+    ) {
         let executed_workflow_id = self.executing_workflow_id;
-
         for local_id in self.new_channels {
             let (channel_id, _) = helper::commit_channel(executed_workflow_id, transaction).await;
             parent.notify_on_channel_init(local_id, channel_id, receipt);
@@ -98,7 +93,7 @@ impl Stubs {
         for (stub_id, mut child_stub) in self.new_workflows {
             let result = Self::commit_child(
                 executed_workflow_id,
-                definitions,
+                &self.cached_definitions,
                 transaction,
                 &mut child_stub,
             );
@@ -108,21 +103,21 @@ impl Stubs {
     }
 
     #[inline]
-    async fn do_commit_external<D, T>(
+    async fn do_commit_external<T: StorageTransaction>(
         self,
-        definitions: &WorkflowDefinitions<D>,
         mut transaction: T,
         senders_to_close: Vec<ChannelId>,
-    ) -> anyhow::Result<WorkflowId>
-    where
-        D: DefineWorkflow,
-        T: StorageTransaction,
-    {
+    ) -> anyhow::Result<WorkflowId> {
         debug_assert!(self.executing_workflow_id.is_none());
         debug_assert_eq!(self.new_workflows.len(), 1);
 
         let (_, mut child_stub) = self.new_workflows.into_iter().next().unwrap();
-        let child = Self::commit_child(None, definitions, &mut transaction, &mut child_stub);
+        let child = Self::commit_child(
+            None,
+            &self.cached_definitions,
+            &mut transaction,
+            &mut child_stub,
+        );
         let child = child.await.map(|ids| ids.workflow_id);
 
         if child.is_ok() {
@@ -136,29 +131,20 @@ impl Stubs {
         child
     }
 
-    fn commit_external<'a, D, T>(
+    fn commit_external<'a, T: 'a + StorageTransaction>(
         self,
-        definitions: &'a WorkflowDefinitions<D>,
         transaction: T,
         senders_to_close: Vec<ChannelId>,
-    ) -> impl Future<Output = anyhow::Result<WorkflowId>> + Send + 'a
-    where
-        D: 'a + DefineWorkflow,
-        T: 'a + StorageTransaction,
-    {
-        self.do_commit_external(definitions, transaction, senders_to_close)
+    ) -> impl Future<Output = anyhow::Result<WorkflowId>> + Send + 'a {
+        self.do_commit_external(transaction, senders_to_close)
     }
 
-    async fn commit_child<D, T>(
+    async fn commit_child<T: StorageTransaction>(
         executed_workflow_id: Option<WorkflowId>,
-        definitions: &WorkflowDefinitions<D>,
+        definitions: &CachedDefinitionsView<D>,
         transaction: &mut T,
         child_stub: &mut WorkflowStub,
-    ) -> anyhow::Result<WorkflowAndChannelIds>
-    where
-        D: DefineWorkflow,
-        T: StorageTransaction,
-    {
+    ) -> anyhow::Result<WorkflowAndChannelIds> {
         let (mut persisted, channel_ids) = child_stub.spawn(definitions)?;
         let child_id = transaction.allocate_workflow_id().await;
 
@@ -193,7 +179,7 @@ impl Stubs {
         }
 
         let (module_id, name_in_module) =
-            WorkflowDefinitions::split_full_id(&child_stub.definition_id).unwrap();
+            CachedDefinitionsView::split_full_id(&child_stub.definition_id).unwrap();
         let state = ActiveWorkflowState {
             persisted,
             tracing_spans: PersistedSpans::default(),
@@ -275,9 +261,10 @@ impl Stubs {
     }
 }
 
-impl StashStub for Stubs {
+impl<D: DefineWorkflow> StashStub for Stubs<D> {
     fn interface(&self, id: &str) -> Option<Cow<'_, Interface>> {
-        Some(Cow::Borrowed(self.interfaces.for_full_id(id)?))
+        let definition = self.cached_definitions.for_full_id(id)?;
+        Some(Cow::Borrowed(definition.interface()))
     }
 
     #[tracing::instrument(skip(self, args), fields(args.len = args.len()))]
@@ -288,10 +275,11 @@ impl StashStub for Stubs {
         args: Vec<u8>,
         channel_ids: ChannelIds,
     ) -> anyhow::Result<()> {
-        let Some(interface) = self.interfaces.for_full_id(definition_id) else {
+        let Some(definition) = self.cached_definitions.for_full_id(definition_id) else {
             return Err(anyhow!("no definition with ID `{definition_id}`"));
         };
-        interface
+        definition
+            .interface()
             .check_shape(&channel_ids, true)
             .context("invalid shape of provided handles")?;
 
@@ -354,7 +342,7 @@ impl<'a, M: AsManager> ManagerSpawner<'a, M> {
 impl<M: AsManager> ManageInterfaces for ManagerSpawner<'_, M> {
     async fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
         let manager = self.inner.as_manager();
-        let definitions = manager.definitions.lock().await;
+        let mut definitions = manager.definitions.lock().await;
         let definition = definitions.for_full_id(definition_id)?;
         Some(Cow::Owned(definition.interface().clone()))
     }
@@ -416,19 +404,14 @@ impl<'a, M: AsManager> CreateWorkflow for ManagerSpawner<'a, M> {
         let manager = self.inner.as_manager();
         let definition_id = definition_id.to_owned();
         async move {
-            // FIXME: this is inefficient; ideally, we'd want to extract a single definition
-            let mut stubs = Stubs::new(None, manager.definition_interfaces().await);
+            let mut stubs = Stubs::new(None, manager.cached_definitions().await);
             stubs.stash_workflow(0, &definition_id, raw_args, channel_ids)?;
 
-            let definitions = manager.definitions.lock().await;
             let workflow_id = manager
                 .storage
                 .transaction()
-                .then(|transaction| {
-                    stubs.commit_external(&definitions, transaction, senders_to_close)
-                })
+                .then(|transaction| stubs.commit_external(transaction, senders_to_close))
                 .await?;
-            drop(definitions);
 
             Ok(manager
                 .storage()

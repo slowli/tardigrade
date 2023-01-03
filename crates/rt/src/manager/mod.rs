@@ -36,54 +36,65 @@ use crate::{
     },
     workflow::Workflow,
 };
-use tardigrade::{interface::Interface, WorkflowId};
+use tardigrade::WorkflowId;
 
 #[derive(Debug)]
-struct WorkflowDefinitions<D> {
-    inner: HashMap<String, HashMap<String, D>>,
+struct CachedDefinitions<D> {
+    // We wrap each definition in `Arc` to be able to easily clone it. This is fine since
+    // definitions are immutable.
+    // TODO: rework keys to avoid `String` allocations in getters
+    inner: LruCache<(String, String), Arc<D>>,
 }
 
-impl<D> Default for WorkflowDefinitions<D> {
-    fn default() -> Self {
-        Self {
-            inner: HashMap::new(),
-        }
+impl<D> CachedDefinitions<D> {
+    fn get(&mut self, module_id: &str, name_in_module: &str) -> Option<&Arc<D>> {
+        let key = (module_id.to_owned(), name_in_module.to_owned());
+        self.inner.get(&key)
+    }
+
+    fn for_full_id(&mut self, full_id: &str) -> Option<&Arc<D>> {
+        let (module_id, name_in_module) = CachedDefinitionsView::split_full_id(full_id)?;
+        let key = (module_id.to_owned(), name_in_module.to_owned());
+        self.inner.get(&key)
+    }
+
+    fn insert(&mut self, module_id: String, name_in_module: String, definition: D) {
+        self.inner
+            .push((module_id, name_in_module), Arc::new(definition));
     }
 }
 
-impl WorkflowDefinitions<()> {
+/// Readonly view of `CachedDefinitions`.
+#[derive(Debug)]
+struct CachedDefinitionsView<D> {
+    inner: HashMap<(String, String), Arc<D>>,
+}
+
+impl CachedDefinitionsView<()> {
     fn split_full_id(full_id: &str) -> Option<(&str, &str)> {
         full_id.split_once("::")
     }
 }
 
-impl<D> WorkflowDefinitions<D> {
-    fn get(&self, module_id: &str, name_in_module: &str) -> &D {
-        &self.inner[module_id][name_in_module]
-    }
-
-    fn for_full_id(&self, full_id: &str) -> Option<&D> {
-        let (module_id, name_in_module) = WorkflowDefinitions::split_full_id(full_id)?;
-        self.inner.get(module_id)?.get(name_in_module)
-    }
-
-    fn insert(&mut self, module_id: String, name_in_module: String, definition: D) {
-        let module_entry = self.inner.entry(module_id).or_default();
-        module_entry.insert(name_in_module, definition);
-    }
-}
-
-impl<D: DefineWorkflow> WorkflowDefinitions<D> {
-    fn extract_interfaces(&self) -> WorkflowDefinitions<Interface> {
-        let it = self.inner.iter().map(|(module_id, module_defs)| {
-            let interfaces = module_defs
-                .iter()
-                .map(|(name, def)| (name.clone(), def.interface().clone()));
-            (module_id.clone(), interfaces.collect())
-        });
-        WorkflowDefinitions {
-            inner: it.collect(),
+impl<D> CachedDefinitionsView<D> {
+    fn new(definitions: &CachedDefinitions<D>) -> Self {
+        let inner = definitions
+            .inner
+            .iter()
+            .map(|(key, definition)| (key.clone(), Arc::clone(definition)));
+        Self {
+            inner: inner.collect(),
         }
+    }
+
+    fn peek(&self, module_id: &str, name_in_module: &str) -> Option<&Arc<D>> {
+        let key = (module_id.to_owned(), name_in_module.to_owned());
+        self.inner.get(&key)
+    }
+
+    fn for_full_id(&self, full_id: &str) -> Option<&Arc<D>> {
+        let (module_id, name_in_module) = CachedDefinitionsView::split_full_id(full_id)?;
+        self.peek(module_id, name_in_module)
     }
 }
 
@@ -228,8 +239,7 @@ impl<I> CachedWorkflows<I> {
 pub struct WorkflowManager<E: WorkflowEngine, C, S> {
     pub(crate) clock: Arc<C>,
     pub(crate) storage: S,
-    // FIXME: rework as a caching layer
-    definitions: Mutex<WorkflowDefinitions<E::Definition>>,
+    definitions: Mutex<CachedDefinitions<E::Definition>>,
     cached_workflows: Mutex<CachedWorkflows<E::Instance>>,
     local_spans: Mutex<HashMap<WorkflowId, LocalSpans>>,
 }
@@ -256,7 +266,9 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
     ) -> anyhow::Result<Self> {
         let definitions = {
             let transaction = storage.readonly_transaction().await;
-            let mut definitions = WorkflowDefinitions::default();
+            let mut definitions = CachedDefinitions {
+                inner: LruCache::unbounded(), // FIXME: support bounded cache
+            };
             let mut module_records = transaction.modules();
             while let Some(record) = module_records.next().await {
                 let module = engine.create_module(&record).await?;
@@ -317,9 +329,9 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         self.storage
     }
 
-    async fn definition_interfaces(&self) -> WorkflowDefinitions<Interface> {
+    async fn cached_definitions(&self) -> CachedDefinitionsView<E::Definition> {
         let definitions = self.definitions.lock().await;
-        definitions.extract_interfaces()
+        CachedDefinitionsView::new(&definitions)
     }
 
     /// Sets the current time for this manager. This may expire timers in some of the contained
