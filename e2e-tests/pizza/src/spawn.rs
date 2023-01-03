@@ -56,7 +56,7 @@ impl PizzaDelivery {
     ) -> TaskResult {
         const DEFINITION_ID: &str = "test::Baking";
 
-        let builder = Workflows.new_workflow::<Baking>(DEFINITION_ID)?;
+        let builder = Workflows.new_workflow::<Baking>(DEFINITION_ID).await?;
         let handles = builder.handles(|config| {
             config.events.copy_from(events);
             if !collect_metrics {

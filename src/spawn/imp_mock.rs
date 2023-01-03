@@ -1,5 +1,6 @@
 //! Mock implementations for spawning child workflows.
 
+use async_trait::async_trait;
 use futures::future::{self, BoxFuture, FutureExt};
 use pin_project_lite::pin_project;
 
@@ -20,8 +21,9 @@ use crate::{
     Codec,
 };
 
+#[async_trait]
 impl ManageInterfaces for Workflows {
-    fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
+    async fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
         Runtime::with(|rt| {
             rt.workflow_registry()
                 .interface(definition_id)

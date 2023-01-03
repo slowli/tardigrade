@@ -57,7 +57,7 @@ async fn do_create_manager<C: Clock, S: Storage>(
     storage: S,
 ) -> TestResult<LocalManager<C, S>> {
     let module = create_module().await;
-    let mut manager = WorkflowManager::builder(Wasmtime::default(), storage)
+    let manager = WorkflowManager::builder(Wasmtime::default(), storage)
         .with_clock(clock)
         .build()
         .await?;
@@ -96,7 +96,7 @@ where
     W: WorkflowFn + GetInterface,
 {
     let spawner = manager.spawner().close_senders();
-    let builder = spawner.new_workflow(definition_id)?;
+    let builder = spawner.new_workflow(definition_id).await?;
     let (child_handles, self_handles) = builder.handles(|_| { /* use default config */ }).await;
     let workflow = builder.build(args, child_handles).await?;
     Ok((workflow, self_handles))

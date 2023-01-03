@@ -94,9 +94,10 @@ use crate::{
 };
 
 /// Manager of [`Interface`]s that allows obtaining an interface by a string identifier.
+#[async_trait]
 pub trait ManageInterfaces {
     /// Returns the interface spec of a workflow with the specified ID.
-    fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>>;
+    async fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>>;
 }
 
 /// Manager of workflow channels.
@@ -124,6 +125,7 @@ pub trait CreateChannel {
 /// Depending on the context, the spawned workflow may be a child workflow (if executed
 /// in the context of a workflow, via [`Workflows`]), or the top-level workflow
 /// (if executed from the host).
+#[async_trait]
 pub trait CreateWorkflow: ManageInterfaces + CreateChannel {
     /// Handle to an instantiated workflow.
     type Spawned<W: WorkflowFn + WithHandle>;
@@ -148,7 +150,7 @@ pub trait CreateWorkflow: ManageInterfaces + CreateChannel {
         feature = "tracing",
         tracing::instrument(level = "debug", skip(self), err)
     )]
-    fn new_workflow<'a, W: WorkflowFn + GetInterface>(
+    async fn new_workflow<'a, W: WorkflowFn + GetInterface>(
         &'a self,
         definition_id: &'a str,
     ) -> Result<WorkflowBuilder<'a, Self, W>, AccessError>
@@ -157,6 +159,7 @@ pub trait CreateWorkflow: ManageInterfaces + CreateChannel {
     {
         let provided_interface = self
             .interface(definition_id)
+            .await
             .ok_or(AccessErrorKind::Missing)?;
         W::interface().check_compatibility(&provided_interface)?;
 

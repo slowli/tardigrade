@@ -514,7 +514,7 @@ where
         let args = self.args;
         self.runtime.workflow_registry.insert::<W>(DEFINITION_ID);
         self.runtime.run(async {
-            let builder = Workflows.new_workflow::<W>(DEFINITION_ID).unwrap();
+            let builder = Workflows.new_workflow::<W>(DEFINITION_ID).await.unwrap();
             let (child_handles, self_handles) = builder.handles(|_| ()).await;
             builder
                 .build(args, child_handles)

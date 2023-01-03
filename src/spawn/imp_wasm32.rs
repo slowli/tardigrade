@@ -1,5 +1,6 @@
 //! WASM bindings for spawning child workflows.
 
+use async_trait::async_trait;
 use externref::{externref, Resource};
 use futures::{future::BoxFuture, FutureExt, TryFutureExt};
 use once_cell::unsync::Lazy;
@@ -22,8 +23,9 @@ use crate::{
     Codec, WorkflowId,
 };
 
+#[async_trait]
 impl ManageInterfaces for Workflows {
-    fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
+    async fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
             #[link_name = "workflow::interface"]

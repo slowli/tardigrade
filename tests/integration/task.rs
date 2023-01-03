@@ -75,6 +75,7 @@ fn test_workflow_termination(args: Args) {
     runtime.run(async {
         let builder = Workflows
             .new_workflow::<WorkflowWithSubtask>("test")
+            .await
             .unwrap();
         let (child_handles, self_handles) = builder.handles(|_| ()).await;
         let child = builder.build(args, child_handles).await.unwrap();
@@ -131,6 +132,7 @@ fn workflow_failure_in_main_task() {
     runtime.run(async {
         let builder = Workflows
             .new_workflow::<WorkflowWithSubtask>("test")
+            .await
             .unwrap();
         let (child_handles, _) = builder
             .handles(|config| {
