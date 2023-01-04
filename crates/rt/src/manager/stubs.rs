@@ -47,10 +47,8 @@ impl WorkflowStub {
         definitions: &mut Definitions<'_, E>,
         transaction: &impl ReadModules,
     ) -> anyhow::Result<(PersistedWorkflow, ChannelIds)> {
-        let (module_id, name_in_module) =
-            CachedDefinitions::split_full_id(&self.definition_id).unwrap();
         let definition = definitions
-            .get(module_id, name_in_module, transaction)
+            .get(&self.definition_id, transaction)
             .await
             .ok_or_else(|| anyhow!("definition `{}` not found", self.definition_id))?;
 
@@ -98,12 +96,8 @@ impl Stubs {
         E: WorkflowEngine,
         T: StorageTransaction,
     {
-        let Some((module_id, name_in_module)) = CachedDefinitions::split_full_id(definition_id) else {
-            tracing::warn!(definition_id, "malformed definition ID");
-            return None;
-        };
         let interface = definitions
-            .get(module_id, name_in_module, transaction)
+            .get(definition_id, transaction)
             .await
             .map(|def| def.interface().clone());
         tracing::debug!(ret.is_some = interface.is_some());
@@ -396,28 +390,22 @@ impl<M: AsManager> ManageInterfaces for ManagerSpawner<'_, M> {
         #[inline]
         fn get_definition<'a, E, T>(
             mut definitions: Definitions<'a, E>,
-            module_id: &'a str,
-            name_in_module: &'a str,
+            definition_id: &'a str,
             transaction: T,
         ) -> impl Future<Output = Option<Arc<E::Definition>>> + Send + 'a
         where
             E: WorkflowEngine,
             T: ReadonlyStorageTransaction + 'a,
         {
-            async move {
-                definitions
-                    .get(module_id, name_in_module, &transaction)
-                    .await
-            }
+            async move { definitions.get(definition_id, &transaction).await }
         }
-
-        let (module_id, name_in_module) = CachedDefinitions::split_full_id(definition_id).unwrap();
 
         let manager = self.inner.as_manager();
         let definitions = manager.definitions().await;
-        let definition = manager.storage.readonly_transaction().then(|transaction| {
-            get_definition(definitions, module_id, name_in_module, transaction)
-        });
+        let definition = manager
+            .storage
+            .readonly_transaction()
+            .then(|transaction| get_definition(definitions, definition_id, transaction));
         let definition = definition.await?;
         Some(Cow::Owned(definition.interface().clone()))
     }

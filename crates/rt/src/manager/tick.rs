@@ -5,7 +5,7 @@ use tracing_tunnel::TracingEventReceiver;
 
 use std::{error, fmt, sync::Arc};
 
-use super::{stubs::Stubs, Clock, Services, WorkflowManager};
+use super::{stubs::Stubs, CachedDefinitions, Clock, Services, WorkflowManager};
 use crate::{
     data::PersistedWorkflowData,
     engine::{DefineWorkflow, WorkflowEngine},
@@ -260,9 +260,11 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         let inner = if let Some(workflow) = cached_workflow {
             WorkflowSeedInner::Cached(workflow)
         } else {
+            let definition_id =
+                CachedDefinitions::full_id(&record.module_id, &record.name_in_module);
             let mut definitions = self.definitions().await;
             let definition = definitions
-                .get(&record.module_id, &record.name_in_module, transaction)
+                .get(&definition_id, transaction)
                 .await
                 .expect("definition missing for an existing workflow");
             WorkflowSeedInner::Persisted {

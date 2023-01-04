@@ -42,25 +42,26 @@ use tardigrade::WorkflowId;
 struct CachedDefinitions<D> {
     // We wrap each definition in `Arc` to be able to easily clone it. This is fine since
     // definitions are immutable.
-    // TODO: rework keys to avoid `String` allocations in getters
-    inner: LruCache<(String, String), Arc<D>>,
+    inner: LruCache<String, Arc<D>>,
 }
 
 impl CachedDefinitions<()> {
+    fn full_id(module_id: &str, name_in_module: &str) -> String {
+        format!("{module_id}::{name_in_module}")
+    }
+
     fn split_full_id(full_id: &str) -> Option<(&str, &str)> {
         full_id.split_once("::")
     }
 }
 
 impl<D> CachedDefinitions<D> {
-    fn get(&mut self, module_id: &str, name_in_module: &str) -> Option<&Arc<D>> {
-        let key = (module_id.to_owned(), name_in_module.to_owned());
-        self.inner.get(&key)
+    fn get(&mut self, definition_id: &str) -> Option<&Arc<D>> {
+        self.inner.get(definition_id)
     }
 
-    fn insert(&mut self, module_id: String, name_in_module: String, definition: D) {
-        self.inner
-            .push((module_id, name_in_module), Arc::new(definition));
+    fn insert(&mut self, definition_id: String, definition: Arc<D>) {
+        self.inner.push(definition_id, definition);
     }
 }
 
@@ -78,15 +79,15 @@ impl<E: WorkflowEngine> Definitions<'_, E> {
     )]
     async fn get(
         &mut self,
-        module_id: &str,
-        name_in_module: &str,
+        definition_id: &str,
         transaction: &impl ReadModules,
     ) -> Option<Arc<E::Definition>> {
-        if let Some(def) = self.cached.get(module_id, name_in_module) {
+        if let Some(def) = self.cached.get(definition_id) {
             tracing::debug!(is_cached = true, "accessing definition cache");
             return Some(Arc::clone(def));
         }
         tracing::debug!(is_cached = false, "accessing definition cache");
+        let (module_id, name_in_module) = CachedDefinitions::split_full_id(definition_id)?;
         let span = tracing::debug_span!("restore_module", module_id);
         let entered = span.enter();
 
@@ -104,9 +105,10 @@ impl<E: WorkflowEngine> Definitions<'_, E> {
         let definition = module
             .into_iter()
             .find_map(|(name, def)| (name == name_in_module).then_some(def))?;
+        let definition = Arc::new(definition);
         self.cached
-            .insert(module_id.to_owned(), name_in_module.to_owned(), definition);
-        self.cached.get(module_id, name_in_module).cloned()
+            .insert(definition_id.to_owned(), Arc::clone(&definition));
+        Some(definition)
     }
 }
 
@@ -273,7 +275,7 @@ impl<E: WorkflowEngine, S: Storage> WorkflowManager<E, (), S> {
 impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
     fn new(engine: E, clock: C, storage: S, workflow_cache_capacity: NonZeroUsize) -> Self {
         let definitions = CachedDefinitions {
-            inner: LruCache::unbounded(), // FIXME: support bounded cache
+            inner: LruCache::unbounded(), // TODO: support bounded cache
         };
 
         Self {
@@ -287,7 +289,13 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
     }
 
     /// Inserts the specified module into the manager.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the module `id` contains ineligible chars, such as `:`.
     pub async fn insert_module(&self, id: &str, module: E::Module) {
+        assert!(!id.contains(':'), "module ID contains ineligible char `:`");
+
         let bytes = module.bytes();
         let mut definitions = HashMap::new();
         let mut cached_definitions = self.definitions.lock().await;
@@ -298,7 +306,8 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
                     interface: def.interface().clone(),
                 },
             );
-            cached_definitions.insert(id.to_owned(), name, def);
+            let definition_id = CachedDefinitions::full_id(id, &name);
+            cached_definitions.insert(definition_id, Arc::new(def));
         }
         drop(cached_definitions);
 
