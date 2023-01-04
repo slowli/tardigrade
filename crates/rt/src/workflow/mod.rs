@@ -19,7 +19,8 @@ use crate::{
     utils::Message,
 };
 use tardigrade::{
-    handle::HandleMap, spawn::HostError, task::TaskResult, ChannelId, TaskId, WorkflowId,
+    handle::HandleMap, interface::Interface, spawn::HostError, task::TaskResult, ChannelId, TaskId,
+    WorkflowId,
 };
 
 #[derive(Debug, Default)]
@@ -39,12 +40,16 @@ pub(crate) struct WorkflowAndChannelIds {
 #[derive(Debug)]
 enum ExecutedFunctionArgs<'a> {
     WorkflowArgs(&'a [u8]),
+    DefinitionResolved {
+        stub_id: u64,
+        result: Option<Interface>,
+    },
     NewChannel {
-        local_id: ChannelId,
+        stub_id: ChannelId,
         id: ChannelId,
     },
     NewChild {
-        local_id: WorkflowId,
+        stub_id: WorkflowId,
         result: Result<WorkflowAndChannelIds, HostError>,
     },
 }
@@ -142,20 +147,25 @@ impl<T: RunWorkflow> Workflow<T> {
             ExecutedFunction::StubInitialization => {
                 let cause = WakeUpCause::StubInitialized;
                 match args.unwrap() {
-                    ExecutedFunctionArgs::NewChannel { local_id, id } => {
-                        self.inner.data_mut().notify_on_channel_init(local_id, id);
+                    ExecutedFunctionArgs::DefinitionResolved { stub_id, result } => {
                         WorkflowData::wake(&mut self.inner, cause, |workflow| {
-                            workflow.initialize_channel(local_id, id);
+                            workflow.resolve_definition(stub_id, result);
                         });
                     }
-                    ExecutedFunctionArgs::NewChild { local_id, result } => {
+                    ExecutedFunctionArgs::NewChannel { stub_id, id } => {
+                        self.inner.data_mut().notify_on_channel_init(stub_id, id);
+                        WorkflowData::wake(&mut self.inner, cause, |workflow| {
+                            workflow.initialize_channel(stub_id, id);
+                        });
+                    }
+                    ExecutedFunctionArgs::NewChild { stub_id, result } => {
                         let narrow_result = result
                             .as_ref()
                             .map(|ids| ids.workflow_id)
                             .map_err(HostError::clone);
-                        self.inner.data_mut().notify_on_child_init(local_id, result);
+                        self.inner.data_mut().notify_on_child_init(stub_id, result);
                         WorkflowData::wake(&mut self.inner, cause, |workflow| {
-                            workflow.initialize_child(local_id, narrow_result);
+                            workflow.initialize_child(stub_id, narrow_result);
                         });
                     }
                     ExecutedFunctionArgs::WorkflowArgs(_) => unreachable!(),
@@ -301,26 +311,38 @@ impl<T: RunWorkflow> Workflow<T> {
         self.inner.data_mut().take_services()
     }
 
+    pub(crate) fn notify_on_definition_resolved(
+        &mut self,
+        stub_id: u64,
+        result: Option<Interface>,
+        receipt: &mut Receipt,
+    ) {
+        let function = ExecutedFunction::StubInitialization;
+        let args = ExecutedFunctionArgs::DefinitionResolved { stub_id, result };
+        self.execute(function, Some(args), receipt).unwrap();
+        // ^ `unwrap()` should be safe; no user-generated code is executed
+    }
+
     pub(crate) fn notify_on_channel_init(
         &mut self,
-        local_id: ChannelId,
+        stub_id: ChannelId,
         id: ChannelId,
         receipt: &mut Receipt,
     ) {
         let function = ExecutedFunction::StubInitialization;
-        let args = ExecutedFunctionArgs::NewChannel { local_id, id };
+        let args = ExecutedFunctionArgs::NewChannel { stub_id, id };
         self.execute(function, Some(args), receipt).unwrap();
         // ^ `unwrap()` should be safe; no user-generated code is executed
     }
 
     pub(crate) fn notify_on_child_init(
         &mut self,
-        local_id: WorkflowId,
+        stub_id: WorkflowId,
         result: Result<WorkflowAndChannelIds, HostError>,
         receipt: &mut Receipt,
     ) {
         let function = ExecutedFunction::StubInitialization;
-        let args = ExecutedFunctionArgs::NewChild { local_id, result };
+        let args = ExecutedFunctionArgs::NewChild { stub_id, result };
         self.execute(function, Some(args), receipt).unwrap();
         // ^ `unwrap()` should be safe; no user-generated code is executed
     }

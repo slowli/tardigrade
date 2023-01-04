@@ -110,13 +110,17 @@ pub trait RunWorkflow: AsWorkflowData + Send {
     /// Wakes a waker with the specified ID.
     fn wake_waker(&mut self, waker_id: WakerId);
 
-    /// Notifies that the child workflow with the specified `local_id`, which was previously supplied
+    /// Notifies that the definition with the specified `stub_id`, which was previously supplied
+    /// to [`WorkflowData::FIXME()`], has been resolved with the specified `result`.
+    fn resolve_definition(&mut self, stub_id: u64, result: Option<Interface>);
+
+    /// Notifies that the child workflow with the specified `stub_id`, which was previously supplied
     /// to [`WorkflowData::create_workflow_stub()`], has been initialized
     /// with the specified `result`. Either the child was allocated the ID wrapped in `Ok(_)`, or
     /// an error has occurred during initialization.
     fn initialize_child(&mut self, stub_id: WorkflowId, result: Result<WorkflowId, HostError>);
 
-    /// Notifies that the channel with the specified `local_id`, which was previously supplied
+    /// Notifies that the channel with the specified `stub_id`, which was previously supplied
     /// to [`WorkflowData::create_channel_stub()`], has been created and was allocated
     /// the provided `channel_id`.
     fn initialize_channel(&mut self, stub_id: ChannelId, channel_id: ChannelId);

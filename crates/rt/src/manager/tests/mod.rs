@@ -691,3 +691,62 @@ async fn non_owned_channel_error() {
         "{err}"
     );
 }
+
+#[async_std::test]
+async fn resolving_workflow_definition() {
+    const STUB_ID: u64 = 1;
+
+    let (poll_fns, mut poll_fn_sx) = Answers::channel();
+    let manager = create_test_manager(poll_fns, ()).await;
+    let workflow = create_test_workflow(&manager).await;
+    let workflow_id = workflow.id();
+
+    let request_definition: MockPollFn = |ctx| {
+        ctx.data_mut().request_definition(STUB_ID, DEFINITION_ID)?;
+        Ok(Poll::Pending)
+    };
+    let assert_on_definition: MockPollFn = |ctx| {
+        let interface = ctx.take_definition(STUB_ID).unwrap();
+        interface.handle(ReceiverAt("orders")).unwrap();
+        interface.handle(SenderAt("events")).unwrap();
+        Ok(Poll::Pending)
+    };
+    poll_fn_sx
+        .send_all([request_definition, assert_on_definition])
+        .async_scope(async {
+            tick_workflow(&manager, workflow_id).await.unwrap();
+            tick_workflow(&manager, workflow_id).await.unwrap();
+        })
+        .await;
+}
+
+#[async_std::test]
+async fn workflow_definition_errors() {
+    const BOGUS_STUB_ID: u64 = 1;
+    const MISSING_STUB_ID: u64 = 2;
+
+    let (poll_fns, mut poll_fn_sx) = Answers::channel();
+    let manager = create_test_manager(poll_fns, ()).await;
+    let workflow = create_test_workflow(&manager).await;
+    let workflow_id = workflow.id();
+
+    let request_definition: MockPollFn = |ctx| {
+        ctx.data_mut()
+            .request_definition(BOGUS_STUB_ID, "bogus:Workflow")?;
+        ctx.data_mut()
+            .request_definition(MISSING_STUB_ID, "missing::Workflow")?;
+        Ok(Poll::Pending)
+    };
+    let assert_on_definition: MockPollFn = |ctx| {
+        assert!(ctx.take_definition(BOGUS_STUB_ID).is_none());
+        assert!(ctx.take_definition(MISSING_STUB_ID).is_none());
+        Ok(Poll::Pending)
+    };
+    poll_fn_sx
+        .send_all([request_definition, assert_on_definition])
+        .async_scope(async {
+            tick_workflow(&manager, workflow_id).await.unwrap();
+            tick_workflow(&manager, workflow_id).await.unwrap();
+        })
+        .await;
+}

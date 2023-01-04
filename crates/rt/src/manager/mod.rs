@@ -46,6 +46,12 @@ struct CachedDefinitions<D> {
     inner: LruCache<(String, String), Arc<D>>,
 }
 
+impl CachedDefinitions<()> {
+    fn split_full_id(full_id: &str) -> Option<(&str, &str)> {
+        full_id.split_once("::")
+    }
+}
+
 impl<D> CachedDefinitions<D> {
     fn get(&mut self, module_id: &str, name_in_module: &str) -> Option<&Arc<D>> {
         let key = (module_id.to_owned(), name_in_module.to_owned());
@@ -55,40 +61,6 @@ impl<D> CachedDefinitions<D> {
     fn insert(&mut self, module_id: String, name_in_module: String, definition: D) {
         self.inner
             .push((module_id, name_in_module), Arc::new(definition));
-    }
-}
-
-/// Readonly view of `CachedDefinitions`.
-#[derive(Debug)]
-struct CachedDefinitionsView<D> {
-    inner: HashMap<(String, String), Arc<D>>,
-}
-
-impl CachedDefinitionsView<()> {
-    fn split_full_id(full_id: &str) -> Option<(&str, &str)> {
-        full_id.split_once("::")
-    }
-}
-
-impl<D> CachedDefinitionsView<D> {
-    fn new(definitions: &CachedDefinitions<D>) -> Self {
-        let inner = definitions
-            .inner
-            .iter()
-            .map(|(key, definition)| (key.clone(), Arc::clone(definition)));
-        Self {
-            inner: inner.collect(),
-        }
-    }
-
-    fn peek(&self, module_id: &str, name_in_module: &str) -> Option<&Arc<D>> {
-        let key = (module_id.to_owned(), name_in_module.to_owned());
-        self.inner.get(&key)
-    }
-
-    fn for_full_id(&self, full_id: &str) -> Option<&Arc<D>> {
-        let (module_id, name_in_module) = CachedDefinitionsView::split_full_id(full_id)?;
-        self.peek(module_id, name_in_module)
     }
 }
 
@@ -361,11 +333,6 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
             cached: self.definitions.lock().await,
             engine: &self.engine,
         }
-    }
-
-    async fn cached_definitions(&self) -> CachedDefinitionsView<E::Definition> {
-        let definitions = self.definitions.lock().await;
-        CachedDefinitionsView::new(&definitions)
     }
 
     /// Sets the current time for this manager. This may expire timers in some of the contained

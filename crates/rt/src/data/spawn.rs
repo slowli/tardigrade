@@ -3,9 +3,8 @@
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 
-use std::{borrow::Cow, collections::HashSet, fmt, mem, task::Poll};
+use std::{collections::HashSet, fmt, mem, task::Poll};
 
-use crate::workflow::WorkflowAndChannelIds;
 use crate::{
     data::{
         channel::{ChannelStates, Channels},
@@ -14,15 +13,10 @@ use crate::{
     },
     receipt::{ResourceEventKind, ResourceId, StubEventKind, StubId, WakeUpCause},
     utils,
-    workflow::ChannelIds,
+    workflow::{ChannelIds, WorkflowAndChannelIds},
 };
 use tardigrade::spawn::HostError;
-use tardigrade::{
-    handle::{Handle, HandleMapKey, ReceiverAt, SenderAt},
-    interface::Interface,
-    task::JoinError,
-    WakerId, WorkflowId,
-};
+use tardigrade::{handle::Handle, task::JoinError, WakerId, WorkflowId};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct ChildWorkflowState {
@@ -158,49 +152,20 @@ impl ChildActions<'_> {
 
 /// Spawning-related functionality.
 impl WorkflowData {
-    /// Returns the interface matching the specified definition ID.
-    #[tracing::instrument(level = "debug", skip(self))]
-    pub fn workflow_interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
-        let workflows = self.services().stubs.as_deref();
-        let interface = workflows.and_then(|workflows| workflows.interface(definition_id));
-        tracing::debug!(ret.is_some = interface.is_some());
-        interface
-    }
-
-    fn validate_handles(&self, definition_id: &str, channels: &ChannelIds) -> anyhow::Result<()> {
-        let workflows = self.services().stubs.as_deref();
-        let interface = workflows.and_then(|workflows| workflows.interface(definition_id));
-        if let Some(interface) = interface {
-            for (path, spec) in interface.handles() {
-                match spec {
-                    Handle::Receiver(_) => ReceiverAt(path).get_from(channels)?,
-                    Handle::Sender(_) => SenderAt(path).get_from(channels)?,
-                };
-            }
-
-            if channels.len() != interface.handles().len() {
-                let err = Self::extra_handles_error(&interface, channels);
-                return Err(err);
-            }
-            Ok(())
-        } else {
-            Err(anyhow!("workflow with ID `{definition_id}` is not defined"))
-        }
-    }
-
-    fn extra_handles_error(interface: &Interface, channel_ids: &ChannelIds) -> anyhow::Error {
-        use std::fmt::Write as _;
-
-        let mut extra_handles = channel_ids
-            .keys()
-            .filter(|path| interface.handle(path.as_ref()).is_err())
-            .fold(String::new(), |mut acc, path| {
-                write!(acc, "`{path}`, ").unwrap();
-                acc
-            });
-        debug_assert!(!extra_handles.is_empty());
-        extra_handles.truncate(extra_handles.len() - 2); // remove trailing ", "
-        anyhow!("extra handles: {extra_handles}")
+    /// Initializes access to a workflow definition with the specified ID. When the initialization
+    /// is complete, it will be reported via [`resolve_definition()`].
+    ///
+    /// [`resolve_definition()`]: crate::engine::RunWorkflow::resolve_definition()
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the workflow has no capability to access workflow definitions.
+    #[tracing::instrument(level = "debug", skip(self), err)]
+    pub fn request_definition(&mut self, stub_id: u64, definition_id: &str) -> anyhow::Result<()> {
+        let stubs = self.services_mut().stubs.as_deref_mut();
+        let stubs = stubs.ok_or_else(|| anyhow!("no capability to access workflow definitions"))?;
+        stubs.stash_definition(stub_id, definition_id);
+        Ok(())
     }
 
     /// Starts initializing a child workflow with the specified parameters.
@@ -217,10 +182,7 @@ impl WorkflowData {
     ///
     /// # Errors
     ///
-    /// Returns an error if the provided `channels` config is not valid (e.g., doesn't contain
-    /// precisely the same channels as specified in the spawned workflow interface).
-    /// The checks that are performed in this function are not exhaustive; even if this method
-    /// succeeds, child initialization can still fail later.
+    /// Returns an error if the workflow has no capability to spawn child workflows.
     #[tracing::instrument(skip(args), ret, err, fields(args.len = args.len()))]
     pub fn create_workflow_stub(
         &mut self,
@@ -229,14 +191,12 @@ impl WorkflowData {
         args: Vec<u8>,
         channels: ChannelIds,
     ) -> anyhow::Result<()> {
-        self.validate_handles(definition_id, &channels)?;
-
         let stubs = self
             .services_mut()
             .stubs
             .as_deref_mut()
             .ok_or_else(|| anyhow!("no capability to spawn workflows"))?;
-        stubs.stash_workflow(stub_id, definition_id, args, channels)?;
+        stubs.stash_workflow(stub_id, definition_id, args, channels);
 
         self.current_execution()
             .push_stub_event(StubId::Workflow(stub_id), StubEventKind::Created);

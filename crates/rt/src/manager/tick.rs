@@ -125,9 +125,9 @@ where
 }
 
 impl<D: DefineWorkflow> WorkflowSeed<D> {
-    fn extract_services(services: Services) -> (Stubs<D>, TracingEventReceiver) {
+    fn extract_services(services: Services) -> (Stubs, TracingEventReceiver) {
         let stubs = services.stubs.unwrap();
-        let stubs = *stubs.downcast::<Stubs<D>>();
+        let stubs = *stubs.downcast::<Stubs>();
         let receiver = services.tracer.unwrap();
         (stubs, receiver)
     }
@@ -212,7 +212,7 @@ impl<D: DefineWorkflow> WorkflowSeed<D> {
         pending_channel
     }
 
-    fn restore(self, stubs: Stubs<D>, tracer: TracingEventReceiver) -> Workflow<D::Instance> {
+    fn restore(self, stubs: Stubs, tracer: TracingEventReceiver) -> Workflow<D::Instance> {
         let services = Services {
             clock: self.clock,
             stubs: Some(Box::new(stubs)),
@@ -308,7 +308,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         let (mut seed, tracer) = self.restore_workflow(transaction, workflow).await;
         seed.apply_wakers(transaction, wakers).await;
         let pending_channel = seed.update_inbound_channels(transaction).await;
-        let stubs = Stubs::new(Some(workflow_id), self.cached_definitions().await);
+        let stubs = Stubs::new(Some(workflow_id));
         let mut workflow = seed.restore(stubs, tracer);
 
         let mut result = workflow.tick();

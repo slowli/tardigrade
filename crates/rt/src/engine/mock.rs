@@ -147,6 +147,13 @@ impl MockInstance {
         }
     }
 
+    pub fn take_definition(&mut self, stub_id: u64) -> Option<Interface> {
+        self.persisted
+            .definitions
+            .remove(&stub_id)
+            .expect("definition is not resolved")
+    }
+
     /// Prepares new channels for a child workflow.
     ///
     /// # Errors
@@ -237,6 +244,12 @@ impl RunWorkflow for MockInstance {
         self.inner.task(owning_task_id).schedule_wakeup();
     }
 
+    fn resolve_definition(&mut self, stub_id: u64, result: Option<Interface>) {
+        self.persisted.definitions.insert(stub_id, result);
+        // Assume that the definition was requested from the main (0th) task.
+        self.inner.task(0).schedule_wakeup();
+    }
+
     fn initialize_child(&mut self, stub_id: WorkflowId, _result: Result<WorkflowId, HostError>) {
         if let Some(stub) = self.persisted.child_stubs.get_mut(&stub_id) {
             self.inner.task(stub.owning_task_id).schedule_wakeup();
@@ -257,6 +270,7 @@ impl RunWorkflow for MockInstance {
 pub struct PersistedMockInstance {
     wakers: HashMap<WakerId, TaskId>,
     next_waker_id: WakerId,
+    definitions: HashMap<u64, Option<Interface>>,
     child_stubs: HashMap<WorkflowId, ChildStub>,
     /// Mapping from local to global channel IDs.
     channel_mapping: HashMap<ChannelId, ChannelId>,
@@ -267,6 +281,7 @@ impl PersistedMockInstance {
         Self {
             wakers: HashMap::new(),
             next_waker_id: 0,
+            definitions: HashMap::new(),
             child_stubs: HashMap::new(),
             channel_mapping: HashMap::new(),
         }

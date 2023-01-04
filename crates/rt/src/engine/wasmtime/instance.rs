@@ -20,7 +20,7 @@ use crate::{
     engine::{AsWorkflowData, PersistWorkflow, RunWorkflow},
     workflow::ChannelIds,
 };
-use tardigrade::{spawn::HostError, ChannelId, TaskId, WakerId, WorkflowId};
+use tardigrade::{interface::Interface, spawn::HostError, ChannelId, TaskId, WakerId, WorkflowId};
 
 #[derive(Debug)]
 pub(super) struct InstanceData {
@@ -124,6 +124,15 @@ impl RunWorkflow for WasmtimeInstance {
         let exports = self.store.data().exports();
         if let Err(err) = exports.wake_waker(self.store.as_context_mut(), waker_id) {
             tracing::warn!(%err, "failed waking waker");
+        }
+    }
+
+    fn resolve_definition(&mut self, stub_id: u64, result: Option<Interface>) {
+        let exports = self.store.data().exports();
+        if let Err(err) =
+            exports.initialize_definition(self.store.as_context_mut(), stub_id, result)
+        {
+            tracing::warn!(%err, "failed initializing definition");
         }
     }
 

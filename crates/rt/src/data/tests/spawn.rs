@@ -1,14 +1,8 @@
 //! Workflow tests for spawning child workflows.
 
-use std::borrow::Cow;
-
 use super::*;
 use crate::{engine::DefineWorkflow, manager::StashStub, workflow::WorkflowAndChannelIds};
-use tardigrade::{
-    handle::{Handle, ReceiverAt, SenderAt},
-    interface::Interface,
-    spawn::HostError,
-};
+use tardigrade::{handle::Handle, interface::Interface, spawn::HostError};
 
 #[derive(Debug)]
 struct NewWorkflowCall {
@@ -62,12 +56,8 @@ impl MockWorkflowManager {
 }
 
 impl StashStub for MockWorkflowManager {
-    fn interface(&self, id: &str) -> Option<Cow<'_, Interface>> {
-        if id == "test:latest" {
-            Some(Cow::Borrowed(&self.interface))
-        } else {
-            None
-        }
+    fn stash_definition(&mut self, _stub_id: u64, _definition_id: &str) {
+        // Do nothing
     }
 
     fn stash_workflow(
@@ -76,11 +66,10 @@ impl StashStub for MockWorkflowManager {
         id: &str,
         args: Vec<u8>,
         channels: ChannelIds,
-    ) -> anyhow::Result<()> {
+    ) {
         assert_eq!(id, "test:latest");
         assert_eq!(channels.len(), 2);
         self.calls.push(NewWorkflowCall { stub_id, args });
-        Ok(())
     }
 
     fn stash_channel(&mut self, _stub_id: ChannelId) {
@@ -104,12 +93,6 @@ fn create_workflow_with_manager(poll_fns: MockAnswers) -> Workflow<MockInstance>
 }
 
 fn spawn_child_workflow(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
-    // Emulate getting interface.
-    let interface = ctx.data().workflow_interface("test:latest").unwrap();
-    assert_eq!(interface.handles().len(), 2);
-    assert!(interface.handle(ReceiverAt("commands")).is_ok());
-    assert!(interface.handle(SenderAt("traces")).is_ok());
-
     // Emulate creating a workflow.
     ctx.data_mut().create_workflow_stub(
         0,
@@ -164,70 +147,6 @@ fn spawning_child_workflow() {
     let commands_id = child.channels().channel_id("commands").unwrap();
     let traces_id = child.channels().channel_id("traces").unwrap();
     assert_ne!(commands_id, traces_id);
-}
-
-#[test]
-fn spawning_child_workflow_with_unknown_interface() {
-    let spawn_with_unknown_interface: MockPollFn = |ctx| {
-        let bogus_id = "bogus:latest";
-        let interface = ctx.data().workflow_interface(bogus_id);
-        assert!(interface.is_none());
-
-        let args = b"err_input".to_vec();
-        let err = ctx
-            .data_mut()
-            .create_workflow_stub(0, bogus_id, args, configure_handles())
-            .unwrap_err()
-            .to_string();
-
-        assert!(err.contains("workflow with ID `bogus:latest`"), "{err}");
-        Ok(Poll::Pending)
-    };
-
-    let poll_fns = MockAnswers::from_value(spawn_with_unknown_interface);
-    let workflow = create_workflow_with_manager(poll_fns);
-
-    assert!(workflow.data().persisted.child_workflows().next().is_none());
-}
-
-#[test]
-fn spawning_child_workflow_with_extra_channel() {
-    let spawn_with_extra_channel: MockPollFn = |ctx| {
-        let id = "test:latest";
-        let args = b"child_input".to_vec();
-        let mut handles = configure_handles();
-        handles.insert(id.into(), Handle::Receiver(3));
-
-        let err = ctx
-            .data_mut()
-            .create_workflow_stub(0, id, args, handles)
-            .unwrap_err()
-            .to_string();
-
-        assert_eq!(err, "extra handles: `test:latest`");
-        Ok(Poll::Pending)
-    };
-    let poll_fns = MockAnswers::from_value(spawn_with_extra_channel);
-    let workflow = create_workflow_with_manager(poll_fns);
-
-    assert!(workflow.data().persisted.child_workflows().next().is_none());
-}
-
-#[test]
-fn spawning_child_workflow_with_host_error() {
-    let spawn_with_host_error: MockPollFn = |ctx| {
-        let id = "test:latest";
-        let args = b"err_input".to_vec();
-        ctx.data_mut()
-            .create_workflow_stub(0, id, args, configure_handles())?;
-
-        Ok(Poll::Pending)
-    };
-
-    let poll_fns = MockAnswers::from_values([spawn_with_host_error]);
-    let mut workflow = create_workflow_with_manager(poll_fns);
-    init_child(&mut workflow);
-    assert!(workflow.data().persisted.child_workflows().next().is_none());
 }
 
 fn consume_message_from_child(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {

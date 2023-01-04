@@ -15,7 +15,7 @@ use super::{
     WasmAllocator,
 };
 use tardigrade::{
-    abi::{IntoWasm, TryFromWasm},
+    abi::{AllocateBytes, IntoWasm, TryFromWasm},
     interface::Interface,
     spawn::HostError,
     ChannelId, TaskId, TimerId, WakerId, WorkflowId,
@@ -50,6 +50,7 @@ pub(super) struct ModuleExports {
     create_waker: TypedFunc<WasmContextPtr, WakerId>,
     wake_waker: TypedFunc<WakerId, ()>,
     drop_waker: TypedFunc<WakerId, ()>,
+    initialize_definition: TypedFunc<(u64, u32, u32), ()>,
     initialize_child: TypedFunc<(WorkflowId, Ref, i64), ()>,
     initialize_channel: TypedFunc<(ChannelId, Ref, Ref), ()>,
 }
@@ -126,6 +127,23 @@ impl ModuleExports {
         waker_id: WakerId,
     ) -> anyhow::Result<()> {
         self.drop_waker.call(ctx, waker_id)
+    }
+
+    #[tracing::instrument(level = "debug", skip(self, ctx), err)]
+    pub fn initialize_definition(
+        &self,
+        mut ctx: StoreContextMut<'_, InstanceData>,
+        stub_id: u64,
+        result: Option<Interface>,
+    ) -> anyhow::Result<()> {
+        let mut alloc = WasmAllocator::new(ctx.as_context_mut());
+        let (ptr, len) = if let Some(interface) = result {
+            alloc.copy_to_wasm(&interface.to_bytes())?
+        } else {
+            (0, 0)
+        };
+
+        self.initialize_definition.call(ctx, (stub_id, ptr, len))
     }
 
     #[tracing::instrument(level = "debug", skip(self, ctx), err)]
@@ -233,6 +251,7 @@ impl ModuleExports {
             memory,
             data_location,
             ref_table,
+
             create_main_task: Self::extract_function(store, instance, &main_fn_name),
             poll_task: Self::extract_function(store, instance, "tardigrade_rt::poll_task"),
             drop_task: Self::extract_function(store, instance, "tardigrade_rt::drop_task"),
@@ -240,6 +259,12 @@ impl ModuleExports {
             create_waker: Self::extract_function(store, instance, "tardigrade_rt::create_waker"),
             wake_waker: Self::extract_function(store, instance, "tardigrade_rt::wake_waker"),
             drop_waker: Self::extract_function(store, instance, "tardigrade_rt::drop_waker"),
+
+            initialize_definition: Self::extract_function(
+                store,
+                instance,
+                "tardigrade_rt::init_definition",
+            ),
             initialize_child: Self::extract_function(store, instance, "tardigrade_rt::init_child"),
             initialize_channel: Self::extract_function(
                 store,
@@ -410,7 +435,7 @@ impl ExtendLinker for WorkflowFunctions {
 impl SpawnFunctions {
     fn validate_import(ty: &ExternType, fn_name: &str) -> anyhow::Result<()> {
         match fn_name {
-            "workflow::interface" => ensure_func_ty::<(u32, u32), i64>(ty, fn_name),
+            "workflow::interface" => ensure_func_ty::<(u64, u32, u32), ()>(ty, fn_name),
             "workflow::spawn" => {
                 ensure_func_ty::<(WorkflowId, u32, u32, u32, u32, Ref), ()>(ty, fn_name)
             }
@@ -436,7 +461,7 @@ impl ExtendLinker for SpawnFunctions {
         vec![
             (
                 "workflow::interface",
-                wrap2(&mut *store, Self::workflow_interface),
+                wrap3(&mut *store, Self::workflow_interface),
             ),
             ("workflow::spawn", wrap6(&mut *store, Self::spawn)),
             (

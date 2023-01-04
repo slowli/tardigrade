@@ -13,7 +13,7 @@ use std::{
     sync::Arc,
 };
 
-use super::{AsManager, CachedDefinitionsView, Definitions, StashStub};
+use super::{AsManager, CachedDefinitions, Definitions, StashStub};
 use crate::{
     data::WorkflowData,
     engine::{DefineWorkflow, WorkflowEngine},
@@ -48,11 +48,16 @@ impl WorkflowStub {
         transaction: &impl ReadModules,
     ) -> anyhow::Result<(PersistedWorkflow, ChannelIds)> {
         let (module_id, name_in_module) =
-            CachedDefinitionsView::split_full_id(&self.definition_id).unwrap();
+            CachedDefinitions::split_full_id(&self.definition_id).unwrap();
         let definition = definitions
             .get(module_id, name_in_module, transaction)
             .await
             .ok_or_else(|| anyhow!("definition `{}` not found", self.definition_id))?;
+
+        definition
+            .interface()
+            .check_shape(&self.channel_ids, true)
+            .context("invalid shape of provided handles")?;
 
         let args = mem::take(&mut self.args);
         let channel_ids = mem::take(&mut self.channel_ids);
@@ -65,40 +70,66 @@ impl WorkflowStub {
 
 /// Storage for channel / workflow stubs created by a transaction.
 #[derive(Debug)]
-pub(super) struct Stubs<D> {
+pub(super) struct Stubs {
     executing_workflow_id: Option<WorkflowId>,
-    cached_definitions: CachedDefinitionsView<D>,
+    definition_requests: HashMap<u64, String>,
     new_workflows: HashMap<WorkflowId, WorkflowStub>,
     new_channels: HashSet<ChannelId>,
 }
 
-impl<D: DefineWorkflow> Stubs<D> {
-    pub fn new(
-        executing_workflow_id: Option<WorkflowId>,
-        cached_definitions: CachedDefinitionsView<D>,
-    ) -> Self {
+impl Stubs {
+    pub fn new(executing_workflow_id: Option<WorkflowId>) -> Self {
         Self {
             executing_workflow_id,
-            cached_definitions,
+            definition_requests: HashMap::new(),
             new_workflows: HashMap::new(),
             new_channels: HashSet::new(),
         }
+    }
+
+    #[tracing::instrument(level = "debug", skip(definitions, transaction))]
+    async fn resolve_definition<E, T>(
+        stub_id: u64,
+        definition_id: &str,
+        definitions: &mut Definitions<'_, E>,
+        transaction: &T,
+    ) -> Option<Interface>
+    where
+        E: WorkflowEngine,
+        T: StorageTransaction,
+    {
+        let Some((module_id, name_in_module)) = CachedDefinitions::split_full_id(definition_id) else {
+            tracing::warn!(definition_id, "malformed definition ID");
+            return None;
+        };
+        let interface = definitions
+            .get(module_id, name_in_module, transaction)
+            .await
+            .map(|def| def.interface().clone());
+        tracing::debug!(ret.is_some = interface.is_some());
+        interface
     }
 
     pub async fn commit<E, T>(
         self,
         mut definitions: Definitions<'_, E>,
         transaction: &mut T,
-        parent: &mut Workflow<D::Instance>,
+        parent: &mut Workflow<E::Instance>,
         receipt: &mut Receipt,
     ) where
         E: WorkflowEngine,
         T: StorageTransaction,
     {
+        for (stub_id, def) in self.definition_requests {
+            let result =
+                Self::resolve_definition(stub_id, &def, &mut definitions, transaction).await;
+            parent.notify_on_definition_resolved(stub_id, result, receipt);
+        }
+
         let executed_workflow_id = self.executing_workflow_id;
-        for local_id in self.new_channels {
+        for stub_id in self.new_channels {
             let (channel_id, _) = helper::commit_channel(executed_workflow_id, transaction).await;
-            parent.notify_on_channel_init(local_id, channel_id, receipt);
+            parent.notify_on_channel_init(stub_id, channel_id, receipt);
         }
 
         for (stub_id, child_stub) in self.new_workflows {
@@ -166,7 +197,12 @@ impl<D: DefineWorkflow> Stubs<D> {
         T: StorageTransaction,
     {
         let (module_id, name_in_module) =
-            CachedDefinitionsView::split_full_id(&child_stub.definition_id).unwrap();
+            CachedDefinitions::split_full_id(&child_stub.definition_id).ok_or_else(|| {
+                anyhow!(
+                    "malformed definition ID `{}`; expected one like `module_id::name_in_module`",
+                    child_stub.definition_id
+                )
+            })?;
         let module_id = module_id.to_owned();
         let name_in_module = name_in_module.to_owned();
 
@@ -284,10 +320,11 @@ impl<D: DefineWorkflow> Stubs<D> {
     }
 }
 
-impl<D: DefineWorkflow> StashStub for Stubs<D> {
-    fn interface(&self, id: &str) -> Option<Cow<'_, Interface>> {
-        let definition = self.cached_definitions.for_full_id(id)?;
-        Some(Cow::Borrowed(definition.interface()))
+impl StashStub for Stubs {
+    #[tracing::instrument(skip(self))]
+    fn stash_definition(&mut self, stub_id: u64, definition_id: &str) {
+        self.definition_requests
+            .insert(stub_id, definition_id.to_owned());
     }
 
     #[tracing::instrument(skip(self, args), fields(args.len = args.len()))]
@@ -297,15 +334,7 @@ impl<D: DefineWorkflow> StashStub for Stubs<D> {
         definition_id: &str,
         args: Vec<u8>,
         channel_ids: ChannelIds,
-    ) -> anyhow::Result<()> {
-        let Some(definition) = self.cached_definitions.for_full_id(definition_id) else {
-            return Err(anyhow!("no definition with ID `{definition_id}`"));
-        };
-        definition
-            .interface()
-            .check_shape(&channel_ids, true)
-            .context("invalid shape of provided handles")?;
-
+    ) {
         self.new_workflows.insert(
             stub_id,
             WorkflowStub {
@@ -314,7 +343,6 @@ impl<D: DefineWorkflow> StashStub for Stubs<D> {
                 channel_ids,
             },
         );
-        Ok(())
     }
 
     #[tracing::instrument(skip(self))]
@@ -383,8 +411,7 @@ impl<M: AsManager> ManageInterfaces for ManagerSpawner<'_, M> {
             }
         }
 
-        let (module_id, name_in_module) =
-            CachedDefinitionsView::split_full_id(definition_id).unwrap();
+        let (module_id, name_in_module) = CachedDefinitions::split_full_id(definition_id).unwrap();
 
         let manager = self.inner.as_manager();
         let definitions = manager.definitions().await;
@@ -450,11 +477,9 @@ impl<'a, M: AsManager> CreateWorkflow for ManagerSpawner<'a, M> {
         };
 
         let manager = self.inner.as_manager();
-        let definition_id = definition_id.to_owned();
+        let mut stubs = Stubs::new(None);
+        stubs.stash_workflow(0, definition_id, raw_args, channel_ids);
         async move {
-            let mut stubs = Stubs::new(None, manager.cached_definitions().await);
-            stubs.stash_workflow(0, &definition_id, raw_args, channel_ids)?;
-
             // TODO: This borrows cached definitions for too long
             let definitions = manager.definitions().await;
             let workflow_id = manager
