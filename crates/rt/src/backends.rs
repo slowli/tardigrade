@@ -43,16 +43,15 @@ mod mock {
     ///
     /// // Set the mocked wall clock for the workflow manager.
     /// let scheduler = MockScheduler::default();
-    /// let mut manager = WorkflowManager::builder(Wasmtime::default(), storage)
+    /// let manager = WorkflowManager::builder(Wasmtime::default(), storage)
     ///     .with_clock(scheduler.clone())
-    ///     .build()
-    ///     .await?;
+    ///     .build();
     /// let manager = Arc::new(manager); // to simplify handle management
     ///
     /// let inputs: Vec<u8> = // ...
     /// #   vec![];
     /// let spawner = manager.spawner();
-    /// let builder = spawner.new_workflow::<()>("test::Workflow")?;
+    /// let builder = spawner.new_workflow::<()>("test::Workflow").await?;
     /// let (handles, self_handles) = builder.handles(|_| {}).await;
     /// builder.build(inputs, handles).await?;
     ///

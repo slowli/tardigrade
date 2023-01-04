@@ -144,7 +144,7 @@ impl LocalStorageSnapshot<'_> {
 /// let mut storage = LocalStorage::default();
 /// // Remove messages consumed by workflows.
 /// storage.truncate_workflow_messages();
-/// let manager = WorkflowManager::builder(engine, storage).build().await?;
+/// let manager = WorkflowManager::builder(engine, storage).build();
 /// // Do something with the manager...
 ///
 /// let mut storage = manager.into_storage();

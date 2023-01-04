@@ -63,15 +63,13 @@
 //!
 //! // Let's instantiate a manager and add the module to it.
 //! let storage = LocalStorage::default();
-//! let mut manager = WorkflowManager::builder(engine, storage)
-//!     .build()
-//!     .await?;
+//! let manager = WorkflowManager::builder(engine, storage).build();
 //! manager.insert_module("test", module).await;
 //!
 //! // Workflows are created within a manager that is responsible
 //! // for their persistence and managing channels, time, and child workflows.
 //! let spawner = manager.spawner();
-//! let builder = spawner.new_workflow::<()>("test::Workflow")?;
+//! let builder = spawner.new_workflow::<()>("test::Workflow").await?;
 //! let (handles, self_handles) = builder.handles(|_| {}).await;
 //! let new_workflow =
 //!     builder.build(b"data".to_vec(), handles).await?;

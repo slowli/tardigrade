@@ -216,10 +216,9 @@ impl<I> CachedWorkflows<I> {
 /// # async fn test_wrapper(module: WasmtimeModule) -> anyhow::Result<()> {
 /// // A manager is instantiated using the builder pattern:
 /// let storage = LocalStorage::default();
-/// let mut manager = WorkflowManager::builder(Wasmtime::default(), storage)
+/// let manager = WorkflowManager::builder(Wasmtime::default(), storage)
 ///     .with_clock(AsyncIoScheduler)
-///     .build()
-///     .await?;
+///     .build();
 /// // After this, modules may be added:
 /// let module: WasmtimeModule = // ...
 /// #   module;
@@ -234,7 +233,7 @@ impl<I> CachedWorkflows<I> {
 /// // ^ The definition ID is the ID of the module and the name of a workflow
 /// //   within the module separated by `::`.
 /// let args = b"test_args".to_vec();
-/// let builder = spawner.new_workflow::<()>(definition_id)?;
+/// let builder = spawner.new_workflow::<()>(definition_id).await?;
 /// let (handles, self_handles) = builder.handles(|_| {}).await;
 /// let mut workflow = builder.build(args, handles).await?;
 /// // Do something with `workflow`, e.g., write something to its channels

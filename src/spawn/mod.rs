@@ -42,7 +42,7 @@
 //! # let mut runtime = Runtime::default();
 //! # runtime.workflow_registry_mut().insert::<ChildWorkflow>("child");
 //! # runtime.run(async {
-//! let builder = Workflows.new_workflow::<ChildWorkflow>("child")?;
+//! let builder = Workflows.new_workflow::<ChildWorkflow>("child").await?;
 //! let (child_handles, mut self_handles) = builder
 //!     .handles(|config| {
 //!         // It is possible to customize child workflow initialization via
