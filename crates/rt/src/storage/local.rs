@@ -446,8 +446,8 @@ impl WriteWorkflows for LocalTransaction<'_> {
             .fetch_add(1, Ordering::SeqCst)
     }
 
-    async fn insert_workflow(&mut self, state: WorkflowRecord) {
-        self.inner_mut().workflows.insert(state.id, state);
+    async fn insert_workflow(&mut self, record: WorkflowRecord) {
+        self.inner_mut().workflows.insert(record.id, record);
     }
 
     async fn workflow_for_update(&mut self, id: WorkflowId) -> Option<WorkflowRecord> {

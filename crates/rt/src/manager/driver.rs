@@ -121,6 +121,7 @@ impl Default for CachedTimer {
 #[derive(Debug, Default)]
 pub struct DriveConfig {
     results_sx: Option<mpsc::UnboundedSender<TickResult>>,
+    wait_for_workflows: bool,
     drop_erroneous_messages: bool,
 }
 
@@ -137,10 +138,16 @@ impl DriveConfig {
         rx
     }
 
-    /// Indicates that the environment should drop any inbound messages that lead
+    /// Indicates that the driver should drop any inbound messages that lead
     /// to execution errors.
     pub fn drop_erroneous_messages(&mut self) {
         self.drop_erroneous_messages = true;
+    }
+
+    /// Indicates that the driver should continue waiting for new workflows or workflow updates
+    /// (e.g., repairing a workflow) when all existing workflows are terminated or errored.
+    pub fn wait_for_workflows(&mut self) {
+        self.wait_for_workflows = true;
     }
 
     /// Executes the provided [`WorkflowManager`] until all workflows in it have completed
@@ -191,7 +198,12 @@ impl DriveConfig {
         let nearest_timer_expiration = self.tick_manager(manager, storage).await;
         let manager_ref = manager.as_manager();
         if nearest_timer_expiration.is_none() {
-            let no_workflows = StorageRef::from(storage).workflow_count().await == 0;
+            let no_workflows = if self.wait_for_workflows {
+                false
+            } else {
+                StorageRef::from(storage).workflow_count().await == 0
+            };
+
             if commits_rx.is_terminated() || no_workflows {
                 let termination = if no_workflows {
                     Termination::Finished

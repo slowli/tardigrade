@@ -35,7 +35,7 @@ fn channel_id(channel_ids: &ChannelIds, path: &str) -> ChannelId {
     channel_ids[&HandlePath::new(path)].factor()
 }
 
-pub(crate) async fn create_test_manager_with_storage<S: Storage, C: Clock>(
+async fn create_test_manager_with_storage<S: Storage, C: Clock>(
     poll_fns: MockAnswers,
     clock: C,
     storage: S,
@@ -60,7 +60,7 @@ async fn create_test_manager<C: Clock>(poll_fns: MockAnswers, clock: C) -> Local
     create_test_manager_with_storage(poll_fns, clock, LocalStorage::default()).await
 }
 
-pub(crate) async fn create_test_workflow<C: Clock, S: Storage + 'static>(
+async fn create_test_workflow<C: Clock, S: Storage + 'static>(
     manager: &LocalManager<C, S>,
 ) -> WorkflowHandle<(), &S> {
     let spawner = manager.spawner().close_senders();
@@ -503,18 +503,18 @@ async fn sending_message_to_workflow() {
     assert_eq!(orders_state.received_message_count(), 1);
 }
 
+fn error_after_consuming_message(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
+    let channels = ctx.data().persisted.channels();
+    let orders_id = channels.channel_id("orders").unwrap();
+    let mut orders = ctx.data_mut().receiver(orders_id);
+    let poll_result = orders.poll_next().into_inner(ctx)?;
+    assert_matches!(poll_result, Poll::Ready(Some(_)));
+
+    Err(anyhow!("oops"))
+}
+
 #[async_std::test]
 async fn error_processing_inbound_message_in_workflow() {
-    let error_after_consuming_message: MockPollFn = |ctx| {
-        let channels = ctx.data().persisted.channels();
-        let orders_id = channels.channel_id("orders").unwrap();
-        let mut orders = ctx.data_mut().receiver(orders_id);
-        let poll_result = orders.poll_next().into_inner(ctx)?;
-        assert_matches!(poll_result, Poll::Ready(Some(_)));
-
-        Err(anyhow!("oops"))
-    };
-
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
     let manager = create_test_manager(poll_fns, ()).await;
     let mut workflow = create_test_workflow(&manager).await;

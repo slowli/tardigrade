@@ -7,7 +7,7 @@ use futures::{
     FutureExt, StreamExt,
 };
 
-use std::{sync::Arc, task::Poll};
+use std::{sync::Arc, task::Poll, time::Duration};
 
 use super::*;
 use crate::{backends::MockScheduler, storage::Streaming};
@@ -203,4 +203,138 @@ async fn selecting_from_driver_and_other_future() {
     orders.send(b"order #2".to_vec()).await.unwrap();
     manager.tick().await.unwrap().into_inner().unwrap();
     workflow.update().await.unwrap_err(); // should be completed
+}
+
+#[async_std::test]
+async fn not_waiting_for_new_workflow_with_default_config() {
+    let poll_fns = MockAnswers::from_values([poll_orders, handle_order]);
+    let (storage, mut commits_rx) = create_storage();
+    let manager = create_test_manager(storage, poll_fns).await;
+
+    // The manager should immediately terminate.
+    let termination = manager.drive(&mut commits_rx, DriveConfig::new()).await;
+    assert_matches!(termination, Termination::Finished);
+}
+
+#[async_std::test]
+async fn waiting_for_new_workflow() {
+    let poll_fns = MockAnswers::from_values([poll_orders, handle_order]);
+    let (storage, mut commits_rx) = create_storage();
+    let manager = Arc::new(create_test_manager(storage, poll_fns).await);
+
+    let mut config = DriveConfig::new();
+    config.wait_for_workflows();
+    let mut results_rx = config.tick_results();
+    let driver_task = {
+        let manager = Arc::clone(&manager);
+        task::spawn(async move { manager.drive(&mut commits_rx, config).await })
+    };
+
+    task::sleep(Duration::from_millis(50)).await;
+    assert!(driver_task.now_or_never().is_none());
+
+    let mut workflow = create_test_workflow(&manager).await;
+    let result = results_rx.next().await.unwrap();
+    assert_eq!(result.workflow_id(), workflow.id());
+
+    let receipt = result.into_inner().unwrap();
+    let has_polling_event = receipt.events().any(|event| {
+        if let Some(event) = event.as_channel_event() {
+            return matches!(
+                event.kind,
+                ChannelEventKind::ReceiverPolled {
+                    result: Poll::Pending,
+                }
+            );
+        }
+        false
+    });
+    assert!(has_polling_event, "{receipt:#?}");
+
+    workflow.update().await.unwrap();
+    assert_eq!(workflow.record().execution_count, 1);
+
+    let mut handle = workflow.handle().await.with_indexing();
+    let orders_sx = handle.remove(ReceiverAt("orders")).unwrap();
+    orders_sx.send(b"order".to_vec()).await.unwrap();
+    orders_sx.close().await;
+
+    let result = results_rx.next().await.unwrap();
+    assert_eq!(result.workflow_id(), workflow.id());
+    let receipt = result.into_inner().unwrap();
+    assert_main_task_completed(&receipt);
+
+    workflow.update().await.unwrap_err();
+    assert_eq!(workflow.record().execution_count, 2);
+    let workflow = manager.storage().any_workflow(workflow.id()).await.unwrap();
+    assert!(workflow.is_completed());
+}
+
+fn assert_main_task_completed(receipt: &Receipt) {
+    let main_execution = receipt
+        .executions()
+        .iter()
+        .find(|execution| {
+            matches!(
+                execution.function,
+                ExecutedFunction::Task { task_id: 0, .. }
+            )
+        })
+        .unwrap();
+    assert_matches!(main_execution.task_result, Some(Ok(_)));
+}
+
+#[async_std::test]
+async fn waiting_for_repaired_workflow() {
+    let poll_fns =
+        MockAnswers::from_values([poll_orders, error_after_consuming_message, handle_order]);
+    let (storage, mut commits_rx) = create_storage();
+    let manager = Arc::new(create_test_manager(storage, poll_fns).await);
+    let mut workflow = create_test_workflow(&manager).await;
+
+    let mut config = DriveConfig::new();
+    config.wait_for_workflows();
+    let mut results_rx = config.tick_results();
+    {
+        let manager = Arc::clone(&manager);
+        task::spawn(async move { manager.drive(&mut commits_rx, config).await });
+    }
+
+    let result = results_rx.next().await.unwrap();
+    assert_eq!(result.workflow_id(), workflow.id());
+    workflow.update().await.unwrap();
+    assert_eq!(workflow.record().execution_count, 1);
+
+    let mut handle = workflow.handle().await.with_indexing();
+    let orders_sx = handle.remove(ReceiverAt("orders")).unwrap();
+    orders_sx.send(b"bogus".to_vec()).await.unwrap();
+
+    let result = results_rx.next().await.unwrap();
+    assert_eq!(result.workflow_id(), workflow.id());
+    let err = result.into_inner().unwrap_err();
+    let err = err.trap().to_string();
+    assert!(err.contains("oops"), "{err}");
+
+    workflow.update().await.unwrap_err();
+    assert_eq!(workflow.record().execution_count, 2);
+    let workflow_id = workflow.id();
+    let workflow = manager.storage().any_workflow(workflow_id).await.unwrap();
+    assert!(workflow.is_errored());
+
+    let workflow = workflow.unwrap_errored();
+    let mut err_messages: Vec<_> = workflow.messages().collect();
+    assert_eq!(err_messages.len(), 1);
+    let err_message = err_messages.pop().unwrap();
+    err_message.drop_for_workflow().await.unwrap();
+    workflow.consider_repaired().await.unwrap();
+
+    orders_sx.send(b"order".to_vec()).await.unwrap();
+    orders_sx.close().await;
+
+    let result = results_rx.next().await.unwrap();
+    let receipt = result.into_inner().unwrap();
+    assert_main_task_completed(&receipt);
+
+    let workflow = manager.storage().any_workflow(workflow_id).await.unwrap();
+    assert!(workflow.is_completed());
 }

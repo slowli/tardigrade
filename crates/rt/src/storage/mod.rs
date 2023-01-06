@@ -263,7 +263,7 @@ pub trait WriteWorkflows: ReadWorkflows {
     /// Allocates a new unique ID for a workflow.
     async fn allocate_workflow_id(&mut self) -> WorkflowId;
     /// Inserts a new workflow into the storage.
-    async fn insert_workflow(&mut self, state: WorkflowRecord);
+    async fn insert_workflow(&mut self, record: WorkflowRecord);
     /// Returns a workflow record for the specified ID for update.
     async fn workflow_for_update(&mut self, id: WorkflowId) -> Option<WorkflowRecord>;
 
