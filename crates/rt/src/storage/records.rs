@@ -172,6 +172,21 @@ impl WorkflowRecord {
     }
 }
 
+impl<T> WorkflowRecord<T> {
+    pub(crate) fn split(self) -> (WorkflowRecord<()>, T) {
+        let state = self.state;
+        let record = WorkflowRecord {
+            id: self.id,
+            parent_id: self.parent_id,
+            module_id: self.module_id,
+            name_in_module: self.name_in_module,
+            execution_count: self.execution_count,
+            state: (),
+        };
+        (record, state)
+    }
+}
+
 /// State of a [`WorkflowRecord`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

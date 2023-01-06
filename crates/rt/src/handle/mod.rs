@@ -64,6 +64,14 @@ pub struct StorageRef<'a, S> {
     inner: &'a S,
 }
 
+impl<S: Storage> Clone for StorageRef<'_, S> {
+    fn clone(&self) -> Self {
+        Self { inner: self.inner }
+    }
+}
+
+impl<S: Storage> Copy for StorageRef<'_, S> {}
+
 impl<'a, S: Storage> HandleFormat for StorageRef<'a, S> {
     type RawReceiver = RawMessageReceiver<&'a S>;
     type Receiver<T, C: Codec<T>> = MessageReceiver<T, C, &'a S>;
@@ -74,6 +82,12 @@ impl<'a, S: Storage> HandleFormat for StorageRef<'a, S> {
 impl<'a, S: Storage> From<&'a S> for StorageRef<'a, S> {
     fn from(storage: &'a S) -> Self {
         Self { inner: storage }
+    }
+}
+
+impl<S: Storage> AsRef<S> for StorageRef<'_, S> {
+    fn as_ref(&self) -> &S {
+        self.inner
     }
 }
 
@@ -139,27 +153,22 @@ impl<'a, S: Storage> StorageRef<'a, S> {
     ) -> impl Future<Output = Option<AnyWorkflowHandle<&'a S>>> + Send + 'a {
         async move {
             let record = transaction.workflow(workflow_id).await?;
-            match record.state {
+            let (record, state) = record.split();
+            match state {
                 WorkflowState::Active(state) => {
-                    let module = transaction.module(&record.module_id).await?;
-                    let interface = &module.definitions.get(&record.name_in_module)?.interface;
-                    let handle =
-                        WorkflowHandle::new(storage, workflow_id, interface.clone(), *state);
+                    let mut module = transaction.module(&record.module_id).await?;
+                    let interface = module.definitions.remove(&record.name_in_module)?.interface;
+                    let handle = WorkflowHandle::new(storage, record, *state, interface);
                     Some(handle.into())
                 }
 
                 WorkflowState::Errored(state) => {
-                    let handle = ErroredWorkflowHandle::new(
-                        storage,
-                        workflow_id,
-                        state.error,
-                        state.erroneous_messages,
-                    );
+                    let handle = ErroredWorkflowHandle::new(storage, record, state);
                     Some(handle.into())
                 }
 
                 WorkflowState::Completed(state) => {
-                    let handle = CompletedWorkflowHandle::new(workflow_id, state);
+                    let handle = CompletedWorkflowHandle::new(record, state);
                     Some(handle.into())
                 }
             }
@@ -182,7 +191,7 @@ impl<'a, S: Storage> StorageRef<'a, S> {
             .await
     }
 
-    fn create_channel(&self) -> impl Future<Output = Channel<'a, S>> + Send + 'a {
+    fn create_channel(self) -> impl Future<Output = Channel<'a, S>> + Send + 'a {
         #[inline]
         async fn do_create_channel<T: StorageTransaction>(
             mut transaction: T,
@@ -215,16 +224,21 @@ pub type HostHandles<'a, W, S> = InEnv<W, Inverse<StorageRef<'a, S>>>;
 impl<'a, S: Storage> CreateChannel for StorageRef<'a, S> {
     type Fmt = Self;
 
+    #[tracing::instrument(level = "debug", skip_all)]
     fn closed_receiver(&self) -> RawMessageReceiver<&'a S> {
         RawMessageReceiver::closed(self.inner)
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     fn closed_sender(&self) -> RawMessageSender<&'a S> {
         RawMessageSender::closed(self.inner)
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn new_channel(&self) -> (RawMessageSender<&'a S>, RawMessageReceiver<&'a S>) {
-        self.create_channel().await
+        let (sx, rx) = self.create_channel().await;
+        tracing::debug!(ret.id = sx.channel_id());
+        (sx, rx)
     }
 }
 
