@@ -142,6 +142,8 @@ mod workflow;
 
 #[cfg(feature = "async-io")]
 pub use crate::backends::AsyncIoScheduler;
+#[cfg(feature = "tokio")]
+pub use crate::backends::TokioScheduler;
 pub use crate::{
     data::{Channels, ChildWorkflow, ReceiverState, SenderState, TaskState, TimerState},
     manager::{Clock, Schedule, TimerFuture},
