@@ -7,7 +7,7 @@ use futures::lock::{Mutex, MutexGuard};
 use lru::LruCache;
 use tracing_tunnel::{LocalSpans, PersistedMetadata};
 
-use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
+use std::{collections::HashMap, fmt, num::NonZeroUsize, sync::Arc};
 
 mod driver;
 mod services;
@@ -175,6 +175,42 @@ impl<I> CachedWorkflows<I> {
     }
 }
 
+/// Part of the `WorkflowManager` not tied to the storage.
+///
+/// We need this as a separate type to make storage easily swappable (e.g., to implement
+/// driving the manager or transactional operations).
+#[derive(Debug)]
+struct ManagerInner<E: WorkflowEngine, C> {
+    engine: E,
+    clock: Arc<C>,
+    definitions: Mutex<CachedDefinitions<E::Definition>>,
+    cached_workflows: Mutex<CachedWorkflows<E::Instance>>,
+    local_spans: Mutex<HashMap<WorkflowId, LocalSpans>>,
+}
+
+impl<E: WorkflowEngine, C: Clock> ManagerInner<E, C> {
+    fn new(engine: E, clock: C, workflow_cache_capacity: NonZeroUsize) -> Self {
+        let definitions = CachedDefinitions {
+            inner: LruCache::unbounded(), // TODO: support bounded cache
+        };
+
+        Self {
+            engine,
+            clock: Arc::new(clock),
+            definitions: Mutex::new(definitions),
+            cached_workflows: Mutex::new(CachedWorkflows::new(workflow_cache_capacity)),
+            local_spans: Mutex::default(),
+        }
+    }
+
+    async fn definitions(&self) -> Definitions<'_, E> {
+        Definitions {
+            cached: self.definitions.lock().await,
+            engine: &self.engine,
+        }
+    }
+}
+
 /// Manager for workflow modules, workflows and channels.
 ///
 /// A workflow manager is responsible for managing the state and interfacing with workflows
@@ -251,14 +287,34 @@ impl<I> CachedWorkflows<I> {
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug)]
 pub struct WorkflowManager<E: WorkflowEngine, C, S> {
-    engine: E,
-    pub(crate) clock: Arc<C>,
-    pub(crate) storage: S,
-    definitions: Mutex<CachedDefinitions<E::Definition>>,
-    cached_workflows: Mutex<CachedWorkflows<E::Instance>>,
-    local_spans: Mutex<HashMap<WorkflowId, LocalSpans>>,
+    inner: Arc<ManagerInner<E, C>>,
+    storage: S,
+}
+
+impl<E, C, S> fmt::Debug for WorkflowManager<E, C, S>
+where
+    E: WorkflowEngine + fmt::Debug,
+    E::Instance: fmt::Debug,
+    C: fmt::Debug,
+    S: fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WorkflowManager")
+            .field("inner", &self.inner)
+            .field("storage", &self.storage)
+            .finish()
+    }
+}
+
+impl<E: WorkflowEngine, C: Clock, S: Storage + Clone> Clone for WorkflowManager<E, C, S> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            storage: self.storage.clone(),
+        }
+    }
 }
 
 #[allow(clippy::mismatching_type_param_order, clippy::missing_panics_doc)] // false positive
@@ -276,17 +332,9 @@ impl<E: WorkflowEngine, S: Storage> WorkflowManager<E, (), S> {
 
 impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
     fn new(engine: E, clock: C, storage: S, workflow_cache_capacity: NonZeroUsize) -> Self {
-        let definitions = CachedDefinitions {
-            inner: LruCache::unbounded(), // TODO: support bounded cache
-        };
-
         Self {
-            engine,
-            clock: Arc::new(clock),
-            definitions: Mutex::new(definitions),
+            inner: Arc::new(ManagerInner::new(engine, clock, workflow_cache_capacity)),
             storage,
-            cached_workflows: Mutex::new(CachedWorkflows::new(workflow_cache_capacity)),
-            local_spans: Mutex::default(),
         }
     }
 
@@ -301,7 +349,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
 
         let bytes = module.bytes();
         let mut definitions = HashMap::new();
-        let mut cached_definitions = self.definitions.lock().await;
+        let mut cached_definitions = self.inner.definitions.lock().await;
         for (name, def) in module {
             definitions.insert(
                 name.clone(),
@@ -328,7 +376,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
 
     /// Returns a reference to the execution engine.
     pub fn engine(&self) -> &E {
-        &self.engine
+        &self.inner.engine
     }
 
     /// Returns a reference to the underlying storage.
@@ -346,22 +394,11 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         self.storage
     }
 
-    async fn definitions(&self) -> Definitions<'_, E> {
-        Definitions {
-            cached: self.definitions.lock().await,
-            engine: &self.engine,
-        }
-    }
-
     /// Sets the current time for this manager. This may expire timers in some of the contained
     /// workflows.
     #[tracing::instrument(skip(self))]
     pub async fn set_current_time(&self, time: DateTime<Utc>) {
-        self.do_set_current_time(&self.storage, time).await;
-    }
-
-    pub(super) async fn do_set_current_time(&self, storage: &S, time: DateTime<Utc>) {
-        let mut transaction = storage.transaction().await;
+        let mut transaction = self.storage.transaction().await;
         StorageHelper::new(&mut transaction)
             .set_current_time(time)
             .await;
@@ -376,7 +413,7 @@ where
     S: Storage + Clone,
 {
     /// Drives this manager using the provided config.
-    pub async fn drive(&self, commits_rx: &mut CommitStream, config: DriveConfig) -> Termination {
+    pub async fn drive(self, commits_rx: &mut CommitStream, config: DriveConfig) -> Termination {
         config.run(self, commits_rx).await
     }
 }

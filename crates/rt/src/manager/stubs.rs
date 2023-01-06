@@ -401,7 +401,7 @@ impl<M: AsManager> ManageInterfaces for ManagerSpawner<'_, M> {
         }
 
         let manager = self.inner.as_manager();
-        let definitions = manager.definitions().await;
+        let definitions = manager.inner.definitions().await;
         let definition = manager
             .storage
             .readonly_transaction()
@@ -469,7 +469,7 @@ impl<'a, M: AsManager> CreateWorkflow for ManagerSpawner<'a, M> {
         stubs.stash_workflow(0, definition_id, raw_args, channel_ids);
         async move {
             // TODO: This borrows cached definitions for too long
-            let definitions = manager.definitions().await;
+            let definitions = manager.inner.definitions().await;
             let workflow_id = manager
                 .storage
                 .transaction()
