@@ -125,6 +125,11 @@ impl SenderState {
         self.is_closed
     }
 
+    /// Returns the number of messages flushed over the sender.
+    pub fn flushed_message_count(&self) -> usize {
+        self.flushed_messages
+    }
+
     /// Is this channel ready to receive another message?
     fn is_ready(&self) -> bool {
         !self.is_closed && self.capacity.map_or(true, |cap| self.messages.len() < cap)

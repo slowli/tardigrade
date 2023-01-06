@@ -43,8 +43,11 @@ impl Wasmtime {
     ///   or a known function with an incorrect signature.
     /// - The module does not have necessary exports.
     /// - The module does not have a custom section with the workflow interface definition(s).
+    #[tracing::instrument(skip_all, err, fields(bytes.len))]
     pub fn create_module(&self, bytes: impl Into<Arc<[u8]>>) -> anyhow::Result<WasmtimeModule> {
-        WasmtimeModule::new(&self.0, bytes.into())
+        let bytes = bytes.into();
+        tracing::Span::current().record("bytes.len", bytes.len());
+        WasmtimeModule::new(&self.0, bytes)
     }
 }
 

@@ -92,6 +92,9 @@ impl<E: WorkflowEngine> Definitions<'_, E> {
         let entered = span.enter();
 
         let module = transaction.module(module_id).await?;
+        module.definitions.get(name_in_module)?;
+        // ^ Do not waste time on restoring the module if the `name_in_module` is bogus.
+
         let module = self.engine.create_module(&module).await;
         let module = match module {
             Ok(module) => module,
@@ -292,7 +295,8 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
     /// # Panics
     ///
     /// Panics if the module `id` contains ineligible chars, such as `:`.
-    pub async fn insert_module(&self, id: &str, module: E::Module) {
+    #[tracing::instrument(skip(self, module), ret)]
+    pub async fn insert_module(&self, id: &str, module: E::Module) -> ModuleRecord {
         assert!(!id.contains(':'), "module ID contains ineligible char `:`");
 
         let bytes = module.bytes();
@@ -317,8 +321,14 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
             tracing_metadata: PersistedMetadata::default(),
         };
         let mut transaction = self.storage.transaction().await;
-        transaction.insert_module(module_record).await;
+        transaction.insert_module(module_record.clone()).await;
         transaction.commit().await;
+        module_record
+    }
+
+    /// Returns a reference to the execution engine.
+    pub fn engine(&self) -> &E {
+        &self.engine
     }
 
     /// Returns a reference to the underlying storage.
