@@ -157,7 +157,7 @@ async fn instantiating_workflow() {
 }
 
 async fn test_initializing_workflow(manager: &LocalManager<()>, channel_ids: &ChannelIds) {
-    let workflow_cache = manager.cached_workflows.lock().await;
+    let workflow_cache = manager.inner.cached_workflows.lock().await;
     assert!(workflow_cache.inner.is_empty());
     drop(workflow_cache);
 
@@ -173,7 +173,7 @@ async fn test_initializing_workflow(manager: &LocalManager<()>, channel_ids: &Ch
     let message = transaction.channel_message(traces_id, 0).await.unwrap();
     assert_eq!(message, b"trace #1");
 
-    let workflow_cache = manager.cached_workflows.lock().await;
+    let workflow_cache = manager.inner.cached_workflows.lock().await;
     assert_eq!(workflow_cache.inner.len(), 1);
 }
 
@@ -750,3 +750,6 @@ async fn workflow_definition_errors() {
         })
         .await;
 }
+
+// FIXME: test / fix providing receiver for existing channel with messages
+//   (old messages should not be consumed)

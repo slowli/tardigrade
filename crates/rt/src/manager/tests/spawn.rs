@@ -237,7 +237,7 @@ async fn spawning_child_workflow_with_cold_cache() {
     let workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
 
-    manager.definitions.lock().await.inner.clear();
+    manager.inner.definitions.lock().await.inner.clear();
     initialize_child(&manager, workflow_id, &mut poll_fn_sx).await;
 }
 
