@@ -279,7 +279,7 @@ pub trait WriteWorkflows: ReadWorkflows {
     /// Finds an active workflow with an inbound channel that has a message or EOF marker
     /// consumable by the workflow, and selects the workflow for update.
     async fn workflow_with_consumable_channel_for_update(
-        &self,
+        &mut self,
     ) -> Option<WorkflowRecord<ActiveWorkflowState>>;
 }
 

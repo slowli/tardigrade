@@ -474,7 +474,7 @@ impl WriteWorkflows for LocalTransaction<'_> {
     }
 
     async fn workflow_with_consumable_channel_for_update(
-        &self,
+        &mut self,
     ) -> Option<WorkflowRecord<ActiveWorkflowState>> {
         let workflows = self.inner().workflows.values().filter_map(|record| {
             if let WorkflowState::Active(state) = &record.state {

@@ -338,7 +338,7 @@ impl<T: StorageTransaction> WriteWorkflows for StreamingTransaction<T> {
 
     #[inline]
     async fn workflow_with_consumable_channel_for_update(
-        &self,
+        &mut self,
     ) -> Option<WorkflowRecord<ActiveWorkflowState>> {
         self.inner
             .workflow_with_consumable_channel_for_update()
