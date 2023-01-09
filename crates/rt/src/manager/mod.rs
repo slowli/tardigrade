@@ -32,7 +32,7 @@ use crate::{
     handle::StorageRef,
     storage::{
         helper::StorageHelper, CommitStream, DefinitionRecord, ModuleRecord, ReadModules, Storage,
-        StorageTransaction, Streaming, WriteModules,
+        StorageTransaction, Streaming, TransactionAsStorage, WriteModules,
     },
     workflow::Workflow,
 };
@@ -384,14 +384,61 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         StorageRef::from(&self.storage)
     }
 
-    /// Returns a spawner handle that can be used to create new workflows.
-    pub fn spawner(&self) -> ManagerSpawner<'_, Self> {
-        ManagerSpawner::new(self)
-    }
-
     /// Returns the encapsulated storage.
     pub fn into_storage(self) -> S {
         self.storage
+    }
+
+    /// Creates a storage transaction and uses it for the further operations on the manager
+    /// (e.g., creating new workflows / channels). Beware of [`TransactionAsStorage`] drawbacks
+    /// documented in the type docs.
+    ///
+    /// The original transaction can be extracted back using [`Self::into_storage()`] and
+    /// then [`TransactionAsStorage::into_inner()`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use tardigrade::spawn::CreateWorkflow;
+    /// # use tardigrade_rt::{
+    /// #     engine::Wasmtime, manager::WorkflowManager,
+    /// #     storage::{LocalStorage, StorageTransaction},
+    /// # };
+    /// #
+    /// # async fn test_wrapper() -> anyhow::Result<()> {
+    /// let storage = LocalStorage::default();
+    /// let mut manager = WorkflowManager::builder(Wasmtime::default(), storage)
+    ///     .build();
+    /// // Obtain a manager operating in a transaction
+    /// let tx_manager = manager.in_transaction().await;
+    /// // Create a workflow and channels for it in a transaction
+    /// let spawner = tx_manager.spawner();
+    /// let builder = spawner.new_workflow::<()>("test::Workflow").await?;
+    /// let (handles, _) = builder.handles(|_| {}).await;
+    /// builder.build(vec![], handles).await?;
+    ///
+    /// // Unwrap the transaction and commit it.
+    /// if let Some(tx) = tx_manager.into_storage().into_inner() {
+    ///     tx.commit().await;
+    /// }
+    /// // If the transaction is not committed, the workflow and all channels created
+    /// // for it are gone.
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn in_transaction(
+        &mut self,
+    ) -> WorkflowManager<E, C, TransactionAsStorage<S::Transaction<'_>>> {
+        let transaction = self.storage.transaction().await;
+        WorkflowManager {
+            inner: Arc::clone(&self.inner),
+            storage: transaction.into(),
+        }
+    }
+
+    /// Returns a spawner handle that can be used to create new workflows.
+    pub fn spawner(&self) -> ManagerSpawner<'_, Self> {
+        ManagerSpawner::new(self)
     }
 
     /// Sets the current time for this manager. This may expire timers in some of the contained

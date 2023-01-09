@@ -60,7 +60,7 @@ async fn create_test_manager<C: Clock>(poll_fns: MockAnswers, clock: C) -> Local
     create_test_manager_with_storage(poll_fns, clock, LocalStorage::default()).await
 }
 
-async fn create_test_workflow<C: Clock, S: Storage + 'static>(
+async fn create_test_workflow<C: Clock, S: Storage>(
     manager: &LocalManager<C, S>,
 ) -> WorkflowHandle<(), &S> {
     let spawner = manager.spawner().close_senders();
@@ -175,6 +175,64 @@ async fn test_initializing_workflow(manager: &LocalManager<()>, channel_ids: &Ch
 
     let workflow_cache = manager.inner.cached_workflows.lock().await;
     assert_eq!(workflow_cache.inner.len(), 1);
+}
+
+#[async_std::test]
+async fn creating_workflow_in_transaction() {
+    let (poll_fns, mut poll_fn_sx) = Answers::channel();
+    let mut manager = create_test_manager(poll_fns, ()).await;
+
+    let tx_manager = manager.in_transaction().await;
+    let workflow_id = create_test_workflow(&tx_manager).await.id();
+    let tick_result = poll_fn_sx
+        .send(initialize_task)
+        .async_scope(tx_manager.tick())
+        .await;
+    tick_result.unwrap().into_inner().unwrap();
+
+    // Finally commit the transaction.
+    let transaction = tx_manager.into_storage().into_inner().unwrap();
+    transaction.commit().await;
+
+    let workflow = manager.storage().workflow(workflow_id).await.unwrap();
+    let handle = workflow.handle().await.with_indexing();
+    let message = handle[SenderAt("traces")].receive_message(0).await.unwrap();
+    let message = message.decode().unwrap();
+    assert_eq!(message, b"trace #1");
+}
+
+#[async_std::test]
+async fn discarding_workflow_in_transaction() {
+    let (poll_fns, mut poll_fn_sx) = Answers::channel();
+    let mut manager = create_test_manager(poll_fns, ()).await;
+
+    let tx_manager = manager.in_transaction().await;
+    let workflow = create_test_workflow(&tx_manager).await;
+    let workflow_id = workflow.id();
+    let channel_ids = workflow.channel_ids().values().copied();
+    let channel_ids: HashSet<_> = channel_ids.map(Handle::factor).collect();
+    let tick_result = poll_fn_sx
+        .send(initialize_task)
+        .async_scope(tx_manager.tick())
+        .await;
+    tick_result.unwrap().into_inner().unwrap();
+
+    // Drop the manager with the transaction, thus discarding it.
+    drop(tx_manager);
+
+    assert!(manager.storage().workflow(workflow_id).await.is_none());
+    for &id in &channel_ids {
+        assert!(manager.storage().channel(id).await.is_none());
+    }
+
+    // Check that if a new workflow is created, its IDs are never reused.
+    let workflow = create_test_workflow(&manager).await;
+    assert_ne!(workflow.id(), workflow_id);
+
+    let new_channel_ids = workflow.channel_ids().values().copied();
+    let new_channel_ids: HashSet<_> = new_channel_ids.map(Handle::factor).collect();
+    let intersection: Vec<_> = new_channel_ids.intersection(&channel_ids).collect();
+    assert!(intersection.is_empty(), "{intersection:?}");
 }
 
 #[async_std::test]
