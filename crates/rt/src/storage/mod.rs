@@ -55,6 +55,7 @@ pub(crate) mod helper;
 mod local;
 mod records;
 mod stream;
+mod transaction;
 
 pub use self::{
     local::{
@@ -69,6 +70,7 @@ pub use self::{
     stream::{
         CommitStream, MessageEvent, MessageOrEof, StreamMessages, Streaming, StreamingTransaction,
     },
+    transaction::{TransactionAsStorage, TransactionLock, TransactionReadLock},
 };
 
 use tardigrade::{ChannelId, WakerId, WorkflowId};
