@@ -25,7 +25,7 @@ impl DelegateHandle for ParentWorkflow {
 
 impl ParentWorkflow {
     async fn spawn_child(command: i32, events: Sender<i32, Json>) -> TaskResult {
-        let builder = Workflows.new_workflow::<TestedWorkflow>("child")?;
+        let builder = Workflows.new_workflow::<TestedWorkflow>("child").await?;
         let (child_handles, mut self_handles) = builder
             .handles(|config| {
                 config.events.copy_from(events);

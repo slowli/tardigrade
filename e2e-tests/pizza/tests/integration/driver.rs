@@ -9,6 +9,7 @@ use futures::{
     stream::BoxStream,
     FutureExt, Stream, StreamExt, TryStreamExt,
 };
+use test_casing::{cases, test_casing, TestCases};
 use tracing::instrument::WithSubscriber;
 use tracing_capture::Storage;
 
@@ -33,7 +34,7 @@ use super::{
     create_streaming_manager, enable_tracing_assertions, spawn_workflow, StreamingManager,
     TestResult,
 };
-use tardigrade_test_basic::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOrder};
+use tardigrade_pizza::{Args, DomainEvent, PizzaDelivery, PizzaKind, PizzaOrder};
 
 pub(crate) fn spawn_traced_task<T: Send + 'static>(
     future: impl Future<Output = T> + Send + 'static,
@@ -47,7 +48,9 @@ fn drain_stream(stream: &mut (impl Stream + Unpin)) {
     }
 }
 
-async fn test_async_handle(cancel_workflow: bool) -> TestResult {
+#[test_casing(2, [false, true])]
+#[async_std::test]
+async fn driver_basics(cancel_workflow: bool) -> TestResult {
     let (_guard, tracing_storage) = enable_tracing_assertions();
     let (manager, mut commits_rx) = create_streaming_manager(AsyncIoScheduler).await?;
 
@@ -123,20 +126,37 @@ fn assert_completed_spans(storage: &Storage) {
     assert!(spans.is_superset(&expected_spans), "{spans:?}");
 }
 
-#[async_std::test]
-async fn async_handle() -> TestResult {
-    test_async_handle(false).await
-}
+const CONCURRENCY_CASES: TestCases<Args> = cases!([
+    Args {
+        oven_count: 1,
+        deliverer_count: 2,
+    },
+    Args {
+        oven_count: 2,
+        deliverer_count: 1,
+    },
+    Args {
+        oven_count: 2,
+        deliverer_count: 2,
+    },
+    Args {
+        oven_count: 3,
+        deliverer_count: 3,
+    },
+    Args {
+        oven_count: 5,
+        deliverer_count: 7,
+    },
+    Args {
+        oven_count: 10,
+        deliverer_count: 1,
+    },
+]);
 
+#[test_casing(6, CONCURRENCY_CASES)]
 #[async_std::test]
-async fn async_handle_with_cancellation() -> TestResult {
-    test_async_handle(true).await
-}
-
-async fn test_async_handle_with_concurrency(args: Args) -> TestResult {
+async fn driver_with_concurrency(args: Args) -> TestResult {
     const ORDER_COUNT: usize = 5;
-
-    println!("testing async handle with {args:?}");
 
     let (manager, mut commits_rx) = create_streaming_manager(AsyncIoScheduler).await?;
     let (_, handle) =
@@ -172,41 +192,6 @@ async fn test_async_handle_with_concurrency(args: Args) -> TestResult {
                 DomainEvent::Delivered { .. },
             ]
         );
-    }
-    Ok(())
-}
-
-#[async_std::test]
-async fn async_handle_with_concurrency() -> TestResult {
-    let sample_inputs = [
-        Args {
-            oven_count: 1,
-            deliverer_count: 2,
-        },
-        Args {
-            oven_count: 2,
-            deliverer_count: 1,
-        },
-        Args {
-            oven_count: 2,
-            deliverer_count: 2,
-        },
-        Args {
-            oven_count: 3,
-            deliverer_count: 3,
-        },
-        Args {
-            oven_count: 5,
-            deliverer_count: 7,
-        },
-        Args {
-            oven_count: 10,
-            deliverer_count: 1,
-        },
-    ];
-
-    for inputs in sample_inputs {
-        test_async_handle_with_concurrency(inputs).await?;
     }
     Ok(())
 }
@@ -293,7 +278,7 @@ async fn initialize_workflow() -> TestResult<AsyncRig> {
 }
 
 #[async_std::test]
-async fn async_handle_with_mock_scheduler() -> TestResult {
+async fn driver_with_mock_scheduler() -> TestResult {
     let (_guard, tracing_storage) = enable_tracing_assertions();
 
     let AsyncRig {
@@ -366,7 +351,7 @@ async fn async_handle_with_mock_scheduler() -> TestResult {
 }
 
 #[async_std::test]
-async fn async_handle_with_mock_scheduler_and_bulk_update() -> TestResult {
+async fn driver_with_mock_scheduler_and_bulk_update() -> TestResult {
     let AsyncRig {
         scheduler,
         mut events,
@@ -495,7 +480,7 @@ async fn launching_env_after_pause() -> TestResult {
 }
 
 #[async_std::test]
-async fn dynamically_typed_async_handle() -> TestResult {
+async fn dynamically_typed_handle_with_driver() -> TestResult {
     let (manager, mut commits_rx) = create_streaming_manager(AsyncIoScheduler).await?;
 
     let args = Json::encode_value(Args {

@@ -57,10 +57,9 @@ async fn do_create_manager<C: Clock, S: Storage>(
     storage: S,
 ) -> TestResult<LocalManager<C, S>> {
     let module = create_module().await;
-    let mut manager = WorkflowManager::builder(Wasmtime::default(), storage)
+    let manager = WorkflowManager::builder(Wasmtime::default(), storage)
         .with_clock(clock)
-        .build()
-        .await?;
+        .build();
     manager.insert_module("test", module).await;
     Ok(manager)
 }
@@ -96,14 +95,14 @@ where
     W: WorkflowFn + GetInterface,
 {
     let spawner = manager.spawner().close_senders();
-    let builder = spawner.new_workflow(definition_id)?;
+    let builder = spawner.new_workflow(definition_id).await?;
     let (child_handles, self_handles) = builder.handles(|_| { /* use default config */ }).await;
     let workflow = builder.build(args, child_handles).await?;
     Ok((workflow, self_handles))
 }
 
 fn create_fmt_subscriber() -> impl Subscriber + for<'a> LookupSpan<'a> {
-    const FILTER: &str = "tardigrade_test_basic=debug,\
+    const FILTER: &str = "tardigrade_pizza=debug,\
         tardigrade=debug,\
         tardigrade_rt=debug,\
         externref=debug";
@@ -117,7 +116,7 @@ fn create_fmt_subscriber() -> impl Subscriber + for<'a> LookupSpan<'a> {
 
 fn enable_tracing_assertions() -> (DefaultGuard, SharedStorage) {
     let storage = SharedStorage::default();
-    let filter = Targets::new().with_target("tardigrade_test_basic", Level::INFO);
+    let filter = Targets::new().with_target("tardigrade_pizza", Level::INFO);
     let layer = CaptureLayer::new(&storage).with_filter(filter);
     let subscriber = create_fmt_subscriber().with(layer);
     let guard = tracing::subscriber::set_default(subscriber);

@@ -49,12 +49,9 @@ pub(crate) async fn create_test_manager_with_storage<S: Storage, C: Clock>(
     };
     let module = engine.create_module(&module_record).await.unwrap();
 
-    let mut manager = WorkflowManager::builder(engine, storage)
+    let manager = WorkflowManager::builder(engine, storage)
         .with_clock(clock)
-        .build()
-        .await
-        .unwrap();
-
+        .build();
     manager.insert_module("test@latest", module).await;
     manager
 }
@@ -67,7 +64,7 @@ pub(crate) async fn create_test_workflow<C: Clock, S: Storage + 'static>(
     manager: &LocalManager<C, S>,
 ) -> WorkflowHandle<(), &S> {
     let spawner = manager.spawner().close_senders();
-    let builder = spawner.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let builder = spawner.new_workflow::<()>(DEFINITION_ID).await.unwrap();
     let (handles, _) = builder.handles(|_| { /* use default config */ }).await;
     builder
         .build(b"test_input".to_vec(), handles)
@@ -160,6 +157,10 @@ async fn instantiating_workflow() {
 }
 
 async fn test_initializing_workflow(manager: &LocalManager<()>, ids: &WorkflowAndChannelIds) {
+    let workflow_cache = manager.cached_workflows.lock().await;
+    assert!(workflow_cache.inner.is_empty());
+    drop(workflow_cache);
+
     let receipt = manager.tick().await.unwrap().into_inner().unwrap();
     assert_eq!(receipt.executions().len(), 2);
     let main_execution = &receipt.executions()[0];
@@ -171,6 +172,9 @@ async fn test_initializing_workflow(manager: &LocalManager<()>, ids: &WorkflowAn
     assert_eq!(traces.received_messages, 1);
     let message = transaction.channel_message(traces_id, 0).await.unwrap();
     assert_eq!(message, b"trace #1");
+
+    let workflow_cache = manager.cached_workflows.lock().await;
+    assert_eq!(workflow_cache.inner.len(), 1);
 }
 
 #[async_std::test]
@@ -194,7 +198,7 @@ async fn initializing_workflow_with_closed_channels() {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
     let manager = create_test_manager(poll_fns, ()).await;
     let spawner = manager.spawner();
-    let builder = spawner.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let builder = spawner.new_workflow::<()>(DEFINITION_ID).await.unwrap();
     let handles = builder.handles(|config| {
         let config = config.with_indexing();
         config[ReceiverAt("orders")].close();
@@ -606,7 +610,7 @@ async fn handles_shape_mismatch_error() {
     let spawner = manager.spawner();
     let storage = manager.storage();
 
-    let builder = spawner.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let builder = spawner.new_workflow::<()>(DEFINITION_ID).await.unwrap();
     let err = builder
         .build(b"test_input".to_vec(), HandleMap::new())
         .await
@@ -619,7 +623,7 @@ async fn handles_shape_mismatch_error() {
     handles.insert("orders".into(), Handle::Receiver(storage.closed_receiver()));
     handles.insert("events".into(), Handle::Sender(storage.closed_sender()));
     handles.insert("traces".into(), Handle::Receiver(storage.closed_receiver()));
-    let builder = spawner.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let builder = spawner.new_workflow::<()>(DEFINITION_ID).await.unwrap();
     let err = builder
         .build(b"test_input".to_vec(), handles)
         .await
@@ -645,7 +649,7 @@ async fn non_owned_channel_error() {
     handles.insert("events".into(), Handle::Sender(traces_sx.clone()));
     handles.insert("traces".into(), Handle::Sender(traces_sx.clone()));
 
-    let builder = spawner.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let builder = spawner.new_workflow::<()>(DEFINITION_ID).await.unwrap();
     let err = builder
         .build(b"test_input".to_vec(), handles)
         .await
@@ -662,7 +666,7 @@ async fn non_owned_channel_error() {
     handles.insert("orders".into(), Handle::Receiver(new_rx));
     handles.insert("events".into(), Handle::Sender(traces_sx.clone()));
     handles.insert("traces".into(), Handle::Sender(traces_sx.clone()));
-    let builder = spawner.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let builder = spawner.new_workflow::<()>(DEFINITION_ID).await.unwrap();
     builder
         .build(b"test_input".to_vec(), handles)
         .await
@@ -675,7 +679,7 @@ async fn non_owned_channel_error() {
     handles.insert("events".into(), Handle::Sender(storage.closed_sender()));
     handles.insert("traces".into(), Handle::Sender(traces_sx));
 
-    let builder = spawner.new_workflow::<()>(DEFINITION_ID).unwrap();
+    let builder = spawner.new_workflow::<()>(DEFINITION_ID).await.unwrap();
     let err = builder
         .build(b"test_input".to_vec(), handles)
         .await
@@ -686,4 +690,63 @@ async fn non_owned_channel_error() {
         err.contains("at `traces` is not owned by requester"),
         "{err}"
     );
+}
+
+#[async_std::test]
+async fn resolving_workflow_definition() {
+    const STUB_ID: u64 = 1;
+
+    let (poll_fns, mut poll_fn_sx) = Answers::channel();
+    let manager = create_test_manager(poll_fns, ()).await;
+    let workflow = create_test_workflow(&manager).await;
+    let workflow_id = workflow.id();
+
+    let request_definition: MockPollFn = |ctx| {
+        ctx.data_mut().request_definition(STUB_ID, DEFINITION_ID)?;
+        Ok(Poll::Pending)
+    };
+    let assert_on_definition: MockPollFn = |ctx| {
+        let interface = ctx.take_definition(STUB_ID).unwrap();
+        interface.handle(ReceiverAt("orders")).unwrap();
+        interface.handle(SenderAt("events")).unwrap();
+        Ok(Poll::Pending)
+    };
+    poll_fn_sx
+        .send_all([request_definition, assert_on_definition])
+        .async_scope(async {
+            tick_workflow(&manager, workflow_id).await.unwrap();
+            tick_workflow(&manager, workflow_id).await.unwrap();
+        })
+        .await;
+}
+
+#[async_std::test]
+async fn workflow_definition_errors() {
+    const BOGUS_STUB_ID: u64 = 1;
+    const MISSING_STUB_ID: u64 = 2;
+
+    let (poll_fns, mut poll_fn_sx) = Answers::channel();
+    let manager = create_test_manager(poll_fns, ()).await;
+    let workflow = create_test_workflow(&manager).await;
+    let workflow_id = workflow.id();
+
+    let request_definition: MockPollFn = |ctx| {
+        ctx.data_mut()
+            .request_definition(BOGUS_STUB_ID, "bogus:Workflow")?;
+        ctx.data_mut()
+            .request_definition(MISSING_STUB_ID, "missing::Workflow")?;
+        Ok(Poll::Pending)
+    };
+    let assert_on_definition: MockPollFn = |ctx| {
+        assert!(ctx.take_definition(BOGUS_STUB_ID).is_none());
+        assert!(ctx.take_definition(MISSING_STUB_ID).is_none());
+        Ok(Poll::Pending)
+    };
+    poll_fn_sx
+        .send_all([request_definition, assert_on_definition])
+        .async_scope(async {
+            tick_workflow(&manager, workflow_id).await.unwrap();
+            tick_workflow(&manager, workflow_id).await.unwrap();
+        })
+        .await;
 }

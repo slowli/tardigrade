@@ -483,16 +483,14 @@ pub(super) struct SpawnFunctions;
 #[allow(clippy::needless_pass_by_value)]
 impl SpawnFunctions {
     pub fn workflow_interface(
-        ctx: StoreContextMut<'_, InstanceData>,
+        mut ctx: StoreContextMut<'_, InstanceData>,
+        stub_id: u64,
         id_ptr: u32,
         id_len: u32,
-    ) -> anyhow::Result<i64> {
+    ) -> anyhow::Result<()> {
         let memory = ctx.data().exports().memory;
         let id = copy_string_from_wasm(&ctx, &memory, id_ptr, id_len)?;
-
-        let interface = ctx.data().inner.workflow_interface(&id);
-        let interface = interface.map(|interface| interface.to_bytes());
-        interface.into_wasm(&mut WasmAllocator::new(ctx))
+        ctx.data_mut().inner.request_definition(stub_id, &id)
     }
 
     pub fn spawn(

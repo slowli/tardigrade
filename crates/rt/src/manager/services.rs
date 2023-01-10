@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::workflow::ChannelIds;
-use tardigrade::{spawn::ManageInterfaces, ChannelId, WorkflowId};
+use tardigrade::{ChannelId, WorkflowId};
 
 /// Wall clock.
 ///
@@ -55,20 +55,18 @@ pub type TimerFuture = Pin<Box<dyn Future<Output = DateTime<Utc>> + Send>>;
 /// Similar to [`tardigrade::ManageWorkflows`], but mutable and synchronous.
 /// The returned handle is stored in a `Workflow` and, before it's persisted, exchanged for
 /// a `WorkflowId`.
-pub(crate) trait StashStub: Any + Send + Sync + ManageInterfaces {
+pub(crate) trait StashStub: Any + Send + Sync {
+    /// Stashes a request to retrieve the specified workflow definition.
+    fn stash_definition(&mut self, stub_id: u64, definition_id: &str);
+
     /// Stashes a workflow stub with the specified params.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the shape of `channels` does not correspond to the interface
-    /// defined in `definition_id`.
     fn stash_workflow(
         &mut self,
         stub_id: WorkflowId,
         definition_id: &str,
         args: Vec<u8>,
         channels: ChannelIds,
-    ) -> anyhow::Result<()>;
+    );
 
     fn stash_channel(&mut self, stub_id: ChannelId);
 }

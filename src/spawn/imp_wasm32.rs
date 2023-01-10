@@ -1,5 +1,6 @@
 //! WASM bindings for spawning child workflows.
 
+use async_trait::async_trait;
 use externref::{externref, Resource};
 use futures::{future::BoxFuture, FutureExt, TryFutureExt};
 use once_cell::unsync::Lazy;
@@ -22,20 +23,64 @@ use crate::{
     Codec, WorkflowId,
 };
 
+type DefinitionStub = StubState<Option<Interface>>;
+
+static mut DEFINITIONS: Lazy<Registry<DefinitionStub>> = Lazy::new(|| Registry::with_capacity(1));
+
+#[async_trait]
 impl ManageInterfaces for Workflows {
-    fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
+    async fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
         #[link(wasm_import_module = "tardigrade_rt")]
         extern "C" {
             #[link_name = "workflow::interface"]
-            fn get_workflow_interface(id_ptr: *const u8, id_len: usize) -> i64;
+            fn get_workflow_interface(stub_id: u64, id_ptr: *const u8, id_len: usize);
         }
 
-        let raw_interface = unsafe {
-            let raw = get_workflow_interface(definition_id.as_ptr(), definition_id.len());
-            Option::<Vec<u8>>::from_abi_in_wasm(raw)
-        };
-        raw_interface.map(|bytes| Cow::Owned(Interface::from_bytes(&bytes)))
+        let stub_id = unsafe { DEFINITIONS.insert(DefinitionStub::default()) };
+        unsafe {
+            get_workflow_interface(stub_id, definition_id.as_ptr(), definition_id.len());
+        }
+        NewDefinition { stub_id }.await.map(Cow::Owned)
     }
+}
+
+#[derive(Debug)]
+struct NewDefinition {
+    stub_id: u64,
+}
+
+impl Future for NewDefinition {
+    type Output = Option<Interface>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let poll_result = unsafe { DEFINITIONS.get_mut(self.stub_id).poll(cx) };
+        if poll_result.is_ready() {
+            unsafe {
+                DEFINITIONS.remove(self.stub_id);
+            }
+        }
+        poll_result
+    }
+}
+
+#[externref]
+#[export_name = "tardigrade_rt::init_definition"]
+pub unsafe extern "C" fn __tardigrade_rt_init_definition(
+    stub_id: u64,
+    interface_ptr: *mut u8,
+    interface_len: usize,
+) {
+    let interface = if interface_ptr.is_null() {
+        None
+    } else {
+        Some(Vec::<u8>::from_raw_parts(
+            interface_ptr,
+            interface_len,
+            interface_len,
+        ))
+    };
+    let interface = interface.map(|bytes| Interface::from_bytes(&bytes));
+    DEFINITIONS.get_mut(stub_id).set_value(interface);
 }
 
 type WorkflowStub = StubState<Result<RemoteWorkflow, HostError>>;

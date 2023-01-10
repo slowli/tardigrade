@@ -231,6 +231,132 @@ async fn send_message_from_child(
 }
 
 #[async_std::test]
+async fn spawning_child_workflow_with_cold_cache() {
+    let (poll_fns, mut poll_fn_sx) = Answers::channel();
+    let manager = create_test_manager(poll_fns, ()).await;
+    let workflow = create_test_workflow(&manager).await;
+    let workflow_id = workflow.id();
+
+    manager.definitions.lock().await.inner.clear();
+    initialize_child(&manager, workflow_id, &mut poll_fn_sx).await;
+}
+
+async fn test_spawning_child_with_error(
+    channels_fn: MockPollFn,
+    spawn_fn: MockPollFn,
+    assert_fn: impl FnOnce(&str),
+) {
+    let (poll_fns, mut poll_fn_sx) = Answers::channel();
+    let manager = create_test_manager(poll_fns, ()).await;
+    let mut workflow = create_test_workflow(&manager).await;
+    let workflow_id = workflow.id();
+
+    let child_receipt = poll_fn_sx
+        .send_all([channels_fn, spawn_fn])
+        .async_scope(async {
+            // Allocate channels for the created child.
+            tick_workflow(&manager, workflow_id).await.unwrap();
+            // ...Then try initializing the child.
+            tick_workflow(&manager, workflow_id).await.unwrap()
+        })
+        .await;
+
+    assert_child_spawn_error(&child_receipt, assert_fn);
+    assert_eq!(manager.storage().workflow_count().await, 1);
+    workflow.update().await.unwrap();
+    assert!(workflow.persisted().child_workflows().next().is_none());
+}
+
+fn assert_child_spawn_error(receipt: &Receipt, assert_fn: impl FnOnce(&str)) {
+    let child_stub_events = receipt.events().filter_map(|event| match event {
+        Event::Stub(event) => Some(event),
+        _ => None,
+    });
+    let child_stub_events: Vec<_> = child_stub_events.collect();
+
+    if let [StubEvent {
+        stub_id: StubId::Workflow(CHILD_ID),
+        kind: StubEventKind::Created,
+    }, StubEvent {
+        stub_id: StubId::Workflow(CHILD_ID),
+        kind: StubEventKind::Mapped(Err(err)),
+    }] = child_stub_events.as_slice()
+    {
+        assert_fn(&err.to_string());
+    } else {
+        panic!("unexpected stub events: {child_stub_events:?}");
+    }
+}
+
+#[async_std::test]
+async fn spawning_child_with_bogus_definition_id() {
+    let spawn_with_bogus_definition: MockPollFn = |ctx| {
+        let bogus_id = "bogus:latest";
+        let args = b"child_input".to_vec();
+        let mapped_ids = ctx.take_stub_channels(CHILD_ID);
+        ctx.data_mut()
+            .create_workflow_stub(CHILD_ID, bogus_id, args, mapped_ids)?;
+        Ok(Poll::Pending)
+    };
+    let assert_fn = |err: &str| {
+        assert!(err.contains("malformed definition ID"), "{err}");
+    };
+    test_spawning_child_with_error(allocate_channels, spawn_with_bogus_definition, assert_fn).await;
+}
+
+#[async_std::test]
+async fn spawning_child_with_missing_definition_id() {
+    let spawn_with_missing_definition: MockPollFn = |ctx| {
+        let bogus_id = "bogus::Workflow";
+        let args = b"child_input".to_vec();
+        let mapped_ids = ctx.take_stub_channels(CHILD_ID);
+        ctx.data_mut()
+            .create_workflow_stub(CHILD_ID, bogus_id, args, mapped_ids)?;
+        Ok(Poll::Pending)
+    };
+    let assert_fn = |err: &str| {
+        assert!(
+            err.contains("definition `bogus::Workflow` not found"),
+            "{err}"
+        );
+    };
+    test_spawning_child_with_error(allocate_channels, spawn_with_missing_definition, assert_fn)
+        .await;
+}
+
+#[async_std::test]
+async fn spawning_child_with_missing_channel() {
+    let allocate_bogus_channels: MockPollFn = |ctx| {
+        let mut local_ids = ChannelIds::new();
+        local_ids.insert("orders".into(), Handle::Receiver(1));
+        local_ids.insert("events".into(), Handle::Sender(2));
+        ctx.create_channels_for_stub(CHILD_ID, local_ids)?;
+        Ok(Poll::Pending)
+    };
+    let assert_fn = |err: &str| {
+        assert!(err.contains("invalid shape of provided handles"), "{err}");
+    };
+    test_spawning_child_with_error(allocate_bogus_channels, spawn_child, assert_fn).await;
+}
+
+#[async_std::test]
+async fn spawning_child_with_extra_channel() {
+    let allocate_bogus_channels: MockPollFn = |ctx| {
+        let mut local_ids = ChannelIds::new();
+        local_ids.insert("orders".into(), Handle::Receiver(1));
+        local_ids.insert("events".into(), Handle::Sender(2));
+        local_ids.insert("traces".into(), Handle::Sender(3));
+        local_ids.insert("extra".into(), Handle::Sender(4));
+        ctx.create_channels_for_stub(CHILD_ID, local_ids)?;
+        Ok(Poll::Pending)
+    };
+    let assert_fn = |err: &str| {
+        assert!(err.contains("invalid shape of provided handles"), "{err}");
+    };
+    test_spawning_child_with_error(allocate_bogus_channels, spawn_child, assert_fn).await;
+}
+
+#[async_std::test]
 async fn sending_message_to_child() {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
     let manager = create_test_manager(poll_fns, ()).await;

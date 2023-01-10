@@ -8,8 +8,8 @@ use std::task::Poll;
 
 use crate::{
     data::{
-        Channels, ChildWorkflow, ConsumeError, PersistError, PersistedWorkflowData, ReceiverState,
-        SenderState, TaskState, TimerState, Wakers,
+        Channels, ChildWorkflow, PersistError, PersistedWorkflowData, ReceiverState, SenderState,
+        TaskState, TimerState, Wakers,
     },
     engine::{DefineWorkflow, PersistWorkflow},
     manager::Services,
@@ -44,6 +44,10 @@ impl PersistedWorkflow {
         })
     }
 
+    pub(crate) fn data_mut(&mut self) -> &mut PersistedWorkflowData {
+        &mut self.data
+    }
+
     pub(crate) fn receivers(&self) -> impl Iterator<Item = (ChannelId, &ReceiverState)> + '_ {
         self.data.receivers()
     }
@@ -59,15 +63,6 @@ impl PersistedWorkflow {
     /// Returns information about channels defined in this workflow interface.
     pub fn channels(&self) -> Channels<'_> {
         self.data.channels()
-    }
-
-    #[tracing::instrument(level = "debug", skip(self, message), err, fields(message.len = message.len()))]
-    pub(crate) fn push_message_for_receiver(
-        &mut self,
-        channel_id: ChannelId,
-        message: Vec<u8>,
-    ) -> Result<(), ConsumeError> {
-        self.data.push_message_for_receiver(channel_id, message)
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
@@ -110,15 +105,6 @@ impl PersistedWorkflow {
         self.data.child_workflow(id)
     }
 
-    #[tracing::instrument(level = "debug", skip(self))]
-    pub(crate) fn notify_on_child_completion(
-        &mut self,
-        id: WorkflowId,
-        result: Result<(), JoinError>,
-    ) {
-        self.data.notify_on_child_completion(id, result);
-    }
-
     /// Checks whether the workflow is initialized.
     pub fn is_initialized(&self) -> bool {
         self.args.is_none()
@@ -137,11 +123,6 @@ impl PersistedWorkflow {
     /// Returns the current time for the workflow.
     pub fn current_time(&self) -> DateTime<Utc> {
         self.data.timers.last_known_time()
-    }
-
-    #[tracing::instrument(level = "debug", skip(self))]
-    pub(crate) fn set_current_time(&mut self, time: DateTime<Utc>) {
-        self.data.set_current_time(time);
     }
 
     /// Returns a timer with the specified `id`.

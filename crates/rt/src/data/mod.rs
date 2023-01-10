@@ -1,5 +1,6 @@
 //! Workflow state.
 
+use chrono::{TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use tracing_tunnel::TracingEvent;
 
@@ -15,17 +16,16 @@ mod time;
 #[cfg(test)]
 pub(crate) mod tests;
 
-pub(crate) use self::{
-    channel::ConsumeError,
-    helpers::{WakerOrTask, Wakers},
-    persistence::PersistError,
-};
 pub use self::{
     channel::{Channels, ReceiverActions, ReceiverState, SenderActions, SenderState},
     helpers::WorkflowPoll,
     spawn::{ChildActions, ChildWorkflow},
     task::{TaskActions, TaskState},
     time::{TimerActions, TimerState},
+};
+pub(crate) use self::{
+    helpers::{WakerOrTask, Wakers},
+    persistence::PersistError,
 };
 
 use self::{
@@ -77,7 +77,7 @@ pub struct WorkflowData {
 }
 
 impl WorkflowData {
-    pub(crate) fn new(interface: &Interface, channel_ids: ChannelIds, services: Services) -> Self {
+    pub(crate) fn new(interface: &Interface, channel_ids: ChannelIds) -> Self {
         debug_assert_eq!(
             interface
                 .handles()
@@ -90,8 +90,8 @@ impl WorkflowData {
         );
 
         Self {
-            persisted: PersistedWorkflowData::new(interface, channel_ids, services.clock.now()),
-            services: Some(services),
+            persisted: PersistedWorkflowData::new(interface, channel_ids, Utc.timestamp_nanos(0)),
+            services: None,
             current_execution: None,
             task_queue: TaskQueue::default(),
             current_wakeup_cause: None,
@@ -108,6 +108,11 @@ impl WorkflowData {
         self.services
             .as_mut()
             .expect("services accessed after taken out")
+    }
+
+    pub(crate) fn set_services(&mut self, services: Services) {
+        debug_assert!(self.services.is_none(), "services set repeatedly");
+        self.services = Some(services);
     }
 
     pub(crate) fn take_services(&mut self) -> Services {

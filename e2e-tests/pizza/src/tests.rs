@@ -17,7 +17,7 @@ use tardigrade::{
 };
 
 fn create_fmt_subscriber() -> impl Subscriber + for<'a> LookupSpan<'a> {
-    const FILTER: &str = "tardigrade_test_basic=debug,tardigrade=debug";
+    const FILTER: &str = "tardigrade_pizza=debug,tardigrade=debug";
 
     FmtSubscriber::builder()
         .pretty()
@@ -28,7 +28,7 @@ fn create_fmt_subscriber() -> impl Subscriber + for<'a> LookupSpan<'a> {
 
 fn enable_tracing_assertions() -> (DefaultGuard, SharedStorage) {
     let storage = SharedStorage::default();
-    let filter = Targets::new().with_target("tardigrade_test_basic", Level::INFO);
+    let filter = Targets::new().with_target("tardigrade_pizza", Level::INFO);
     let layer = CaptureLayer::new(&storage).with_filter(filter);
     let subscriber = create_fmt_subscriber().with(layer);
     let guard = tracing::subscriber::set_default(subscriber);

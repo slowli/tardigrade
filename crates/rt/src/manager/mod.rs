@@ -3,10 +3,11 @@
 //! See `WorkflowManager` docs for an overview and examples of usage.
 
 use chrono::{DateTime, Utc};
-use futures::{lock::Mutex, StreamExt};
+use futures::lock::{Mutex, MutexGuard};
+use lru::LruCache;
 use tracing_tunnel::{LocalSpans, PersistedMetadata};
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
 
 mod driver;
 mod services;
@@ -33,47 +34,142 @@ use crate::{
         helper::StorageHelper, CommitStream, DefinitionRecord, ModuleRecord, ReadModules, Storage,
         StorageTransaction, Streaming, WriteModules,
     },
+    workflow::Workflow,
 };
 use tardigrade::WorkflowId;
 
 #[derive(Debug)]
-struct WorkflowDefinitions<D> {
-    inner: HashMap<String, HashMap<String, D>>,
+struct CachedDefinitions<D> {
+    // We wrap each definition in `Arc` to be able to easily clone it. This is fine since
+    // definitions are immutable.
+    inner: LruCache<String, Arc<D>>,
 }
 
-impl<D> Default for WorkflowDefinitions<D> {
-    fn default() -> Self {
-        Self {
-            inner: HashMap::new(),
-        }
-    }
-}
-
-impl<D> WorkflowDefinitions<D> {
-    fn get(&self, module_id: &str, name_in_module: &str) -> &D {
-        &self.inner[module_id][name_in_module]
+impl CachedDefinitions<()> {
+    fn full_id(module_id: &str, name_in_module: &str) -> String {
+        format!("{module_id}::{name_in_module}")
     }
 
     fn split_full_id(full_id: &str) -> Option<(&str, &str)> {
         full_id.split_once("::")
     }
+}
 
-    fn for_full_id(&self, full_id: &str) -> Option<&D> {
-        let (module_id, name_in_module) = Self::split_full_id(full_id)?;
-        self.inner.get(module_id)?.get(name_in_module)
+impl<D> CachedDefinitions<D> {
+    fn get(&mut self, definition_id: &str) -> Option<&Arc<D>> {
+        self.inner.get(definition_id)
     }
 
-    fn insert(&mut self, module_id: String, name_in_module: String, definition: D) {
-        let module_entry = self.inner.entry(module_id).or_default();
-        module_entry.insert(name_in_module, definition);
+    fn insert(&mut self, definition_id: String, definition: Arc<D>) {
+        self.inner.push(definition_id, definition);
     }
 }
 
-/// Part of the manager used during workflow instantiation.
-#[derive(Debug, Clone)]
-struct Shared<D> {
-    clock: Arc<dyn Clock>,
-    definitions: Arc<WorkflowDefinitions<D>>,
+#[derive(Debug)]
+struct Definitions<'a, E: WorkflowEngine> {
+    cached: MutexGuard<'a, CachedDefinitions<E::Definition>>,
+    engine: &'a E,
+}
+
+impl<E: WorkflowEngine> Definitions<'_, E> {
+    #[tracing::instrument(
+        level = "debug",
+        skip(self, transaction),
+        fields(self.len = self.cached.inner.len())
+    )]
+    async fn get(
+        &mut self,
+        definition_id: &str,
+        transaction: &impl ReadModules,
+    ) -> Option<Arc<E::Definition>> {
+        if let Some(def) = self.cached.get(definition_id) {
+            tracing::debug!(is_cached = true, "accessing definition cache");
+            return Some(Arc::clone(def));
+        }
+        tracing::debug!(is_cached = false, "accessing definition cache");
+        let (module_id, name_in_module) = CachedDefinitions::split_full_id(definition_id)?;
+        let span = tracing::debug_span!("restore_module", module_id);
+        let entered = span.enter();
+
+        let module = transaction.module(module_id).await?;
+        let module = self.engine.create_module(&module).await;
+        let module = match module {
+            Ok(module) => module,
+            Err(err) => {
+                tracing::warn!(%err, module_id, "cannot restore persisted module");
+                return None;
+            }
+        };
+        drop(entered);
+
+        let definition = module
+            .into_iter()
+            .find_map(|(name, def)| (name == name_in_module).then_some(def))?;
+        let definition = Arc::new(definition);
+        self.cached
+            .insert(definition_id.to_owned(), Arc::clone(&definition));
+        Some(definition)
+    }
+}
+
+#[derive(Debug)]
+struct CachedWorkflow<I> {
+    inner: Workflow<I>,
+    execution_count: usize,
+}
+
+/// In-memory LRU cache for recently executed `Workflow`s.
+///
+/// # Assumptions
+///
+/// - Workflows are never modified outside of `WorkflowManager` methods (e.g., no manual storage
+///   edits). This is used when checking cache staleness.
+/// - A specific workflow is never executed concurrently. This should be enforced by the storage
+///   implementation.
+#[derive(Debug)]
+struct CachedWorkflows<I> {
+    inner: LruCache<WorkflowId, CachedWorkflow<I>>,
+}
+
+impl<I> CachedWorkflows<I> {
+    fn new(capacity: NonZeroUsize) -> Self {
+        Self {
+            inner: LruCache::new(capacity),
+        }
+    }
+
+    #[tracing::instrument(
+        level = "debug",
+        skip(self, workflow),
+        fields(self.len = self.inner.len())
+    )]
+    fn insert(&mut self, id: WorkflowId, workflow: Workflow<I>, execution_count: usize) {
+        self.inner.push(
+            id,
+            CachedWorkflow {
+                inner: workflow,
+                execution_count,
+            },
+        );
+    }
+
+    #[tracing::instrument(level = "debug", skip(self), fields(self.len = self.inner.len()))]
+    fn take(&mut self, id: WorkflowId, execution_count: usize) -> Option<Workflow<I>> {
+        let cached = self.inner.pop(&id);
+        tracing::debug!(is_cached = cached.is_some(), "accessing workflow cache");
+        let cached = cached?;
+        if cached.execution_count == execution_count {
+            Some(cached.inner)
+        } else {
+            tracing::info!(
+                id,
+                cached.execution_count,
+                execution_count,
+                "cached workflow is stale"
+            );
+            None
+        }
+    }
 }
 
 /// Manager for workflow modules, workflows and channels.
@@ -120,10 +216,9 @@ struct Shared<D> {
 /// # async fn test_wrapper(module: WasmtimeModule) -> anyhow::Result<()> {
 /// // A manager is instantiated using the builder pattern:
 /// let storage = LocalStorage::default();
-/// let mut manager = WorkflowManager::builder(Wasmtime::default(), storage)
+/// let manager = WorkflowManager::builder(Wasmtime::default(), storage)
 ///     .with_clock(AsyncIoScheduler)
-///     .build()
-///     .await?;
+///     .build();
 /// // After this, modules may be added:
 /// let module: WasmtimeModule = // ...
 /// #   module;
@@ -138,7 +233,7 @@ struct Shared<D> {
 /// // ^ The definition ID is the ID of the module and the name of a workflow
 /// //   within the module separated by `::`.
 /// let args = b"test_args".to_vec();
-/// let builder = spawner.new_workflow::<()>(definition_id)?;
+/// let builder = spawner.new_workflow::<()>(definition_id).await?;
 /// let (handles, self_handles) = builder.handles(|_| {}).await;
 /// let mut workflow = builder.build(args, handles).await?;
 /// // Do something with `workflow`, e.g., write something to its channels
@@ -155,13 +250,15 @@ struct Shared<D> {
 /// ```
 #[derive(Debug)]
 pub struct WorkflowManager<E: WorkflowEngine, C, S> {
+    engine: E,
     pub(crate) clock: Arc<C>,
     pub(crate) storage: S,
-    definitions: Arc<WorkflowDefinitions<E::Definition>>,
+    definitions: Mutex<CachedDefinitions<E::Definition>>,
+    cached_workflows: Mutex<CachedWorkflows<E::Instance>>,
     local_spans: Mutex<HashMap<WorkflowId, LocalSpans>>,
 }
 
-#[allow(clippy::mismatching_type_param_order)] // false positive
+#[allow(clippy::mismatching_type_param_order, clippy::missing_panics_doc)] // false positive
 impl<E: WorkflowEngine, S: Storage> WorkflowManager<E, (), S> {
     /// Creates a builder that will use the specified storage.
     pub fn builder(engine: E, storage: S) -> WorkflowManagerBuilder<E, (), S> {
@@ -169,37 +266,38 @@ impl<E: WorkflowEngine, S: Storage> WorkflowManager<E, (), S> {
             engine,
             clock: (),
             storage,
+            workflow_cache_capacity: NonZeroUsize::new(16).unwrap(),
         }
     }
 }
 
 impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
-    async fn new(engine: E, clock: C, storage: S) -> anyhow::Result<Self> {
-        let definitions = {
-            let transaction = storage.readonly_transaction().await;
-            let mut definitions = WorkflowDefinitions::default();
-            let mut module_records = transaction.modules();
-            while let Some(record) = module_records.next().await {
-                let module = engine.create_module(&record).await?;
-                for (name, def) in module {
-                    definitions.insert(record.id.clone(), name, def);
-                }
-            }
-            definitions
+    fn new(engine: E, clock: C, storage: S, workflow_cache_capacity: NonZeroUsize) -> Self {
+        let definitions = CachedDefinitions {
+            inner: LruCache::unbounded(), // TODO: support bounded cache
         };
 
-        Ok(Self {
+        Self {
+            engine,
             clock: Arc::new(clock),
-            definitions: Arc::new(definitions),
+            definitions: Mutex::new(definitions),
             storage,
+            cached_workflows: Mutex::new(CachedWorkflows::new(workflow_cache_capacity)),
             local_spans: Mutex::default(),
-        })
+        }
     }
 
     /// Inserts the specified module into the manager.
-    pub async fn insert_module(&mut self, id: &str, module: E::Module) {
+    ///
+    /// # Panics
+    ///
+    /// Panics if the module `id` contains ineligible chars, such as `:`.
+    pub async fn insert_module(&self, id: &str, module: E::Module) {
+        assert!(!id.contains(':'), "module ID contains ineligible char `:`");
+
         let bytes = module.bytes();
         let mut definitions = HashMap::new();
+        let mut cached_definitions = self.definitions.lock().await;
         for (name, def) in module {
             definitions.insert(
                 name.clone(),
@@ -207,9 +305,10 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
                     interface: def.interface().clone(),
                 },
             );
-            let self_definitions = Arc::get_mut(&mut self.definitions).expect("leaked definitions");
-            self_definitions.insert(id.to_owned(), name, def);
+            let definition_id = CachedDefinitions::full_id(id, &name);
+            cached_definitions.insert(definition_id, Arc::new(def));
         }
+        drop(cached_definitions);
 
         let module_record = ModuleRecord {
             id: id.to_owned(),
@@ -237,10 +336,10 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         self.storage
     }
 
-    fn shared(&self) -> Shared<E::Definition> {
-        Shared {
-            clock: Arc::clone(&self.clock) as Arc<dyn Clock>,
-            definitions: Arc::clone(&self.definitions),
+    async fn definitions(&self) -> Definitions<'_, E> {
+        Definitions {
+            cached: self.definitions.lock().await,
+            engine: &self.engine,
         }
     }
 
@@ -278,6 +377,7 @@ pub struct WorkflowManagerBuilder<E, C, S> {
     engine: E,
     clock: C,
     storage: S,
+    workflow_cache_capacity: NonZeroUsize,
 }
 
 #[allow(clippy::mismatching_type_param_order)] // false positive
@@ -289,17 +389,32 @@ impl<E: WorkflowEngine, S: Storage> WorkflowManagerBuilder<E, (), S> {
             engine: self.engine,
             clock,
             storage: self.storage,
+            workflow_cache_capacity: self.workflow_cache_capacity,
         }
     }
 }
 
 impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManagerBuilder<E, C, S> {
+    /// Sets the capacity of the LRU cache of the recently executed workflows. Depending
+    /// on the workflow engine, caching workflows can significantly speed up workflow execution.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the provided capacity is 0.
+    #[must_use]
+    pub fn cache_workflows(mut self, capacity: usize) -> Self {
+        self.workflow_cache_capacity =
+            NonZeroUsize::new(capacity).expect("cannot set workflow cache capacity to 0");
+        self
+    }
+
     /// Finishes building the manager.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if [module instantiation](WorkflowEngine::create_module()) fails.
-    pub async fn build(self) -> anyhow::Result<WorkflowManager<E, C, S>> {
-        WorkflowManager::new(self.engine, self.clock, self.storage).await
+    pub fn build(self) -> WorkflowManager<E, C, S> {
+        WorkflowManager::new(
+            self.engine,
+            self.clock,
+            self.storage,
+            self.workflow_cache_capacity,
+        )
     }
 }
