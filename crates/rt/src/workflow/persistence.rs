@@ -8,8 +8,8 @@ use std::task::Poll;
 
 use crate::{
     data::{
-        Channels, ChildWorkflow, ConsumeError, PersistError, PersistedWorkflowData, ReceiverState,
-        SenderState, TaskState, TimerState, Wakers,
+        Channels, ChildWorkflow, PersistError, PersistedWorkflowData, ReceiverState, SenderState,
+        TaskState, TimerState, Wakers,
     },
     engine::{DefineWorkflow, PersistWorkflow},
     manager::Services,
@@ -63,15 +63,6 @@ impl PersistedWorkflow {
     /// Returns information about channels defined in this workflow interface.
     pub fn channels(&self) -> Channels<'_> {
         self.data.channels()
-    }
-
-    #[tracing::instrument(level = "debug", skip(self, message), err, fields(message.len = message.len()))]
-    pub(crate) fn push_message_for_receiver(
-        &mut self,
-        channel_id: ChannelId,
-        message: Vec<u8>,
-    ) -> Result<(), ConsumeError> {
-        self.data.push_message_for_receiver(channel_id, message)
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
