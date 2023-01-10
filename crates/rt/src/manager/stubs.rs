@@ -9,6 +9,7 @@ use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
     fmt::Write as _,
+    marker::PhantomData,
     mem,
     sync::Arc,
 };
@@ -30,8 +31,8 @@ use tardigrade::{
     handle::{Handle, HandlePath, HandlePathBuf},
     interface::Interface,
     spawn::{CreateChannel, CreateWorkflow, HostError, ManageInterfaces},
-    workflow::{InsertHandles, WithHandle, WorkflowFn},
-    ChannelId, Codec, WorkflowId,
+    workflow::{HandleFormat, InsertHandles, WithHandle, WorkflowFn},
+    ChannelId, Codec, Raw, WorkflowId,
 };
 
 #[derive(Debug)]
@@ -345,31 +346,75 @@ impl StashStub for Stubs {
     }
 }
 
+/// Type mapper from [channel handles](crate::handle) to a [`HandleFormat`]. Used as a boundary
+/// for [`ManagerSpawner`].
+pub trait MapFormat {
+    /// Handle format output by this mapper.
+    type Fmt<'a, S: 'a + Storage>: HandleFormat;
+
+    #[doc(hidden)]
+    fn map_receiver<S: Storage>(
+        receiver: RawMessageReceiver<&S>,
+    ) -> <Self::Fmt<'_, S> as HandleFormat>::RawReceiver;
+
+    #[doc(hidden)]
+    fn map_sender<S: Storage>(
+        sender: RawMessageSender<&S>,
+    ) -> <Self::Fmt<'_, S> as HandleFormat>::RawSender;
+}
+
+impl MapFormat for () {
+    type Fmt<'a, S: 'a + Storage> = StorageRef<'a, S>;
+
+    fn map_receiver<S: Storage>(receiver: RawMessageReceiver<&S>) -> RawMessageReceiver<&S> {
+        receiver
+    }
+
+    fn map_sender<S: Storage>(sender: RawMessageSender<&S>) -> RawMessageSender<&S> {
+        sender
+    }
+}
+
+impl MapFormat for Raw {
+    type Fmt<'a, S: 'a + Storage> = Self;
+
+    fn map_receiver<S: Storage>(receiver: RawMessageReceiver<&S>) -> ChannelId {
+        receiver.channel_id()
+    }
+
+    fn map_sender<S: Storage>(sender: RawMessageSender<&S>) -> ChannelId {
+        sender.channel_id()
+    }
+}
+
 /// Specialized handle to a [`WorkflowManager`] allowing to spawn new workflows.
 ///
 /// [`WorkflowManager`]: crate::manager::WorkflowManager
 #[derive(Debug)]
-pub struct ManagerSpawner<'a, M> {
+pub struct ManagerSpawner<'a, M, Fmt = ()> {
     inner: &'a M,
     close_senders: bool,
+    _format: PhantomData<fn(Fmt)>,
 }
 
-impl<M> Clone for ManagerSpawner<'_, M> {
+impl<M, Fmt> Clone for ManagerSpawner<'_, M, Fmt> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner,
             close_senders: self.close_senders,
+            _format: PhantomData,
         }
     }
 }
 
-impl<M> Copy for ManagerSpawner<'_, M> {}
+impl<M, Fmt> Copy for ManagerSpawner<'_, M, Fmt> {}
 
-impl<'a, M: AsManager> ManagerSpawner<'a, M> {
+impl<'a, M: AsManager, Fmt: MapFormat> ManagerSpawner<'a, M, Fmt> {
     pub(super) fn new(inner: &'a M) -> Self {
         Self {
             inner,
             close_senders: false,
+            _format: PhantomData,
         }
     }
 
@@ -381,10 +426,50 @@ impl<'a, M: AsManager> ManagerSpawner<'a, M> {
         self.close_senders = true;
         self
     }
+
+    fn spawn_workflow(
+        self,
+        definition_id: &str,
+        raw_args: Vec<u8>,
+        channel_ids: ChannelIds,
+    ) -> BoxFuture<'a, anyhow::Result<WorkflowId>> {
+        let senders_to_close: Vec<_> = if self.close_senders {
+            let senders_to_close = channel_ids.values().filter_map(|&handle| {
+                if let Handle::Sender(id) = handle {
+                    Some(id)
+                } else {
+                    None
+                }
+            });
+            senders_to_close.collect()
+        } else {
+            vec![]
+        };
+
+        let manager = self.inner.as_manager();
+        let mut stubs = Stubs::new(None);
+        stubs.stash_workflow(0, definition_id, raw_args, channel_ids);
+        async move {
+            // TODO: This borrows cached definitions for too long
+            let definitions = manager.inner.definitions().await;
+            manager
+                .storage
+                .transaction()
+                .then(|transaction| {
+                    stubs.commit_external(definitions, transaction, senders_to_close)
+                })
+                .await
+        }
+        .boxed()
+    }
 }
 
 #[async_trait]
-impl<M: AsManager> ManageInterfaces for ManagerSpawner<'_, M> {
+impl<M, Fmt> ManageInterfaces for ManagerSpawner<'_, M, Fmt>
+where
+    M: AsManager,
+    Fmt: MapFormat,
+{
     async fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
         #[allow(clippy::manual_async_fn)]
         #[inline]
@@ -412,27 +497,32 @@ impl<M: AsManager> ManageInterfaces for ManagerSpawner<'_, M> {
 }
 
 #[async_trait]
-impl<'a, M: AsManager> CreateChannel for ManagerSpawner<'a, M> {
-    type Fmt = StorageRef<'a, M::Storage>;
+impl<'a, M, Fmt> CreateChannel for ManagerSpawner<'a, M, Fmt>
+where
+    M: AsManager,
+    Fmt: MapFormat,
+{
+    type Fmt = Fmt::Fmt<'a, M::Storage>;
 
-    fn closed_receiver(&self) -> RawMessageReceiver<&'a M::Storage> {
+    fn closed_receiver(&self) -> <Self::Fmt as HandleFormat>::RawReceiver {
         let manager = self.inner.as_manager();
-        manager.storage().closed_receiver()
+        Fmt::map_receiver(manager.storage().closed_receiver())
     }
 
-    fn closed_sender(&self) -> RawMessageSender<&'a M::Storage> {
+    fn closed_sender(&self) -> <Self::Fmt as HandleFormat>::RawSender {
         let manager = self.inner.as_manager();
-        manager.storage().closed_sender()
+        Fmt::map_sender(manager.storage().closed_sender())
     }
 
     async fn new_channel(
         &self,
     ) -> (
-        RawMessageSender<&'a M::Storage>,
-        RawMessageReceiver<&'a M::Storage>,
+        <Self::Fmt as HandleFormat>::RawSender,
+        <Self::Fmt as HandleFormat>::RawReceiver,
     ) {
         let manager = self.inner.as_manager();
-        manager.storage().new_channel().await
+        let (sx, rx) = manager.storage().new_channel().await;
+        (Fmt::map_sender(sx), Fmt::map_receiver(rx))
     }
 }
 
@@ -446,38 +536,15 @@ impl<'a, M: AsManager> CreateWorkflow for ManagerSpawner<'a, M> {
         args: W::Args,
         handles: W::Handle<Self::Fmt>,
     ) -> BoxFuture<'_, Result<Self::Spawned<W>, Self::Error>> {
-        let raw_args = <W::Codec>::encode_value(args);
         let mut channel_ids = ChannelIdsCollector::default();
         W::insert_into_untyped(handles, &mut channel_ids, HandlePath::EMPTY);
         let channel_ids = channel_ids.0;
+        let raw_args = <W::Codec>::encode_value(args);
 
-        let senders_to_close: Vec<_> = if self.close_senders {
-            let senders_to_close = channel_ids.values().filter_map(|&handle| {
-                if let Handle::Sender(id) = handle {
-                    Some(id)
-                } else {
-                    None
-                }
-            });
-            senders_to_close.collect()
-        } else {
-            vec![]
-        };
-
-        let manager = self.inner.as_manager();
-        let mut stubs = Stubs::new(None);
-        stubs.stash_workflow(0, definition_id, raw_args, channel_ids);
+        let spawn_future = self.spawn_workflow(definition_id, raw_args, channel_ids);
         async move {
-            // TODO: This borrows cached definitions for too long
-            let definitions = manager.inner.definitions().await;
-            let workflow_id = manager
-                .storage
-                .transaction()
-                .then(|transaction| {
-                    stubs.commit_external(definitions, transaction, senders_to_close)
-                })
-                .await?;
-
+            let workflow_id = spawn_future.await?;
+            let manager = self.inner.as_manager();
             Ok(manager
                 .storage()
                 .workflow(workflow_id)
@@ -486,6 +553,22 @@ impl<'a, M: AsManager> CreateWorkflow for ManagerSpawner<'a, M> {
                 .downcast_unchecked())
         }
         .boxed()
+    }
+}
+
+impl<'a, M: AsManager> CreateWorkflow for ManagerSpawner<'a, M, Raw> {
+    type Spawned<W: WorkflowFn + WithHandle> = WorkflowId;
+    type Error = anyhow::Error;
+
+    fn new_workflow_unchecked<W: WorkflowFn + WithHandle>(
+        &self,
+        definition_id: &str,
+        args: W::Args,
+        handles: W::Handle<Self::Fmt>,
+    ) -> BoxFuture<'_, Result<Self::Spawned<W>, Self::Error>> {
+        let channel_ids = W::into_untyped(handles);
+        let raw_args = <W::Codec>::encode_value(args);
+        self.spawn_workflow(definition_id, raw_args, channel_ids)
     }
 }
 

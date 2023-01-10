@@ -22,7 +22,7 @@ pub(crate) use self::services::{Services, StashStub};
 pub use self::{
     driver::{DriveConfig, Termination},
     services::{Clock, Schedule, TimerFuture},
-    stubs::ManagerSpawner,
+    stubs::{ManagerSpawner, MapFormat},
     tick::{TickResult, WouldBlock},
     traits::AsManager,
 };
@@ -36,7 +36,7 @@ use crate::{
     },
     workflow::Workflow,
 };
-use tardigrade::WorkflowId;
+use tardigrade::{Raw, WorkflowId};
 
 #[derive(Debug)]
 struct CachedDefinitions<D> {
@@ -438,6 +438,14 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
 
     /// Returns a spawner handle that can be used to create new workflows.
     pub fn spawner(&self) -> ManagerSpawner<'_, Self> {
+        ManagerSpawner::new(self)
+    }
+
+    /// Returns a *raw* spawner handle that can be used to create new workflows.
+    /// In contrast to [`Self::spawner()`], the returned spawner uses channel IDs
+    /// rather than channel handles to create workflows, and returns the ID of a created workflow
+    /// rather than its handle.
+    pub fn raw_spawner(&self) -> ManagerSpawner<'_, Self, Raw> {
         ManagerSpawner::new(self)
     }
 
