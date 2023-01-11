@@ -16,7 +16,7 @@ use tardigrade::{
     workflow::{GetInterface, WorkflowFn},
 };
 use tardigrade_rt::{
-    engine::{Wasmtime, WasmtimeModule},
+    engine::{Wasmtime, WasmtimeModule, WorkflowEngine},
     handle::{HostHandles, WorkflowHandle},
     manager::WorkflowManager,
     storage::{CommitStream, LocalStorage, Storage, Streaming},
@@ -45,7 +45,7 @@ static MODULE: Lazy<WasmtimeModule> = Lazy::new(|| {
         .set_wasm_opt(WasmOpt::default())
         .compile();
     let engine = Wasmtime::default();
-    engine.create_module(module_bytes).unwrap()
+    task::block_on(engine.create_module(module_bytes.into())).unwrap()
 });
 
 async fn create_module() -> WasmtimeModule {

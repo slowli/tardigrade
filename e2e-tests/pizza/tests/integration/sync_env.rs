@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use futures::{StreamExt, TryStreamExt};
 use test_casing::test_casing;
 
-use std::{collections::HashSet, task::Poll};
+use std::{collections::HashSet, sync::Arc, task::Poll};
 
 use tardigrade::{
     handle::{ReceiverAt, SenderAt, WithIndexing},
@@ -19,7 +19,7 @@ use tardigrade_rt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, ExecutionError, Receipt,
         ResourceEvent, ResourceEventKind, ResourceId, WakeUpCause,
     },
-    storage::{LocalStorageSnapshot, ModuleRecord, Storage},
+    storage::{LocalStorageSnapshot, Storage},
     test::MockScheduler,
     PersistedWorkflow,
 };
@@ -316,8 +316,7 @@ impl WorkflowEngine for SingleModuleEngine {
     type Definition = WasmtimeDefinition;
     type Module = WasmtimeModule;
 
-    async fn create_module(&self, module: &ModuleRecord) -> anyhow::Result<Self::Module> {
-        assert_eq!(module.id, "test");
+    async fn create_module(&self, _bytes: Arc<[u8]>) -> anyhow::Result<Self::Module> {
         Ok(create_module().await)
     }
 }

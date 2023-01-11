@@ -18,7 +18,6 @@ pub use self::{
 
 use self::instance::InstanceData;
 use super::WorkflowEngine;
-use crate::storage::ModuleRecord;
 use tardigrade::abi::AllocateBytes;
 
 /// [`WorkflowEngine`] based on the `wasmtime` crate.
@@ -31,7 +30,12 @@ impl fmt::Debug for Wasmtime {
     }
 }
 
-impl Wasmtime {
+#[async_trait]
+impl WorkflowEngine for Wasmtime {
+    type Instance = WasmtimeInstance;
+    type Definition = WasmtimeDefinition;
+    type Module = WasmtimeModule;
+
     /// Creates a module from the specified WASM module bytes.
     ///
     /// # Errors
@@ -43,22 +47,9 @@ impl Wasmtime {
     ///   or a known function with an incorrect signature.
     /// - The module does not have necessary exports.
     /// - The module does not have a custom section with the workflow interface definition(s).
-    #[tracing::instrument(skip_all, err, fields(bytes.len))]
-    pub fn create_module(&self, bytes: impl Into<Arc<[u8]>>) -> anyhow::Result<WasmtimeModule> {
-        let bytes = bytes.into();
-        tracing::Span::current().record("bytes.len", bytes.len());
+    #[tracing::instrument(skip_all, err, fields(bytes.len = bytes.len()))]
+    async fn create_module(&self, bytes: Arc<[u8]>) -> anyhow::Result<Self::Module> {
         WasmtimeModule::new(&self.0, bytes)
-    }
-}
-
-#[async_trait]
-impl WorkflowEngine for Wasmtime {
-    type Instance = WasmtimeInstance;
-    type Definition = WasmtimeDefinition;
-    type Module = WasmtimeModule;
-
-    async fn create_module(&self, record: &ModuleRecord) -> anyhow::Result<Self::Module> {
-        self.create_module(Arc::clone(&record.bytes))
     }
 }
 

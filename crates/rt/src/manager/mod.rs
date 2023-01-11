@@ -95,7 +95,7 @@ impl<E: WorkflowEngine> Definitions<'_, E> {
         module.definitions.get(name_in_module)?;
         // ^ Do not waste time on restoring the module if the `name_in_module` is bogus.
 
-        let module = self.engine.create_module(&module).await;
+        let module = self.engine.restore_module(&module).await;
         let module = match module {
             Ok(module) => module,
             Err(err) => {

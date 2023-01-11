@@ -50,7 +50,7 @@ async fn create_test_manager_with_storage<S: Storage, C: Clock>(
         definitions: HashMap::new(), // logically incorrect, but this field is ignored
         tracing_metadata: PersistedMetadata::default(),
     };
-    let module = engine.create_module(&module_record).await.unwrap();
+    let module = engine.restore_module(&module_record).await.unwrap();
 
     let manager = WorkflowManager::builder(engine, storage)
         .with_clock(clock)

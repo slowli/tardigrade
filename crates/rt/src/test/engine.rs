@@ -16,7 +16,6 @@ use crate::{
         AsWorkflowData, CreateWaker, DefineWorkflow, PersistWorkflow, RunWorkflow, WorkflowEngine,
         WorkflowModule,
     },
-    storage::ModuleRecord,
     workflow::ChannelIds,
 };
 use tardigrade::{
@@ -68,18 +67,17 @@ impl WorkflowEngine for MockEngine {
     type Definition = MockDefinition;
     type Module = MockModule;
 
-    async fn create_module(&self, record: &ModuleRecord) -> anyhow::Result<Self::Module> {
-        let bytes = record.bytes.as_ref();
+    async fn create_module(&self, bytes: Arc<[u8]>) -> anyhow::Result<Self::Module> {
         let (name, interface) = self
             .modules
-            .get(bytes)
+            .get(bytes.as_ref())
             .ok_or_else(|| anyhow::anyhow!("Module with contents {bytes:?} was not predefined"))?;
 
         Ok(MockModule {
             poll_fns: Arc::clone(&self.poll_fns),
             definition_name: name.clone(),
             interface: interface.clone(),
-            bytes: bytes.into(),
+            bytes: Arc::clone(&bytes),
         })
     }
 }
