@@ -341,7 +341,8 @@ impl PersistedWorkflowData {
         channel_state.close();
     }
 
-    pub(crate) fn channels(&self) -> Channels<'_> {
+    /// Returns information about channels defined in this workflow interface.
+    pub fn channels(&self) -> Channels<'_> {
         Channels::new(&self.channels, &self.channels.mapping)
     }
 

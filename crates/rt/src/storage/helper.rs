@@ -111,7 +111,7 @@ impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
     #[tracing::instrument(
         skip(self, workflow, tracing_spans),
         fields(
-            workflow.result = ?workflow.result(),
+            workflow.result = ?workflow.common().result(),
             tracing_spans.len = tracing_spans.len()
         )
     )]
@@ -123,9 +123,9 @@ impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
         tracing_spans: PersistedSpans,
     ) {
         self.handle_workflow_update(id, parent_id, &workflow).await;
-        let state = match workflow.result() {
+        let state = match workflow.common().result() {
             Poll::Pending => {
-                let has_internal_waker = workflow.pending_wakeup_causes().next().is_some();
+                let has_internal_waker = workflow.common().pending_wakeup_causes().next().is_some();
                 if has_internal_waker {
                     self.inner.insert_waker(id, WorkflowWaker::Internal).await;
                 }
@@ -147,7 +147,7 @@ impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
         parent_id: Option<WorkflowId>,
         workflow: &PersistedWorkflow,
     ) {
-        let completion_receiver = if workflow.result().is_ready() {
+        let completion_receiver = if workflow.common().result().is_ready() {
             // Close all channels linked to the workflow.
             for (channel_id, _) in workflow.receivers() {
                 self.close_channel_side(channel_id, ChannelSide::Receiver(id))

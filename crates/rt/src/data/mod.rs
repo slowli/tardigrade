@@ -51,14 +51,16 @@ pub enum ReportedErrorKind {
     TaskError,
 }
 
-/// `Workflow` state that can be persisted between workflow invocations.
+/// [Engine]-independent workflow data that can be persisted between workflow invocations.
+///
+/// [Engine](crate::engine::WorkflowEngine)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct PersistedWorkflowData {
-    pub timers: Timers,
-    pub tasks: HashMap<TaskId, TaskState>,
+pub struct PersistedWorkflowData {
+    timers: Timers,
+    tasks: HashMap<TaskId, TaskState>,
     child_workflows: HashMap<WorkflowId, ChildWorkflowState>,
     channels: ChannelStates,
-    pub waker_queue: Vec<Wakers>,
+    waker_queue: Vec<Wakers>,
 }
 
 /// Data associated with a workflow instance.
@@ -117,6 +119,11 @@ impl WorkflowData {
 
     pub(crate) fn take_services(&mut self) -> Services {
         self.services.take().expect("services already taken out")
+    }
+
+    /// Returns persisted data for the encapsulated workflow.
+    pub fn persisted(&self) -> &PersistedWorkflowData {
+        &self.persisted
     }
 
     /// Reports an error or panic that has occurred in the workflow.

@@ -100,7 +100,7 @@ async fn driver_basics(cancel_workflow: bool) -> TestResult {
 
         let workflow = manager.storage().workflow(workflow_id).await.unwrap();
         let persisted = workflow.persisted();
-        assert_eq!(persisted.timers().count(), 0);
+        assert_eq!(persisted.common().timers().count(), 0);
     } else {
         orders_sx.close().await; // should terminate the workflow
         assert_matches!(join_handle.await, Either::Left(Termination::Finished));

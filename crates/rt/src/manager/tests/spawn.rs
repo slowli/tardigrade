@@ -134,9 +134,9 @@ async fn spawning_child_workflow() {
 
     workflow.update().await.unwrap();
     let persisted = workflow.persisted();
-    let wakeup_causes: Vec<_> = persisted.pending_wakeup_causes().collect();
+    let wakeup_causes: Vec<_> = persisted.common().pending_wakeup_causes().collect();
     assert_matches!(wakeup_causes.as_slice(), [WakeUpCause::StubInitialized]);
-    let mut children: Vec<_> = persisted.child_workflows().collect();
+    let mut children: Vec<_> = persisted.common().child_workflows().collect();
     assert_eq!(children.len(), 1);
     let (child_id, child) = children.pop().unwrap();
     assert_eq!(child_id, CHILD_ID);
@@ -149,7 +149,7 @@ async fn spawning_child_workflow() {
         .unwrap();
     workflow.update().await.unwrap();
     let persisted = workflow.persisted();
-    let wakeup_causes: Vec<_> = persisted.pending_wakeup_causes().collect();
+    let wakeup_causes: Vec<_> = persisted.common().pending_wakeup_causes().collect();
     assert!(wakeup_causes.is_empty(), "{wakeup_causes:?}");
 
     {
@@ -264,7 +264,12 @@ async fn test_spawning_child_with_error(
     assert_child_spawn_error(&child_receipt, assert_fn);
     assert_eq!(manager.storage().workflow_count().await, 1);
     workflow.update().await.unwrap();
-    assert!(workflow.persisted().child_workflows().next().is_none());
+    assert!(workflow
+        .persisted()
+        .common()
+        .child_workflows()
+        .next()
+        .is_none());
 }
 
 fn assert_child_spawn_error(receipt: &Receipt, assert_fn: impl FnOnce(&str)) {
@@ -383,7 +388,7 @@ async fn sending_message_to_child() {
         .unwrap();
 
     let child = manager.storage().workflow(CHILD_ID).await.unwrap();
-    let child_channels = child.persisted().channels();
+    let child_channels = child.persisted().common().channels();
     let child_orders_id = child_channels.channel_id("orders").unwrap();
     {
         let transaction = manager.storage.readonly_transaction().await;
@@ -465,7 +470,7 @@ async fn test_child_workflow_channel_management(complete_child: bool) {
         .unwrap();
 
     workflow.update().await.unwrap();
-    let mut children: Vec<_> = workflow.persisted().child_workflows().collect();
+    let mut children: Vec<_> = workflow.persisted().common().child_workflows().collect();
     assert_eq!(children.len(), 1);
     let (child_id, child_state) = children.pop().unwrap();
     assert_eq!(child_id, CHILD_ID);
@@ -538,7 +543,11 @@ async fn test_child_resources_after_drop(
         .unwrap();
 
     workflow.update().await.unwrap();
-    let child_state = workflow.persisted().child_workflow(CHILD_ID).unwrap();
+    let child_state = workflow
+        .persisted()
+        .common()
+        .child_workflow(CHILD_ID)
+        .unwrap();
     if complete_child {
         assert_matches!(child_state.result(), Poll::Ready(Ok(())));
     } else {
@@ -651,7 +660,12 @@ async fn spawning_child_with_copied_sender() {
         HashSet::from_iter([workflow_id, CHILD_ID])
     );
     let child = manager.storage().workflow(CHILD_ID).await.unwrap();
-    let child_events_id = child.persisted().channels().channel_id("events").unwrap();
+    let child_events_id = child
+        .persisted()
+        .common()
+        .channels()
+        .channel_id("events")
+        .unwrap();
     assert_eq!(child_events_id, events_id);
 
     let write_event_and_complete_child: MockPollFn = |ctx| {

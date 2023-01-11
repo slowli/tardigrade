@@ -85,7 +85,7 @@ impl PersistedWorkflowData {
         }
     }
 
-    pub fn restore(
+    pub(crate) fn restore(
         self,
         interface: &Interface,
         services: Services,

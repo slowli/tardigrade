@@ -93,7 +93,7 @@ impl<S: Storage> WorkflowHandle<(), S> {
         Self {
             storage,
             record,
-            channel_ids: state.persisted.channels().to_ids(),
+            channel_ids: state.persisted.common().channels().to_ids(),
             interface,
             persisted: state.persisted,
             _ty: PhantomData,

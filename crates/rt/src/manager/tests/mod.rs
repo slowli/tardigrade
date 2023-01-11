@@ -341,7 +341,11 @@ async fn closing_workflow_channels() {
     assert!(channel_info.is_closed);
 
     workflow.update().await.unwrap();
-    let events: Vec<_> = workflow.persisted().pending_wakeup_causes().collect();
+    let events: Vec<_> = workflow
+        .persisted()
+        .common()
+        .pending_wakeup_causes()
+        .collect();
     assert_matches!(
         events.as_slice(),
         [WakeUpCause::Flush { channel_id, .. }] if *channel_id == events_id
@@ -660,7 +664,11 @@ async fn workflow_not_consuming_inbound_message() {
 
     // Workflow wakers should be consumed to not trigger the infinite loop.
     workflow.update().await.unwrap();
-    let events: Vec<_> = workflow.persisted().pending_wakeup_causes().collect();
+    let events: Vec<_> = workflow
+        .persisted()
+        .common()
+        .pending_wakeup_causes()
+        .collect();
     assert!(events.is_empty(), "{events:?}");
 }
 

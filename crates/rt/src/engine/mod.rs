@@ -23,8 +23,8 @@ mod wasmtime;
 
 pub use self::wasmtime::{Wasmtime, WasmtimeDefinition, WasmtimeInstance, WasmtimeModule};
 pub use crate::data::{
-    ChildActions, ReceiverActions, ReportedErrorKind, SenderActions, TaskActions, TimerActions,
-    WorkflowData, WorkflowPoll,
+    ChildActions, PersistedWorkflowData, ReceiverActions, ReportedErrorKind, SenderActions,
+    TaskActions, TimerActions, WorkflowData, WorkflowPoll,
 };
 
 use crate::storage::ModuleRecord;

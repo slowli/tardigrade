@@ -428,7 +428,7 @@ impl WorkflowFunctions {
     ) -> anyhow::Result<()> {
         // We don't use resources for timers; thus, need to check whether the timer ID is valid.
         ensure!(
-            ctx.data().inner.persisted.timers.get(timer_id).is_some(),
+            ctx.data().inner.persisted().timer(timer_id).is_some(),
             "timer {timer_id} does not exist in the workflow"
         );
 
@@ -447,7 +447,7 @@ impl WorkflowFunctions {
     ) -> anyhow::Result<i64> {
         // We don't use resources for timers; thus, need to check whether the timer ID is valid.
         ensure!(
-            ctx.data().inner.persisted.timers.get(timer_id).is_some(),
+            ctx.data().inner.persisted().timer(timer_id).is_some(),
             "timer {timer_id} does not exist in the workflow"
         );
 

@@ -1,23 +1,16 @@
 //! Workflow persistence.
 
 use anyhow::Context;
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use std::task::Poll;
-
 use crate::{
-    data::{
-        Channels, ChildWorkflow, PersistError, PersistedWorkflowData, ReceiverState, SenderState,
-        TaskState, TimerState, Wakers,
-    },
+    data::{PersistError, PersistedWorkflowData, ReceiverState, SenderState},
     engine::{DefineWorkflow, PersistWorkflow},
     manager::Services,
-    receipt::WakeUpCause,
     utils::Message,
     workflow::Workflow,
 };
-use tardigrade::{handle::Handle, task::JoinError, ChannelId, TaskId, TimerId, WorkflowId};
+use tardigrade::{handle::Handle, ChannelId};
 
 /// Persisted version of a workflow containing the state of its external dependencies
 /// (channels and timers), and its linear WASM memory.
@@ -60,11 +53,6 @@ impl PersistedWorkflow {
         self.data.senders()
     }
 
-    /// Returns information about channels defined in this workflow interface.
-    pub fn channels(&self) -> Channels<'_> {
-        self.data.channels()
-    }
-
     #[tracing::instrument(level = "debug", skip(self))]
     pub(crate) fn drop_message_for_receiver(&mut self, channel_id: ChannelId) {
         self.data.drop_message_for_receiver(channel_id);
@@ -78,31 +66,9 @@ impl PersistedWorkflow {
         }
     }
 
-    /// Returns the current state of a task with the specified ID.
-    pub fn task(&self, task_id: TaskId) -> Option<&TaskState> {
-        self.data.task(task_id)
-    }
-
-    /// Returns the current state of the main task (the task that initializes the workflow),
-    /// or `None` if the workflow is not initialized.
-    pub fn main_task(&self) -> Option<&TaskState> {
-        self.data.main_task()
-    }
-
-    /// Lists all tasks in this workflow.
-    pub fn tasks(&self) -> impl Iterator<Item = (TaskId, &TaskState)> + '_ {
-        self.data.tasks()
-    }
-
-    /// Enumerates child workflows.
-    pub fn child_workflows(&self) -> impl Iterator<Item = (WorkflowId, ChildWorkflow<'_>)> + '_ {
-        self.data.child_workflows()
-    }
-
-    /// Returns the local state of the child workflow with the specified ID, or `None`
-    /// if a workflow with such ID was not spawned by this workflow.
-    pub fn child_workflow(&self, id: WorkflowId) -> Option<ChildWorkflow<'_>> {
-        self.data.child_workflow(id)
+    /// Returns the engine-independent data persisted for this workflow.
+    pub fn common(&self) -> &PersistedWorkflowData {
+        &self.data
     }
 
     /// Checks whether the workflow is initialized.
@@ -110,34 +76,9 @@ impl PersistedWorkflow {
         self.args.is_none()
     }
 
-    /// Returns the result of executing this workflow, which is the output of its main task.
-    pub fn result(&self) -> Poll<Result<(), &JoinError>> {
-        self.data.result()
-    }
-
     /// Aborts the workflow by changing the result of its main task.
     pub(crate) fn abort(&mut self) {
         self.data.abort();
-    }
-
-    /// Returns the current time for the workflow.
-    pub fn current_time(&self) -> DateTime<Utc> {
-        self.data.timers.last_known_time()
-    }
-
-    /// Returns a timer with the specified `id`.
-    pub fn timer(&self, id: TimerId) -> Option<&TimerState> {
-        self.data.timers.get(id)
-    }
-
-    /// Enumerates all timers together with their states.
-    pub fn timers(&self) -> impl Iterator<Item = (TimerId, &TimerState)> + '_ {
-        self.data.timers.iter()
-    }
-
-    /// Iterates over pending [`WakeUpCause`]s.
-    pub fn pending_wakeup_causes(&self) -> impl Iterator<Item = &WakeUpCause> + '_ {
-        self.data.waker_queue.iter().map(Wakers::cause)
     }
 
     /// Restores a workflow from the persisted state and the `definition` of the workflow.

@@ -453,7 +453,7 @@ fn workflow_terminates_after_main_task_completion() {
     task_result.as_ref().unwrap();
 
     let workflow = workflow.persist();
-    assert_matches!(workflow.result(), Poll::Ready(Ok(())));
+    assert_matches!(workflow.common().result(), Poll::Ready(Ok(())));
 }
 
 #[test]

@@ -310,6 +310,7 @@ impl WorkflowSelectionCriteria {
     pub(super) fn matches(&self, workflow: &PersistedWorkflow) -> bool {
         match self {
             Self::HasTimerBefore(time) => workflow
+                .common()
                 .timers()
                 .any(|(_, timer)| timer.definition().expires_at <= *time),
         }
