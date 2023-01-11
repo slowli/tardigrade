@@ -19,11 +19,10 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use std::{fmt, sync::Arc, task::Poll};
 
-#[cfg(test)]
 mod mock;
 mod wasmtime;
 
-#[cfg(test)]
+#[doc(hidden)] // not baked for external use (yet?)
 pub use self::mock::{
     MockAnswers, MockDefinition, MockEngine, MockInstance, MockModule, MockPollFn,
 };

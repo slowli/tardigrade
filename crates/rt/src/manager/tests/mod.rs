@@ -11,6 +11,7 @@ mod spawn;
 
 use super::*;
 use crate::{
+    data::tests::test_interface,
     engine::{AsWorkflowData, MockAnswers, MockEngine, MockInstance, MockPollFn},
     handle::WorkflowHandle,
     receipt::{
@@ -40,10 +41,12 @@ async fn create_test_manager_with_storage<S: Storage, C: Clock>(
     clock: C,
     storage: S,
 ) -> LocalManager<C, S> {
-    let engine = MockEngine::new(poll_fns);
+    let engine = MockEngine::new(poll_fns)
+        .with_module(b"test", "TestWorkflow", test_interface());
+
     let module_record = ModuleRecord {
         id: "test@latest".to_owned(),
-        bytes: Arc::new([]),
+        bytes: Arc::new(*b"test"),
         definitions: HashMap::new(), // logically incorrect, but this field is ignored
         tracing_metadata: PersistedMetadata::default(),
     };

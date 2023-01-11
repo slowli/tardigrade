@@ -43,17 +43,18 @@ git = "https://github.com/slowli/externref.git"
 rev = "2e7ce459f98d0493d7734fe20b1945e41838250e"
 features = ["processor"]
 
+[dependencies.mimicry]
+version = "0.1.0"
+git = "https://github.com/slowli/mimicry.git"
+rev = "87abe3031032d3465f2e0172c96b68cd16fcf9f9"
+optional = true
+
 [dev-dependencies]
 assert_matches = "1.5.0"
 async-std = { version = "1.12.0", features = ["attributes"] }
 version-sync = "0.9.4"
 
-[dev-dependencies.mimicry]
-version = "0.1.0"
-git = "https://github.com/slowli/mimicry.git"
-rev = "87abe3031032d3465f2e0172c96b68cd16fcf9f9"
-
 [features]
 default = []
 # Enables the `test` module with test-related helpers.
-test = ["externref"]
+test = ["externref", "mimicry"]

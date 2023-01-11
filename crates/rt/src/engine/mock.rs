@@ -23,30 +23,41 @@ use tardigrade::{
     handle::Handle, interface::Interface, spawn::HostError, ChannelId, TaskId, WakerId, WorkflowId,
 };
 
-const INTERFACE: &[u8] = br#"{
-    "v": 0,
-    "handles": {
-        "orders": { "receiver": {} },
-        "events": { "sender": {} },
-        "traces": { "sender": { "capacity": null } }
-    }
-}"#;
-
+/// Mock polling function for a workflow.
 pub type MockPollFn = fn(&mut MockInstance) -> anyhow::Result<Poll<()>>;
+/// [`Answers`](mimicry::Answers) for [mock polling functions](MockPollFn).
 pub type MockAnswers = mimicry::Answers<MockPollFn, TaskId>;
+
 type SharedAnswers = Arc<Mutex<MockAnswers>>;
 
 /// Mock workflow execution engine.
+///
+/// TODO: more details & examples
 #[derive(Debug)]
 pub struct MockEngine {
     poll_fns: SharedAnswers,
+    modules: HashMap<&'static [u8], (String, Interface)>,
 }
 
 impl MockEngine {
+    /// Creates a new engine that will use the provided answers when polling workflows.
     pub fn new(poll_fns: MockAnswers) -> Self {
         Self {
             poll_fns: Arc::new(Mutex::new(poll_fns)),
+            modules: HashMap::new(),
         }
+    }
+
+    /// Adds a new module definition that will be used when [`Self::create_module()`] is called.
+    #[must_use]
+    pub fn with_module(
+        mut self,
+        bytes: &'static [u8],
+        definition_name: impl Into<String>,
+        interface: Interface,
+    ) -> Self {
+        self.modules.insert(bytes, (definition_name.into(), interface));
+        self
     }
 }
 
@@ -56,9 +67,16 @@ impl WorkflowEngine for MockEngine {
     type Definition = MockDefinition;
     type Module = MockModule;
 
-    async fn create_module(&self, _record: &ModuleRecord) -> anyhow::Result<Self::Module> {
+    async fn create_module(&self, record: &ModuleRecord) -> anyhow::Result<Self::Module> {
+        let bytes = record.bytes.as_ref();
+        let (name, interface) = self.modules.get(bytes).ok_or_else(|| {
+            anyhow::anyhow!("Module with contents {bytes:?} was not predefined")
+        })?;
+
         Ok(MockModule {
             poll_fns: Arc::clone(&self.poll_fns),
+            definition_name: name.clone(),
+            interface: interface.clone(),
         })
     }
 }
@@ -67,6 +85,8 @@ impl WorkflowEngine for MockEngine {
 #[derive(Debug)]
 pub struct MockModule {
     poll_fns: SharedAnswers,
+    definition_name: String,
+    interface: Interface,
 }
 
 impl IntoIterator for MockModule {
@@ -74,8 +94,8 @@ impl IntoIterator for MockModule {
     type IntoIter = iter::Once<(String, MockDefinition)>;
 
     fn into_iter(self) -> Self::IntoIter {
-        let name = "TestWorkflow".to_owned();
-        let interface = Interface::from_bytes(INTERFACE);
+        let name = self.definition_name.clone();
+        let interface = self.interface.clone();
         let definition = MockDefinition {
             poll_fns: Arc::clone(&self.poll_fns),
             interface,
@@ -100,10 +120,11 @@ pub struct MockDefinition {
 }
 
 impl MockDefinition {
-    pub fn new(poll_fns: MockAnswers) -> Self {
+    #[cfg(test)]
+    pub(crate) fn new(poll_fns: MockAnswers, interface: Interface) -> Self {
         Self {
             poll_fns: Arc::new(Mutex::new(poll_fns)),
-            interface: Interface::from_bytes(INTERFACE),
+            interface,
         }
     }
 }
@@ -136,8 +157,6 @@ pub struct MockInstance {
 }
 
 impl MockInstance {
-    pub const MOCK_MODULE_BYTES: &'static [u8] = b"\0asm\x01\0\0\0";
-
     fn new(data: WorkflowData, poll_fns: SharedAnswers) -> Self {
         Self {
             inner: data,
@@ -147,7 +166,8 @@ impl MockInstance {
         }
     }
 
-    pub fn take_definition(&mut self, stub_id: u64) -> Option<Interface> {
+    #[cfg(test)]
+    pub(crate) fn take_definition(&mut self, stub_id: u64) -> Option<Interface> {
         self.persisted
             .definitions
             .remove(&stub_id)
