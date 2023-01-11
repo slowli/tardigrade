@@ -1,0 +1,133 @@
+syntax = "proto3";
+
+package tardigrade;
+
+import "google/protobuf/empty.proto";
+import "tardigrade/types.proto";
+
+// Tardigrade runtime server interface.
+service Tardigrade {
+  // Deploys a new module.
+  rpc DeployModule(DeployModuleRequest) returns (Module) {}
+  // Lists all deployed modules.
+  rpc ListModules(google.protobuf.Empty) returns (stream Module) {}
+
+  // Creates a new channel.
+  rpc CreateChannel(CreateChannelRequest) returns (Channel) {}
+  // Gets information about the channel with the specified ID.
+  rpc GetChannel(GetChannelRequest) returns (Channel) {}
+  // Closes the channel with the specified ID.
+  rpc CloseChannel(CloseChannelRequest) returns (Channel) {}
+  // TODO: truncate channel
+
+  // Gets a specific message from the specified channel.
+  rpc GetMessage(MessageRef) returns (Message) {}
+  // Streams messages from the specified channel.
+  rpc StreamMessages(StreamMessagesRequest) returns (stream Message) {}
+  // Push one or more messages to the specified channel.
+  rpc PushMessages(PushMessagesRequest) returns (google.protobuf.Empty) {}
+
+  // Creates a workflow with the specified args and channel handles.
+  rpc CreateWorkflow(CreateWorkflowRequest) returns (Workflow) {}
+  // Gets information about the workflow with the specified ID.
+  rpc GetWorkflow(GetWorkflowRequest) returns (Workflow) {}
+  // Aborts workflow with the specified ID.
+  rpc AbortWorkflow(AbortWorkflowRequest) returns (Workflow) {}
+  // TODO: repair workflow
+}
+
+// TODO: test extensions (scheduler; manual workflow running)
+
+// Request to deploy a new module.
+message DeployModuleRequest {
+  // ID of the module. This string should be globally unique
+  // and not contain the `:` char.
+  string id = 1;
+  // WASM module contents.
+  bytes bytes = 2;
+  // Do not actually deploy the module, just parse it.
+  bool dry_run = 3;
+}
+
+// Request to create a new channel.
+message CreateChannelRequest {
+  // No fields yet.
+}
+
+// Request to get information about a channel.
+message GetChannelRequest {
+  // Channel ID to retrieve.
+  uint64 id = 1;
+}
+
+// Request to close a channel.
+message CloseChannelRequest {
+  // Channel ID to close.
+  uint64 id = 1;
+  // Which half of the channel to close?
+  HandleType half = 2;
+}
+
+// Message stored in a channel.
+message Message {
+  // Message coordinates: the ID of the owning channel, and the message index.
+  MessageRef reference = 1;
+  // Message payload.
+  bytes payload = 2;
+}
+
+// Request to stream messages from a channel.
+message StreamMessagesRequest {
+  // Channel ID to stream from.
+  uint64 id = 1;
+  // 0-based starting index for the streamed messages.
+  uint64 start_index = 2;
+}
+
+// Request to push messages to a channel.
+message PushMessagesRequest {
+  // Channel ID to push the message into.
+  uint64 channel_id = 1;
+  // Message payloads.
+  repeated bytes payloads = 2;
+}
+
+// Request to create a workflow.
+message CreateWorkflowRequest {
+  // ID of the module defining the workflow.
+  string module_id = 1;
+  // ID of the definition within the module.
+  string name_in_module = 2;
+
+  // Argument supplied to the workflow. The serialization format
+  // is defined by the workflow (e.g., JSON).
+  bytes args = 3;
+  // Configuration of the channels supplied to the workflow.
+  // Must correspond to the workflow interface.
+  map<string, ChannelConfig> channels = 4;
+}
+
+// Configuration of a channel handle in `CreateWorkflowRequest`.
+message ChannelConfig {
+  // Type of the handle (receiver or sender).
+  HandleType type = 1;
+  oneof reference {
+    // Use an existing channel. The 0th channel can be used as a
+    // special pre-closed channel.
+    uint64 existing = 2;
+    // Create a new channel.
+    google.protobuf.Empty new = 3;
+  }
+}
+
+// Request to get information about a workflow.
+message GetWorkflowRequest {
+  // Requested workflow ID.
+  uint64 id = 1;
+}
+
+// Request to abort a workflow,
+message AbortWorkflowRequest {
+  // ID of the workflow to be aborted.
+  uint64 id = 1;
+}

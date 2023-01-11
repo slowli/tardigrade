@@ -1,0 +1,231 @@
+// Common data types.
+
+syntax = "proto3";
+
+package tardigrade;
+
+import "google/protobuf/empty.proto";
+
+// Information about a deployed module.
+message Module {
+  // ID of the module.
+  string id = 1;
+  // Workflow definitions contained in the module.
+  map<string, WorkflowDefinition> definitions = 2;
+}
+
+// Information about a workflow definition in a deployed module.
+message WorkflowDefinition {
+  // Interface of the workflows.
+  Interface interface = 1;
+}
+
+// Information about a workflow interface.
+message Interface {
+  // Specification of the arguments provided to the workflow.
+  ArgsSpec args = 1;
+  // Specifications of the workflow handles (senders and receivers).
+  map<string, HandleSpec> handles = 2;
+}
+
+// Specification of the arguments supplied to a workflow.
+message ArgsSpec {
+  // Human-readable description of arguments.
+  string description = 1;
+}
+
+// Handle type (sender or receiver).
+enum HandleType {
+  // Unspecified type (present just to conform to Protobuf guidelines;
+  // should not be used).
+  UNSPECIFIED = 0;
+  // Channel receiver.
+  RECEIVER = 1;
+  // Channel sender.
+  SENDER = 2;
+}
+
+// Specification for a handle (channel sender or receiver).
+message HandleSpec {
+  // Type of this handle.
+  HandleType type = 1;
+  // Human-readable description of arguments.
+  string description = 2;
+  // Channel capacity (only applicable for senders). 0 / absent field
+  // denotes unlimited capacity.
+  optional uint32 capacity = 3;
+}
+
+// Information about a channel.
+message Channel {
+  // Unique ID of the channel.
+  uint64 id = 1;
+  // ID of the workflow receiving messages from the channel, if any.
+  optional uint64 receiver_workflow_id = 2;
+  // IDs of the workflows sending messages to the channel.
+  repeated uint64 sender_workflow_ids = 3;
+  // Can the host send messages over the channel?
+  bool has_external_sender = 4;
+  // Is the channel closed (i.e., cannot receive new messages)?
+  bool is_closed = 5;
+  // Number of messages received for the channel.
+  uint64 received_messages = 6;
+}
+
+// Reference to a channel message.
+message MessageRef {
+  // ID of the channel containing the message.
+  uint64 channel_id = 1;
+  // 0-based index of the message in the channel.
+  uint64 index = 2;
+}
+
+// Information about an instantiated workflow.
+message Workflow {
+  // ID of the workflow.
+  uint64 id = 1;
+  // ID of the parent workflow.
+  optional uint64 parent_id = 2;
+  // ID of the module from which the workflow was instantiated.
+  string module_id = 3;
+  // ID of the workflow definition within the module.
+  string name_in_module = 4;
+  // Number of workflow executions.
+  uint32 execution_count = 5;
+
+  // Current workflow state.
+  oneof state {
+    // Workflow is active (can be executed).
+    ActiveWorkflowState active = 10;
+    // Workflow has errored.
+    ErroredWorkflowState errored = 11;
+    // Workflow is completed.
+    CompletedWorkflowState completed = 12;
+  }
+}
+
+// Information about an active workflow.
+message ActiveWorkflowState {
+  // Persisted workflow state.
+  PersistedWorkflow persisted = 1;
+}
+
+// Persisted workflow state.
+message PersistedWorkflow {
+  // Information about a task in the workflow.
+  message Task {
+    // Task name.
+    string name = 1;
+    // Is the task completed?
+    bool is_completed = 2;
+    // Task completion error, if any.
+    optional JoinError completion_error = 3;
+    // ID of the parent task. Not present for the main task.
+    optional uint64 spawned_by = 4;
+  }
+
+  // Information about a child workflow as viewed by the parent.
+  message Child {
+    // Channel mapping for the child.
+    map<string, Channel> channels = 1;
+    // Is the child completed?
+    bool is_completed = 2;
+    // Child completion error, if any.
+    optional JoinError completion_error = 3;
+  }
+
+  // Information about a receiver handle held by the workflow.
+  message Receiver {
+    // Is the receiver closed?
+    bool is_closed = 1;
+    // Number of received messages.
+    uint64 received_message_count = 2;
+  }
+
+  // Information about a sender handle held by the workflow.
+  message Sender {
+    // Is the sender closed?
+    bool is_closed = 1;
+    // Number of flushed messages.
+    uint64 flushed_message_count = 2;
+  }
+
+  // State of a channel handle (receiver or sender).
+  message Channel {
+    // ID of the channel the handle is attached to.
+    uint64 id = 1;
+    // State of the channel.
+    oneof state {
+      Receiver receiver = 2;
+      Sender sender = 3;
+    }
+  }
+
+  // Tasks keyed by their ID (assigned by the workflow).
+  map<uint64, Task> tasks = 1;
+  // Children of this workflow keyed by their workflow ID.
+  map<uint64, Child> child_workflows = 2;
+  // Channel mapping for the handles defined in the workflow interface.
+  map<string, Channel> channels = 3;
+}
+
+// Information about an errored workflow.
+message ErroredWorkflowState {
+  // Persisted workflow information at the latest execution
+  // *before* a WASM trap has occurred.
+  PersistedWorkflow persisted = 1;
+
+  // Human-readable trap message.
+  string trap_message = 2;
+  // Error message raised by the workflow using language-specific mechanisms
+  // (e.g., panics in Rust).
+  optional string error_message = 3;
+  // Location of the error.
+  optional ErrorLocation error_location = 4;
+  // Channel messages that may have led to the execution error.
+  repeated MessageRef erroneous_messages = 5;
+}
+
+// Information about a completed workflow.
+message CompletedWorkflowState {
+  // Information about the completion error, if any.
+  optional JoinError error = 1;
+}
+
+// Execution error for a workflow or a task in a workflow.
+message JoinError {
+  oneof type {
+    // The workflow / task was aborted.
+    google.protobuf.Empty aborted = 1;
+    // An error raised by the workflow logic.
+    TaskError task_error = 2;
+  }
+}
+
+// Error raised by the workflow logic.
+message TaskError {
+  // Human-readable error cause.
+  string cause = 1;
+  // Location of the error in the workflow source code.
+  ErrorLocation location = 2;
+  // Additional contexts for the error.
+  repeated ErrorContext contexts = 3;
+}
+
+// Information about an error location.
+message ErrorLocation {
+  // Name of the file associated with the location.
+  string filename = 1;
+  // 1-based line in the file.
+  uint32 line = 2;
+  // 1-based column.
+  uint32 column = 3;
+}
+
+// Additional context for a task error.
+message ErrorContext {
+  // Human-readable context description.
+  string message = 1;
+  // Location in the workflow source code.
+  ErrorLocation location = 2;
+}
