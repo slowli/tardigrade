@@ -14,13 +14,14 @@ mod spawn;
 
 use super::*;
 use crate::{
-    backends::MockScheduler,
-    engine::{
-        AsWorkflowData, DefineWorkflow, MockAnswers, MockDefinition, MockInstance, MockPollFn,
-    },
+    engine::{AsWorkflowData, DefineWorkflow},
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, Execution, ExecutionError,
         Receipt, ResourceEventKind, ResourceId,
+    },
+    test::{
+        engine::{MockAnswers, MockDefinition, MockInstance, MockPollFn},
+        MockScheduler,
     },
     workflow::{PersistedWorkflow, Workflow},
 };

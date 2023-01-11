@@ -19,13 +19,8 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use std::{fmt, sync::Arc, task::Poll};
 
-mod mock;
 mod wasmtime;
 
-#[doc(hidden)] // not baked for external use (yet?)
-pub use self::mock::{
-    MockAnswers, MockDefinition, MockEngine, MockInstance, MockModule, MockPollFn,
-};
 pub use self::wasmtime::{Wasmtime, WasmtimeDefinition, WasmtimeInstance, WasmtimeModule};
 pub use crate::data::{
     ChildActions, ReceiverActions, ReportedErrorKind, SenderActions, TaskActions, TimerActions,

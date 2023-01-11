@@ -56,7 +56,8 @@ impl MockEngine {
         definition_name: impl Into<String>,
         interface: Interface,
     ) -> Self {
-        self.modules.insert(bytes, (definition_name.into(), interface));
+        self.modules
+            .insert(bytes, (definition_name.into(), interface));
         self
     }
 }
@@ -69,14 +70,16 @@ impl WorkflowEngine for MockEngine {
 
     async fn create_module(&self, record: &ModuleRecord) -> anyhow::Result<Self::Module> {
         let bytes = record.bytes.as_ref();
-        let (name, interface) = self.modules.get(bytes).ok_or_else(|| {
-            anyhow::anyhow!("Module with contents {bytes:?} was not predefined")
-        })?;
+        let (name, interface) = self
+            .modules
+            .get(bytes)
+            .ok_or_else(|| anyhow::anyhow!("Module with contents {bytes:?} was not predefined"))?;
 
         Ok(MockModule {
             poll_fns: Arc::clone(&self.poll_fns),
             definition_name: name.clone(),
             interface: interface.clone(),
+            bytes: bytes.into(),
         })
     }
 }
@@ -87,6 +90,7 @@ pub struct MockModule {
     poll_fns: SharedAnswers,
     definition_name: String,
     interface: Interface,
+    bytes: Arc<[u8]>,
 }
 
 impl IntoIterator for MockModule {
@@ -108,7 +112,7 @@ impl WorkflowModule for MockModule {
     type Definition = MockDefinition;
 
     fn bytes(&self) -> Arc<[u8]> {
-        Arc::new([])
+        Arc::clone(&self.bytes)
     }
 }
 

@@ -134,7 +134,7 @@ pub mod handle;
 pub mod manager;
 pub mod receipt;
 pub mod storage;
-#[cfg(feature = "test")]
+#[cfg(any(test, feature = "test"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "test")))]
 pub mod test;
 mod utils;

@@ -12,9 +12,9 @@ use std::{sync::Arc, task::Poll, time::Duration};
 
 use super::*;
 use crate::{
-    backends::MockScheduler,
     receipt::{ResourceEventKind, ResourceId},
     storage::Streaming,
+    test::MockScheduler,
 };
 use tardigrade::{TimerDefinition, TimerId};
 
