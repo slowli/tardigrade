@@ -8,10 +8,10 @@ use tonic::{Request, Response, Status};
 use std::collections::HashMap;
 
 use crate::proto::{
-    channel_config, tardigrade_server::Tardigrade, AbortWorkflowRequest, Channel, ChannelConfig,
-    CloseChannelRequest, CreateChannelRequest, CreateWorkflowRequest, DeployModuleRequest,
-    GetChannelRequest, GetWorkflowRequest, HandleType, Message, MessageRef, Module,
-    PushMessagesRequest, StreamMessagesRequest, Workflow,
+    channel_config, tardigrade_channels_server::TardigradeChannels, tardigrade_server::Tardigrade,
+    AbortWorkflowRequest, Channel, ChannelConfig, CloseChannelRequest, CreateChannelRequest,
+    CreateWorkflowRequest, DeployModuleRequest, GetChannelRequest, GetWorkflowRequest, HandleType,
+    Message, MessageRef, Module, PushMessagesRequest, StreamMessagesRequest, Workflow,
 };
 use tardigrade::{
     handle::{Handle, HandlePathBuf},
@@ -38,7 +38,7 @@ type TxManager<'a, M> = WorkflowManager<
     TxStorage<'a, <M as AsManager>::Storage>,
 >;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ManagerWrapper<M> {
     inner: M,
 }
@@ -211,6 +211,61 @@ where
         Ok(Response::new(modules.boxed()))
     }
 
+    #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
+    async fn create_workflow(
+        &self,
+        request: Request<CreateWorkflowRequest>,
+    ) -> Result<Response<Workflow>, Status> {
+        let workflow_id = self.do_create_workflow(request).await?;
+        self.do_get_workflow(workflow_id).await
+    }
+
+    #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
+    async fn get_workflow(
+        &self,
+        request: Request<GetWorkflowRequest>,
+    ) -> Result<Response<Workflow>, Status> {
+        let workflow_id = request.get_ref().id;
+        self.do_get_workflow(workflow_id).await
+    }
+
+    #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
+    async fn abort_workflow(
+        &self,
+        request: Request<AbortWorkflowRequest>,
+    ) -> Result<Response<Workflow>, Status> {
+        let workflow_id = request.get_ref().id;
+
+        let storage = self.inner.as_manager().storage();
+        let workflow = storage.any_workflow(workflow_id).await;
+        let workflow = workflow
+            .ok_or_else(|| Status::not_found(format!("workflow {workflow_id} does not exist")))?;
+
+        let result = match workflow {
+            AnyWorkflowHandle::Active(workflow) => workflow.abort().await,
+            AnyWorkflowHandle::Errored(workflow) => workflow.abort().await,
+            AnyWorkflowHandle::Completed(_) => {
+                let message = format!("workflow {workflow_id} is completed and cannot be aborted");
+                return Err(Status::failed_precondition(message));
+            }
+            _ => {
+                let message = format!("workflow {workflow_id} has unknown state");
+                return Err(Status::unimplemented(message));
+            }
+        };
+        result
+            .map_err(|err| Status::failed_precondition(format!("cannot abort workflow: {err}")))?;
+
+        self.do_get_workflow(workflow_id).await
+    }
+}
+
+#[tonic::async_trait]
+impl<M> TardigradeChannels for ManagerWrapper<M>
+where
+    M: AsManager + 'static,
+    M::Storage: StreamMessages + Clone + 'static,
+{
     #[tracing::instrument(skip_all, err)]
     async fn create_channel(
         &self,
@@ -334,53 +389,5 @@ where
             .await
             .map_err(|err| Status::failed_precondition(err.to_string()))?;
         Ok(Response::new(()))
-    }
-
-    #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
-    async fn create_workflow(
-        &self,
-        request: Request<CreateWorkflowRequest>,
-    ) -> Result<Response<Workflow>, Status> {
-        let workflow_id = self.do_create_workflow(request).await?;
-        self.do_get_workflow(workflow_id).await
-    }
-
-    #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
-    async fn get_workflow(
-        &self,
-        request: Request<GetWorkflowRequest>,
-    ) -> Result<Response<Workflow>, Status> {
-        let workflow_id = request.get_ref().id;
-        self.do_get_workflow(workflow_id).await
-    }
-
-    #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
-    async fn abort_workflow(
-        &self,
-        request: Request<AbortWorkflowRequest>,
-    ) -> Result<Response<Workflow>, Status> {
-        let workflow_id = request.get_ref().id;
-
-        let storage = self.inner.as_manager().storage();
-        let workflow = storage.any_workflow(workflow_id).await;
-        let workflow = workflow
-            .ok_or_else(|| Status::not_found(format!("workflow {workflow_id} does not exist")))?;
-
-        let result = match workflow {
-            AnyWorkflowHandle::Active(workflow) => workflow.abort().await,
-            AnyWorkflowHandle::Errored(workflow) => workflow.abort().await,
-            AnyWorkflowHandle::Completed(_) => {
-                let message = format!("workflow {workflow_id} is completed and cannot be aborted");
-                return Err(Status::failed_precondition(message));
-            }
-            _ => {
-                let message = format!("workflow {workflow_id} has unknown state");
-                return Err(Status::unimplemented(message));
-            }
-        };
-        result
-            .map_err(|err| Status::failed_precondition(format!("cannot abort workflow: {err}")))?;
-
-        self.do_get_workflow(workflow_id).await
     }
 }

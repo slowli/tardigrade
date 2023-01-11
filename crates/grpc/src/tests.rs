@@ -8,7 +8,10 @@ use tonic::{Code, Request};
 use std::{collections::HashMap, sync::Arc, task::Poll, time::Duration};
 
 use crate::{
-    proto::{self, persisted_workflow::channel, tardigrade_server::Tardigrade},
+    proto::{
+        self, persisted_workflow::channel, tardigrade_channels_server::TardigradeChannels,
+        tardigrade_server::Tardigrade,
+    },
     ManagerWrapper,
 };
 use tardigrade::interface::{ArgsSpec, InterfaceBuilder, ReceiverSpec, SenderSpec};
@@ -20,7 +23,7 @@ use tardigrade_rt::{
     TokioScheduler,
 };
 
-async fn create_service(engine: MockEngine) -> impl Tardigrade {
+async fn create_service(engine: MockEngine) -> impl Tardigrade + TardigradeChannels {
     let storage = Arc::new(LocalStorage::default());
     let (storage, routing_task) = Streaming::new(storage);
     task::spawn(routing_task);
@@ -75,6 +78,57 @@ fn complete_workflow(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
 }
 
 #[tokio::test]
+async fn channel_management() {
+    let (poll_fns, _) = MockAnswers::channel();
+    let service = create_service(mock_engine(poll_fns)).await;
+
+    let request = proto::CreateChannelRequest {};
+    let channel = service.create_channel(Request::new(request)).await;
+    let channel = channel.unwrap().into_inner();
+
+    assert_ne!(channel.id, 0);
+    assert_eq!(channel.receiver_workflow_id, None);
+    assert!(channel.sender_workflow_ids.is_empty());
+    assert!(channel.has_external_sender);
+
+    let request = proto::PushMessagesRequest {
+        channel_id: channel.id,
+        payloads: vec![b"test".to_vec(), b"other".to_vec()],
+    };
+    service.push_messages(Request::new(request)).await.unwrap();
+
+    let request = proto::MessageRef {
+        channel_id: channel.id,
+        index: 0,
+    };
+    let message = service.get_message(Request::new(request)).await;
+    let message = message.unwrap().into_inner();
+
+    assert_eq!(message.payload, b"test");
+
+    let request = proto::CloseChannelRequest {
+        id: channel.id,
+        half: proto::HandleType::Receiver as i32,
+    };
+    let channel = service.close_channel(Request::new(request)).await;
+    let channel = channel.unwrap().into_inner();
+
+    assert!(channel.is_closed);
+
+    let request = proto::StreamMessagesRequest {
+        id: channel.id,
+        start_index: 0,
+    };
+    let messages = service.stream_messages(Request::new(request)).await;
+    let messages = messages.unwrap().into_inner();
+    let messages: Vec<_> = messages.try_collect().await.unwrap();
+
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].payload, b"test");
+    assert_eq!(messages[1].payload, b"other");
+}
+
+#[tokio::test]
 async fn server_basics() {
     let (poll_fns, mut poll_fns_sx) = MockAnswers::channel();
     let service = create_service(mock_engine(poll_fns)).await;
@@ -92,7 +146,7 @@ async fn server_basics() {
         .await;
 }
 
-async fn test_module_deployment(service: &impl Tardigrade) {
+async fn test_module_deployment<S: Tardigrade + TardigradeChannels>(service: &S) {
     let request = proto::DeployModuleRequest {
         id: "test".to_owned(),
         bytes: b"test".to_vec(),
@@ -119,7 +173,7 @@ async fn test_module_deployment(service: &impl Tardigrade) {
     assert_eq!(modules[0].id, "test");
 }
 
-async fn test_workflow_creation_errors(service: &impl Tardigrade) {
+async fn test_workflow_creation_errors<S: Tardigrade + TardigradeChannels>(service: &S) {
     let request = proto::CreateWorkflowRequest {
         module_id: "bogus".to_owned(), // <<< invalid: module with this ID is not deployed
         name_in_module: "Workflow".to_owned(),
@@ -168,7 +222,9 @@ async fn test_workflow_creation_errors(service: &impl Tardigrade) {
     assert!(err.message().contains("invalid shape"), "{}", err.message());
 }
 
-async fn test_workflow_creation(service: &impl Tardigrade) -> proto::Workflow {
+async fn test_workflow_creation<S: Tardigrade + TardigradeChannels>(
+    service: &S,
+) -> proto::Workflow {
     let orders_config = proto::ChannelConfig {
         r#type: proto::HandleType::Receiver as _,
         reference: Some(proto::channel_config::Reference::New(())),
@@ -202,7 +258,10 @@ async fn test_workflow_creation(service: &impl Tardigrade) -> proto::Workflow {
     workflow.unwrap().into_inner()
 }
 
-async fn test_workflow_completion(service: &impl Tardigrade, workflow: &proto::Workflow) {
+async fn test_workflow_completion<S: Tardigrade + TardigradeChannels>(
+    service: &S,
+    workflow: &proto::Workflow,
+) {
     const TIMEOUT: Duration = Duration::from_millis(20);
 
     assert!(workflow.execution_count > 0);
