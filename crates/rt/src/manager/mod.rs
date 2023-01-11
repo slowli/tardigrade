@@ -384,6 +384,11 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         StorageRef::from(&self.storage)
     }
 
+    #[doc(hidden)] // not mature for external usage yet
+    pub fn storage_mut(&mut self) -> &mut S {
+        &mut self.storage
+    }
+
     /// Returns the encapsulated storage.
     pub fn into_storage(self) -> S {
         self.storage

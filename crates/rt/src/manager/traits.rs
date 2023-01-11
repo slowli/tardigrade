@@ -14,6 +14,9 @@ pub trait AsManager: Send + Sync {
 
     #[doc(hidden)] // implementation detail
     fn as_manager(&self) -> &WorkflowManager<Self::Engine, Self::Clock, Self::Storage>;
+
+    #[doc(hidden)] // implementation detail
+    fn as_manager_mut(&mut self) -> &mut WorkflowManager<Self::Engine, Self::Clock, Self::Storage>;
 }
 
 impl<E: WorkflowEngine, C: Clock, S: Storage> AsManager for WorkflowManager<E, C, S> {
@@ -23,6 +26,11 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> AsManager for WorkflowManager<E, C
 
     #[inline]
     fn as_manager(&self) -> &WorkflowManager<Self::Engine, Self::Clock, Self::Storage> {
+        self
+    }
+
+    #[inline]
+    fn as_manager_mut(&mut self) -> &mut WorkflowManager<Self::Engine, Self::Clock, Self::Storage> {
         self
     }
 }
