@@ -163,6 +163,18 @@ impl PersistedWorkflowData {
     pub fn timers(&self) -> impl Iterator<Item = (TimerId, &TimerState)> + '_ {
         self.timers.iter()
     }
+
+    /// Returns the nearest timer expiration.
+    pub fn nearest_timer(&self) -> Option<DateTime<Utc>> {
+        let expirations = self.timers.iter().filter_map(|(_, state)| {
+            if state.completed_at().is_none() {
+                Some(state.definition().expires_at)
+            } else {
+                None
+            }
+        });
+        expirations.min()
+    }
 }
 
 /// Handle allowing to manipulate a workflow timer.

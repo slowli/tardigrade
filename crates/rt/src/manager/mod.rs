@@ -23,7 +23,7 @@ pub use self::{
     driver::{DriveConfig, Termination},
     services::{Clock, Schedule, TimerFuture},
     stubs::{ManagerSpawner, MapFormat},
-    tick::{TickResult, WouldBlock},
+    tick::{TickResult, WorkflowTickError, WouldBlock},
     traits::AsManager,
 };
 
@@ -382,6 +382,11 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
     /// Returns a reference to the underlying storage.
     pub fn storage(&self) -> StorageRef<'_, S> {
         StorageRef::from(&self.storage)
+    }
+
+    #[doc(hidden)] // not mature for external usage yet
+    pub fn clock(&self) -> &C {
+        self.inner.clock.as_ref()
     }
 
     #[doc(hidden)] // not mature for external usage yet

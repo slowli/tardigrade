@@ -13,7 +13,7 @@ use crate::{
     storage::{
         helper::StorageHelper, ActiveWorkflowState, ErroneousMessageRef, MessageError,
         ReadChannels, ReadModules, ReadWorkflows, Storage, StorageTransaction, WorkflowRecord,
-        WorkflowWaker, WriteModules, WriteWorkflowWakers, WriteWorkflows,
+        WorkflowWaker, WorkflowWakerRecord, WriteModules, WriteWorkflowWakers, WriteWorkflows,
     },
     workflow::{PersistedWorkflow, Workflow},
 };
@@ -70,6 +70,36 @@ impl fmt::Display for WouldBlock {
 }
 
 impl error::Error for WouldBlock {}
+
+/// Errors that can occur when [ticking a specific workflow](WorkflowManager::tick_workflow()).
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum WorkflowTickError {
+    /// Workflow not found.
+    NotFound,
+    /// Workflow is not active.
+    NotActive,
+    /// The workflow has no events to consume.
+    WouldBlock(WouldBlock),
+}
+
+impl From<WouldBlock> for WorkflowTickError {
+    fn from(err: WouldBlock) -> Self {
+        Self::WouldBlock(err)
+    }
+}
+
+impl fmt::Display for WorkflowTickError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotFound => formatter.write_str("workflow not found"),
+            Self::NotActive => formatter.write_str("workflow is not active"),
+            Self::WouldBlock(err) => fmt::Display::fmt(err, formatter),
+        }
+    }
+}
+
+impl error::Error for WorkflowTickError {}
 
 #[derive(Debug)]
 struct PendingChannel {
@@ -298,7 +328,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
             workflow.name_in_module = workflow.name_in_module
         )
     )]
-    async fn tick_workflow<'a>(
+    async fn tick_workflow_in_transaction<'a>(
         &'a self,
         transaction: &mut S::Transaction<'a>,
         workflow: WorkflowRecord<ActiveWorkflowState>,
@@ -392,14 +422,29 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
             return Err(err);
         };
         let workflow_id = workflow.id;
+        let result = self.do_tick(transaction, workflow, waker_records).await;
 
+        Ok(TickResult {
+            workflow_id,
+            result,
+        })
+    }
+
+    async fn do_tick<'a>(
+        &'a self,
+        mut transaction: S::Transaction<'a>,
+        workflow: WorkflowRecord<ActiveWorkflowState>,
+        waker_records: Vec<WorkflowWakerRecord>,
+    ) -> Result<Receipt, ExecutionError> {
+        let workflow_id = workflow.id;
         let (waker_ids, wakers): (Vec<_>, Vec<_>) = waker_records
             .into_iter()
             .map(|record| (record.waker_id, record.waker))
             .unzip();
 
-        let (result, pending_channel) =
-            self.tick_workflow(&mut transaction, workflow, wakers).await;
+        let (result, pending_channel) = self
+            .tick_workflow_in_transaction(&mut transaction, workflow, wakers)
+            .await;
         let result = match result {
             Ok(receipt) => {
                 transaction.delete_wakers(workflow_id, &waker_ids).await;
@@ -417,6 +462,44 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
             }
         };
         transaction.commit().await;
+
+        result
+    }
+
+    /// Attempts to advance a specific workflow within this manager.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error in any of the following cases:
+    ///
+    /// - The workflow with the specified ID does not exist.
+    /// - The workflow is not currently active.
+    /// - The workflow cannot be advanced (see [`WouldBlock`])
+    pub async fn tick_workflow(
+        &self,
+        workflow_id: WorkflowId,
+    ) -> Result<TickResult, WorkflowTickError> {
+        let span = tracing::info_span!("tick_workflow", workflow_id);
+        let _entered = span.enter();
+        let mut transaction = self.storage.transaction().await;
+
+        let workflow = transaction
+            .workflow_for_update(workflow_id)
+            .await
+            .ok_or(WorkflowTickError::NotFound)?;
+        let workflow = workflow.into_active().ok_or(WorkflowTickError::NotActive)?;
+        let nearest_timer_expiration = workflow.state.persisted.common().nearest_timer();
+        let waker_records = transaction.wakers_for_workflow(workflow_id).await;
+
+        let result = self.do_tick(transaction, workflow, waker_records).await;
+        if let Ok(receipt) = &result {
+            if receipt.executions().is_empty() {
+                return Err(WouldBlock {
+                    nearest_timer_expiration,
+                }
+                .into());
+            }
+        }
 
         Ok(TickResult {
             workflow_id,

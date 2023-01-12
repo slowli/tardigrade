@@ -923,12 +923,14 @@ async fn completing_child_with_panic() {
     let tick_result = poll_fn_sx
         .send_all([allocate_channels, spawn_child])
         .async_scope(async {
-            manager.tick().await.unwrap().into_inner().unwrap();
-            manager.tick().await.unwrap()
+            let result = manager.tick_workflow(workflow_id).await.unwrap();
+            result.into_inner().unwrap();
+            manager.tick_workflow(workflow_id).await.unwrap()
         })
         .await;
     assert_eq!(tick_result.workflow_id(), workflow_id);
     tick_result.into_inner().unwrap();
+
     let child = manager.storage().workflow(CHILD_ID).await.unwrap();
     let child_events_id = channel_id(child.channel_ids(), "events");
 

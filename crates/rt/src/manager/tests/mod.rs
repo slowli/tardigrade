@@ -164,7 +164,8 @@ async fn test_initializing_workflow(manager: &LocalManager<()>, channel_ids: &Ch
     assert!(workflow_cache.inner.is_empty());
     drop(workflow_cache);
 
-    let receipt = manager.tick().await.unwrap().into_inner().unwrap();
+    let receipt = manager.tick_workflow(0).await.unwrap();
+    let receipt = receipt.into_inner().unwrap();
     assert_eq!(receipt.executions().len(), 2);
     let main_execution = &receipt.executions()[0];
     assert_matches!(main_execution.function, ExecutedFunction::Entry { .. });
