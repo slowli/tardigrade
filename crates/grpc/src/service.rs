@@ -2,16 +2,19 @@
 
 use async_stream::stream;
 use futures::{stream::BoxStream, StreamExt};
+use prost_types::Timestamp;
 use tokio::task;
 use tonic::{Request, Response, Status};
 
 use std::collections::HashMap;
 
+use crate::mapping::from_timestamp;
 use crate::proto::{
     channel_config, tardigrade_channels_server::TardigradeChannels, tardigrade_server::Tardigrade,
-    AbortWorkflowRequest, Channel, ChannelConfig, CloseChannelRequest, CreateChannelRequest,
-    CreateWorkflowRequest, DeployModuleRequest, GetChannelRequest, GetWorkflowRequest, HandleType,
-    Message, MessageRef, Module, PushMessagesRequest, StreamMessagesRequest, Workflow,
+    tardigrade_test_server::TardigradeTest, AbortWorkflowRequest, Channel, ChannelConfig,
+    CloseChannelRequest, CreateChannelRequest, CreateWorkflowRequest, DeployModuleRequest,
+    GetChannelRequest, GetWorkflowRequest, HandleType, Message, MessageRef, Module,
+    PushMessagesRequest, StreamMessagesRequest, TickResult, TickWorkflowRequest, Workflow,
 };
 use tardigrade::{
     handle::{Handle, HandlePathBuf},
@@ -22,11 +25,12 @@ use tardigrade::{
 use tardigrade_rt::{
     engine::WorkflowEngine,
     handle::AnyWorkflowHandle,
-    manager::{AsManager, DriveConfig, ManagerSpawner, WorkflowManager},
+    manager::{AsManager, DriveConfig, ManagerSpawner, WorkflowManager, WorkflowTickError},
     storage::{
         ReadModules, ReadWorkflows, Storage, StorageTransaction, StreamMessages, Streaming,
         TransactionAsStorage,
     },
+    test::MockScheduler,
     Schedule,
 };
 
@@ -389,5 +393,54 @@ where
             .await
             .map_err(|err| Status::failed_precondition(err.to_string()))?;
         Ok(Response::new(()))
+    }
+}
+
+#[tonic::async_trait]
+impl<M> TardigradeTest for ManagerWrapper<M>
+where
+    M: AsManager<Clock = MockScheduler> + 'static,
+    M::Storage: StreamMessages + Clone + 'static,
+{
+    #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
+    async fn set_time(&self, request: Request<Timestamp>) -> Result<Response<()>, Status> {
+        let timestamp = request.into_inner();
+        let timestamp = from_timestamp(timestamp)
+            .ok_or_else(|| Status::invalid_argument("provided timestamp is invalid"))?;
+
+        let manager = self.inner.as_manager();
+        manager.clock().set_now(timestamp);
+
+        Ok(Response::new(()))
+    }
+
+    #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
+    async fn tick_workflow(
+        &self,
+        request: Request<TickWorkflowRequest>,
+    ) -> Result<Response<TickResult>, Status> {
+        let workflow_id = request.get_ref().workflow_id;
+
+        let manager = self.inner.as_manager();
+        let result = if let Some(workflow_id) = workflow_id {
+            match manager.tick_workflow(workflow_id).await {
+                Ok(result) => Ok(result),
+                Err(WorkflowTickError::WouldBlock(err)) => Err(err),
+                Err(WorkflowTickError::NotFound) => {
+                    let message = format!("workflow {workflow_id} does not exist");
+                    return Err(Status::not_found(message));
+                }
+                Err(err) => {
+                    let message = format!("cannot tick workflow {workflow_id}: {err}");
+                    return Err(Status::failed_precondition(message));
+                }
+            }
+        } else {
+            manager.tick().await
+        };
+        let result = result.map_err(|would_block| (workflow_id, would_block));
+
+        let result = TickResult::from_data(result);
+        Ok(Response::new(result))
     }
 }

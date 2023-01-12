@@ -23,8 +23,6 @@ service Tardigrade {
   // TODO: repair workflow
 }
 
-// TODO: test extensions (scheduler; manual workflow running)
-
 // Request to deploy a new module.
 message DeployModuleRequest {
   // ID of the module. This string should be globally unique

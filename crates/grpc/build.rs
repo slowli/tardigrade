@@ -7,6 +7,7 @@ fn main() {
     let protos = &[
         "proto/tardigrade/service.proto",
         "proto/tardigrade/channels.proto",
+        "proto/tardigrade/test.proto",
     ];
 
     tonic_build::configure()

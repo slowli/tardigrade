@@ -174,16 +174,21 @@ message ErroredWorkflowState {
   // Persisted workflow information at the latest execution
   // *before* a WASM trap has occurred.
   PersistedWorkflow persisted = 1;
+  // Execution error.
+  ExecutionError error = 2;
+  // Channel messages that may have led to the execution error.
+  repeated MessageRef erroneous_messages = 3;
+}
 
+// Error executing a workflow.
+message ExecutionError {
   // Human-readable trap message.
-  string trap_message = 2;
+  string trap_message = 1;
   // Error message raised by the workflow using language-specific mechanisms
   // (e.g., panics in Rust).
-  optional string error_message = 3;
+  optional string error_message = 2;
   // Location of the error.
-  optional ErrorLocation error_location = 4;
-  // Channel messages that may have led to the execution error.
-  repeated MessageRef erroneous_messages = 5;
+  optional ErrorLocation error_location = 3;
 }
 
 // Information about a completed workflow.

@@ -1,5 +1,8 @@
 //! Mappings between runtime types and Protobuf messages.
 
+use chrono::{DateTime, TimeZone, Utc};
+use prost_types::Timestamp;
+
 use std::{collections::HashMap, task::Poll};
 
 use crate::proto::{
@@ -10,17 +13,34 @@ use tardigrade::{
     handle::Handle,
     interface::{ArgsSpec, HandleSpec, Interface},
     task::{ErrorContext, ErrorLocation, JoinError, TaskError},
-    ChannelId, Raw,
+    ChannelId, Raw, WorkflowId,
 };
 use tardigrade_rt::{
     engine::PersistedWorkflowData,
     handle::ReceivedMessage,
+    manager::{TickResult, WouldBlock},
+    receipt::ExecutionError,
     storage::{
         ActiveWorkflowState, ChannelRecord, CompletedWorkflowState, DefinitionRecord,
         ErroredWorkflowState, ModuleRecord, WorkflowRecord, WorkflowState,
     },
     Channels, ChildWorkflow, ReceiverState, SenderState, TaskState,
 };
+
+pub(crate) fn from_timestamp(mut ts: Timestamp) -> Option<DateTime<Utc>> {
+    ts.normalize();
+    let nanos = u32::try_from(ts.nanos).unwrap();
+    // ^ `unwrap()` is safe due to `Timestamp::normalize()`.
+    let timestamp = Utc.timestamp_opt(ts.seconds, nanos);
+    timestamp.single()
+}
+
+fn to_timestamp(ts: DateTime<Utc>) -> Timestamp {
+    Timestamp {
+        seconds: ts.timestamp(),
+        nanos: ts.timestamp_subsec_nanos() as i32,
+    }
+}
 
 impl Module {
     pub(crate) fn from_record(record: ModuleRecord) -> Self {
@@ -150,7 +170,6 @@ impl proto::ActiveWorkflowState {
 
 impl proto::ErroredWorkflowState {
     fn from_record(state: ErroredWorkflowState) -> Self {
-        let panic_info = state.error.panic_info();
         let erroneous_messages = state
             .erroneous_messages
             .into_iter()
@@ -164,12 +183,21 @@ impl proto::ErroredWorkflowState {
             persisted: Some(proto::PersistedWorkflow::from_data(
                 state.persisted.common(),
             )),
-            trap_message: state.error.trap().to_string(),
+            error: Some(proto::ExecutionError::from_data(&state.error)),
+            erroneous_messages,
+        }
+    }
+}
+
+impl proto::ExecutionError {
+    fn from_data(error: &ExecutionError) -> Self {
+        let panic_info = error.panic_info();
+        Self {
+            trap_message: error.trap().to_string(),
             error_message: panic_info.and_then(|panic| panic.message.clone()),
             error_location: panic_info
                 .and_then(|panic| panic.location.as_ref())
                 .map(proto::ErrorLocation::from_data),
-            erroneous_messages,
         }
     }
 }
@@ -315,6 +343,43 @@ impl proto::ErrorContext {
         Self {
             message: context.message().to_owned(),
             location: Some(proto::ErrorLocation::from_data(context.location())),
+        }
+    }
+}
+
+type ExtendedWouldBlock = (Option<WorkflowId>, WouldBlock);
+
+impl proto::TickResult {
+    pub(crate) fn from_data(result: Result<TickResult, ExtendedWouldBlock>) -> Self {
+        let (workflow_id, outcome) = match result {
+            Ok(result) => {
+                let outcome = match result.as_ref() {
+                    Ok(_) => proto::tick_result::Outcome::Ok(()),
+                    Err(err) => {
+                        let err = proto::ExecutionError::from_data(err);
+                        proto::tick_result::Outcome::Error(err)
+                    }
+                };
+                (Some(result.workflow_id()), outcome)
+            }
+            Err((id, would_block)) => {
+                let would_block = proto::WouldBlock::from_data(&would_block);
+                let outcome = proto::tick_result::Outcome::WouldBlock(would_block);
+                (id, outcome)
+            }
+        };
+
+        Self {
+            workflow_id,
+            outcome: Some(outcome),
+        }
+    }
+}
+
+impl proto::WouldBlock {
+    fn from_data(data: &WouldBlock) -> Self {
+        Self {
+            nearest_timer: data.nearest_timer_expiration().map(to_timestamp),
         }
     }
 }

@@ -12,21 +12,21 @@ repository = "https://github.com/slowli/tardigrade"
 
 [dependencies]
 async-stream = "0.3.3"
+chrono = "0.4.23"
 futures = "0.3.25"
 prost = "0.11.5"
+prost-types = "0.11.5"
 tokio = { version = "1.24.1", features = ["rt"] }
 tonic = { version = "0.8.3", default-features = false, features = ["codegen", "prost"] }
 tracing = { version = "0.1.37", features = ["attributes"] }
 
 tardigrade = { version = "0.1.0", path = "../.." }
-tardigrade-rt = { version = "0.1.0", path = "../rt", features = ["tokio"] }
+tardigrade-rt = { version = "0.1.0", path = "../rt", features = ["tokio", "test"] }
 
 [dev-dependencies]
 anyhow = "1.0.68"
 assert_matches = "1.5.0"
 tokio = { version = "1.24.1", features = ["rt", "macros"] }
-
-tardigrade-rt = { version = "0.1.0", path = "../rt", features = ["tokio", "test"] }
 
 [build-dependencies]
 tonic-build = "0.8.4"
