@@ -10,29 +10,35 @@ use std::{collections::HashMap, sync::Arc, task::Poll, time::Duration};
 use crate::{
     proto::{
         self, persisted_workflow::channel, tardigrade_channels_server::TardigradeChannels,
-        tardigrade_server::Tardigrade,
+        tardigrade_server::Tardigrade, tardigrade_test_server::TardigradeTest,
     },
-    ManagerWrapper,
+    ManagerService,
 };
-use tardigrade::interface::{ArgsSpec, InterfaceBuilder, ReceiverSpec, SenderSpec};
+use tardigrade::{
+    interface::{ArgsSpec, InterfaceBuilder, ReceiverSpec, SenderSpec},
+    TimerDefinition, TimerId, WorkflowId,
+};
 use tardigrade_rt::{
     engine::AsWorkflowData,
     manager::WorkflowManager,
     storage::{LocalStorage, Streaming},
-    test::engine::{MockAnswers, MockEngine, MockInstance},
-    TokioScheduler,
+    test::{
+        engine::{MockAnswers, MockEngine, MockInstance},
+        MockScheduler,
+    },
+    Schedule, TokioScheduler,
 };
 
-async fn create_service(engine: MockEngine) -> impl Tardigrade + TardigradeChannels {
+type TestManager<C> = WorkflowManager<MockEngine, C, Streaming<Arc<LocalStorage>>>;
+
+fn create_manager<C: Schedule>(engine: MockEngine, clock: C) -> TestManager<C> {
     let storage = Arc::new(LocalStorage::default());
     let (storage, routing_task) = Streaming::new(storage);
     task::spawn(routing_task);
 
-    let manager = WorkflowManager::builder(engine, storage)
-        .with_clock(TokioScheduler)
-        .build();
-
-    ManagerWrapper::new(manager)
+    WorkflowManager::builder(engine, storage)
+        .with_clock(clock)
+        .build()
 }
 
 fn mock_engine(poll_fns: MockAnswers) -> MockEngine {
@@ -80,7 +86,8 @@ fn complete_workflow(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
 #[tokio::test]
 async fn channel_management() {
     let (poll_fns, _) = MockAnswers::channel();
-    let service = create_service(mock_engine(poll_fns)).await;
+    let manager = create_manager(mock_engine(poll_fns), TokioScheduler);
+    let service = ManagerService::new(manager);
 
     let request = proto::CreateChannelRequest {};
     let channel = service.create_channel(Request::new(request)).await;
@@ -131,14 +138,15 @@ async fn channel_management() {
 #[tokio::test]
 async fn server_basics() {
     let (poll_fns, mut poll_fns_sx) = MockAnswers::channel();
-    let service = create_service(mock_engine(poll_fns)).await;
+    let manager = create_manager(mock_engine(poll_fns), TokioScheduler);
+    let service = ManagerService::new(manager);
 
     test_module_deployment(&service).await;
     test_workflow_creation_errors(&service).await;
 
     let workflow = poll_fns_sx
         .send(init_workflow)
-        .async_scope(test_workflow_creation(&service))
+        .async_scope(test_workflow_creation(&service, true))
         .await;
     poll_fns_sx
         .send(complete_workflow)
@@ -224,6 +232,7 @@ async fn test_workflow_creation_errors<S: Tardigrade + TardigradeChannels>(servi
 
 async fn test_workflow_creation<S: Tardigrade + TardigradeChannels>(
     service: &S,
+    has_driver: bool,
 ) -> proto::Workflow {
     let orders_config = proto::ChannelConfig {
         r#type: proto::HandleType::Receiver as _,
@@ -250,8 +259,10 @@ async fn test_workflow_creation<S: Tardigrade + TardigradeChannels>(
     assert_eq!(workflow.name_in_module, "Workflow");
     assert_eq!(workflow.parent_id, None);
 
-    // Wait until the workflow is initialized.
-    time::sleep(Duration::from_millis(100)).await;
+    if has_driver {
+        // Wait until the workflow is initialized.
+        time::sleep(Duration::from_millis(100)).await;
+    }
 
     let request = proto::GetWorkflowRequest { id: workflow.id };
     let workflow = service.get_workflow(Request::new(request)).await;
@@ -315,4 +326,130 @@ async fn test_workflow_completion<S: Tardigrade + TardigradeChannels>(
     let workflow = service.get_workflow(Request::new(request)).await;
     let workflow = workflow.unwrap().into_inner();
     assert_matches!(workflow.state, Some(proto::workflow::State::Completed(_)));
+}
+
+fn init_workflow_with_timer(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
+    let now = ctx.data().current_timestamp();
+    let timer_id = ctx.data_mut().create_timer(TimerDefinition {
+        expires_at: now + chrono::Duration::milliseconds(50),
+    });
+    assert_eq!(timer_id, 0);
+
+    let poll_result = ctx.data_mut().timer(timer_id).poll().into_inner(ctx)?;
+    assert!(poll_result.is_pending());
+    Ok(Poll::Pending)
+}
+
+fn resolve_timer(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
+    const TIMER_ID: TimerId = 0;
+
+    let poll_result = ctx.data_mut().timer(TIMER_ID).poll().into_inner(ctx)?;
+    assert!(poll_result.is_ready());
+    Ok(Poll::Ready(()))
+}
+
+async fn test_workflow_with_mock_scheduler(has_driver: bool) {
+    let (poll_fns, mut poll_fns_sx) = MockAnswers::channel();
+    let manager = create_manager(mock_engine(poll_fns), MockScheduler::default());
+    let service = if has_driver {
+        ManagerService::new(manager)
+    } else {
+        ManagerService::from(manager)
+    };
+
+    test_module_deployment(&service).await;
+
+    let workflow_id = poll_fns_sx
+        .send(init_workflow_with_timer)
+        .async_scope(async {
+            let workflow_id = test_workflow_creation(&service, has_driver).await.id;
+            if !has_driver {
+                tick_workflow_and_expect_success(&service, workflow_id).await;
+            }
+            workflow_id
+        })
+        .await;
+
+    let request = proto::TickWorkflowRequest {
+        workflow_id: Some(workflow_id + 1), // <<< non-existing ID
+    };
+    let result = service.tick_workflow(Request::new(request)).await;
+    let err = result.unwrap_err();
+    assert_eq!(err.code(), Code::NotFound);
+
+    let request = proto::TickWorkflowRequest {
+        workflow_id: Some(workflow_id),
+    };
+    let result = service.tick_workflow(Request::new(request)).await;
+    let result = result.unwrap().into_inner();
+    assert_eq!(result.workflow_id, Some(workflow_id));
+    let outcome = result.outcome.as_ref().unwrap();
+    let next_timer = match outcome {
+        proto::tick_result::Outcome::WouldBlock(would_block) => {
+            would_block.nearest_timer.clone().unwrap()
+        }
+        other => panic!("unexpected outcome: {other:?}"),
+    };
+
+    let workflow = poll_fns_sx
+        .send(resolve_timer)
+        .async_scope(async {
+            service.set_time(Request::new(next_timer)).await.unwrap();
+            if has_driver {
+                // Wait until the workflow is updated
+                time::sleep(Duration::from_millis(100)).await;
+            } else {
+                tick_workflow_and_expect_success(&service, workflow_id).await;
+            }
+
+            let request = proto::GetWorkflowRequest { id: workflow_id };
+            service.get_workflow(Request::new(request)).await
+        })
+        .await;
+    let workflow = workflow.unwrap().into_inner();
+    assert_matches!(workflow.state, Some(proto::workflow::State::Completed(_)));
+
+    let req = proto::TickWorkflowRequest {
+        workflow_id: Some(workflow_id),
+    };
+    let result = service.tick_workflow(Request::new(req)).await;
+    let err = result.unwrap_err();
+    assert_eq!(err.code(), Code::FailedPrecondition);
+    assert!(
+        err.message().contains("cannot tick workflow"),
+        "{}",
+        err.message()
+    );
+
+    let req = proto::TickWorkflowRequest { workflow_id: None };
+    let result = service.tick_workflow(Request::new(req)).await;
+    let result = result.unwrap().into_inner();
+
+    match result.outcome {
+        Some(proto::tick_result::Outcome::WouldBlock(would_block)) => {
+            assert_eq!(would_block.nearest_timer, None);
+        }
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+}
+
+async fn tick_workflow_and_expect_success<S: TardigradeTest>(service: &S, workflow_id: WorkflowId) {
+    let req = proto::TickWorkflowRequest {
+        workflow_id: Some(workflow_id),
+    };
+    let result = service.tick_workflow(Request::new(req)).await;
+    let result = result.unwrap().into_inner();
+
+    assert_eq!(result.workflow_id, Some(workflow_id));
+    assert_matches!(result.outcome, Some(proto::tick_result::Outcome::Ok(_)));
+}
+
+#[tokio::test]
+async fn workflow_with_mock_scheduler() {
+    test_workflow_with_mock_scheduler(false).await;
+}
+
+#[tokio::test]
+async fn workflow_with_mock_scheduler_and_driver() {
+    test_workflow_with_mock_scheduler(true).await;
 }

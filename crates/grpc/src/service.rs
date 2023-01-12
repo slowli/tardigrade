@@ -43,16 +43,18 @@ type TxManager<'a, M> = WorkflowManager<
 >;
 
 #[derive(Debug, Clone)]
-pub struct ManagerWrapper<M> {
+pub struct ManagerService<M> {
     inner: M,
+    has_driver: bool,
 }
 
-impl<S, M: AsManager<Storage = Streaming<S>>> ManagerWrapper<M>
+impl<S, M: AsManager<Storage = Streaming<S>>> ManagerService<M>
 where
     S: Storage + Clone + 'static,
     M::Clock: Schedule,
 {
-    /// Creates a new wrapper around the provided `manager`.
+    /// Creates a new wrapper around the provided `manager`. Drives the manager in the background
+    /// task using [`WorkflowManager::drive()`].
     pub fn new(mut manager: M) -> Self {
         let storage = manager.as_manager_mut().storage_mut();
         let mut commits_rx = storage.stream_commits();
@@ -65,11 +67,28 @@ where
             });
         }
 
-        Self { inner: manager }
+        Self {
+            inner: manager,
+            has_driver: true,
+        }
     }
 }
 
-impl<M: AsManager> ManagerWrapper<M>
+/// Wraps the specified manager. Unlike [`Self::new()`], does not start any background tasks.
+impl<S, M: AsManager<Storage = Streaming<S>>> From<M> for ManagerService<M>
+where
+    S: Storage + Clone + 'static,
+    M::Clock: Schedule,
+{
+    fn from(manager: M) -> Self {
+        Self {
+            inner: manager,
+            has_driver: false,
+        }
+    }
+}
+
+impl<M: AsManager> ManagerService<M>
 where
     M::Storage: StreamMessages + Clone + 'static,
 {
@@ -175,7 +194,7 @@ where
 }
 
 #[tonic::async_trait]
-impl<M> Tardigrade for ManagerWrapper<M>
+impl<M> Tardigrade for ManagerService<M>
 where
     M: AsManager + 'static,
     M::Storage: StreamMessages + Clone + 'static,
@@ -265,7 +284,7 @@ where
 }
 
 #[tonic::async_trait]
-impl<M> TardigradeChannels for ManagerWrapper<M>
+impl<M> TardigradeChannels for ManagerService<M>
 where
     M: AsManager + 'static,
     M::Storage: StreamMessages + Clone + 'static,
@@ -397,7 +416,7 @@ where
 }
 
 #[tonic::async_trait]
-impl<M> TardigradeTest for ManagerWrapper<M>
+impl<M> TardigradeTest for ManagerService<M>
 where
     M: AsManager<Clock = MockScheduler> + 'static,
     M::Storage: StreamMessages + Clone + 'static,
@@ -410,6 +429,9 @@ where
 
         let manager = self.inner.as_manager();
         manager.clock().set_now(timestamp);
+        if !self.has_driver {
+            manager.set_current_time(timestamp).await;
+        }
 
         Ok(Response::new(()))
     }
