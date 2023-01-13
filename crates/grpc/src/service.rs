@@ -10,7 +10,8 @@ use std::collections::HashMap;
 
 use crate::mapping::from_timestamp;
 use crate::proto::{
-    channel_config, tardigrade_channels_server::TardigradeChannels, tardigrade_server::Tardigrade,
+    channel_config, create_workflow_request, push_messages_request::pushed,
+    tardigrade_channels_server::TardigradeChannels, tardigrade_server::Tardigrade,
     tardigrade_test_server::TardigradeTest, AbortWorkflowRequest, Channel, ChannelConfig,
     CloseChannelRequest, CreateChannelRequest, CreateWorkflowRequest, DeployModuleRequest,
     GetChannelRequest, GetMessageRequest, GetWorkflowRequest, HandleType, Message, MessageCodec,
@@ -171,6 +172,12 @@ where
         request: Request<CreateWorkflowRequest>,
     ) -> Result<WorkflowId, Status> {
         let request = request.into_inner();
+        let args = match request.args {
+            None => return Err(Status::invalid_argument("arguments are not specified")),
+            Some(create_workflow_request::Args::RawArgs(bytes)) => bytes,
+            Some(create_workflow_request::Args::StrArgs(string)) => string.into_bytes(),
+        };
+
         let definition_id = format!("{}::{}", request.module_id, request.name_in_module);
         let mut manager = self.inner.as_manager().clone();
         let tx_manager = manager.in_transaction().await;
@@ -183,7 +190,7 @@ where
         })?;
 
         let handles = Self::create_handles(&spawner, &request.channels).await?;
-        let workflow_id = builder.build(request.args, handles).await;
+        let workflow_id = builder.build(args, handles).await;
         let workflow_id = workflow_id.map_err(|err| Status::invalid_argument(err.to_string()))?;
 
         let Some(transaction) = tx_manager.into_storage().into_inner() else {
@@ -464,10 +471,20 @@ where
         let sender = sender
             .ok_or_else(|| Status::not_found(format!("channel {channel_id} does not exist")))?;
 
+        let messages: Result<Vec<_>, _> = request
+            .messages
+            .into_iter()
+            .map(|message| match message.payload {
+                None => Err(Status::invalid_argument("no message payload specified")),
+                Some(pushed::Payload::Raw(bytes)) => Ok(bytes),
+                Some(pushed::Payload::Str(string)) => Ok(string.into_bytes()),
+            })
+            .collect();
+
         sender
-            .send_all(request.payloads)
+            .send_all(messages?)
             .await
-            .map_err(|err| Status::failed_precondition(err.to_string()))?;
+            .map_err(|err| Status::aborted(err.to_string()))?;
         Ok(Response::new(()))
     }
 }

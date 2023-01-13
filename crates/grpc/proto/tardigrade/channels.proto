@@ -87,8 +87,19 @@ message StreamMessagesRequest {
 
 // Request to push messages to a channel.
 message PushMessagesRequest {
+  // Single message pushed into the channel.
+  message Pushed {
+    // Message payload.
+    oneof payload {
+      // Raw payload bytes.
+      bytes raw = 1;
+      // Payload specified as a UTF-8 string (e.g., for the JSON codec).
+      string str = 2;
+    }
+  }
+
   // Channel ID to push the message into.
   uint64 channel_id = 1;
-  // Message payloads.
-  repeated bytes payloads = 2;
+  // Messages to push. All specified messages are pushed atomically.
+  repeated Pushed messages = 2;
 }

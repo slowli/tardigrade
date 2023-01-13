@@ -9,8 +9,12 @@ use std::{collections::HashMap, sync::Arc, task::Poll, time::Duration};
 
 use crate::{
     proto::{
-        self, persisted_workflow::channel, tardigrade_channels_server::TardigradeChannels,
-        tardigrade_server::Tardigrade, tardigrade_test_server::TardigradeTest,
+        self, create_workflow_request,
+        persisted_workflow::channel,
+        push_messages_request::{pushed, Pushed},
+        tardigrade_channels_server::TardigradeChannels,
+        tardigrade_server::Tardigrade,
+        tardigrade_test_server::TardigradeTest,
     },
     ManagerService,
 };
@@ -114,7 +118,14 @@ async fn channel_management() {
 
     let request = proto::PushMessagesRequest {
         channel_id: channel.id,
-        payloads: vec![b"test".to_vec(), b"other".to_vec()],
+        messages: vec![
+            Pushed {
+                payload: Some(pushed::Payload::Str("test".to_owned())),
+            },
+            Pushed {
+                payload: Some(pushed::Payload::Str("other".to_owned())),
+            },
+        ],
     };
     service.push_messages(Request::new(request)).await.unwrap();
 
@@ -204,7 +215,7 @@ async fn test_workflow_creation_errors<S: Tardigrade + TardigradeChannels>(servi
     let request = proto::CreateWorkflowRequest {
         module_id: "bogus".to_owned(), // <<< invalid: module with this ID is not deployed
         name_in_module: "Workflow".to_owned(),
-        args: vec![],
+        args: Some(create_workflow_request::Args::RawArgs(vec![])),
         channels: HashMap::new(),
     };
     let err = service
@@ -221,7 +232,7 @@ async fn test_workflow_creation_errors<S: Tardigrade + TardigradeChannels>(servi
     let request = proto::CreateWorkflowRequest {
         module_id: "test".to_owned(),
         name_in_module: "Bogus".to_owned(), // <<< invalid: no workflow with this name in module
-        args: vec![],
+        args: Some(create_workflow_request::Args::RawArgs(vec![])),
         channels: HashMap::new(),
     };
     let err = service
@@ -238,7 +249,7 @@ async fn test_workflow_creation_errors<S: Tardigrade + TardigradeChannels>(servi
     let request = proto::CreateWorkflowRequest {
         module_id: "test".to_owned(),
         name_in_module: "Workflow".to_owned(),
-        args: vec![],
+        args: Some(create_workflow_request::Args::RawArgs(vec![])),
         channels: HashMap::new(), // <<< invalid: handles are missing
     };
     let err = service
@@ -265,7 +276,7 @@ async fn test_workflow_creation<S: Tardigrade + TardigradeChannels>(
     let request = proto::CreateWorkflowRequest {
         module_id: "test".to_owned(),
         name_in_module: "Workflow".to_owned(),
-        args: vec![],
+        args: Some(create_workflow_request::Args::StrArgs(String::new())),
         channels: HashMap::from_iter([
             ("orders".to_owned(), orders_config),
             ("events".to_owned(), events_config),
@@ -329,7 +340,9 @@ async fn test_workflow_completion<S: Tardigrade + TardigradeChannels>(
 
     let request = proto::PushMessagesRequest {
         channel_id: orders_id,
-        payloads: vec![b"order #0".to_vec()],
+        messages: vec![Pushed {
+            payload: Some(pushed::Payload::Raw(b"order #0".to_vec())),
+        }],
     };
     service.push_messages(Request::new(request)).await.unwrap();
 

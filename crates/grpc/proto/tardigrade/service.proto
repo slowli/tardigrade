@@ -44,12 +44,18 @@ message CreateWorkflowRequest {
   // ID of the definition within the module.
   string name_in_module = 2;
 
-  // Argument supplied to the workflow. The serialization format
+  // Arguments supplied to the workflow. The serialization format
   // is defined by the workflow (e.g., JSON).
-  bytes args = 3;
+  oneof args {
+    // Arguments specified as raw bytes.
+    bytes raw_args = 3;
+    // Arguments specified as a UTF-8 string.
+    string str_args = 4;
+  }
+
   // Configuration of the channels supplied to the workflow.
   // Must correspond to the workflow interface.
-  map<string, ChannelConfig> channels = 4;
+  map<string, ChannelConfig> channels = 5;
 }
 
 // Configuration of a channel handle in `CreateWorkflowRequest`.
