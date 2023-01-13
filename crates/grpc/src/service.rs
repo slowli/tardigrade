@@ -42,6 +42,7 @@ type TxManager<'a, M> = WorkflowManager<
     TxStorage<'a, <M as AsManager>::Storage>,
 >;
 
+/// gRPC service wrapper for the [Tardigrade runtime](WorkflowManager).
 #[derive(Debug, Clone)]
 pub struct ManagerService<M> {
     inner: M,
@@ -253,6 +254,36 @@ where
     }
 
     #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
+    async fn tick_workflow(
+        &self,
+        request: Request<TickWorkflowRequest>,
+    ) -> Result<Response<TickResult>, Status> {
+        let workflow_id = request.get_ref().workflow_id;
+
+        let manager = self.inner.as_manager();
+        let result = if let Some(workflow_id) = workflow_id {
+            match manager.tick_workflow(workflow_id).await {
+                Ok(result) => Ok(result),
+                Err(WorkflowTickError::WouldBlock(err)) => Err(err),
+                Err(WorkflowTickError::NotFound) => {
+                    let message = format!("workflow {workflow_id} does not exist");
+                    return Err(Status::not_found(message));
+                }
+                Err(err) => {
+                    let message = format!("cannot tick workflow {workflow_id}: {err}");
+                    return Err(Status::failed_precondition(message));
+                }
+            }
+        } else {
+            manager.tick().await
+        };
+        let result = result.map_err(|would_block| (workflow_id, would_block));
+
+        let result = TickResult::from_data(result);
+        Ok(Response::new(result))
+    }
+
+    #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
     async fn abort_workflow(
         &self,
         request: Request<AbortWorkflowRequest>,
@@ -358,7 +389,8 @@ where
     #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
     async fn get_message(&self, request: Request<MessageRef>) -> Result<Response<Message>, Status> {
         let channel_id = request.get_ref().channel_id;
-        let message_idx = request.get_ref().index as usize;
+        let message_idx = usize::try_from(request.get_ref().index)
+            .map_err(|_| Status::invalid_argument("message index is too large"))?;
 
         let manager = self.inner.as_manager();
         let receiver = manager.storage().receiver(channel_id).await;
@@ -380,7 +412,8 @@ where
         request: Request<StreamMessagesRequest>,
     ) -> Result<Response<Self::StreamMessagesStream>, Status> {
         let channel_id = request.get_ref().id;
-        let start_index = request.get_ref().start_index as usize;
+        let start_index = usize::try_from(request.get_ref().start_index)
+            .map_err(|_| Status::invalid_argument("message index is too large"))?;
 
         let manager = self.inner.as_manager();
         let receiver = manager.storage().receiver(channel_id).await;
@@ -434,35 +467,5 @@ where
         }
 
         Ok(Response::new(()))
-    }
-
-    #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
-    async fn tick_workflow(
-        &self,
-        request: Request<TickWorkflowRequest>,
-    ) -> Result<Response<TickResult>, Status> {
-        let workflow_id = request.get_ref().workflow_id;
-
-        let manager = self.inner.as_manager();
-        let result = if let Some(workflow_id) = workflow_id {
-            match manager.tick_workflow(workflow_id).await {
-                Ok(result) => Ok(result),
-                Err(WorkflowTickError::WouldBlock(err)) => Err(err),
-                Err(WorkflowTickError::NotFound) => {
-                    let message = format!("workflow {workflow_id} does not exist");
-                    return Err(Status::not_found(message));
-                }
-                Err(err) => {
-                    let message = format!("cannot tick workflow {workflow_id}: {err}");
-                    return Err(Status::failed_precondition(message));
-                }
-            }
-        } else {
-            manager.tick().await
-        };
-        let result = result.map_err(|would_block| (workflow_id, would_block));
-
-        let result = TickResult::from_data(result);
-        Ok(Response::new(result))
     }
 }

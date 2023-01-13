@@ -433,7 +433,7 @@ async fn test_workflow_with_mock_scheduler(has_driver: bool) {
     }
 }
 
-async fn tick_workflow_and_expect_success<S: TardigradeTest>(service: &S, workflow_id: WorkflowId) {
+async fn tick_workflow_and_expect_success<S: Tardigrade>(service: &S, workflow_id: WorkflowId) {
     let req = proto::TickWorkflowRequest {
         workflow_id: Some(workflow_id),
     };

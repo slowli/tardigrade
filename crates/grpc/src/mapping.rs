@@ -35,6 +35,7 @@ pub(crate) fn from_timestamp(mut ts: Timestamp) -> Option<DateTime<Utc>> {
     timestamp.single()
 }
 
+#[allow(clippy::cast_possible_wrap)] // safe due to how `timestamp_subsec_nanos()` works
 fn to_timestamp(ts: DateTime<Utc>) -> Timestamp {
     Timestamp {
         seconds: ts.timestamp(),
@@ -47,7 +48,7 @@ impl Module {
         let definitions = record
             .definitions
             .into_iter()
-            .map(|(name, def)| (name, WorkflowDefinition::from_record(def)));
+            .map(|(name, def)| (name, WorkflowDefinition::from_record(&def)));
 
         Self {
             id: record.id,
@@ -57,7 +58,7 @@ impl Module {
 }
 
 impl WorkflowDefinition {
-    pub(crate) fn from_record(record: DefinitionRecord) -> Self {
+    pub(crate) fn from_record(record: &DefinitionRecord) -> Self {
         Self {
             interface: Some(proto::Interface::from_data(&record.interface)),
         }
@@ -136,7 +137,7 @@ impl Workflow {
             parent_id: record.parent_id,
             module_id: record.module_id,
             name_in_module: record.name_in_module,
-            execution_count: record.execution_count as u32,
+            execution_count: record.execution_count as u64,
             state: Some(proto::workflow::State::from_record(record.state)),
         }
     }
@@ -146,7 +147,7 @@ impl proto::workflow::State {
     fn from_record(state: WorkflowState) -> Self {
         match state {
             WorkflowState::Active(state) => {
-                Self::Active(proto::ActiveWorkflowState::from_record(*state))
+                Self::Active(proto::ActiveWorkflowState::from_record(&state))
             }
             WorkflowState::Errored(state) => {
                 Self::Errored(proto::ErroredWorkflowState::from_record(state))
@@ -159,7 +160,7 @@ impl proto::workflow::State {
 }
 
 impl proto::ActiveWorkflowState {
-    fn from_record(state: ActiveWorkflowState) -> Self {
+    fn from_record(state: &ActiveWorkflowState) -> Self {
         Self {
             persisted: Some(proto::PersistedWorkflow::from_data(
                 state.persisted.common(),

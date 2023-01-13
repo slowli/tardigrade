@@ -5,6 +5,7 @@ syntax = "proto3";
 package tardigrade;
 
 import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
 import "tardigrade/types.proto";
 
 // Tardigrade runtime server interface.
@@ -18,6 +19,8 @@ service Tardigrade {
   rpc CreateWorkflow(CreateWorkflowRequest) returns (Workflow) {}
   // Gets information about the workflow with the specified ID.
   rpc GetWorkflow(GetWorkflowRequest) returns (Workflow) {}
+  // Ticks a specific workflow.
+  rpc TickWorkflow(TickWorkflowRequest) returns (TickResult) {}
   // Aborts workflow with the specified ID.
   rpc AbortWorkflow(AbortWorkflowRequest) returns (Workflow) {}
   // TODO: repair workflow
@@ -72,4 +75,34 @@ message GetWorkflowRequest {
 message AbortWorkflowRequest {
   // ID of the workflow to be aborted.
   uint64 id = 1;
+}
+
+// Request to tick a workflow.
+message TickWorkflowRequest {
+  // ID of the workflow to tick. If not specified, a workflow with pending events
+  // or messages will be ticked.
+  optional uint64 workflow_id = 1;
+}
+
+// Result of a workflow getting ticked.
+message TickResult {
+  // ID of the ticked workflow. Not present if requested to tick any workflow,
+  // and the outcome is `WouldBlock`.
+  optional uint64 workflow_id = 1;
+
+  oneof outcome {
+    // The workflow was executed successfully.
+    google.protobuf.Empty ok = 2; // TODO: add receipt?
+    // The workflow execution resulted in an error.
+    ExecutionError error = 3;
+    // The workflow cannot be advanced since it is blocked
+    // on an incoming message or a timer.
+    WouldBlock would_block = 4;
+  }
+}
+
+// Information about a blocked workflow.
+message WouldBlock {
+  // Nearest timer expiration.
+  optional google.protobuf.Timestamp nearest_timer = 1;
 }

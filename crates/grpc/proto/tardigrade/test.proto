@@ -12,37 +12,4 @@ import "tardigrade/types.proto";
 service TardigradeTest {
   // Sets the current time for the runtime.
   rpc SetTime(google.protobuf.Timestamp) returns (google.protobuf.Empty) {}
-
-  // Ticks a specific workflow.
-  rpc TickWorkflow(TickWorkflowRequest) returns (TickResult) {}
-}
-
-// Request to tick a workflow.
-message TickWorkflowRequest {
-  // ID of the workflow to tick. If not specified, a workflow with pending events
-  // or messages will be ticked.
-  optional uint64 workflow_id = 1;
-}
-
-// Result of a workflow getting ticked.
-message TickResult {
-  // ID of the ticked workflow. Not present if requested to tick any workflow,
-  // and the outcome is `WouldBlock`.
-  optional uint64 workflow_id = 1;
-
-  oneof outcome {
-    // The workflow was executed successfully.
-    google.protobuf.Empty ok = 2; // TODO: add receipt?
-    // The workflow execution resulted in an error.
-    ExecutionError error = 3;
-    // The workflow cannot be advanced since it is blocked
-    // on an incoming message or a timer.
-    WouldBlock would_block = 4;
-  }
-}
-
-// Information about a blocked workflow.
-message WouldBlock {
-  // Nearest timer expiration.
-  optional google.protobuf.Timestamp nearest_timer = 1;
 }
