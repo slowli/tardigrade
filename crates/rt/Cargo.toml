@@ -13,7 +13,7 @@ repository = "https://github.com/slowli/tardigrade"
 [dependencies]
 anyhow = "1.0.57"
 async-trait = "0.1.57"
-base64 = "0.13.0"
+base64 = "0.21.0"
 chrono = { version = "0.4.23", features = ["serde"] }
 flate2 = "1.0.24"
 futures = "0.3.21"
@@ -26,7 +26,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
 tracing = "0.1.37"
 tracing-tunnel = { version = "0.1.0", features = ["receiver"] }
-wasmtime = "3.0.0"
+wasmtime = "4.0.0"
 
 ## Standalone optional dependencies
 # Implements the scheduler trait based on `async-io` / `async-std` runtime.

@@ -117,6 +117,7 @@ impl<'a, S: 'a, T> Stream for RefStream<'a, S, T> {
 }
 
 pub(crate) mod serde_b64 {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     use serde::{
         de::{Error as DeError, Unexpected, Visitor},
         Deserializer, Serializer,
@@ -129,7 +130,7 @@ pub(crate) mod serde_b64 {
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         if serializer.is_human_readable() {
-            serializer.serialize_str(&base64::encode_config(value, base64::URL_SAFE_NO_PAD))
+            serializer.serialize_str(&URL_SAFE_NO_PAD.encode(value))
         } else {
             serializer.serialize_bytes(value.as_ref())
         }
@@ -150,7 +151,8 @@ pub(crate) mod serde_b64 {
             }
 
             fn visit_str<E: DeError>(self, value: &str) -> Result<Self::Value, E> {
-                base64::decode_config(value, base64::URL_SAFE_NO_PAD)
+                URL_SAFE_NO_PAD
+                    .decode(value)
                     .map_err(|_| E::invalid_type(Unexpected::Str(value), &self))
             }
 
