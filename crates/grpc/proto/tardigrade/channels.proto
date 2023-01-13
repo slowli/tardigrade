@@ -17,7 +17,7 @@ service TardigradeChannels {
   // TODO: truncate channel
 
   // Gets a specific message from the specified channel.
-  rpc GetMessage(MessageRef) returns (Message) {}
+  rpc GetMessage(GetMessageRequest) returns (Message) {}
   // Streams messages from the specified channel.
   rpc StreamMessages(StreamMessagesRequest) returns (stream Message) {}
   // Push one or more messages to the specified channel.
@@ -43,20 +43,46 @@ message CloseChannelRequest {
   HandleType half = 2;
 }
 
+// Message payload codec.
+enum MessageCodec {
+  // Do not decode messages.
+  MESSAGE_CODEC_UNSPECIFIED = 0;
+  // Assume message payloads are JSON.
+  MESSAGE_CODEC_JSON = 1;
+}
+
+// Request to get a message from a channel.
+message GetMessageRequest {
+  // Reference of the message.
+  MessageRef ref = 1;
+  // Codec to use when decoding the message.
+  MessageCodec codec = 2;
+}
+
 // Message stored in a channel.
 message Message {
   // Message coordinates: the ID of the owning channel, and the message index.
   MessageRef reference = 1;
   // Message payload.
-  bytes payload = 2;
+  oneof payload {
+    // Raw payload bytes.
+    bytes raw = 2;
+    // Decoded UTF-8 string.
+    string str = 3;
+  }
 }
 
 // Request to stream messages from a channel.
 message StreamMessagesRequest {
   // Channel ID to stream from.
-  uint64 id = 1;
+  uint64 channel_id = 1;
   // 0-based starting index for the streamed messages.
   uint64 start_index = 2;
+  // Codec to use when decoding messages.
+  MessageCodec codec = 3;
+  // Follow new messages from the channel? If false, messages will be streamed
+  // from a storage snapshot; thus, the stream should complete even if the channel is open.
+  bool follow = 4;
 }
 
 // Request to push messages to a channel.

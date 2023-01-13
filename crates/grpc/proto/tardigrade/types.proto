@@ -5,6 +5,7 @@ syntax = "proto3";
 package tardigrade;
 
 import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
 
 // Information about a deployed module.
 message Module {
@@ -38,11 +39,11 @@ message ArgsSpec {
 enum HandleType {
   // Unspecified type (present just to conform to Protobuf guidelines;
   // should not be used).
-  UNSPECIFIED = 0;
+  HANDLE_TYPE_UNSPECIFIED = 0;
   // Channel receiver.
-  RECEIVER = 1;
+  HANDLE_TYPE_RECEIVER = 1;
   // Channel sender.
-  SENDER = 2;
+  HANDLE_TYPE_SENDER = 2;
 }
 
 // Specification for a handle (channel sender or receiver).
@@ -124,6 +125,14 @@ message PersistedWorkflow {
     optional uint64 spawned_by = 4;
   }
 
+  // Information about a timer in the workflow.
+  message Timer {
+    // Expiration timestamp.
+    google.protobuf.Timestamp expires_at = 1;
+    // Timestamp when this timer was completed.
+    optional google.protobuf.Timestamp completed_at = 2;
+  }
+
   // Information about a child workflow as viewed by the parent.
   message Child {
     // Channel mapping for the child.
@@ -140,6 +149,8 @@ message PersistedWorkflow {
     bool is_closed = 1;
     // Number of received messages.
     uint64 received_message_count = 2;
+    // Is this receiver currently waiting for a message?
+    bool waits_for_message = 3;
   }
 
   // Information about a sender handle held by the workflow.
@@ -163,10 +174,12 @@ message PersistedWorkflow {
 
   // Tasks keyed by their ID (assigned by the workflow).
   map<uint64, Task> tasks = 1;
+  // Timers keyed by their ID (assigned by the workflow).
+  map<uint64, Timer> timers = 2;
   // Children of this workflow keyed by their workflow ID.
-  map<uint64, Child> child_workflows = 2;
+  map<uint64, Child> child_workflows = 3;
   // Channel mapping for the handles defined in the workflow interface.
-  map<string, Channel> channels = 3;
+  map<string, Channel> channels = 4;
 }
 
 // Information about an errored workflow.

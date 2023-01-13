@@ -13,8 +13,8 @@ use crate::proto::{
     channel_config, tardigrade_channels_server::TardigradeChannels, tardigrade_server::Tardigrade,
     tardigrade_test_server::TardigradeTest, AbortWorkflowRequest, Channel, ChannelConfig,
     CloseChannelRequest, CreateChannelRequest, CreateWorkflowRequest, DeployModuleRequest,
-    GetChannelRequest, GetWorkflowRequest, HandleType, Message, MessageRef, Module,
-    PushMessagesRequest, StreamMessagesRequest, TickResult, TickWorkflowRequest, Workflow,
+    GetChannelRequest, GetMessageRequest, GetWorkflowRequest, HandleType, Message, MessageCodec,
+    Module, PushMessagesRequest, StreamMessagesRequest, TickResult, TickWorkflowRequest, Workflow,
 };
 use tardigrade::{
     handle::{Handle, HandlePathBuf},
@@ -387,9 +387,19 @@ where
     }
 
     #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
-    async fn get_message(&self, request: Request<MessageRef>) -> Result<Response<Message>, Status> {
-        let channel_id = request.get_ref().channel_id;
-        let message_idx = usize::try_from(request.get_ref().index)
+    async fn get_message(
+        &self,
+        request: Request<GetMessageRequest>,
+    ) -> Result<Response<Message>, Status> {
+        let request = request.into_inner();
+        let codec = MessageCodec::from_i32(request.codec)
+            .ok_or_else(|| Status::invalid_argument("invalid message codec specified"))?;
+
+        let reference = request
+            .r#ref
+            .ok_or_else(|| Status::invalid_argument("message reference is not specified"))?;
+        let channel_id = reference.channel_id;
+        let message_idx = usize::try_from(reference.index)
             .map_err(|_| Status::invalid_argument("message index is too large"))?;
 
         let manager = self.inner.as_manager();
@@ -400,7 +410,7 @@ where
 
         let message = receiver.receive_message(message_idx).await;
         let message = message.map_err(|err| Status::not_found(err.to_string()))?;
-        let message = Message::from_data(channel_id, message);
+        let message = Message::try_from_data(channel_id, message, codec)?;
         Ok(Response::new(message))
     }
 
@@ -411,8 +421,11 @@ where
         &self,
         request: Request<StreamMessagesRequest>,
     ) -> Result<Response<Self::StreamMessagesStream>, Status> {
-        let channel_id = request.get_ref().id;
-        let start_index = usize::try_from(request.get_ref().start_index)
+        let request = request.get_ref();
+        let codec = MessageCodec::from_i32(request.codec)
+            .ok_or_else(|| Status::invalid_argument("invalid message codec specified"))?;
+        let channel_id = request.channel_id;
+        let start_index = usize::try_from(request.start_index)
             .map_err(|_| Status::invalid_argument("message index is too large"))?;
 
         let manager = self.inner.as_manager();
@@ -420,10 +433,21 @@ where
         let receiver = receiver
             .ok_or_else(|| Status::not_found(format!("channel {channel_id} does not exist")))?;
 
-        let messages = receiver
-            .stream_messages(start_index..)
-            .map(move |message| Ok(Message::from_data(channel_id, message)))
-            .boxed();
+        let messages = if request.follow {
+            receiver
+                .stream_messages(start_index..)
+                .map(move |message| Message::try_from_data(channel_id, message, codec))
+                .boxed()
+        } else {
+            let receiver = receiver.into_owned();
+            let messages = stream! {
+                let messages = receiver.receive_messages(start_index..);
+                for await message in messages {
+                    yield Message::try_from_data(channel_id, message, codec);
+                }
+            };
+            messages.boxed()
+        };
         Ok(Response::new(messages))
     }
 

@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, TimeZone, Utc};
 use prost_types::Timestamp;
+use tonic::Status;
 
 use std::{collections::HashMap, task::Poll};
 
@@ -24,7 +25,7 @@ use tardigrade_rt::{
         ActiveWorkflowState, ChannelRecord, CompletedWorkflowState, DefinitionRecord,
         ErroredWorkflowState, ModuleRecord, WorkflowRecord, WorkflowState,
     },
-    Channels, ChildWorkflow, ReceiverState, SenderState, TaskState,
+    Channels, ChildWorkflow, ReceiverState, SenderState, TaskState, TimerState,
 };
 
 pub(crate) fn from_timestamp(mut ts: Timestamp) -> Option<DateTime<Utc>> {
@@ -119,14 +120,33 @@ impl Channel {
 }
 
 impl Message {
-    pub(crate) fn from_data(channel_id: ChannelId, message: ReceivedMessage<Vec<u8>, Raw>) -> Self {
-        Self {
+    pub(crate) fn try_from_data(
+        channel_id: ChannelId,
+        message: ReceivedMessage<Vec<u8>, Raw>,
+        codec: proto::MessageCodec,
+    ) -> Result<Self, Status> {
+        Ok(Self {
             reference: Some(MessageRef {
                 channel_id,
                 index: message.index() as u64,
             }),
-            payload: message.into_bytes(),
-        }
+            payload: Some(codec.decode(message.into_bytes())?),
+        })
+    }
+}
+
+impl proto::MessageCodec {
+    fn decode(self, payload: Vec<u8>) -> Result<proto::message::Payload, Status> {
+        Ok(match self {
+            Self::Unspecified => proto::message::Payload::Raw(payload),
+            Self::Json => {
+                let s = String::from_utf8(payload).map_err(|err| {
+                    let err = err.utf8_error();
+                    Status::aborted(format!("failed decoding message: {err}"))
+                })?;
+                proto::message::Payload::Str(s)
+            }
+        })
     }
 }
 
@@ -221,6 +241,10 @@ impl proto::PersistedWorkflow {
                 .tasks()
                 .map(|(id, state)| (id, persisted_workflow::Task::from_data(state)))
                 .collect(),
+            timers: persisted
+                .timers()
+                .map(|(id, state)| (id, persisted_workflow::Timer::from_data(state)))
+                .collect(),
             child_workflows: persisted
                 .child_workflows()
                 .map(|(id, state)| (id, persisted_workflow::Child::from_data(&state)))
@@ -249,6 +273,15 @@ impl persisted_workflow::Task {
                 _ => None,
             },
             spawned_by: state.spawned_by(),
+        }
+    }
+}
+
+impl persisted_workflow::Timer {
+    fn from_data(state: &TimerState) -> Self {
+        Self {
+            expires_at: Some(to_timestamp(state.definition().expires_at)),
+            completed_at: state.completed_at().map(to_timestamp),
         }
     }
 }
@@ -289,6 +322,7 @@ impl persisted_workflow::Receiver {
         Self {
             is_closed: state.is_closed(),
             received_message_count: state.received_message_count() as u64,
+            waits_for_message: state.waits_for_message(),
         }
     }
 }

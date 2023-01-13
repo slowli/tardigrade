@@ -79,7 +79,8 @@ impl ReceiverState {
         self.is_closed
     }
 
-    pub(crate) fn waits_for_message(&self) -> bool {
+    /// Is this receiver currently waiting for a message?
+    pub fn waits_for_message(&self) -> bool {
         !self.is_closed && !self.wakes_on_next_element.is_empty()
     }
 

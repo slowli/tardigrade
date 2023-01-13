@@ -83,6 +83,20 @@ fn complete_workflow(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     Ok(Poll::Ready(()))
 }
 
+fn assert_str_payload(message: &proto::Message, expected: &str) {
+    match &message.payload {
+        Some(proto::message::Payload::Str(s)) => assert_eq!(s, expected),
+        other => panic!("unexpected payload format: {other:?}"),
+    }
+}
+
+fn assert_raw_payload(message: &proto::Message, expected: &[u8]) {
+    match &message.payload {
+        Some(proto::message::Payload::Raw(bytes)) => assert_eq!(bytes, expected),
+        other => panic!("unexpected payload format: {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn channel_management() {
     let (poll_fns, _) = MockAnswers::channel();
@@ -104,14 +118,17 @@ async fn channel_management() {
     };
     service.push_messages(Request::new(request)).await.unwrap();
 
-    let request = proto::MessageRef {
-        channel_id: channel.id,
-        index: 0,
+    let request = proto::GetMessageRequest {
+        r#ref: Some(proto::MessageRef {
+            channel_id: channel.id,
+            index: 0,
+        }),
+        codec: proto::MessageCodec::Json.into(),
     };
     let message = service.get_message(Request::new(request)).await;
     let message = message.unwrap().into_inner();
 
-    assert_eq!(message.payload, b"test");
+    assert_str_payload(&message, "test");
 
     let request = proto::CloseChannelRequest {
         id: channel.id,
@@ -123,16 +140,18 @@ async fn channel_management() {
     assert!(channel.is_closed);
 
     let request = proto::StreamMessagesRequest {
-        id: channel.id,
+        channel_id: channel.id,
         start_index: 0,
+        codec: proto::MessageCodec::Json.into(),
+        follow: true,
     };
     let messages = service.stream_messages(Request::new(request)).await;
     let messages = messages.unwrap().into_inner();
     let messages: Vec<_> = messages.try_collect().await.unwrap();
 
     assert_eq!(messages.len(), 2);
-    assert_eq!(messages[0].payload, b"test");
-    assert_eq!(messages[1].payload, b"other");
+    assert_str_payload(&messages[0], "test");
+    assert_str_payload(&messages[1], "other");
 }
 
 #[tokio::test]
@@ -297,8 +316,10 @@ async fn test_workflow_completion<S: Tardigrade + TardigradeChannels>(
     assert_eq!(events_info.received_messages, 0);
 
     let request = proto::StreamMessagesRequest {
-        id: events_id,
+        channel_id: events_id,
         start_index: 0,
+        codec: proto::MessageCodec::Unspecified.into(),
+        follow: true,
     };
     let events_rx = service.stream_messages(Request::new(request)).await;
     let events_rx = events_rx.unwrap().into_inner();
@@ -320,7 +341,7 @@ async fn test_workflow_completion<S: Tardigrade + TardigradeChannels>(
             index: 0,
         })
     );
-    assert_eq!(event.payload, b"event #0");
+    assert_raw_payload(&event, b"event #0");
 
     let request = proto::GetWorkflowRequest { id: workflow.id };
     let workflow = service.get_workflow(Request::new(request)).await;
