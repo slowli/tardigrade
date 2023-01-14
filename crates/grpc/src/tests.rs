@@ -9,12 +9,13 @@ use std::{collections::HashMap, sync::Arc, task::Poll, time::Duration};
 
 use crate::{
     proto::{
-        self, create_workflow_request,
+        self,
+        channels_service_server::ChannelsService,
+        create_workflow_request,
         persisted_workflow::channel,
         push_messages_request::{pushed, Pushed},
-        tardigrade_channels_server::TardigradeChannels,
-        tardigrade_server::Tardigrade,
-        tardigrade_test_server::TardigradeTest,
+        runtime_service_server::RuntimeService,
+        test_service_server::TestService,
     },
     ManagerService,
 };
@@ -184,7 +185,7 @@ async fn server_basics() {
         .await;
 }
 
-async fn test_module_deployment<S: Tardigrade + TardigradeChannels>(service: &S) {
+async fn test_module_deployment<S: RuntimeService>(service: &S) {
     let request = proto::DeployModuleRequest {
         id: "test".to_owned(),
         bytes: b"test".to_vec(),
@@ -211,7 +212,7 @@ async fn test_module_deployment<S: Tardigrade + TardigradeChannels>(service: &S)
     assert_eq!(modules[0].id, "test");
 }
 
-async fn test_workflow_creation_errors<S: Tardigrade + TardigradeChannels>(service: &S) {
+async fn test_workflow_creation_errors<S: RuntimeService>(service: &S) {
     let request = proto::CreateWorkflowRequest {
         module_id: "bogus".to_owned(), // <<< invalid: module with this ID is not deployed
         name_in_module: "Workflow".to_owned(),
@@ -260,7 +261,7 @@ async fn test_workflow_creation_errors<S: Tardigrade + TardigradeChannels>(servi
     assert!(err.message().contains("invalid shape"), "{}", err.message());
 }
 
-async fn test_workflow_creation<S: Tardigrade + TardigradeChannels>(
+async fn test_workflow_creation<S: RuntimeService>(
     service: &S,
     has_driver: bool,
 ) -> proto::Workflow {
@@ -299,7 +300,7 @@ async fn test_workflow_creation<S: Tardigrade + TardigradeChannels>(
     workflow.unwrap().into_inner()
 }
 
-async fn test_workflow_completion<S: Tardigrade + TardigradeChannels>(
+async fn test_workflow_completion<S: RuntimeService + ChannelsService>(
     service: &S,
     workflow: &proto::Workflow,
 ) {
@@ -467,7 +468,10 @@ async fn test_workflow_with_mock_scheduler(has_driver: bool) {
     }
 }
 
-async fn tick_workflow_and_expect_success<S: Tardigrade>(service: &S, workflow_id: WorkflowId) {
+async fn tick_workflow_and_expect_success<S>(service: &S, workflow_id: WorkflowId)
+where
+    S: RuntimeService,
+{
     let req = proto::TickWorkflowRequest {
         workflow_id: Some(workflow_id),
     };

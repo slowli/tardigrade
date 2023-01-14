@@ -10,9 +10,9 @@ use std::collections::HashMap;
 
 use crate::mapping::from_timestamp;
 use crate::proto::{
-    channel_config, create_workflow_request, push_messages_request::pushed,
-    tardigrade_channels_server::TardigradeChannels, tardigrade_server::Tardigrade,
-    tardigrade_test_server::TardigradeTest, AbortWorkflowRequest, Channel, ChannelConfig,
+    channel_config, channels_service_server::ChannelsService, create_workflow_request,
+    push_messages_request::pushed, runtime_service_server::RuntimeService,
+    test_service_server::TestService, AbortWorkflowRequest, Channel, ChannelConfig,
     CloseChannelRequest, CreateChannelRequest, CreateWorkflowRequest, DeployModuleRequest,
     GetChannelRequest, GetMessageRequest, GetWorkflowRequest, HandleType, Message, MessageCodec,
     Module, PushMessagesRequest, StreamMessagesRequest, TickResult, TickWorkflowRequest, Workflow,
@@ -202,7 +202,7 @@ where
 }
 
 #[tonic::async_trait]
-impl<M> Tardigrade for ManagerService<M>
+impl<M> RuntimeService for ManagerService<M>
 where
     M: AsManager + 'static,
     M::Storage: StreamMessages + Clone + 'static,
@@ -322,7 +322,7 @@ where
 }
 
 #[tonic::async_trait]
-impl<M> TardigradeChannels for ManagerService<M>
+impl<M> ChannelsService for ManagerService<M>
 where
     M: AsManager + 'static,
     M::Storage: StreamMessages + Clone + 'static,
@@ -490,7 +490,7 @@ where
 }
 
 #[tonic::async_trait]
-impl<M> TardigradeTest for ManagerService<M>
+impl<M> TestService for ManagerService<M>
 where
     M: AsManager<Clock = MockScheduler> + 'static,
     M::Storage: StreamMessages + Clone + 'static,

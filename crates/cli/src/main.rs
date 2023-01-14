@@ -24,7 +24,7 @@ use tracing_subscriber::{EnvFilter, FmtSubscriber};
 use std::{error, future::Future, io, net::SocketAddr, sync::Arc};
 
 use tardigrade_grpc::{
-    ManagerService, TardigradeChannelsServer, TardigradeServer, TardigradeTestServer,
+    ChannelsServiceServer, ManagerService, RuntimeServiceServer, TestServiceServer,
     SERVICE_DESCRIPTOR,
 };
 use tardigrade_rt::{
@@ -63,13 +63,13 @@ impl TracingOptions {
 
 type LocalStreamingStorage = Streaming<Arc<LocalStorage>>;
 type LocalService<C> = ManagerService<WorkflowManager<Wasmtime, C, LocalStreamingStorage>>;
-type LocalTestService = TardigradeTestServer<LocalService<MockScheduler>>;
+type LocalTestService = TestServiceServer<LocalService<MockScheduler>>;
 
 #[derive(Debug)]
 struct Services<C: Schedule> {
-    main_service: TardigradeServer<LocalService<C>>,
+    runtime_service: RuntimeServiceServer<LocalService<C>>,
     test_service: Option<LocalTestService>,
-    channels_service: TardigradeChannelsServer<LocalService<C>>,
+    channels_service: ChannelsServiceServer<LocalService<C>>,
 }
 
 impl<C: Schedule> Services<C> {
@@ -81,7 +81,7 @@ impl<C: Schedule> Services<C> {
 
         Server::builder()
             .trace_fn(Self::trace_request)
-            .add_service(self.main_service)
+            .add_service(self.runtime_service)
             .add_optional_service(self.test_service)
             .add_service(self.channels_service)
             .add_service(reflection)
@@ -161,12 +161,12 @@ impl Cli {
         } else {
             ManagerService::new(manager)
         };
-        let main_service = TardigradeServer::new(service.clone());
-        let channels_service = TardigradeChannelsServer::new(service.clone());
-        let test_service = map_service(service).map(TardigradeTestServer::new);
+        let runtime_service = RuntimeServiceServer::new(service.clone());
+        let channels_service = ChannelsServiceServer::new(service.clone());
+        let test_service = map_service(service).map(TestServiceServer::new);
 
         Services {
-            main_service,
+            runtime_service,
             test_service,
             channels_service,
         }

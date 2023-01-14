@@ -9,7 +9,7 @@ import "google/protobuf/timestamp.proto";
 import "tardigrade/types.proto";
 
 // Tardigrade runtime server interface.
-service Tardigrade {
+service RuntimeService {
   // Deploys a new module.
   rpc DeployModule(DeployModuleRequest) returns (Module) {}
   // Lists all deployed modules.

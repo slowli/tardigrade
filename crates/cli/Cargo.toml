@@ -24,7 +24,7 @@ tardigrade-rt = { version = "0.1.0", path = "../rt" }
 tardigrade-grpc = { version = "0.1.0", path = "../grpc" }
 
 [[bin]]
-name = "tardigrade"
+name = "tardigrade-grpc"
 path = "src/main.rs"
 
 [workspace]

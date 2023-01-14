@@ -31,8 +31,8 @@ mod proto {
 
 pub use crate::{
     proto::{
-        tardigrade_channels_server::TardigradeChannelsServer, tardigrade_server::TardigradeServer,
-        tardigrade_test_server::TardigradeTestServer,
+        channels_service_server::ChannelsServiceServer,
+        runtime_service_server::RuntimeServiceServer, test_service_server::TestServiceServer,
     },
     service::ManagerService,
 };

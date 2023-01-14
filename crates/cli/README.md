@@ -30,9 +30,9 @@ Install with
 
 ```shell
 cargo install --locked tardigrade-cli
-# This will install `term-transcript` executable, which can be checked
+# This will install `tardigrade-grpc` executable, which can be checked
 # as follows:
-tardigrade --help
+tardigrade-grpc --help
 ```
 
 <!-- TODO: reference Docker image once it's available -->
@@ -42,7 +42,7 @@ tardigrade --help
 The server can be launched with a command like
 
 ```shell
-tardigrade 127.0.0.1:9000
+tardigrade-grpc 127.0.0.1:9000
 ```
 
 where `127.0.0.1:9000` is a socket address to bind the server to.

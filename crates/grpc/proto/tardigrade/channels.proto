@@ -7,7 +7,7 @@ package tardigrade;
 import "google/protobuf/empty.proto";
 import "tardigrade/types.proto";
 
-service TardigradeChannels {
+service ChannelsService {
   // Creates a new channel.
   rpc CreateChannel(CreateChannelRequest) returns (Channel) {}
   // Gets information about the channel with the specified ID.
