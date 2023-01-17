@@ -25,7 +25,7 @@ use std::{error, future::Future, io, net::SocketAddr, sync::Arc};
 
 use tardigrade_grpc::{
     ChannelsServiceServer, ManagerService, RuntimeServiceServer, TestServiceServer,
-    SERVICE_DESCRIPTOR,
+    SERVICE_DESCRIPTOR, WithClockType,
 };
 use tardigrade_rt::{
     engine::Wasmtime,
@@ -144,7 +144,7 @@ struct Cli {
 }
 
 impl Cli {
-    fn create_services<C: Schedule>(
+    fn create_services<C: WithClockType>(
         &self,
         clock: C,
         map_service: impl FnOnce(LocalService<C>) -> Option<LocalService<MockScheduler>>,
@@ -156,15 +156,16 @@ impl Cli {
             .with_clock(clock)
             .build();
 
-        let service = if self.no_driver {
+        let mut service = if self.no_driver {
             ManagerService::from(manager)
         } else {
             ManagerService::new(manager)
         };
+        service.set_clock_type();
+
         let runtime_service = RuntimeServiceServer::new(service.clone());
         let channels_service = ChannelsServiceServer::new(service.clone());
         let test_service = map_service(service).map(TestServiceServer::new);
-
         Services {
             runtime_service,
             test_service,

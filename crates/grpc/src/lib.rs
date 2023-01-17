@@ -34,7 +34,7 @@ pub use crate::{
         channels_service_server::ChannelsServiceServer,
         runtime_service_server::RuntimeServiceServer, test_service_server::TestServiceServer,
     },
-    service::ManagerService,
+    service::{ManagerService, WithClockType},
 };
 
 /// Serialized file descriptor set for messages and services declared in this crate.

@@ -11,11 +11,12 @@ use std::collections::HashMap;
 use crate::mapping::from_timestamp;
 use crate::proto::{
     channel_config, channels_service_server::ChannelsService, create_workflow_request,
-    push_messages_request::pushed, runtime_service_server::RuntimeService,
+    push_messages_request::pushed, runtime_info::ClockType, runtime_service_server::RuntimeService,
     test_service_server::TestService, AbortWorkflowRequest, Channel, ChannelConfig,
     CloseChannelRequest, CreateChannelRequest, CreateWorkflowRequest, DeployModuleRequest,
     GetChannelRequest, GetMessageRequest, GetWorkflowRequest, HandleType, Message, MessageCodec,
-    Module, PushMessagesRequest, StreamMessagesRequest, TickResult, TickWorkflowRequest, Workflow,
+    Module, PushMessagesRequest, RuntimeInfo, StreamMessagesRequest, TickResult,
+    TickWorkflowRequest, Workflow,
 };
 use tardigrade::{
     handle::{Handle, HandlePathBuf},
@@ -32,7 +33,7 @@ use tardigrade_rt::{
         TransactionAsStorage,
     },
     test::MockScheduler,
-    Schedule,
+    Schedule, TokioScheduler,
 };
 
 type TxStorage<'a, S> = TransactionAsStorage<<S as Storage>::Transaction<'a>>;
@@ -43,11 +44,30 @@ type TxManager<'a, M> = WorkflowManager<
     TxStorage<'a, <M as AsManager>::Storage>,
 >;
 
+/// Scheduler that can be described.
+pub trait WithClockType: Schedule {
+    #[doc(hidden)] // implementation detail
+    fn clock_type() -> ClockType;
+}
+
+impl WithClockType for TokioScheduler {
+    fn clock_type() -> ClockType {
+        ClockType::System
+    }
+}
+
+impl WithClockType for MockScheduler {
+    fn clock_type() -> ClockType {
+        ClockType::Mock
+    }
+}
+
 /// gRPC service wrapper for the [Tardigrade runtime](WorkflowManager).
 #[derive(Debug, Clone)]
 pub struct ManagerService<M> {
     inner: M,
     has_driver: bool,
+    clock_type: ClockType,
 }
 
 impl<S, M: AsManager<Storage = Streaming<S>>> ManagerService<M>
@@ -72,7 +92,18 @@ where
         Self {
             inner: manager,
             has_driver: true,
+            clock_type: ClockType::Unspecified,
         }
+    }
+}
+
+impl<M: AsManager> ManagerService<M>
+where
+    M::Clock: WithClockType,
+{
+    /// Records the clock type used in the wrapped runtime.
+    pub fn set_clock_type(&mut self) {
+        self.clock_type = <M::Clock>::clock_type();
     }
 }
 
@@ -86,6 +117,7 @@ where
         Self {
             inner: manager,
             has_driver: false,
+            clock_type: ClockType::Unspecified,
         }
     }
 }
@@ -208,6 +240,15 @@ where
     M: AsManager + 'static,
     M::Storage: StreamMessages + Clone + 'static,
 {
+    #[tracing::instrument(skip_all, err)]
+    async fn get_info(&self, _request: Request<()>) -> Result<Response<RuntimeInfo>, Status> {
+        Ok(Response::new(RuntimeInfo {
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            has_driver: self.has_driver,
+            clock_type: self.clock_type.into(),
+        }))
+    }
+
     #[tracing::instrument(skip_all, err, fields(request.id = request.get_ref().id))]
     async fn deploy_module(
         &self,
