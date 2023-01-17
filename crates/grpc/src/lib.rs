@@ -26,7 +26,7 @@ mod tests;
 
 #[allow(clippy::pedantic)] // too may lints triggered
 mod proto {
-    tonic::include_proto!("tardigrade");
+    tonic::include_proto!("tardigrade.v0");
 }
 
 pub use crate::{

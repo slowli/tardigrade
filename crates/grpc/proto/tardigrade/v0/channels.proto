@@ -2,10 +2,10 @@
 
 syntax = "proto3";
 
-package tardigrade;
+package tardigrade.v0;
 
 import "google/protobuf/empty.proto";
-import "tardigrade/types.proto";
+import "tardigrade/v0/types.proto";
 
 service ChannelsService {
   // Creates a new channel.

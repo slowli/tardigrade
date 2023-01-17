@@ -2,11 +2,11 @@
 
 syntax = "proto3";
 
-package tardigrade;
+package tardigrade.v0;
 
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
-import "tardigrade/types.proto";
+import "tardigrade/v0/types.proto";
 
 // Tardigrade runtime server interface.
 service RuntimeService {
