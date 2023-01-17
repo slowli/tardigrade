@@ -8,7 +8,8 @@ on:
 
 env:
   msrv: 1.65.0
-  nightly: nightly-2022-09-22
+  nightly: nightly-2022-11-24
+  protoc: 21.12
   binaryen: version_110
 
 jobs:
@@ -24,6 +25,12 @@ jobs:
           toolchain: ${{ env.msrv }}
           override: true
           target: wasm32-unknown-unknown
+      - name: Install protoc
+        run: |
+          wget -q -O protoc.zip "https://github.com/protocolbuffers/protobuf/releases/download/v$protoc/protoc-$protoc-linux-x86_64.zip" && \
+          unzip -d protoc protoc.zip && \
+          sudo cp -r protoc/include/* /usr/local/include && \
+          sudo install protoc/bin/protoc /usr/local/bin
       - name: Install wasm-opt
         run: |
           wget -q -O binaryen.tar.gz "https://github.com/WebAssembly/binaryen/releases/download/$binaryen/binaryen-$binaryen-x86_64-linux.tar.gz" && \
@@ -37,7 +44,9 @@ jobs:
       - name: Cache cargo build
         uses: actions/cache@v3
         with:
-          path: target
+          path: |
+            target
+            crates/cli/target
           key: ${{ runner.os }}-msrv-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-msrv-cargo
 
@@ -59,6 +68,12 @@ jobs:
           command: test
           args: --workspace --all-features --doc
 
+      - name: Build CLI crate
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --manifest-path=crates/cli/Cargo.toml --all-features
+
   build:
     runs-on: ubuntu-latest
 
@@ -72,6 +87,12 @@ jobs:
           override: true
           target: wasm32-unknown-unknown
           components: rustfmt, clippy
+      - name: Install protoc
+        run: |
+          wget -q -O protoc.zip "https://github.com/protocolbuffers/protobuf/releases/download/v$protoc/protoc-$protoc-linux-x86_64.zip" && \
+          unzip -d protoc protoc.zip && \
+          sudo cp -r protoc/include/* /usr/local/include && \
+          sudo install protoc/bin/protoc /usr/local/bin
       - name: Install wasm-opt
         run: |
           wget -q -O binaryen.tar.gz "https://github.com/WebAssembly/binaryen/releases/download/$binaryen/binaryen-$binaryen-x86_64-linux.tar.gz" && \
@@ -85,7 +106,9 @@ jobs:
       - name: Cache cargo build
         uses: actions/cache@v3
         with:
-          path: target
+          path: |
+            target
+            crates/cli/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo
 
@@ -112,13 +135,24 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           name: "Clippy: runtime, no features"
           args: -p tardigrade-rt --lib --no-default-features -- -D warnings
+      - name: Clippy (CLI)
+        uses: actions-rs/clippy-check@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          name: "Clippy: CLI"
+          args: --manifest-path=crates/cli/Cargo.toml --all-features -- -D warnings
 
-      # Build the E2E crate first to speed up its testing.
+      # Build the E2E and CLI crates first to speed up its testing.
       - name: Build E2E test crate
         uses: actions-rs/cargo@v1
         with:
           command: build
           args: -p tardigrade-pizza --lib --target wasm32-unknown-unknown --profile wasm
+      - name: Build CLI crate
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --manifest-path=crates/cli/Cargo.toml --all-features
 
       - name: Run tests
         uses: actions-rs/cargo@v1
@@ -130,6 +164,8 @@ jobs:
         with:
           command: test
           args: --workspace --all-features --doc
+      - name: Run gRPC end-to-end tests
+        run: ./e2e-tests/pizza/tests/test-grpc.sh
 
   document:
     if: github.event_name == 'push'
@@ -147,6 +183,12 @@ jobs:
           toolchain: ${{ env.nightly }}
           profile: minimal
           override: true
+      - name: Install protoc
+        run: |
+          wget -q -O protoc.zip "https://github.com/protocolbuffers/protobuf/releases/download/v$protoc/protoc-$protoc-linux-x86_64.zip" && \
+          unzip -d protoc protoc.zip && \
+          sudo cp -r protoc/include/* /usr/local/include && \
+          sudo install protoc/bin/protoc /usr/local/bin
       - name: Generate lockfile
         uses: actions-rs/cargo@v1
         with:
@@ -156,7 +198,7 @@ jobs:
         uses: actions/cache@v3
         with:
           path: target
-          key: ${{ runner.os }}-document-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-document-cargo-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-document-cargo
 
       - name: Build docs
@@ -164,7 +206,8 @@ jobs:
           cargo clean --doc && \
           cargo rustdoc -p tardigrade-shared --all-features -- --cfg docsrs && \
           cargo rustdoc -p tardigrade --all-features -- --cfg docsrs && \
-          cargo rustdoc -p tardigrade-rt --all-features -- --cfg docsrs
+          cargo rustdoc -p tardigrade-rt --all-features -- --cfg docsrs && \
+          cargo rustdoc -p tardigrade-grpc --all-features -- --cfg docsrs
 
       - name: Deploy
         uses: JamesIves/github-pages-deploy-action@v4
