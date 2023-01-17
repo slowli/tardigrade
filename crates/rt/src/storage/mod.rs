@@ -226,7 +226,8 @@ pub trait ReadChannels {
 /// Allows modifying stored information about channels.
 #[async_trait]
 pub trait WriteChannels: ReadChannels {
-    /// Allocates a new unique ID for a channel.
+    /// Allocates a new unique ID for a channel. The allocated ID must be positive; 0th channel ID
+    /// is reserved for a closed channel.
     async fn allocate_channel_id(&mut self) -> ChannelId;
 
     /// Creates a new channel with the provided `state`. If the channel with the specified ID
@@ -262,7 +263,8 @@ pub trait ReadWorkflows {
 /// Allows modifying stored information about workflows.
 #[async_trait]
 pub trait WriteWorkflows: ReadWorkflows {
-    /// Allocates a new unique ID for a workflow.
+    /// Allocates a new unique ID for a workflow. The allocated ID must be positive; 0th ID
+    /// is reserved.
     async fn allocate_workflow_id(&mut self) -> WorkflowId;
     /// Inserts a new workflow into the storage.
     async fn insert_workflow(&mut self, record: WorkflowRecord);

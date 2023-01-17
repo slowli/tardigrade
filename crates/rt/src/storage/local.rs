@@ -184,7 +184,7 @@ impl Default for LocalStorage {
         Self {
             inner: Mutex::default(),
             next_channel_id: AtomicU64::new(1), // skip the closed channel
-            next_workflow_id: AtomicU64::new(0),
+            next_workflow_id: AtomicU64::new(1),
             next_waker_id: AtomicU64::new(0),
             truncate_messages: false,
         }

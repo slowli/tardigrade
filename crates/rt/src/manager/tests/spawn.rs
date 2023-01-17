@@ -18,7 +18,8 @@ use tardigrade::{
     task::JoinError,
 };
 
-const CHILD_ID: WorkflowId = 1;
+const PARENT_ID: WorkflowId = 1;
+const CHILD_ID: WorkflowId = 2;
 
 async fn wakers_for_workflow(
     manager: &LocalManager,
@@ -171,8 +172,6 @@ async fn send_message_from_child(
     traces_id: ChannelId,
     poll_fn_sx: &mut AnswersSender<MockPollFn>,
 ) {
-    let workflow_id = 0;
-
     // Emulate the child workflow putting a message to the `traces` channel.
     poll_fn_sx
         .send(|_| Ok(Poll::Pending))
@@ -199,7 +198,7 @@ async fn send_message_from_child(
     };
     let receipt = poll_fn_sx
         .send(receive_child_trace)
-        .async_scope(feed_message(manager, workflow_id, traces_id))
+        .async_scope(feed_message(manager, PARENT_ID, traces_id))
         .await
         .unwrap();
 
@@ -521,8 +520,7 @@ async fn test_child_resources_after_drop(
     mut poll_fn_sx: AnswersSender<MockPollFn>,
     complete_child: bool,
 ) {
-    let workflow_id = 0;
-    let mut workflow = manager.storage().workflow(workflow_id).await.unwrap();
+    let mut workflow = manager.storage().workflow(PARENT_ID).await.unwrap();
 
     let test_child_resources: MockPollFn = if complete_child {
         |ctx| {
@@ -538,7 +536,7 @@ async fn test_child_resources_after_drop(
     };
     let receipt = poll_fn_sx
         .send(test_child_resources)
-        .async_scope(tick_workflow(manager, workflow_id))
+        .async_scope(tick_workflow(manager, PARENT_ID))
         .await
         .unwrap();
 

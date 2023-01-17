@@ -155,16 +155,24 @@ async fn instantiating_workflow() {
 
     poll_fn_sx
         .send(initialize_task)
-        .async_scope(test_initializing_workflow(&manager, workflow.channel_ids()))
+        .async_scope(test_initializing_workflow(
+            &manager,
+            workflow.id(),
+            workflow.channel_ids(),
+        ))
         .await;
 }
 
-async fn test_initializing_workflow(manager: &LocalManager<()>, channel_ids: &ChannelIds) {
+async fn test_initializing_workflow(
+    manager: &LocalManager<()>,
+    workflow_id: WorkflowId,
+    channel_ids: &ChannelIds,
+) {
     let workflow_cache = manager.inner.cached_workflows.lock().await;
     assert!(workflow_cache.inner.is_empty());
     drop(workflow_cache);
 
-    let receipt = manager.tick_workflow(0).await.unwrap();
+    let receipt = manager.tick_workflow(workflow_id).await.unwrap();
     let receipt = receipt.into_inner().unwrap();
     assert_eq!(receipt.executions().len(), 2);
     let main_execution = &receipt.executions()[0];
