@@ -309,14 +309,15 @@ impl ModuleImports {
     const RT_MODULE: &'static str = "tardigrade_rt";
 
     pub fn validate_module(module: &Module) -> anyhow::Result<()> {
-        let rt_imports = module
-            .imports()
-            .filter(|import| import.module() == Self::RT_MODULE);
-
-        for import in rt_imports {
+        for import in module.imports() {
             let ty = import.ty();
             let fn_name = import.name();
-            Self::validate_import(&ty, fn_name)?;
+
+            match import.module() {
+                Self::RT_MODULE => Self::validate_import(&ty, fn_name)?,
+                TracingFunctions::MODULE_NAME => TracingFunctions::validate_import(&ty, fn_name)?,
+                other => bail!("import from unsupported module: `{other}`"),
+            }
         }
         Ok(())
     }
@@ -473,6 +474,21 @@ impl ExtendLinker for SpawnFunctions {
                 wrap1(&mut *store, Self::completion_error),
             ),
         ]
+    }
+}
+
+impl TracingFunctions {
+    fn validate_import(ty: &ExternType, fn_name: &str) -> anyhow::Result<()> {
+        match fn_name {
+            "send_trace" => ensure_func_ty::<(u32, u32), ()>(ty, fn_name),
+
+            other => {
+                bail!(
+                    "Unknown import from `{}` module: `{other}`",
+                    Self::MODULE_NAME
+                );
+            }
+        }
     }
 }
 
