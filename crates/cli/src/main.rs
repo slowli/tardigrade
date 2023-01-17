@@ -24,8 +24,8 @@ use tracing_subscriber::{EnvFilter, FmtSubscriber};
 use std::{error, future::Future, io, net::SocketAddr, sync::Arc};
 
 use tardigrade_grpc::{
-    ChannelsServiceServer, ManagerService, RuntimeServiceServer, TestServiceServer,
-    SERVICE_DESCRIPTOR, WithClockType,
+    ChannelsServiceServer, ManagerService, RuntimeServiceServer, TestServiceServer, WithClockType,
+    SERVICE_DESCRIPTOR,
 };
 use tardigrade_rt::{
     engine::Wasmtime,
