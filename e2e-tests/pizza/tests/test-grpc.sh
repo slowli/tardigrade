@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+
+# Script for testing the `PizzaDelivery` workflow in tandem with the
+# Tardigrade gRPC server. Requires Docker, `jq` and `wasm-opt` installed locally.
+
+set -e
+
+# Image tag for the `externref` processor CLI
+EXTERNREF_IMAGE_TAG=main
+# Port for the Tardigrade gRPC server to bind to
+GRPC_PORT=9000
+
+ROOT_DIR=$(dirname "$0")
+ROOT_DIR=$(realpath -L "$ROOT_DIR/../../..")
+WASM_TARGET_DIR="$ROOT_DIR/target/wasm32-unknown-unknown/wasm"
+CLI_DIR="$ROOT_DIR/crates/cli"
+CLI_TARGET_DIR="$CLI_DIR/target/debug"
+
+function build-module {
+  (
+    cd "$ROOT_DIR"
+    echo "Building WASM module..."
+    cargo build -p tardigrade-pizza --lib \
+      --target=wasm32-unknown-unknown \
+      --profile=wasm
+  )
+
+  if [[ ! -x "$WASM_TARGET_DIR/tardigrade_pizza.wasm" ]]; then
+    echo "Module tardigrade_pizza.wasm not found in expected location $WASM_TARGET_DIR"
+    exit 1
+  fi
+
+  echo "Running externref module processor..."
+  docker run --rm -i "ghcr.io/slowli/externref:$EXTERNREF_IMAGE_TAG" \
+    --drop-fn 'tardigrade_rt::resource::drop' - \
+    < "$WASM_TARGET_DIR/tardigrade_pizza.wasm" \
+    > "$WASM_TARGET_DIR/tardigrade_pizza.ref.wasm"
+
+  echo "Running wasm-opt module processor..."
+  wasm-opt -Os --enable-mutable-globals --enable-reference-types --strip-debug \
+    -o "$WASM_TARGET_DIR/tardigrade_pizza.ref.opt.wasm" \
+    "$WASM_TARGET_DIR/tardigrade_pizza.ref.wasm"
+}
+
+function build-grpc-server {
+  echo "Building gRPC server CLI app..."
+  cargo build --manifest-path="$CLI_DIR/Cargo.toml" --all-features
+
+  if [[ ! -x "$CLI_TARGET_DIR/tardigrade-grpc" ]]; then
+    echo "tardigrade-grpc binary not found in expected location $CLI_TARGET_DIR"
+    exit 1
+  fi
+}
+
+# Preliminary checks for third-party executables
+echo "Checking jq..."
+jq --version
+echo "Checking docker..."
+docker --version
+echo "Checking wasm-opt..."
+wasm-opt --version
+
+build-module
+build-grpc-server
+export PATH=$PATH:$CLI_TARGET_DIR
+
+echo "Killing gRPC server, if any..."
+killall -q tardigrade-grpc || echo "gRPC server was not running"
+echo "Starting gRPC server..."
+RUST_LOG=info,tardigrade_grpc=debug,tardigrade_rt=debug,tardigrade=debug \
+  tardigrade-grpc "127.0.0.1:$GRPC_PORT" &
+sleep 3 # wait for the server to start
+
+echo "Checking gRPC server..."
+docker run --rm fullstorydev/grpcurl:latest \
+  -plaintext "host.docker.internal:$GRPC_PORT" list \
+  | grep 'tardigrade.v0.RuntimeService'
+
+echo "Deploying pizza module..."
+MODULE_BYTES=$(base64 --wrap=0 "$WASM_TARGET_DIR/tardigrade_pizza.ref.opt.wasm")
+docker run -i --rm fullstorydev/grpcurl:latest \
+  -d @ -plaintext "host.docker.internal:$GRPC_PORT" \
+  tardigrade.v0.RuntimeService/DeployModule <<EOM
+{ "id": "pizza", "bytes": "$MODULE_BYTES" }
+EOM
+# ^ heredoc is necessary here, since argument would be too long
+
+echo "Listing modules..."
+docker run --rm fullstorydev/grpcurl:latest \
+  -plaintext "host.docker.internal:$GRPC_PORT" \
+  tardigrade.v0.RuntimeService/ListModules
+
+echo "Creating PizzaDelivery workflow..."
+INPUT='{
+  "module_id": "pizza",
+  "name_in_module": "PizzaDelivery",
+  "str_args": "{ \"oven_count\": 2, \"deliverer_count\": 1 }",
+  "channels": {
+    "orders": {
+      "type": "HANDLE_TYPE_RECEIVER",
+      "new": {}
+    },
+    "events": {
+      "type": "HANDLE_TYPE_SENDER",
+      "new": {}
+    }
+  }
+}'
+WORKFLOW=$(
+  docker run -i --rm fullstorydev/grpcurl:latest \
+    -d "$INPUT" -plaintext "host.docker.internal:$GRPC_PORT" \
+    tardigrade.v0.RuntimeService/CreateWorkflow
+)
+WORKFLOW_ID=$(echo "$WORKFLOW" | jq '.id')
+ORDERS_ID=$(echo "$WORKFLOW" | jq '.active.persisted.channels.orders.id')
+EVENTS_ID=$(echo "$WORKFLOW" | jq '.active.persisted.channels.events.id')
+
+echo "Writing order to channel..."
+INPUT='{
+  "channel_id": '"$ORDERS_ID"',
+  "messages": [
+    { "str": "{ \"kind\": \"Pepperoni\", \"delivery_distance\": 5 }" }
+  ]
+}'
+docker run -i --rm fullstorydev/grpcurl:latest \
+  -d "$INPUT" -plaintext "host.docker.internal:$GRPC_PORT" \
+  tardigrade.v0.ChannelsService/PushMessages
+
+echo "Closing orders channel..."
+CHANNEL_IS_CLOSED=$(
+  docker run -i --rm fullstorydev/grpcurl:latest \
+    -d '{ "id": '"$ORDERS_ID"', "half": "HANDLE_TYPE_SENDER" }' -plaintext "host.docker.internal:$GRPC_PORT" \
+    tardigrade.v0.ChannelsService/CloseChannel \
+  | jq '.isClosed'
+)
+if [[ ! "$CHANNEL_IS_CLOSED" == "true" ]]; then
+  echo "Orders channel $ORDERS_ID is unexpectedly not closed"
+  exit 1
+fi
+
+sleep 1 # Wait for the workflow to complete
+
+echo "Checking workflow completion..."
+WORKFLOW_IS_COMPLETED=$(
+  docker run -i --rm fullstorydev/grpcurl:latest \
+    -d '{ "id": '"$WORKFLOW_ID"' }' -plaintext "host.docker.internal:$GRPC_PORT" \
+    tardigrade.v0.RuntimeService/GetWorkflow \
+  | jq 'has("completed")'
+)
+if [[ ! "$WORKFLOW_IS_COMPLETED" == "true" ]]; then
+  echo "Workflow $WORKFLOW_ID is unexpectedly not completed"
+  exit 1
+fi
+
+echo "Checking events generated by workflow..."
+INPUT='{
+  "channel_id": '"$EVENTS_ID"',
+  "codec": "MESSAGE_CODEC_JSON"
+}'
+EVENT_TYPES=$(
+  docker run -i --rm fullstorydev/grpcurl:latest \
+    -d "$INPUT" -plaintext "host.docker.internal:$GRPC_PORT" \
+    tardigrade.v0.ChannelsService/StreamMessages \
+  | jq --slurp -r '[.[].str | fromjson | keys[0]] | join(",")'
+)
+if [[ ! "$EVENT_TYPES" == 'OrderTaken,Baked,StartedDelivering,Delivered' ]]; then
+  echo "Unexpected events generated by workflow: $EVENT_TYPES"
+  exit 1
+fi
+
+echo "Stopping server..."
+killall tardigrade-grpc

@@ -10,7 +10,7 @@
 This crate provides a gRPC server for the [Tardigrade runtime].
 It builds on top of [`tardigrade-grpc`] and supports the same set of functionality.
 The server also includes the gRPC reflection service (thus enabling the use
-of tools like [`grpcui`]) and the end-to-end tracing of gRPC requests.
+of tools like [`grpcurl`] or [`grpcui`]) and the end-to-end tracing of gRPC requests.
 
 The functionality supported by the server covers most of what
 the Tardigrade runtime is capable of:
@@ -51,11 +51,11 @@ Additional run options include:
 
 - `--mock`: Use a mock timer / scheduler instead of a real one.
   The time can be advanced manually by calling the `SetTime` endpoint
-  of the test gRPC service (`tardigrade.TardigradeTest`).
+  of the test gRPC service (`tardigrade.v0.TestService`).
 - `--no-driver`: Do not drive workflows to completion when timers expire
   or new inbound messages arrive. This option is mostly useful for testing
   together with `--mock`. Workflows can be driven manually by calling
-  the `TickWorkflow` endpoint of the main service (`tardigrade.Tardigrade`).
+  the `TickWorkflow` endpoint of the main service (`tardigrade.v0.RuntimeService`).
 
 Launch the CLI app with the `--help` option for more details about arguments.
 
@@ -71,4 +71,5 @@ shall be dual licensed as above, without any additional terms or conditions.
 <!-- TODO: replace with crates.io links before publishing -->
 [Tardigrade runtime]: ../rt
 [`tardigrade-grpc`]: ../grpc
+[`grpcurl`]: https://github.com/fullstorydev/grpcurl
 [`grpcui`]: https://github.com/fullstorydev/grpcui
