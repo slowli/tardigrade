@@ -20,7 +20,7 @@ use std::{
 
 use tardigrade::{
     handle::{ReceiverAt, SenderAt, WithIndexing},
-    Codec, Json, TimerId,
+    Codec, Json, TimerId, WorkflowId,
 };
 use tardigrade_rt::{
     manager::{DriveConfig, Termination, TickResult},
@@ -435,8 +435,9 @@ async fn spawn_cancellable_workflow() -> TestResult<CancellableWorkflow> {
 
 #[async_std::test]
 async fn launching_env_after_pause() -> TestResult {
-    let (_guard, tracing_storage) = enable_tracing_assertions();
+    const WORKFLOW_ID: WorkflowId = 1;
 
+    let (_guard, tracing_storage) = enable_tracing_assertions();
     let CancellableWorkflow {
         mut events_rx,
         manager,
@@ -460,7 +461,7 @@ async fn launching_env_after_pause() -> TestResult {
     let mut commits_rx = join_handle.await;
 
     // Restore the persisted workflow and launch it again.
-    let workflow = manager.storage().workflow(0).await.unwrap();
+    let workflow = manager.storage().workflow(WORKFLOW_ID).await.unwrap();
     let workflow = workflow.downcast::<PizzaDelivery>()?;
     let handle = workflow.handle().await;
     let orders_sx = handle.orders;
