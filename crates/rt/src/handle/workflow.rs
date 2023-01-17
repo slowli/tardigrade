@@ -57,7 +57,7 @@ use tardigrade::{
 /// let message: Vec<u8> = message.decode()?;
 ///
 /// // It is possible to access the underlying workflow state:
-/// let persisted = workflow.persisted();
+/// let persisted = workflow.persisted().common();
 /// println!("{:?}", persisted.tasks().collect::<Vec<_>>());
 /// let now = persisted.current_time();
 /// # Ok(())

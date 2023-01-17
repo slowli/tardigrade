@@ -91,7 +91,6 @@ impl Default for CachedTimer {
 /// // Assume we have a dynamically typed workflow:
 /// let manager: WorkflowManager<_, AsyncIoScheduler, StreamingStorage> = // ...
 /// #   manager;
-/// let manager = Arc::new(manager);
 /// let workflow = manager.storage().workflow(workflow_id).await.unwrap();
 /// // ...and a commits stream from the storage:
 /// let mut commits_rx: CommitStream = // ...

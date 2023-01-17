@@ -6,8 +6,9 @@
 //! among multiple tests. This can be performed as follows:
 //!
 //! ```no_run
+//! use async_std::task;
 //! use once_cell::sync::Lazy;
-//! use tardigrade_rt::{test::*, engine::{Wasmtime, WasmtimeModule}};
+//! use tardigrade_rt::{test::*, engine::{Wasmtime, WasmtimeModule, WorkflowEngine}};
 //!
 //! static MODULE: Lazy<WasmtimeModule> = Lazy::new(|| {
 //!     let module_bytes = ModuleCompiler::new(env!("CARGO_PKG_NAME"))
@@ -16,7 +17,8 @@
 //!         .set_wasm_opt(WasmOpt::default())
 //!         .compile();
 //!     let engine = Wasmtime::default();
-//!     engine.create_module(module_bytes).unwrap()
+//!     let task = engine.create_module(module_bytes.into());
+//!     task::block_on(task).unwrap()
 //! });
 //! // The module can then be used in tests
 //! ```
@@ -73,7 +75,6 @@ use tardigrade::test::MockScheduler as SchedulerBase;
 /// let manager = WorkflowManager::builder(Wasmtime::default(), storage)
 ///     .with_clock(scheduler.clone())
 ///     .build();
-/// let manager = Arc::new(manager); // to simplify handle management
 ///
 /// let inputs: Vec<u8> = // ...
 /// #   vec![];

@@ -1,9 +1,51 @@
 //! gRPC service wrapper for the Tardigrade runtime.
 //!
-//! The wrapper can be used as a building block for gRPC server in the cases when
+//! The wrapper can be used as a building block for gRPC server in the cases when [the CLI app]
+//! is not good enough (e.g., if custom authentication / authorization logic is required).
 //!
-//! Most of generated Protobuf types are not public. This is intentional;
-//! the API contract for the gRPC services is not stable yet.
+//! The generated Protobuf types are not public. This is intentional; the API contract
+//! for the gRPC services is not stable yet.
+//!
+//! [the CLI app]: https://crates.io/crates/tardigrade-cli
+//!
+//! # Examples
+//!
+//! ```
+//! use tokio::task;
+//! use tonic::transport::Server;
+//! # use std::{net::SocketAddr, sync::Arc};
+//!
+//! use tardigrade_rt::{
+//!     engine::Wasmtime, manager::WorkflowManager, TokioScheduler,
+//!     storage::{LocalStorage, Streaming},
+//! };
+//! use tardigrade_grpc::*;
+//!
+//! # async fn test_wrapper() -> anyhow::Result<()> {
+//! // Build a workflow manager
+//! let storage = Arc::new(LocalStorage::default());
+//! let (storage, routing_task) = Streaming::new(storage);
+//! task::spawn(routing_task);
+//! let manager = WorkflowManager::builder(Wasmtime::default(), storage)
+//!     .with_clock(TokioScheduler)
+//!     .build();
+//!
+//! // Create services based on the manager
+//! let service = ManagerService::new(manager);
+//! let runtime_service = RuntimeServiceServer::new(service.clone());
+//! let channels_service = ChannelsServiceServer::new(service);
+//!
+//! // Create gRPC server with the services
+//! let addr: SocketAddr = "[::]:9000".parse()?;
+//! Server::builder()
+//!     .add_service(runtime_service)
+//!     .add_service(channels_service)
+//!     // Add other services and/or configure the server...
+//!     .serve(addr)
+//!     .await?;
+//! # Ok(())
+//! # }
+//! ```
 
 // Documentation settings.
 #![cfg_attr(docsrs, feature(doc_cfg))]

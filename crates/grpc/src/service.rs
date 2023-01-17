@@ -63,6 +63,10 @@ impl WithClockType for MockScheduler {
 }
 
 /// gRPC service wrapper for the [Tardigrade runtime](WorkflowManager).
+///
+/// # Examples
+///
+/// See [crate-level docs](index.html#examples) for the examples of usage.
 #[derive(Debug, Clone)]
 pub struct ManagerService<M> {
     inner: M,

@@ -47,7 +47,7 @@
 //!
 //! ```
 //! use tardigrade_rt::{
-//!     engine::Wasmtime, manager::WorkflowManager, storage::LocalStorage,
+//!     engine::{Wasmtime, WorkflowEngine}, manager::WorkflowManager, storage::LocalStorage,
 //! };
 //! use tardigrade::spawn::CreateWorkflow;
 //!
@@ -55,7 +55,7 @@
 //! let module_bytes: Vec<u8> = // e.g., take from a file
 //! #   vec![];
 //! let engine = Wasmtime::default();
-//! let module = engine.create_module(module_bytes)?;
+//! let module = engine.create_module(module_bytes.into()).await?;
 //! // It is possible to inspect module definitions:
 //! for (workflow_name, interface) in module.interfaces() {
 //!     println!("{workflow_name}: {interface:?}");
