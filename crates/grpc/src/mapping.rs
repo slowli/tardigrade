@@ -17,7 +17,7 @@ use tardigrade::{
     ChannelId, Raw, WorkflowId,
 };
 use tardigrade_rt::{
-    engine::PersistedWorkflowData,
+    engine::{DefineWorkflow, PersistedWorkflowData, WorkflowModule},
     handle::ReceivedMessage,
     manager::{TickResult, WouldBlock},
     receipt::ExecutionError,
@@ -56,12 +56,29 @@ impl Module {
             definitions: definitions.collect(),
         }
     }
+
+    pub(crate) fn from_engine_module<M: WorkflowModule>(id: String, module: M) -> Self {
+        let definitions = module
+            .into_iter()
+            .map(|(name, def)| (name, WorkflowDefinition::from_engine_def(&def)));
+
+        Self {
+            id,
+            definitions: definitions.collect(),
+        }
+    }
 }
 
 impl WorkflowDefinition {
-    pub(crate) fn from_record(record: &DefinitionRecord) -> Self {
+    fn from_record(record: &DefinitionRecord) -> Self {
         Self {
             interface: Some(proto::Interface::from_data(&record.interface)),
+        }
+    }
+
+    fn from_engine_def<D: DefineWorkflow>(def: &D) -> Self {
+        Self {
+            interface: Some(proto::Interface::from_data(def.interface())),
         }
     }
 }

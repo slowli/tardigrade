@@ -191,7 +191,8 @@ where
 
         let handles = Self::create_handles(&spawner, &request.channels).await?;
         let workflow_id = builder.build(args, handles).await;
-        let workflow_id = workflow_id.map_err(|err| Status::invalid_argument(err.to_string()))?;
+        let workflow_id =
+            workflow_id.map_err(|err| Status::invalid_argument(format!("{err:#}")))?;
 
         let Some(transaction) = tx_manager.into_storage().into_inner() else {
             return Err(Status::internal("cannot commit transaction"));
@@ -218,9 +219,15 @@ where
             .engine()
             .create_module(request.bytes.into())
             .await
-            .map_err(|err| Status::invalid_argument(err.to_string()))?;
-        let module = manager.insert_module(&request.id, module).await;
-        Ok(Response::new(Module::from_record(module)))
+            .map_err(|err| Status::invalid_argument(format!("{err:#}")))?;
+
+        let module = if request.dry_run {
+            Module::from_engine_module(request.id, module)
+        } else {
+            let module = manager.insert_module(&request.id, module).await;
+            Module::from_record(module)
+        };
+        Ok(Response::new(module))
     }
 
     type ListModulesStream = BoxStream<'static, Result<Module, Status>>;
