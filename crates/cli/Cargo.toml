@@ -11,6 +11,7 @@ description = "gRPC server encapsulating Tardigrade runtime"
 repository = "https://github.com/slowli/tardigrade"
 
 [dependencies]
+async-stream = "0.3.3"
 clap = { version = "4.0.32", features = ["derive", "wrap_help"] }
 futures = "0.3.25"
 http = { version = "0.2.8", default-features = false }

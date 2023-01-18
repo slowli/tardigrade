@@ -16,12 +16,16 @@ use http::{
     header::{self, HeaderMap, HeaderName, HeaderValue},
     uri::Scheme,
 };
+#[cfg(unix)]
+use tokio::net::UnixListener;
 use tokio::task;
-use tonic::transport::{Error as TransportError, Server};
+use tonic::transport::{server::Router, Error as TransportError, Server};
 use tonic_reflection::server as reflection;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
-use std::{error, future::Future, io, net::SocketAddr, sync::Arc};
+#[cfg(unix)]
+use std::path::PathBuf;
+use std::{error, fmt, future::Future, io, net::SocketAddr, str::FromStr, sync::Arc};
 
 use tardigrade_grpc::{
     ChannelsServiceServer, ManagerService, RuntimeServiceServer, TestServiceServer, WithClockType,
@@ -73,19 +77,22 @@ struct Services<C: Schedule> {
 }
 
 impl<C: Schedule> Services<C> {
-    fn run_server(self, address: SocketAddr) -> impl Future<Output = Result<(), TransportError>> {
+    fn run_server(
+        self,
+        addr: &SocketAddrOrUds,
+    ) -> impl Future<Output = Result<(), TransportError>> {
         let reflection = reflection::Builder::configure()
             .register_encoded_file_descriptor_set(SERVICE_DESCRIPTOR)
             .build()
             .unwrap();
 
-        Server::builder()
+        let router = Server::builder()
             .trace_fn(Self::trace_request)
             .add_service(self.runtime_service)
             .add_optional_service(self.test_service)
             .add_service(self.channels_service)
-            .add_service(reflection)
-            .serve(address)
+            .add_service(reflection);
+        addr.serve(router)
     }
 
     #[tracing::instrument(level = "debug", skip_all)]
@@ -124,12 +131,88 @@ impl<C: Schedule> Services<C> {
     }
 }
 
+#[derive(Debug, Clone)]
+enum SocketAddrOrUds {
+    Addr(SocketAddr),
+    #[cfg(unix)]
+    Uds(PathBuf),
+}
+
+impl SocketAddrOrUds {
+    #[cfg(not(unix))]
+    fn serve(&self, router: Router) -> impl Future<Output = Result<(), TransportError>> {
+        match self {
+            Self::Addr(addr) => router.serve(*addr),
+        }
+    }
+
+    #[cfg(unix)]
+    fn serve(&self, router: Router) -> impl Future<Output = Result<(), TransportError>> {
+        match self {
+            Self::Addr(addr) => router.serve(*addr).left_future(),
+            Self::Uds(path) => {
+                let path = path.clone();
+                let uds_stream = async_stream::stream! {
+                    let uds = match UnixListener::bind(&path) {
+                        Ok(uds) => uds,
+                        Err(err) => {
+                            let message = format!(
+                                "cannot bind to Unix domain socket at `{}`: {err}",
+                                path.to_string_lossy()
+                            );
+                            yield Err(io::Error::new(io::ErrorKind::BrokenPipe, message));
+                            return;
+                        }
+                    };
+
+                    loop {
+                        yield uds.accept().await.map(|(stream, _)| stream);
+                    }
+                };
+                router.serve_with_incoming(uds_stream).right_future()
+            }
+        }
+    }
+}
+
+impl fmt::Display for SocketAddrOrUds {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Addr(addr) => fmt::Display::fmt(addr, formatter),
+            #[cfg(unix)]
+            Self::Uds(path) => write!(formatter, "sock://{}", path.to_string_lossy()),
+        }
+    }
+}
+
+impl FromStr for SocketAddrOrUds {
+    type Err = Box<dyn error::Error + Send + Sync>;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        #[cfg(unix)]
+        if let Some(path) = s.strip_prefix("sock://") {
+            Ok(Self::Uds(PathBuf::from(path)))
+        } else {
+            let addr = s.parse()?;
+            Ok(Self::Addr(addr))
+        }
+
+        #[cfg(not(unix))]
+        {
+            let addr = s.parse()?;
+            Ok(Self::Addr(addr))
+        }
+    }
+}
+
 /// gRPC server for Tardigrade runtime.
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    /// Address to bind the gRPC server to.
-    address: SocketAddr,
+    /// Address to bind the gRPC server to. Can be specified either as a socket address
+    /// (e.g., `127.0.0.1:9000`) or, on Unix systems, as a file path to the Unix domain
+    /// socket (e.g., `sock:///var/grpc.sock`).
+    address: SocketAddrOrUds,
 
     /// Use a mock scheduler instead of the real one.
     #[arg(long)]
@@ -179,11 +262,11 @@ impl Cli {
 
         let server = if self.mock {
             self.create_services(MockScheduler::default(), Some)
-                .run_server(self.address)
+                .run_server(&self.address)
                 .left_future()
         } else {
             self.create_services(TokioScheduler, |_| None)
-                .run_server(self.address)
+                .run_server(&self.address)
                 .right_future()
         };
 
