@@ -10,6 +10,7 @@ env:
   msrv: 1.65.0
   nightly: nightly-2022-11-24
   protoc: 21.12
+  grpcurl: 1.8.7
   binaryen: version_110
 
 jobs:
@@ -93,6 +94,15 @@ jobs:
           unzip -d protoc protoc.zip && \
           sudo cp -r protoc/include/* /usr/local/include && \
           sudo install protoc/bin/protoc /usr/local/bin
+      - name: Install grpcurl
+        run: |
+          (
+            mkdir .grpcurl && cd .grpcurl && \
+            wget -q -O grpcurl.tar.gz "https://github.com/fullstorydev/grpcurl/releases/download/v$grpcurl/grpcurl_${grpcurl}_linux_x86_64.tar.gz" && \
+            tar xf grpcurl.tar.gz && \
+            sudo install grpcurl /usr/local/bin
+          )
+
       - name: Install wasm-opt
         run: |
           wget -q -O binaryen.tar.gz "https://github.com/WebAssembly/binaryen/releases/download/$binaryen/binaryen-$binaryen-x86_64-linux.tar.gz" && \
@@ -170,7 +180,10 @@ jobs:
           command: test
           args: --workspace --all-features --doc
       - name: Run gRPC end-to-end tests
-        run: ./e2e-tests/pizza/tests/test-grpc.sh
+        run: |
+          ./crates/cli/tests/test-server.sh
+          ./crates/cli/tests/test-server.sh uds
+          ./e2e-tests/pizza/tests/test-grpc.sh
 
   document:
     if: github.event_name == 'push'
