@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
 # Script for testing the `PizzaDelivery` workflow in tandem with the
-# Tardigrade gRPC server. Requires Docker, `jq` and `wasm-opt` installed locally.
+# Tardigrade gRPC server. Requires Docker, `jq`, `grpcurl` and `wasm-opt`
+# installed locally.
 
 set -e
 
@@ -16,7 +17,7 @@ WASM_TARGET_DIR="$ROOT_DIR/target/wasm32-unknown-unknown/wasm"
 CLI_DIR="$ROOT_DIR/crates/cli"
 CLI_TARGET_DIR="$CLI_DIR/target/debug"
 
-function build-module {
+function build_module {
   (
     cd "$ROOT_DIR"
     echo "Building WASM module..."
@@ -42,7 +43,7 @@ function build-module {
     "$WASM_TARGET_DIR/tardigrade_pizza.ref.wasm"
 }
 
-function build-grpc-server {
+function build_grpc_server {
   echo "Building gRPC server CLI app..."
   cargo build --manifest-path="$CLI_DIR/Cargo.toml" --all-features
 
@@ -55,13 +56,15 @@ function build-grpc-server {
 # Preliminary checks for third-party executables
 echo "Checking jq..."
 jq --version
+echo "Checking grpcurl..."
+grpcurl --version
 echo "Checking docker..."
 docker --version
 echo "Checking wasm-opt..."
 wasm-opt --version
 
-build-module
-build-grpc-server
+build_module
+build_grpc_server
 export PATH=$PATH:$CLI_TARGET_DIR
 
 echo "Killing gRPC server, if any..."
@@ -72,23 +75,19 @@ RUST_LOG=info,tardigrade_grpc=debug,tardigrade_rt=debug,tardigrade=debug \
 sleep 3 # wait for the server to start
 
 echo "Checking gRPC server..."
-docker run --rm fullstorydev/grpcurl:latest \
-  -plaintext "host.docker.internal:$GRPC_PORT" list \
+grpcurl -plaintext "127.0.0.1:$GRPC_PORT" list \
   | grep 'tardigrade.v0.RuntimeService'
 
 echo "Deploying pizza module..."
 MODULE_BYTES=$(base64 --wrap=0 "$WASM_TARGET_DIR/tardigrade_pizza.ref.opt.wasm")
-docker run -i --rm fullstorydev/grpcurl:latest \
-  -d @ -plaintext "host.docker.internal:$GRPC_PORT" \
+grpcurl -d @ -plaintext "127.0.0.1:$GRPC_PORT" \
   tardigrade.v0.RuntimeService/DeployModule <<EOM
 { "id": "pizza", "bytes": "$MODULE_BYTES" }
 EOM
 # ^ heredoc is necessary here, since argument would be too long
 
 echo "Listing modules..."
-docker run --rm fullstorydev/grpcurl:latest \
-  -plaintext "host.docker.internal:$GRPC_PORT" \
-  tardigrade.v0.RuntimeService/ListModules
+grpcurl -plaintext "127.0.0.1:$GRPC_PORT" tardigrade.v0.RuntimeService/ListModules
 
 echo "Creating PizzaDelivery workflow..."
 INPUT='{
@@ -107,8 +106,7 @@ INPUT='{
   }
 }'
 WORKFLOW=$(
-  docker run -i --rm fullstorydev/grpcurl:latest \
-    -d "$INPUT" -plaintext "host.docker.internal:$GRPC_PORT" \
+  grpcurl -d "$INPUT" -plaintext "127.0.0.1:$GRPC_PORT" \
     tardigrade.v0.RuntimeService/CreateWorkflow
 )
 WORKFLOW_ID=$(echo "$WORKFLOW" | jq '.id')
@@ -122,14 +120,13 @@ INPUT='{
     { "str": "{ \"kind\": \"Pepperoni\", \"delivery_distance\": 5 }" }
   ]
 }'
-docker run -i --rm fullstorydev/grpcurl:latest \
-  -d "$INPUT" -plaintext "host.docker.internal:$GRPC_PORT" \
+grpcurl -d "$INPUT" -plaintext "127.0.0.1:$GRPC_PORT" \
   tardigrade.v0.ChannelsService/PushMessages
 
 echo "Closing orders channel..."
 CHANNEL_IS_CLOSED=$(
-  docker run -i --rm fullstorydev/grpcurl:latest \
-    -d '{ "id": '"$ORDERS_ID"', "half": "HANDLE_TYPE_SENDER" }' -plaintext "host.docker.internal:$GRPC_PORT" \
+  grpcurl -d '{ "id": '"$ORDERS_ID"', "half": "HANDLE_TYPE_SENDER" }' \
+    -plaintext "127.0.0.1:$GRPC_PORT" \
     tardigrade.v0.ChannelsService/CloseChannel \
   | jq '.isClosed'
 )
@@ -142,8 +139,8 @@ sleep 1 # Wait for the workflow to complete
 
 echo "Checking workflow completion..."
 WORKFLOW_IS_COMPLETED=$(
-  docker run -i --rm fullstorydev/grpcurl:latest \
-    -d '{ "id": '"$WORKFLOW_ID"' }' -plaintext "host.docker.internal:$GRPC_PORT" \
+  grpcurl -d '{ "id": '"$WORKFLOW_ID"' }' \
+    -plaintext "127.0.0.1:$GRPC_PORT" \
     tardigrade.v0.RuntimeService/GetWorkflow \
   | jq 'has("completed")'
 )
@@ -158,8 +155,7 @@ INPUT='{
   "codec": "MESSAGE_CODEC_JSON"
 }'
 EVENT_TYPES=$(
-  docker run -i --rm fullstorydev/grpcurl:latest \
-    -d "$INPUT" -plaintext "host.docker.internal:$GRPC_PORT" \
+  grpcurl -d "$INPUT" -plaintext "127.0.0.1:$GRPC_PORT" \
     tardigrade.v0.ChannelsService/StreamMessages \
   | jq --slurp -r '[.[].str | fromjson | keys[0]] | join(",")'
 )
