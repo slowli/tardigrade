@@ -1,4 +1,4 @@
-//! gRPC service wrapper for the Tardigrade runtime.
+//! gRPC service wrapper for the Tardigrade runtime powered by [`tonic`].
 //!
 //! The wrapper can be used as a building block for gRPC server in the cases when [the CLI app]
 //! is not good enough (e.g., if custom authentication / authorization logic is required).
@@ -6,6 +6,7 @@
 //! The generated Protobuf types are not public. This is intentional; the API contract
 //! for the gRPC services is not stable yet.
 //!
+//! [`tonic`]: https://docs.rs/tonic/
 //! [the CLI app]: https://crates.io/crates/tardigrade-cli
 //!
 //! # Examples

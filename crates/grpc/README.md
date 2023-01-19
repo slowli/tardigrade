@@ -5,10 +5,11 @@
 ![rust 1.65+ required](https://img.shields.io/badge/rust-1.65+-blue.svg?label=Required%20Rust)
 
 **Documentation:**
-[![crate docs (main)](https://img.shields.io/badge/main-yellow.svg?label=docs)](https://slowli.github.io/tardigrade/tardigrade_rt/)
+[![crate docs (main)](https://img.shields.io/badge/main-yellow.svg?label=docs)](https://slowli.github.io/tardigrade/tardigrade_grpc/)
 
-This crate provides server gRPC bindings for the [Tardigrade runtime].
-It allows launching a runtime alongside with other services or interceptors
+This crate provides gRPC services encapsulating the [Tardigrade runtime]
+powered by the [`tonic`] framework.
+This allows launching a runtime alongside with other services or interceptors
 (authentication, tracing etc.).
 
 The functionality supported by the services exported from this crate covers most of what
@@ -41,6 +42,7 @@ Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in `tardigrade` by you, as defined in the Apache-2.0 license,
 shall be dual licensed as above, without any additional terms or conditions.
 
+[`tonic`]: https://crates.io/crates/tonic
 <!-- TODO: replace with crates.io links before publishing -->
 [Tardigrade runtime]: ../rt
 [`tardigrade-cli`]: ../cli

@@ -134,7 +134,14 @@ is also flexible enough to allow workflows with the interface not known at compi
   for client bindings.
 - The [`tardigrade-shared`](crates/shared) crate provides some types
   that are used by multiple crates, in particular, the macro crate.
-- The [`tardigrade-rt`](crates/rt) crate provides a runtime for workflow modules.
+- The [`tardigrade-rt`](crates/rt) crate provides an embeddable runtime
+  for workflow modules.
+- The [`tardigrade-grpc`](crates/grpc) crate provides a gRPC service wrapper
+  for the runtime. (Actually, there are multiple services split by the domain;
+  e.g., functionality related to channels is extracted into a separate service.)
+- The [`tardigrade-cli`](crates/cli) crate provides a gRPC server binary
+  with the aforementioned services and some other functionality, such as
+  the reflection service and tracing support.
 
 ### Other stuff
 

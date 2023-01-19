@@ -9,7 +9,7 @@ on:
 env:
   msrv: 1.65.0
   nightly: nightly-2022-11-24
-  protoc: 21.12
+  protoc: "21.12"
   grpcurl: 1.8.7
   binaryen: version_110
 

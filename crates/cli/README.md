@@ -4,9 +4,6 @@
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%2FApache--2.0-blue)](https://github.com/slowli/tardigrade#license)
 ![rust 1.65+ required](https://img.shields.io/badge/rust-1.65+-blue.svg?label=Required%20Rust)
 
-**Documentation:**
-[![crate docs (main)](https://img.shields.io/badge/main-yellow.svg?label=docs)](https://slowli.github.io/tardigrade/tardigrade_rt/)
-
 This crate provides a gRPC server for the [Tardigrade runtime].
 It builds on top of [`tardigrade-grpc`] and supports the same set of functionality.
 The server also includes the gRPC reflection service (thus enabling the use
