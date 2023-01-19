@@ -6,10 +6,11 @@ use super::{ConcurrencyError, HostHandles, MessageReceiver, MessageSender, Recei
 use crate::{
     receipt::ExecutionError,
     storage::{
-        helper, ActiveWorkflowState, CompletedWorkflowState, ErroneousMessageRef, MessageError,
-        ReadChannels, ReadWorkflows, Storage, WorkflowState,
+        helper, ActiveWorkflowState, CompletedWorkflowState, ErroneousMessageRef,
+        ErroredWorkflowState, MessageError, ReadChannels, ReadWorkflows, Storage, WorkflowRecord,
+        WorkflowState,
     },
-    workflow::WorkflowAndChannelIds,
+    workflow::ChannelIds,
     PersistedWorkflow,
 };
 use tardigrade::{
@@ -56,7 +57,7 @@ use tardigrade::{
 /// let message: Vec<u8> = message.decode()?;
 ///
 /// // It is possible to access the underlying workflow state:
-/// let persisted = workflow.persisted();
+/// let persisted = workflow.persisted().common();
 /// println!("{:?}", persisted.tasks().collect::<Vec<_>>());
 /// let now = persisted.current_time();
 /// # Ok(())
@@ -64,7 +65,8 @@ use tardigrade::{
 /// ```
 pub struct WorkflowHandle<W, S> {
     storage: S,
-    ids: WorkflowAndChannelIds,
+    record: WorkflowRecord<()>,
+    channel_ids: ChannelIds,
     interface: Interface,
     persisted: PersistedWorkflow,
     _ty: PhantomData<fn(W)>,
@@ -75,7 +77,8 @@ impl<W, S: fmt::Debug> fmt::Debug for WorkflowHandle<W, S> {
         formatter
             .debug_struct("WorkflowHandle")
             .field("storage", &self.storage)
-            .field("ids", &self.ids)
+            .field("record", &self.record)
+            .field("channel_ids", &self.channel_ids)
             .finish()
     }
 }
@@ -83,18 +86,14 @@ impl<W, S: fmt::Debug> fmt::Debug for WorkflowHandle<W, S> {
 impl<S: Storage> WorkflowHandle<(), S> {
     pub(super) fn new(
         storage: S,
-        id: WorkflowId,
-        interface: Interface,
+        record: WorkflowRecord<()>,
         state: ActiveWorkflowState,
+        interface: Interface,
     ) -> Self {
-        let ids = WorkflowAndChannelIds {
-            workflow_id: id,
-            channel_ids: state.persisted.channels().to_ids(),
-        };
-
         Self {
             storage,
-            ids,
+            record,
+            channel_ids: state.persisted.common().channels().to_ids(),
             interface,
             persisted: state.persisted,
             _ty: PhantomData,
@@ -102,8 +101,8 @@ impl<S: Storage> WorkflowHandle<(), S> {
     }
 
     #[cfg(test)]
-    pub(crate) fn ids(&self) -> &WorkflowAndChannelIds {
-        &self.ids
+    pub(crate) fn channel_ids(&self) -> &ChannelIds {
+        &self.channel_ids
     }
 
     /// Attempts to downcast this handle to a specific workflow interface.
@@ -120,7 +119,8 @@ impl<S: Storage> WorkflowHandle<(), S> {
     pub(crate) fn downcast_unchecked<W>(self) -> WorkflowHandle<W, S> {
         WorkflowHandle {
             storage: self.storage,
-            ids: self.ids,
+            record: self.record,
+            channel_ids: self.channel_ids,
             interface: self.interface,
             persisted: self.persisted,
             _ty: PhantomData,
@@ -131,7 +131,12 @@ impl<S: Storage> WorkflowHandle<(), S> {
 impl<W: WithHandle, S: Storage> WorkflowHandle<W, S> {
     /// Returns the ID of this workflow.
     pub fn id(&self) -> WorkflowId {
-        self.ids.workflow_id
+        self.record.id
+    }
+
+    /// Returns a workflow record corresponding to this workflow, with the `state` field scrubbed.
+    pub fn record(&self) -> &WorkflowRecord<()> {
+        &self.record
     }
 
     /// Returns the workflow interface.
@@ -154,9 +159,12 @@ impl<W: WithHandle, S: Storage> WorkflowHandle<W, S> {
     /// Returns an error if the workflow was terminated.
     pub async fn update(&mut self) -> Result<(), ConcurrencyError> {
         let transaction = self.storage.readonly_transaction().await;
-        let record = transaction.workflow(self.ids.workflow_id).await;
+        let record = transaction.workflow(self.id()).await;
         let record = record.ok_or_else(ConcurrencyError::new)?;
-        self.persisted = match record.state {
+        let (record, state) = record.split();
+
+        self.record = record; // Intentionally updated even on error.
+        self.persisted = match state {
             WorkflowState::Active(state) => state.persisted,
             WorkflowState::Completed(_) | WorkflowState::Errored(_) => {
                 return Err(ConcurrencyError::new());
@@ -172,7 +180,7 @@ impl<W: WithHandle, S: Storage> WorkflowHandle<W, S> {
     /// Returns an error if abort fails because of a concurrent edit (e.g., the workflow is
     /// already aborted).
     pub async fn abort(self) -> Result<(), ConcurrencyError> {
-        helper::abort_workflow(&self.storage, self.ids.workflow_id).await
+        helper::abort_workflow(&self.storage, self.id()).await
     }
 }
 
@@ -182,9 +190,9 @@ impl<'a, W: WithHandle, S: Storage> WorkflowHandle<W, &'a S> {
     pub async fn handle(&self) -> HostHandles<'a, W, S> {
         let storage = self.storage;
         let transaction = storage.readonly_transaction().await;
-        let mut untyped = HandleMap::with_capacity(self.ids.channel_ids.len());
+        let mut untyped = HandleMap::with_capacity(self.channel_ids.len());
 
-        for (path, &id_handle) in &self.ids.channel_ids {
+        for (path, &id_handle) in &self.channel_ids {
             let handle = match id_handle {
                 Handle::Receiver(id) => {
                     let record = transaction.channel(id).await.unwrap();
@@ -257,29 +265,29 @@ impl<'a, W: WithHandle, S: Storage> WorkflowHandle<W, &'a S> {
 #[derive(Debug)]
 pub struct ErroredWorkflowHandle<S> {
     storage: S,
-    id: WorkflowId,
+    record: WorkflowRecord<()>,
     error: ExecutionError,
     erroneous_messages: Vec<ErroneousMessageRef>,
 }
 
 impl<S: Storage> ErroredWorkflowHandle<S> {
-    pub(super) fn new(
-        storage: S,
-        id: WorkflowId,
-        error: ExecutionError,
-        erroneous_messages: Vec<ErroneousMessageRef>,
-    ) -> Self {
+    pub(super) fn new(storage: S, record: WorkflowRecord<()>, state: ErroredWorkflowState) -> Self {
         Self {
             storage,
-            id,
-            error,
-            erroneous_messages,
+            record,
+            error: state.error,
+            erroneous_messages: state.erroneous_messages,
         }
     }
 
     /// Returns the ID of this workflow.
     pub fn id(&self) -> WorkflowId {
-        self.id
+        self.record.id
+    }
+
+    /// Returns a workflow record corresponding to this workflow, with the `state` field scrubbed.
+    pub fn record(&self) -> &WorkflowRecord<()> {
+        &self.record
     }
 
     /// Returns the workflow execution error.
@@ -294,7 +302,7 @@ impl<S: Storage> ErroredWorkflowHandle<S> {
     /// Returns an error if abort fails because of a concurrent edit (e.g., the workflow is
     /// already aborted).
     pub async fn abort(self) -> Result<(), ConcurrencyError> {
-        helper::abort_workflow(&self.storage, self.id).await
+        helper::abort_workflow(&self.storage, self.id()).await
     }
 
     /// Considers this workflow repaired, usually after [dropping bogus messages] for the workflow
@@ -307,7 +315,7 @@ impl<S: Storage> ErroredWorkflowHandle<S> {
     ///
     /// [dropping bogus messages]: ErroneousMessage::drop_for_workflow()
     pub async fn consider_repaired(self) -> Result<(), ConcurrencyError> {
-        helper::repair_workflow(&self.storage, self.id).await
+        helper::repair_workflow(&self.storage, self.id()).await
     }
 
     /// Iterates over messages the ingestion of which may have led to the execution error.
@@ -316,7 +324,7 @@ impl<S: Storage> ErroredWorkflowHandle<S> {
             .iter()
             .map(|message_ref| ErroneousMessage {
                 storage: &self.storage,
-                workflow_id: self.id,
+                workflow_id: self.id(),
                 message_ref: message_ref.clone(),
             })
     }
@@ -368,21 +376,26 @@ impl<S: Storage> ErroneousMessage<S> {
 /// [manager docs]: crate::manager::WorkflowManager#workflow-lifecycle
 #[derive(Debug)]
 pub struct CompletedWorkflowHandle {
-    id: WorkflowId,
+    record: WorkflowRecord<()>,
     result: Result<(), JoinError>,
 }
 
 impl CompletedWorkflowHandle {
-    pub(super) fn new(id: WorkflowId, state: CompletedWorkflowState) -> Self {
+    pub(super) fn new(record: WorkflowRecord<()>, state: CompletedWorkflowState) -> Self {
         Self {
-            id,
+            record,
             result: state.result,
         }
     }
 
     /// Returns the ID of this workflow.
     pub fn id(&self) -> WorkflowId {
-        self.id
+        self.record.id
+    }
+
+    /// Returns a workflow record corresponding to this workflow, with the `state` field scrubbed.
+    pub fn record(&self) -> &WorkflowRecord<()> {
+        &self.record
     }
 
     /// Returns the execution result of the workflow.
@@ -411,6 +424,15 @@ impl<S: Storage> AnyWorkflowHandle<S> {
             Self::Active(handle) => handle.id(),
             Self::Errored(handle) => handle.id(),
             Self::Completed(handle) => handle.id(),
+        }
+    }
+
+    /// Returns a workflow record corresponding to this workflow, with the `state` field scrubbed.
+    pub fn record(&self) -> &WorkflowRecord<()> {
+        match self {
+            Self::Active(handle) => handle.record(),
+            Self::Errored(handle) => handle.record(),
+            Self::Completed(handle) => handle.record(),
         }
     }
 

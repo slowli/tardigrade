@@ -20,7 +20,7 @@ use std::{
 
 use tardigrade::{
     handle::{ReceiverAt, SenderAt, WithIndexing},
-    Codec, Json, TimerId,
+    Codec, Json, TimerId, WorkflowId,
 };
 use tardigrade_rt::{
     manager::{DriveConfig, Termination, TickResult},
@@ -66,14 +66,16 @@ async fn driver_basics(cancel_workflow: bool) -> TestResult {
     let events_rx = events_rx.map(|message| message.decode());
 
     let (cancel_sx, mut cancel_rx) = oneshot::channel::<()>();
-    let manager = manager.clone();
-    let join_handle = spawn_traced_task(async move {
-        let drive_task = manager.drive(&mut commits_rx, DriveConfig::new());
-        futures::select! {
-            term = drive_task.fuse() => Either::Left(term),
-            _ = cancel_rx => Either::Right(manager),
-        }
-    });
+    let join_handle = {
+        let manager = manager.clone();
+        spawn_traced_task(async move {
+            let drive_task = manager.drive(&mut commits_rx, DriveConfig::new());
+            futures::select! {
+                term = drive_task.fuse() => Either::Left(term),
+                _ = cancel_rx => Either::Right(()),
+            }
+        })
+    };
 
     let order = PizzaOrder {
         kind: PizzaKind::Pepperoni,
@@ -94,14 +96,11 @@ async fn driver_basics(cancel_workflow: bool) -> TestResult {
 
     if cancel_workflow {
         cancel_sx.send(()).unwrap();
-        let manager = match join_handle.await {
-            Either::Right(manager) => manager,
-            other => panic!("expected cancelled workflow, got {other:?}"),
-        };
+        assert_matches!(join_handle.await, Either::Right(()));
 
         let workflow = manager.storage().workflow(workflow_id).await.unwrap();
         let persisted = workflow.persisted();
-        assert_eq!(persisted.timers().count(), 0);
+        assert_eq!(persisted.common().timers().count(), 0);
     } else {
         orders_sx.close().await; // should terminate the workflow
         assert_matches!(join_handle.await, Either::Left(Termination::Finished));
@@ -385,7 +384,8 @@ async fn driver_with_mock_scheduler_and_bulk_update() -> TestResult {
 
 struct CancellableWorkflow {
     events_rx: BoxStream<'static, serde_json::Result<DomainEvent>>,
-    join_handle: task::JoinHandle<(StreamingManager<MockScheduler>, CommitStream)>,
+    manager: StreamingManager<MockScheduler>,
+    join_handle: task::JoinHandle<CommitStream>,
     scheduler: MockScheduler,
     scheduler_expirations: BoxStream<'static, DateTime<Utc>>,
     cancel_sx: oneshot::Sender<()>,
@@ -412,17 +412,20 @@ async fn spawn_cancellable_workflow() -> TestResult<CancellableWorkflow> {
     orders_sx.send(order).await?;
 
     let (cancel_sx, mut cancel_rx) = oneshot::channel::<()>();
-    let manager = manager.clone();
-    let join_handle = spawn_traced_task(async move {
-        futures::select! {
-            _ = manager.drive(&mut commits_rx, DriveConfig::new()).fuse() =>
-                unreachable!("workflow should not be completed"),
-            _ = cancel_rx => (manager, commits_rx),
-        }
-    });
+    let join_handle = {
+        let manager = manager.clone();
+        spawn_traced_task(async move {
+            futures::select! {
+                _ = manager.drive(&mut commits_rx, DriveConfig::new()).fuse() =>
+                    unreachable!("workflow should not be completed"),
+                _ = cancel_rx => commits_rx,
+            }
+        })
+    };
 
     Ok(CancellableWorkflow {
         events_rx: events_rx.boxed(),
+        manager,
         join_handle,
         scheduler,
         scheduler_expirations: expirations.boxed(),
@@ -432,10 +435,12 @@ async fn spawn_cancellable_workflow() -> TestResult<CancellableWorkflow> {
 
 #[async_std::test]
 async fn launching_env_after_pause() -> TestResult {
-    let (_guard, tracing_storage) = enable_tracing_assertions();
+    const WORKFLOW_ID: WorkflowId = 1;
 
+    let (_guard, tracing_storage) = enable_tracing_assertions();
     let CancellableWorkflow {
         mut events_rx,
+        manager,
         join_handle,
         scheduler,
         mut scheduler_expirations,
@@ -453,10 +458,10 @@ async fn launching_env_after_pause() -> TestResult {
 
     // Cancel the workflow.
     cancel_sx.send(()).unwrap();
-    let (manager, mut commits_rx) = join_handle.await;
+    let mut commits_rx = join_handle.await;
 
     // Restore the persisted workflow and launch it again.
-    let workflow = manager.storage().workflow(0).await.unwrap();
+    let workflow = manager.storage().workflow(WORKFLOW_ID).await.unwrap();
     let workflow = workflow.downcast::<PizzaDelivery>()?;
     let handle = workflow.handle().await;
     let orders_sx = handle.orders;

@@ -16,7 +16,7 @@ use tardigrade::{
     workflow::{GetInterface, WorkflowFn},
 };
 use tardigrade_rt::{
-    engine::{Wasmtime, WasmtimeModule},
+    engine::{Wasmtime, WasmtimeModule, WorkflowEngine},
     handle::{HostHandles, WorkflowHandle},
     manager::WorkflowManager,
     storage::{CommitStream, LocalStorage, Storage, Streaming},
@@ -33,7 +33,7 @@ mod tasks;
 type TestResult<T = ()> = Result<T, Box<dyn error::Error>>;
 type LocalManager<C, S = LocalStorage> = WorkflowManager<Wasmtime, C, S>;
 type StreamingStorage = Streaming<Arc<LocalStorage>>;
-type StreamingManager<C> = Arc<LocalManager<C, StreamingStorage>>;
+type StreamingManager<C> = LocalManager<C, StreamingStorage>;
 
 static MODULE: Lazy<WasmtimeModule> = Lazy::new(|| {
     // Since this closure is called once, it is a good place to do other initialization
@@ -45,7 +45,7 @@ static MODULE: Lazy<WasmtimeModule> = Lazy::new(|| {
         .set_wasm_opt(WasmOpt::default())
         .compile();
     let engine = Wasmtime::default();
-    engine.create_module(module_bytes).unwrap()
+    task::block_on(engine.create_module(module_bytes.into())).unwrap()
 });
 
 async fn create_module() -> WasmtimeModule {
@@ -80,7 +80,7 @@ async fn create_streaming_manager<C: Clock>(
     let commits_rx = storage.stream_commits();
 
     let manager = do_create_manager(clock, storage).await?;
-    Ok((Arc::new(manager), commits_rx))
+    Ok((manager, commits_rx))
 }
 
 type WorkflowAndHandles<'m, W, S> = (WorkflowHandle<W, &'m S>, HostHandles<'m, W, S>);

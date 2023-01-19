@@ -13,8 +13,8 @@ repository = "https://github.com/slowli/tardigrade"
 [dependencies]
 anyhow = "1.0.57"
 async-trait = "0.1.57"
-base64 = "0.13.0"
-chrono = { version = "0.4.22", features = ["serde"] }
+base64 = "0.21.0"
+chrono = { version = "0.4.23", features = ["serde"] }
 flate2 = "1.0.24"
 futures = "0.3.21"
 leb128 = "0.2.5"
@@ -26,11 +26,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
 tracing = "0.1.37"
 tracing-tunnel = { version = "0.1.0", features = ["receiver"] }
-wasmtime = "3.0.0"
+wasmtime = "4.0.0"
 
 ## Standalone optional dependencies
 # Implements the scheduler trait based on `async-io` / `async-std` runtime.
 async-io = { version = "1.7.0", optional = true }
+# Implements the scheduler trait based on `tokio` runtime.
+tokio = { version = "1.23.0", features = ["time"], optional = true }
 
 tardigrade = { version = "0.1.0", path = "../.." }
 
@@ -40,6 +42,12 @@ optional = true
 git = "https://github.com/slowli/externref.git"
 rev = "2e7ce459f98d0493d7734fe20b1945e41838250e"
 features = ["processor"]
+
+[dependencies.mimicry]
+version = "0.1.0"
+git = "https://github.com/slowli/mimicry.git"
+rev = "87abe3031032d3465f2e0172c96b68cd16fcf9f9"
+optional = true
 
 [dev-dependencies]
 assert_matches = "1.5.0"
@@ -54,4 +62,4 @@ rev = "87abe3031032d3465f2e0172c96b68cd16fcf9f9"
 [features]
 default = []
 # Enables the `test` module with test-related helpers.
-test = ["externref"]
+test = ["externref", "mimicry"]

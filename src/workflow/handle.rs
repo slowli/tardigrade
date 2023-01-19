@@ -5,7 +5,7 @@ use std::{convert::Infallible, marker::PhantomData};
 use super::untyped::UntypedHandles;
 use crate::{
     handle::{AccessError, Handle, HandlePath, HandlePathBuf},
-    Codec,
+    ChannelId, Codec, Raw,
 };
 
 /// Conversion from a [raw handle](HandleFormat::RawReceiver).
@@ -29,6 +29,14 @@ impl TryFromRaw<()> for () {
     }
 }
 
+impl TryFromRaw<ChannelId> for ChannelId {
+    type Error = Infallible;
+
+    fn try_from_raw(raw: ChannelId) -> Result<Self, Self::Error> {
+        Ok(raw)
+    }
+}
+
 /// Conversion into a [raw handle](HandleFormat::RawReceiver).
 pub trait IntoRaw<T> {
     /// Performs the conversion.
@@ -38,6 +46,12 @@ pub trait IntoRaw<T> {
 impl IntoRaw<()> for () {
     fn into_raw(self) {
         // do nothing
+    }
+}
+
+impl IntoRaw<ChannelId> for ChannelId {
+    fn into_raw(self) -> ChannelId {
+        self
     }
 }
 
@@ -64,6 +78,13 @@ impl HandleFormat for () {
     type Receiver<T, C: Codec<T>> = ();
     type RawSender = ();
     type Sender<T, C: Codec<T>> = ();
+}
+
+impl HandleFormat for Raw {
+    type RawReceiver = ChannelId;
+    type Receiver<T, C: Codec<T>> = ChannelId;
+    type RawSender = ChannelId;
+    type Sender<T, C: Codec<T>> = ChannelId;
 }
 
 /// Wrapper for a [`HandleFormat`] that swaps handles for senders and receivers.

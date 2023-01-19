@@ -19,18 +19,12 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use std::{fmt, sync::Arc, task::Poll};
 
-#[cfg(test)]
-mod mock;
 mod wasmtime;
 
-#[cfg(test)]
-pub use self::mock::{
-    MockAnswers, MockDefinition, MockEngine, MockInstance, MockModule, MockPollFn,
-};
 pub use self::wasmtime::{Wasmtime, WasmtimeDefinition, WasmtimeInstance, WasmtimeModule};
 pub use crate::data::{
-    ChildActions, ReceiverActions, ReportedErrorKind, SenderActions, TaskActions, TimerActions,
-    WorkflowData, WorkflowPoll,
+    ChildActions, PersistedWorkflowData, ReceiverActions, ReportedErrorKind, SenderActions,
+    TaskActions, TimerActions, WorkflowData, WorkflowPoll,
 };
 
 use crate::storage::ModuleRecord;
@@ -46,12 +40,19 @@ pub trait WorkflowEngine: 'static + Send + Sync {
     /// Module defining one or more workflows.
     type Module: WorkflowModule<Definition = Self::Definition>;
 
-    /// Creates a module given the specified storage record.
-    async fn create_module(&self, record: &ModuleRecord) -> anyhow::Result<Self::Module>;
+    /// Creates a new module based on the specified `bytes`.
+    async fn create_module(&self, bytes: Arc<[u8]>) -> anyhow::Result<Self::Module>;
+
+    /// Restores a module given the specified storage record.
+    ///
+    /// The default implementation calls [`Self::create_module()`] with `record.bytes`.
+    async fn restore_module(&self, record: &ModuleRecord) -> anyhow::Result<Self::Module> {
+        self.create_module(Arc::clone(&record.bytes)).await
+    }
 }
 
 /// Workflow module.
-pub trait WorkflowModule: IntoIterator<Item = (String, Self::Definition)> {
+pub trait WorkflowModule: IntoIterator<Item = (String, Self::Definition)> + Send {
     /// Workflow definition contained in a module of this type.
     type Definition: DefineWorkflow;
     /// Returns module bytes.

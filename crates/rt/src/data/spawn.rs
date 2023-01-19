@@ -85,6 +85,7 @@ impl<'a> ChildWorkflow<'a> {
 }
 
 impl PersistedWorkflowData {
+    /// Enumerates child workflows.
     pub fn child_workflows(&self) -> impl Iterator<Item = (WorkflowId, ChildWorkflow<'_>)> + '_ {
         self.child_workflows.iter().map(|(id, state)| {
             let child = ChildWorkflow::new(state, &self.channels);
@@ -92,13 +93,19 @@ impl PersistedWorkflowData {
         })
     }
 
+    /// Returns the local state of the child workflow with the specified ID, or `None`
+    /// if a workflow with such ID was not spawned by this workflow.
     pub fn child_workflow(&self, id: WorkflowId) -> Option<ChildWorkflow<'_>> {
         let state = self.child_workflows.get(&id)?;
         Some(ChildWorkflow::new(state, &self.channels))
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
-    pub fn notify_on_child_completion(&mut self, id: WorkflowId, result: Result<(), JoinError>) {
+    pub(crate) fn notify_on_child_completion(
+        &mut self,
+        id: WorkflowId,
+        result: Result<(), JoinError>,
+    ) {
         let state = self.child_workflows.get_mut(&id).unwrap();
         debug_assert!(state.completion_result.is_pending());
         state.completion_result = Poll::Ready(result);

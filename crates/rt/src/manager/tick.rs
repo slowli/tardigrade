@@ -5,7 +5,7 @@ use tracing_tunnel::TracingEventReceiver;
 
 use std::{error, fmt, sync::Arc};
 
-use super::{stubs::Stubs, CachedDefinitions, Clock, Services, WorkflowManager};
+use super::{stubs::Stubs, CachedDefinitions, Clock, ManagerInner, Services, WorkflowManager};
 use crate::{
     data::PersistedWorkflowData,
     engine::{DefineWorkflow, WorkflowEngine},
@@ -13,7 +13,7 @@ use crate::{
     storage::{
         helper::StorageHelper, ActiveWorkflowState, ErroneousMessageRef, MessageError,
         ReadChannels, ReadModules, ReadWorkflows, Storage, StorageTransaction, WorkflowRecord,
-        WorkflowWaker, WriteModules, WriteWorkflowWakers, WriteWorkflows,
+        WorkflowWaker, WorkflowWakerRecord, WriteModules, WriteWorkflowWakers, WriteWorkflows,
     },
     workflow::{PersistedWorkflow, Workflow},
 };
@@ -70,6 +70,36 @@ impl fmt::Display for WouldBlock {
 }
 
 impl error::Error for WouldBlock {}
+
+/// Errors that can occur when [ticking a specific workflow](WorkflowManager::tick_workflow()).
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum WorkflowTickError {
+    /// Workflow not found.
+    NotFound,
+    /// Workflow is not active.
+    NotActive,
+    /// The workflow has no events to consume.
+    WouldBlock(WouldBlock),
+}
+
+impl From<WouldBlock> for WorkflowTickError {
+    fn from(err: WouldBlock) -> Self {
+        Self::WouldBlock(err)
+    }
+}
+
+impl fmt::Display for WorkflowTickError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotFound => formatter.write_str("workflow not found"),
+            Self::NotActive => formatter.write_str("workflow is not active"),
+            Self::WouldBlock(err) => fmt::Display::fmt(err, formatter),
+        }
+    }
+}
+
+impl error::Error for WorkflowTickError {}
 
 #[derive(Debug)]
 struct PendingChannel {
@@ -236,7 +266,7 @@ impl<D: DefineWorkflow> WorkflowSeed<D> {
     }
 }
 
-impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
+impl<E: WorkflowEngine, C: Clock> ManagerInner<E, C> {
     #[tracing::instrument(
         level = "debug",
         skip_all,
@@ -246,9 +276,9 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
             name_in_module = record.name_in_module
         )
     )]
-    async fn restore_workflow<'a>(
-        &'a self,
-        transaction: &S::Transaction<'a>,
+    async fn restore_workflow(
+        &self,
+        transaction: &impl ReadModules,
         record: WorkflowRecord<ActiveWorkflowState>,
     ) -> (WorkflowSeed<E::Definition>, TracingEventReceiver) {
         let state = record.state;
@@ -287,7 +317,9 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         };
         (seed, tracer)
     }
+}
 
+impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
     #[tracing::instrument(
         skip_all,
         fields(
@@ -296,7 +328,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
             workflow.name_in_module = workflow.name_in_module
         )
     )]
-    async fn tick_workflow<'a>(
+    async fn tick_workflow_in_transaction<'a>(
         &'a self,
         transaction: &mut S::Transaction<'a>,
         workflow: WorkflowRecord<ActiveWorkflowState>,
@@ -307,7 +339,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         let module_id = workflow.module_id.clone();
         let execution_count = workflow.execution_count;
 
-        let (mut seed, tracer) = self.restore_workflow(transaction, workflow).await;
+        let (mut seed, tracer) = self.inner.restore_workflow(transaction, workflow).await;
         seed.apply_wakers(transaction, wakers).await;
         let pending_channel = seed.update_inbound_channels(transaction).await;
         let stubs = Stubs::new(Some(workflow_id));
@@ -325,12 +357,12 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
             let (stubs, tracer) =
                 WorkflowSeed::<E::Definition>::extract_services(workflow.take_services());
             let messages = workflow.drain_messages();
-            let definitions = self.definitions().await;
+            let definitions = self.inner.definitions().await;
             stubs
                 .commit(definitions, transaction, &mut workflow, receipt)
                 .await;
             let tracing_metadata = tracer.persist_metadata();
-            let (spans, local_spans) = tracer.persist();
+            let (spans, new_local_spans) = tracer.persist();
 
             let persisted = workflow.persist();
             let mut persistence = StorageHelper::new(transaction);
@@ -340,14 +372,14 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
                 .await;
             persistence.close_channels(workflow_id, receipt).await;
 
-            self.local_spans
-                .lock()
-                .await
-                .insert(workflow_id, local_spans);
+            {
+                let mut local_spans = self.inner.local_spans.lock().await;
+                local_spans.insert(workflow_id, new_local_spans);
+            }
             transaction
                 .update_tracing_metadata(&module_id, tracing_metadata)
                 .await;
-            let mut cached_workflows = self.cached_workflows.lock().await;
+            let mut cached_workflows = self.inner.cached_workflows.lock().await;
             cached_workflows.insert(workflow_id, workflow, execution_count + 1);
         } else {
             let err = result.as_ref().unwrap_err();
@@ -367,15 +399,10 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
     /// # Errors
     ///
     /// Returns an error if the manager cannot be progressed.
-    #[allow(clippy::missing_panics_doc)] // false positive
     pub async fn tick(&self) -> Result<TickResult, WouldBlock> {
-        self.do_tick(&self.storage).await
-    }
-
-    pub(super) async fn do_tick(&self, storage: &S) -> Result<TickResult, WouldBlock> {
         let span = tracing::info_span!("tick");
         let _entered = span.enter();
-        let mut transaction = storage.transaction().await;
+        let mut transaction = self.storage.transaction().await;
 
         let mut workflow = transaction.workflow_with_wakers_for_update().await;
         let waker_records = if let Some(workflow) = &workflow {
@@ -395,14 +422,29 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
             return Err(err);
         };
         let workflow_id = workflow.id;
+        let result = self.do_tick(transaction, workflow, waker_records).await;
 
+        Ok(TickResult {
+            workflow_id,
+            result,
+        })
+    }
+
+    async fn do_tick<'a>(
+        &'a self,
+        mut transaction: S::Transaction<'a>,
+        workflow: WorkflowRecord<ActiveWorkflowState>,
+        waker_records: Vec<WorkflowWakerRecord>,
+    ) -> Result<Receipt, ExecutionError> {
+        let workflow_id = workflow.id;
         let (waker_ids, wakers): (Vec<_>, Vec<_>) = waker_records
             .into_iter()
             .map(|record| (record.waker_id, record.waker))
             .unzip();
 
-        let (result, pending_channel) =
-            self.tick_workflow(&mut transaction, workflow, wakers).await;
+        let (result, pending_channel) = self
+            .tick_workflow_in_transaction(&mut transaction, workflow, wakers)
+            .await;
         let result = match result {
             Ok(receipt) => {
                 transaction.delete_wakers(workflow_id, &waker_ids).await;
@@ -420,6 +462,44 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
             }
         };
         transaction.commit().await;
+
+        result
+    }
+
+    /// Attempts to advance a specific workflow within this manager.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error in any of the following cases:
+    ///
+    /// - The workflow with the specified ID does not exist.
+    /// - The workflow is not currently active.
+    /// - The workflow cannot be advanced (see [`WouldBlock`])
+    pub async fn tick_workflow(
+        &self,
+        workflow_id: WorkflowId,
+    ) -> Result<TickResult, WorkflowTickError> {
+        let span = tracing::info_span!("tick_workflow", workflow_id);
+        let _entered = span.enter();
+        let mut transaction = self.storage.transaction().await;
+
+        let workflow = transaction
+            .workflow_for_update(workflow_id)
+            .await
+            .ok_or(WorkflowTickError::NotFound)?;
+        let workflow = workflow.into_active().ok_or(WorkflowTickError::NotActive)?;
+        let nearest_timer_expiration = workflow.state.persisted.common().nearest_timer();
+        let waker_records = transaction.wakers_for_workflow(workflow_id).await;
+
+        let result = self.do_tick(transaction, workflow, waker_records).await;
+        if let Ok(receipt) = &result {
+            if receipt.executions().is_empty() {
+                return Err(WouldBlock {
+                    nearest_timer_expiration,
+                }
+                .into());
+            }
+        }
 
         Ok(TickResult {
             workflow_id,

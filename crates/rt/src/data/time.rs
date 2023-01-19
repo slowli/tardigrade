@@ -148,6 +148,33 @@ impl PersistedWorkflowData {
             self.waker_queue.push(Wakers::new(wakers, cause));
         }
     }
+
+    /// Returns the current time for the workflow.
+    pub fn current_time(&self) -> DateTime<Utc> {
+        self.timers.last_known_time()
+    }
+
+    /// Returns a timer with the specified `id`.
+    pub fn timer(&self, id: TimerId) -> Option<&TimerState> {
+        self.timers.get(id)
+    }
+
+    /// Enumerates all timers together with their states.
+    pub fn timers(&self) -> impl Iterator<Item = (TimerId, &TimerState)> + '_ {
+        self.timers.iter()
+    }
+
+    /// Returns the nearest timer expiration.
+    pub fn nearest_timer(&self) -> Option<DateTime<Utc>> {
+        let expirations = self.timers.iter().filter_map(|(_, state)| {
+            if state.completed_at().is_none() {
+                Some(state.definition().expires_at)
+            } else {
+                None
+            }
+        });
+        expirations.min()
+    }
 }
 
 /// Handle allowing to manipulate a workflow timer.

@@ -55,6 +55,7 @@ pub(crate) mod helper;
 mod local;
 mod records;
 mod stream;
+mod transaction;
 
 pub use self::{
     local::{
@@ -69,6 +70,7 @@ pub use self::{
     stream::{
         CommitStream, MessageEvent, MessageOrEof, StreamMessages, Streaming, StreamingTransaction,
     },
+    transaction::{TransactionAsStorage, TransactionLock, TransactionReadLock},
 };
 
 use tardigrade::{ChannelId, WakerId, WorkflowId};
@@ -224,7 +226,8 @@ pub trait ReadChannels {
 /// Allows modifying stored information about channels.
 #[async_trait]
 pub trait WriteChannels: ReadChannels {
-    /// Allocates a new unique ID for a channel.
+    /// Allocates a new unique ID for a channel. The allocated ID must be positive; 0th channel ID
+    /// is reserved for a closed channel.
     async fn allocate_channel_id(&mut self) -> ChannelId;
 
     /// Creates a new channel with the provided `state`. If the channel with the specified ID
@@ -260,10 +263,11 @@ pub trait ReadWorkflows {
 /// Allows modifying stored information about workflows.
 #[async_trait]
 pub trait WriteWorkflows: ReadWorkflows {
-    /// Allocates a new unique ID for a workflow.
+    /// Allocates a new unique ID for a workflow. The allocated ID must be positive; 0th ID
+    /// is reserved.
     async fn allocate_workflow_id(&mut self) -> WorkflowId;
     /// Inserts a new workflow into the storage.
-    async fn insert_workflow(&mut self, state: WorkflowRecord);
+    async fn insert_workflow(&mut self, record: WorkflowRecord);
     /// Returns a workflow record for the specified ID for update.
     async fn workflow_for_update(&mut self, id: WorkflowId) -> Option<WorkflowRecord>;
 
@@ -279,7 +283,7 @@ pub trait WriteWorkflows: ReadWorkflows {
     /// Finds an active workflow with an inbound channel that has a message or EOF marker
     /// consumable by the workflow, and selects the workflow for update.
     async fn workflow_with_consumable_channel_for_update(
-        &self,
+        &mut self,
     ) -> Option<WorkflowRecord<ActiveWorkflowState>>;
 }
 

@@ -1,7 +1,5 @@
 //! Helper traits for `WorkflowManager`.
 
-use std::sync::Arc;
-
 use super::{Clock, WorkflowManager};
 use crate::{engine::WorkflowEngine, storage::Storage};
 
@@ -16,6 +14,9 @@ pub trait AsManager: Send + Sync {
 
     #[doc(hidden)] // implementation detail
     fn as_manager(&self) -> &WorkflowManager<Self::Engine, Self::Clock, Self::Storage>;
+
+    #[doc(hidden)] // implementation detail
+    fn as_manager_mut(&mut self) -> &mut WorkflowManager<Self::Engine, Self::Clock, Self::Storage>;
 }
 
 impl<E: WorkflowEngine, C: Clock, S: Storage> AsManager for WorkflowManager<E, C, S> {
@@ -27,26 +28,19 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> AsManager for WorkflowManager<E, C
     fn as_manager(&self) -> &WorkflowManager<Self::Engine, Self::Clock, Self::Storage> {
         self
     }
-}
-
-impl<M: AsManager> AsManager for &M {
-    type Engine = M::Engine;
-    type Storage = M::Storage;
-    type Clock = M::Clock;
 
     #[inline]
-    fn as_manager(&self) -> &WorkflowManager<Self::Engine, Self::Clock, Self::Storage> {
-        (**self).as_manager()
+    fn as_manager_mut(&mut self) -> &mut WorkflowManager<Self::Engine, Self::Clock, Self::Storage> {
+        self
     }
 }
 
-impl<M: AsManager> AsManager for Arc<M> {
-    type Engine = M::Engine;
-    type Storage = M::Storage;
-    type Clock = M::Clock;
+pub(super) trait IntoManager: AsManager {
+    fn into_manager(self) -> WorkflowManager<Self::Engine, Self::Clock, Self::Storage>;
+}
 
-    #[inline]
-    fn as_manager(&self) -> &WorkflowManager<Self::Engine, Self::Clock, Self::Storage> {
-        (**self).as_manager()
+impl<E: WorkflowEngine, C: Clock, S: Storage> IntoManager for WorkflowManager<E, C, S> {
+    fn into_manager(self) -> WorkflowManager<Self::Engine, Self::Clock, Self::Storage> {
+        self
     }
 }

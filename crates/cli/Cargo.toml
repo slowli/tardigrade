@@ -1,0 +1,32 @@
+[package]
+name = "tardigrade-cli"
+version = "0.1.0"
+edition = "2021"
+authors = ["Alex Ostrovski <ostrovski.alex@gmail.com>"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["orchestration", "workflow", "business process"]
+categories = ["asynchronous", "wasm"]
+description = "gRPC server encapsulating Tardigrade runtime"
+repository = "https://github.com/slowli/tardigrade"
+
+[dependencies]
+async-stream = "0.3.3"
+clap = { version = "4.0.32", features = ["derive", "wrap_help"] }
+futures = "0.3.25"
+http = { version = "0.2.8", default-features = false }
+tokio = { version = "1.24.1", features = ["rt-multi-thread", "macros"] }
+tonic = "0.8.3"
+tonic-reflection = "0.6.0"
+tracing = { version = "0.1.37", features = ["attributes"] }
+tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
+
+tardigrade-rt = { version = "0.1.0", path = "../rt" }
+tardigrade-grpc = { version = "0.1.0", path = "../grpc" }
+
+[[bin]]
+name = "tardigrade-grpc"
+path = "src/main.rs"
+
+[workspace]
+members = [] # Separate workspace to commit the lockfile

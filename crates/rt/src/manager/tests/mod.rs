@@ -11,14 +11,16 @@ mod spawn;
 
 use super::*;
 use crate::{
-    engine::{AsWorkflowData, MockAnswers, MockEngine, MockInstance, MockPollFn},
+    data::tests::test_interface,
+    engine::AsWorkflowData,
     handle::WorkflowHandle,
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, ExecutionError, Receipt,
         WakeUpCause,
     },
     storage::{helper, LocalStorage, ReadChannels, ReadWorkflows},
-    workflow::WorkflowAndChannelIds,
+    test::engine::{MockAnswers, MockEngine, MockInstance, MockPollFn},
+    workflow::ChannelIds,
 };
 use tardigrade::{
     channel::SendError,
@@ -31,23 +33,24 @@ const DEFINITION_ID: &str = "test@latest::TestWorkflow";
 
 type LocalManager<C = (), S = LocalStorage> = WorkflowManager<MockEngine, C, S>;
 
-fn channel_id(ids: &WorkflowAndChannelIds, path: &str) -> ChannelId {
-    ids.channel_ids[&HandlePath::new(path)].factor()
+fn channel_id(channel_ids: &ChannelIds, path: &str) -> ChannelId {
+    channel_ids[&HandlePath::new(path)].factor()
 }
 
-pub(crate) async fn create_test_manager_with_storage<S: Storage, C: Clock>(
+async fn create_test_manager_with_storage<S: Storage, C: Clock>(
     poll_fns: MockAnswers,
     clock: C,
     storage: S,
 ) -> LocalManager<C, S> {
-    let engine = MockEngine::new(poll_fns);
+    let engine = MockEngine::new(poll_fns).with_module(b"test", "TestWorkflow", test_interface());
+
     let module_record = ModuleRecord {
         id: "test@latest".to_owned(),
-        bytes: Arc::new([]),
+        bytes: Arc::new(*b"test"),
         definitions: HashMap::new(), // logically incorrect, but this field is ignored
         tracing_metadata: PersistedMetadata::default(),
     };
-    let module = engine.create_module(&module_record).await.unwrap();
+    let module = engine.restore_module(&module_record).await.unwrap();
 
     let manager = WorkflowManager::builder(engine, storage)
         .with_clock(clock)
@@ -60,7 +63,7 @@ async fn create_test_manager<C: Clock>(poll_fns: MockAnswers, clock: C) -> Local
     create_test_manager_with_storage(poll_fns, clock, LocalStorage::default()).await
 }
 
-pub(crate) async fn create_test_workflow<C: Clock, S: Storage + 'static>(
+async fn create_test_workflow<C: Clock, S: Storage>(
     manager: &LocalManager<C, S>,
 ) -> WorkflowHandle<(), &S> {
     let spawner = manager.spawner().close_senders();
@@ -127,7 +130,7 @@ fn initialize_task(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
 
 #[async_std::test]
 async fn instantiating_workflow() {
-    let (poll_fns, mut poll_fn_sx) = Answers::channel();
+    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
     let manager = create_test_manager(poll_fns, ()).await;
     let workflow = create_test_workflow(&manager).await;
 
@@ -135,13 +138,13 @@ async fn instantiating_workflow() {
     let record = storage.workflow(workflow.id()).await.unwrap();
     assert_eq!(record.module_id, "test@latest");
     assert_eq!(record.name_in_module, "TestWorkflow");
-    let orders_id = channel_id(workflow.ids(), "orders");
+    let orders_id = channel_id(workflow.channel_ids(), "orders");
     let orders_record = storage.channel(orders_id).await.unwrap();
     assert_eq!(orders_record.receiver_workflow_id, Some(workflow.id()));
     assert_eq!(orders_record.sender_workflow_ids, HashSet::new());
     assert!(orders_record.has_external_sender);
 
-    let traces_id = channel_id(workflow.ids(), "traces");
+    let traces_id = channel_id(workflow.channel_ids(), "traces");
     let traces_record = storage.channel(traces_id).await.unwrap();
     assert_eq!(traces_record.receiver_workflow_id, None);
     assert_eq!(
@@ -152,29 +155,96 @@ async fn instantiating_workflow() {
 
     poll_fn_sx
         .send(initialize_task)
-        .async_scope(test_initializing_workflow(&manager, workflow.ids()))
+        .async_scope(test_initializing_workflow(
+            &manager,
+            workflow.id(),
+            workflow.channel_ids(),
+        ))
         .await;
 }
 
-async fn test_initializing_workflow(manager: &LocalManager<()>, ids: &WorkflowAndChannelIds) {
-    let workflow_cache = manager.cached_workflows.lock().await;
+async fn test_initializing_workflow(
+    manager: &LocalManager<()>,
+    workflow_id: WorkflowId,
+    channel_ids: &ChannelIds,
+) {
+    let workflow_cache = manager.inner.cached_workflows.lock().await;
     assert!(workflow_cache.inner.is_empty());
     drop(workflow_cache);
 
-    let receipt = manager.tick().await.unwrap().into_inner().unwrap();
+    let receipt = manager.tick_workflow(workflow_id).await.unwrap();
+    let receipt = receipt.into_inner().unwrap();
     assert_eq!(receipt.executions().len(), 2);
     let main_execution = &receipt.executions()[0];
     assert_matches!(main_execution.function, ExecutedFunction::Entry { .. });
 
-    let traces_id = channel_id(ids, "traces");
+    let traces_id = channel_id(channel_ids, "traces");
     let transaction = manager.storage.readonly_transaction().await;
     let traces = transaction.channel(traces_id).await.unwrap();
     assert_eq!(traces.received_messages, 1);
     let message = transaction.channel_message(traces_id, 0).await.unwrap();
     assert_eq!(message, b"trace #1");
 
-    let workflow_cache = manager.cached_workflows.lock().await;
+    let workflow_cache = manager.inner.cached_workflows.lock().await;
     assert_eq!(workflow_cache.inner.len(), 1);
+}
+
+#[async_std::test]
+async fn creating_workflow_in_transaction() {
+    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
+    let mut manager = create_test_manager(poll_fns, ()).await;
+
+    let tx_manager = manager.in_transaction().await;
+    let workflow_id = create_test_workflow(&tx_manager).await.id();
+    let tick_result = poll_fn_sx
+        .send(initialize_task)
+        .async_scope(tx_manager.tick())
+        .await;
+    tick_result.unwrap().into_inner().unwrap();
+
+    // Finally commit the transaction.
+    let transaction = tx_manager.into_storage().into_inner().unwrap();
+    transaction.commit().await;
+
+    let workflow = manager.storage().workflow(workflow_id).await.unwrap();
+    let handle = workflow.handle().await.with_indexing();
+    let message = handle[SenderAt("traces")].receive_message(0).await.unwrap();
+    let message = message.decode().unwrap();
+    assert_eq!(message, b"trace #1");
+}
+
+#[async_std::test]
+async fn discarding_workflow_in_transaction() {
+    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
+    let mut manager = create_test_manager(poll_fns, ()).await;
+
+    let tx_manager = manager.in_transaction().await;
+    let workflow = create_test_workflow(&tx_manager).await;
+    let workflow_id = workflow.id();
+    let channel_ids = workflow.channel_ids().values().copied();
+    let channel_ids: HashSet<_> = channel_ids.map(Handle::factor).collect();
+    let tick_result = poll_fn_sx
+        .send(initialize_task)
+        .async_scope(tx_manager.tick())
+        .await;
+    tick_result.unwrap().into_inner().unwrap();
+
+    // Drop the manager with the transaction, thus discarding it.
+    drop(tx_manager);
+
+    assert!(manager.storage().workflow(workflow_id).await.is_none());
+    for &id in &channel_ids {
+        assert!(manager.storage().channel(id).await.is_none());
+    }
+
+    // Check that if a new workflow is created, its IDs are never reused.
+    let workflow = create_test_workflow(&manager).await;
+    assert_ne!(workflow.id(), workflow_id);
+
+    let new_channel_ids = workflow.channel_ids().values().copied();
+    let new_channel_ids: HashSet<_> = new_channel_ids.map(Handle::factor).collect();
+    let intersection: Vec<_> = new_channel_ids.intersection(&channel_ids).collect();
+    assert!(intersection.is_empty(), "{intersection:?}");
 }
 
 #[async_std::test]
@@ -195,7 +265,7 @@ async fn initializing_workflow_with_closed_channels() {
         Ok(Poll::Pending)
     };
 
-    let (poll_fns, mut poll_fn_sx) = Answers::channel();
+    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
     let manager = create_test_manager(poll_fns, ()).await;
     let spawner = manager.spawner();
     let builder = spawner.new_workflow::<()>(DEFINITION_ID).await.unwrap();
@@ -211,8 +281,8 @@ async fn initializing_workflow_with_closed_channels() {
         .unwrap();
     let workflow_id = workflow.id();
 
-    assert_eq!(channel_id(workflow.ids(), "orders"), 0);
-    assert_eq!(channel_id(workflow.ids(), "traces"), 0);
+    assert_eq!(channel_id(workflow.channel_ids(), "orders"), 0);
+    assert_eq!(channel_id(workflow.channel_ids(), "traces"), 0);
 
     poll_fn_sx
         .send(test_channels)
@@ -263,12 +333,12 @@ async fn closing_workflow_channels() {
         Ok(Poll::Pending)
     };
 
-    let (poll_fns, mut poll_fn_sx) = Answers::channel();
+    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
     let manager = create_test_manager(poll_fns, ()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
-    let events_id = channel_id(workflow.ids(), "events");
-    let orders_id = channel_id(workflow.ids(), "orders");
+    let events_id = channel_id(workflow.channel_ids(), "events");
+    let orders_id = channel_id(workflow.channel_ids(), "orders");
 
     poll_fn_sx
         .send(block_on_flush)
@@ -280,7 +350,11 @@ async fn closing_workflow_channels() {
     assert!(channel_info.is_closed);
 
     workflow.update().await.unwrap();
-    let events: Vec<_> = workflow.persisted().pending_wakeup_causes().collect();
+    let events: Vec<_> = workflow
+        .persisted()
+        .common()
+        .pending_wakeup_causes()
+        .collect();
     assert_matches!(
         events.as_slice(),
         [WakeUpCause::Flush { channel_id, .. }] if *channel_id == events_id
@@ -333,11 +407,11 @@ async fn test_closing_receiver_from_host_side(with_message: bool) {
         Ok(Poll::Pending)
     };
 
-    let (poll_fns, mut poll_fn_sx) = Answers::channel();
+    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
     let manager = create_test_manager(poll_fns, ()).await;
     let workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
-    let orders_id = channel_id(workflow.ids(), "orders");
+    let orders_id = channel_id(workflow.channel_ids(), "orders");
 
     poll_fn_sx
         .send(initialize_task)
@@ -397,7 +471,7 @@ async fn closing_receiver_with_message_from_host_side() {
 
 #[async_std::test]
 async fn error_initializing_workflow() {
-    let (poll_fns, mut poll_fn_sx) = Answers::channel();
+    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
     let manager = create_test_manager(poll_fns, ()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
@@ -456,11 +530,11 @@ fn consume_message(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
 
 #[async_std::test]
 async fn sending_message_to_workflow() {
-    let (poll_fns, mut poll_fn_sx) = Answers::channel();
+    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
     let manager = create_test_manager(poll_fns, ()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
-    let orders_id = channel_id(workflow.ids(), "orders");
+    let orders_id = channel_id(workflow.channel_ids(), "orders");
 
     poll_fn_sx
         .send(poll_receiver)
@@ -503,23 +577,23 @@ async fn sending_message_to_workflow() {
     assert_eq!(orders_state.received_message_count(), 1);
 }
 
+fn error_after_consuming_message(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
+    let channels = ctx.data().persisted.channels();
+    let orders_id = channels.channel_id("orders").unwrap();
+    let mut orders = ctx.data_mut().receiver(orders_id);
+    let poll_result = orders.poll_next().into_inner(ctx)?;
+    assert_matches!(poll_result, Poll::Ready(Some(_)));
+
+    Err(anyhow!("oops"))
+}
+
 #[async_std::test]
 async fn error_processing_inbound_message_in_workflow() {
-    let error_after_consuming_message: MockPollFn = |ctx| {
-        let channels = ctx.data().persisted.channels();
-        let orders_id = channels.channel_id("orders").unwrap();
-        let mut orders = ctx.data_mut().receiver(orders_id);
-        let poll_result = orders.poll_next().into_inner(ctx)?;
-        assert_matches!(poll_result, Poll::Ready(Some(_)));
-
-        Err(anyhow!("oops"))
-    };
-
-    let (poll_fns, mut poll_fn_sx) = Answers::channel();
+    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
     let manager = create_test_manager(poll_fns, ()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
-    let orders_id = channel_id(workflow.ids(), "orders");
+    let orders_id = channel_id(workflow.channel_ids(), "orders");
 
     poll_fn_sx
         .send(initialize_task)
@@ -570,11 +644,11 @@ async fn error_processing_inbound_message_in_workflow() {
 
 #[async_std::test]
 async fn workflow_not_consuming_inbound_message() {
-    let (poll_fns, mut poll_fn_sx) = Answers::channel();
+    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
     let manager = create_test_manager(poll_fns, ()).await;
     let mut workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
-    let orders_id = channel_id(workflow.ids(), "orders");
+    let orders_id = channel_id(workflow.channel_ids(), "orders");
 
     poll_fn_sx
         .send(poll_receiver)
@@ -599,13 +673,17 @@ async fn workflow_not_consuming_inbound_message() {
 
     // Workflow wakers should be consumed to not trigger the infinite loop.
     workflow.update().await.unwrap();
-    let events: Vec<_> = workflow.persisted().pending_wakeup_causes().collect();
+    let events: Vec<_> = workflow
+        .persisted()
+        .common()
+        .pending_wakeup_causes()
+        .collect();
     assert!(events.is_empty(), "{events:?}");
 }
 
 #[async_std::test]
 async fn handles_shape_mismatch_error() {
-    let (poll_fns, _) = Answers::channel();
+    let (poll_fns, _) = MockAnswers::channel();
     let manager = create_test_manager(poll_fns, ()).await;
     let spawner = manager.spawner();
     let storage = manager.storage();
@@ -635,13 +713,13 @@ async fn handles_shape_mismatch_error() {
 
 #[async_std::test]
 async fn non_owned_channel_error() {
-    let (poll_fns, _) = Answers::channel();
+    let (poll_fns, _) = MockAnswers::channel();
     let manager = create_test_manager(poll_fns, ()).await;
     let spawner = manager.spawner();
     let storage = &manager.storage;
     let workflow = create_test_workflow(&manager).await;
 
-    let orders_id = channel_id(workflow.ids(), "orders");
+    let orders_id = channel_id(workflow.channel_ids(), "orders");
     let orders_rx = manager.storage().receiver(orders_id).await.unwrap();
     let (traces_sx, _) = spawner.new_channel().await;
     let mut handles = HandleMap::new();
@@ -696,7 +774,7 @@ async fn non_owned_channel_error() {
 async fn resolving_workflow_definition() {
     const STUB_ID: u64 = 1;
 
-    let (poll_fns, mut poll_fn_sx) = Answers::channel();
+    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
     let manager = create_test_manager(poll_fns, ()).await;
     let workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
@@ -725,7 +803,7 @@ async fn workflow_definition_errors() {
     const BOGUS_STUB_ID: u64 = 1;
     const MISSING_STUB_ID: u64 = 2;
 
-    let (poll_fns, mut poll_fn_sx) = Answers::channel();
+    let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
     let manager = create_test_manager(poll_fns, ()).await;
     let workflow = create_test_workflow(&manager).await;
     let workflow_id = workflow.id();
@@ -750,3 +828,6 @@ async fn workflow_definition_errors() {
         })
         .await;
 }
+
+// FIXME: test / fix providing receiver for existing channel with messages
+//   (old messages should not be consumed)

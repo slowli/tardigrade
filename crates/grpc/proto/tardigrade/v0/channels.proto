@@ -1,0 +1,105 @@
+// Channel-specific functionality for the Tardigrade runtime.
+
+syntax = "proto3";
+
+package tardigrade.v0;
+
+import "google/protobuf/empty.proto";
+import "tardigrade/v0/types.proto";
+
+service ChannelsService {
+  // Creates a new channel.
+  rpc CreateChannel(CreateChannelRequest) returns (Channel) {}
+  // Gets information about the channel with the specified ID.
+  rpc GetChannel(GetChannelRequest) returns (Channel) {}
+  // Closes the channel with the specified ID.
+  rpc CloseChannel(CloseChannelRequest) returns (Channel) {}
+  // TODO: truncate channel
+
+  // Gets a specific message from the specified channel.
+  rpc GetMessage(GetMessageRequest) returns (Message) {}
+  // Streams messages from the specified channel.
+  rpc StreamMessages(StreamMessagesRequest) returns (stream Message) {}
+  // Push one or more messages to the specified channel.
+  rpc PushMessages(PushMessagesRequest) returns (google.protobuf.Empty) {}
+}
+
+// Request to create a new channel.
+message CreateChannelRequest {
+  // No fields yet.
+}
+
+// Request to get information about a channel.
+message GetChannelRequest {
+  // Channel ID to retrieve.
+  uint64 id = 1;
+}
+
+// Request to close a channel.
+message CloseChannelRequest {
+  // Channel ID to close.
+  uint64 id = 1;
+  // Which half of the channel to close?
+  HandleType half = 2;
+}
+
+// Message payload codec.
+enum MessageCodec {
+  // Do not decode messages.
+  MESSAGE_CODEC_UNSPECIFIED = 0;
+  // Assume message payloads are JSON.
+  MESSAGE_CODEC_JSON = 1;
+}
+
+// Request to get a message from a channel.
+message GetMessageRequest {
+  // Reference of the message.
+  MessageRef ref = 1;
+  // Codec to use when decoding the message.
+  MessageCodec codec = 2;
+}
+
+// Message stored in a channel.
+message Message {
+  // Message coordinates: the ID of the owning channel, and the message index.
+  MessageRef reference = 1;
+  // Message payload.
+  oneof payload {
+    // Raw payload bytes.
+    bytes raw = 2;
+    // Decoded UTF-8 string.
+    string str = 3;
+  }
+}
+
+// Request to stream messages from a channel.
+message StreamMessagesRequest {
+  // Channel ID to stream from.
+  uint64 channel_id = 1;
+  // 0-based starting index for the streamed messages.
+  uint64 start_index = 2;
+  // Codec to use when decoding messages.
+  MessageCodec codec = 3;
+  // Follow new messages from the channel? If false, messages will be streamed
+  // from a storage snapshot; thus, the stream should complete even if the channel is open.
+  bool follow = 4;
+}
+
+// Request to push messages to a channel.
+message PushMessagesRequest {
+  // Single message pushed into the channel.
+  message Pushed {
+    // Message payload.
+    oneof payload {
+      // Raw payload bytes.
+      bytes raw = 1;
+      // Payload specified as a UTF-8 string (e.g., for the JSON codec).
+      string str = 2;
+    }
+  }
+
+  // Channel ID to push the message into.
+  uint64 channel_id = 1;
+  // Messages to push. All specified messages are pushed atomically.
+  repeated Pushed messages = 2;
+}

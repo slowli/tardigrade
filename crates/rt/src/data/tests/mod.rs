@@ -14,19 +14,33 @@ mod spawn;
 
 use super::*;
 use crate::{
-    backends::MockScheduler,
-    engine::{
-        AsWorkflowData, DefineWorkflow, MockAnswers, MockDefinition, MockInstance, MockPollFn,
-    },
+    engine::{AsWorkflowData, DefineWorkflow},
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, Execution, ExecutionError,
         Receipt, ResourceEventKind, ResourceId,
+    },
+    test::{
+        engine::{MockAnswers, MockDefinition, MockInstance, MockPollFn},
+        MockScheduler,
     },
     workflow::{PersistedWorkflow, Workflow},
 };
 use tardigrade::{
     abi::PollMessage, interface::Interface, task::JoinError, ChannelId, TimerDefinition,
 };
+
+const TEST_INTERFACE: &[u8] = br#"{
+    "v": 0,
+    "handles": {
+        "orders": { "receiver": {} },
+        "events": { "sender": {} },
+        "traces": { "sender": { "capacity": null } }
+    }
+}"#;
+
+pub(crate) fn test_interface() -> Interface {
+    Interface::from_bytes(TEST_INTERFACE)
+}
 
 fn extract_message(poll_res: PollMessage) -> Vec<u8> {
     match poll_res {
@@ -129,7 +143,7 @@ fn create_workflow_with_scheduler(
     poll_fns: MockAnswers,
     scheduler: MockScheduler,
 ) -> (Receipt, Workflow<MockInstance>) {
-    let definition = MockDefinition::new(poll_fns);
+    let definition = MockDefinition::new(poll_fns, test_interface());
     let channel_ids = mock_channel_ids(definition.interface(), &mut 1);
     let mut data = WorkflowData::new(definition.interface(), channel_ids);
     data.set_services(Services {
@@ -151,7 +165,7 @@ fn restore_workflow(
     persisted: PersistedWorkflow,
     scheduler: MockScheduler,
 ) -> Workflow<MockInstance> {
-    let definition = MockDefinition::new(poll_fns);
+    let definition = MockDefinition::new(poll_fns, test_interface());
     let services = Services {
         clock: Arc::new(scheduler),
         stubs: None,
@@ -313,7 +327,7 @@ fn assert_inbound_message_receipt(workflow: &Workflow<MockInstance>, receipt: &R
 #[test]
 fn trap_when_starting_workflow() {
     let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
-    let definition = MockDefinition::new(poll_fns);
+    let definition = MockDefinition::new(poll_fns, test_interface());
     let channel_ids = mock_channel_ids(definition.interface(), &mut 1);
     let mut data = WorkflowData::new(definition.interface(), channel_ids);
     data.set_services(Services {
@@ -439,7 +453,7 @@ fn workflow_terminates_after_main_task_completion() {
     task_result.as_ref().unwrap();
 
     let workflow = workflow.persist();
-    assert_matches!(workflow.result(), Poll::Ready(Ok(())));
+    assert_matches!(workflow.common().result(), Poll::Ready(Ok(())));
 }
 
 #[test]

@@ -7,7 +7,7 @@
 **Documentation:**
 [![crate docs (main)](https://img.shields.io/badge/main-yellow.svg?label=docs)](https://slowli.github.io/tardigrade/tardigrade_rt/)
 
-This crate provides a specialized runtime for [`tardigrade`] workflows.
+This crate provides an embeddable runtime for [`tardigrade`] workflows.
 Workflow modules can be run either using a high-level async interface,
 or a lower-level sync API; the latter could be useful for greater control
 over workflow execution. Both statically known and dynamically-typed
@@ -22,9 +22,6 @@ Add this to your `Crate.toml`:
 tardigrade-rt = "0.1.0"
 ```
 
-Note that async workflow execution and some other functionality
-is provided by opt-in crate features.
-
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE)
@@ -34,4 +31,5 @@ Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in `tardigrade` by you, as defined in the Apache-2.0 license,
 shall be dual licensed as above, without any additional terms or conditions.
 
-[`tardigrade`]: https://crates.io/crates/tardigrade
+<!-- TODO: replace with crates.io links before publishing -->
+[`tardigrade`]: ../..

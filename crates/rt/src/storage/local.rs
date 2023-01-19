@@ -184,7 +184,7 @@ impl Default for LocalStorage {
         Self {
             inner: Mutex::default(),
             next_channel_id: AtomicU64::new(1), // skip the closed channel
-            next_workflow_id: AtomicU64::new(0),
+            next_workflow_id: AtomicU64::new(1),
             next_waker_id: AtomicU64::new(0),
             truncate_messages: false,
         }
@@ -329,14 +329,7 @@ impl ReadWorkflows for LocalReadonlyTransaction<'_> {
 
     async fn nearest_timer_expiration(&self) -> Option<DateTime<Utc>> {
         let workflows = self.active_workflow_states();
-        let timers = workflows.flat_map(PersistedWorkflow::timers);
-        let expirations = timers.filter_map(|(_, state)| {
-            if state.completed_at().is_none() {
-                Some(state.definition().expires_at)
-            } else {
-                None
-            }
-        });
+        let expirations = workflows.filter_map(|workflow| workflow.common().nearest_timer());
         expirations.min()
     }
 }
@@ -446,8 +439,8 @@ impl WriteWorkflows for LocalTransaction<'_> {
             .fetch_add(1, Ordering::SeqCst)
     }
 
-    async fn insert_workflow(&mut self, state: WorkflowRecord) {
-        self.inner_mut().workflows.insert(state.id, state);
+    async fn insert_workflow(&mut self, record: WorkflowRecord) {
+        self.inner_mut().workflows.insert(record.id, record);
     }
 
     async fn workflow_for_update(&mut self, id: WorkflowId) -> Option<WorkflowRecord> {
@@ -474,7 +467,7 @@ impl WriteWorkflows for LocalTransaction<'_> {
     }
 
     async fn workflow_with_consumable_channel_for_update(
-        &self,
+        &mut self,
     ) -> Option<WorkflowRecord<ActiveWorkflowState>> {
         let workflows = self.inner().workflows.values().filter_map(|record| {
             if let WorkflowState::Active(state) = &record.state {

@@ -116,11 +116,14 @@ impl TaskState {
 }
 
 impl PersistedWorkflowData {
-    pub(crate) fn task(&self, task_id: TaskId) -> Option<&TaskState> {
+    /// Returns the current state of a task with the specified ID.
+    pub fn task(&self, task_id: TaskId) -> Option<&TaskState> {
         self.tasks.get(&task_id)
     }
 
-    pub(crate) fn main_task(&self) -> Option<&TaskState> {
+    /// Returns the current state of the main task (the task that initializes the workflow),
+    /// or `None` if the workflow is not initialized.
+    pub fn main_task(&self) -> Option<&TaskState> {
         debug_assert_eq!(
             self.tasks
                 .values()
@@ -133,8 +136,14 @@ impl PersistedWorkflowData {
         self.tasks.values().find(|state| state.spawned_by.is_none())
     }
 
-    pub(crate) fn tasks(&self) -> impl Iterator<Item = (TaskId, &TaskState)> + '_ {
+    /// Lists all tasks in this workflow.
+    pub fn tasks(&self) -> impl Iterator<Item = (TaskId, &TaskState)> + '_ {
         self.tasks.iter().map(|(id, state)| (*id, state))
+    }
+
+    /// Iterates over pending [`WakeUpCause`]s.
+    pub fn pending_wakeup_causes(&self) -> impl Iterator<Item = &WakeUpCause> + '_ {
+        self.waker_queue.iter().map(Wakers::cause)
     }
 
     #[tracing::instrument(level = "debug")]
@@ -149,7 +158,8 @@ impl PersistedWorkflowData {
         self.schedule_wakers(wakers, WakeUpCause::CompletedTask(task_id));
     }
 
-    pub(crate) fn result(&self) -> Poll<Result<(), &JoinError>> {
+    /// Returns the result of executing this workflow, which is the output of its main task.
+    pub fn result(&self) -> Poll<Result<(), &JoinError>> {
         self.main_task().map_or(Poll::Pending, TaskState::result)
     }
 

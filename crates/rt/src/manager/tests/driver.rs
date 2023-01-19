@@ -2,15 +2,21 @@
 
 use assert_matches::assert_matches;
 use async_std::task;
+use chrono::TimeZone;
 use futures::{
     future::{self, Either},
     FutureExt, StreamExt,
 };
 
-use std::{sync::Arc, task::Poll};
+use std::{sync::Arc, task::Poll, time::Duration};
 
 use super::*;
-use crate::{backends::MockScheduler, storage::Streaming};
+use crate::{
+    receipt::{ResourceEventKind, ResourceId},
+    storage::Streaming,
+    test::MockScheduler,
+};
+use tardigrade::{TimerDefinition, TimerId};
 
 type StreamingStorage = Streaming<Arc<LocalStorage>>;
 type StreamingManager = WorkflowManager<MockEngine, MockScheduler, StreamingStorage>;
@@ -56,11 +62,13 @@ fn handle_order(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
 async fn completing_workflow_via_driver() {
     let poll_fns = MockAnswers::from_values([poll_orders, handle_order]);
     let (storage, mut commits_rx) = create_storage();
-    let manager = Arc::new(create_test_manager(storage, poll_fns).await);
+    let manager = create_test_manager(storage, poll_fns).await;
     let workflow = create_test_workflow(&manager).await;
-    let manager = Arc::clone(&manager);
-    let driver_task =
-        task::spawn(async move { manager.drive(&mut commits_rx, DriveConfig::new()).await });
+
+    let driver_task = {
+        let manager = manager.clone();
+        task::spawn(async move { manager.drive(&mut commits_rx, DriveConfig::new()).await })
+    };
 
     let mut handle = workflow.handle().await.with_indexing();
     let orders_sx = handle.remove(ReceiverAt("orders")).unwrap();
@@ -118,7 +126,7 @@ async fn test_driver_with_multiple_messages(start_after_tick: bool) {
         orders_sx.send(b"order".to_vec()).await.unwrap();
         orders_sx.close().await;
     };
-    let drive_task = manager.drive(&mut commits_rx, DriveConfig::new());
+    let drive_task = manager.clone().drive(&mut commits_rx, DriveConfig::new());
     let (_, termination) = future::join(orders_task, drive_task).await;
     assert_matches!(termination, Termination::Finished);
 
@@ -152,7 +160,7 @@ async fn selecting_from_driver_and_other_future() {
         MockAnswers::from_values([poll_orders, handle_order_and_poll_order, handle_order]);
 
     let (storage, mut commits_rx) = create_storage();
-    let manager = Arc::new(create_test_manager(storage, poll_fns).await);
+    let manager = create_test_manager(storage, poll_fns).await;
     let mut workflow = create_test_workflow(&manager).await;
     let mut drive_config = DriveConfig::new();
     let mut tick_results = drive_config.tick_results();
@@ -184,7 +192,7 @@ async fn selecting_from_driver_and_other_future() {
     futures::pin_mut!(until_consumed_order);
 
     {
-        let driver_task = manager.drive(&mut commits_rx, drive_config);
+        let driver_task = manager.clone().drive(&mut commits_rx, drive_config);
         futures::pin_mut!(driver_task);
         let select_task = future::select(driver_task, until_consumed_order);
 
@@ -203,4 +211,211 @@ async fn selecting_from_driver_and_other_future() {
     orders.send(b"order #2".to_vec()).await.unwrap();
     manager.tick().await.unwrap().into_inner().unwrap();
     workflow.update().await.unwrap_err(); // should be completed
+}
+
+async fn test_dropping_storage_with_driver(drop_before_start: bool) {
+    const TIMER_ID: TimerId = 0;
+
+    let create_timer: MockPollFn = |ctx| {
+        let timer_id = ctx.data_mut().create_timer(TimerDefinition {
+            expires_at: Utc.timestamp_millis_opt(50).unwrap(),
+        });
+        assert_eq!(timer_id, TIMER_ID);
+
+        let poll_result = ctx.data_mut().timer(timer_id).poll().into_inner(ctx)?;
+        assert!(poll_result.is_pending());
+        Ok(Poll::Pending)
+    };
+    let complete_timer: MockPollFn = |ctx| {
+        let poll_result = ctx.data_mut().timer(TIMER_ID).poll().into_inner(ctx)?;
+        assert!(poll_result.is_ready());
+        Ok(Poll::Ready(()))
+    };
+    let poll_fns = MockAnswers::from_values([create_timer, complete_timer]);
+
+    let (storage, mut commits_rx) = create_storage();
+    let clock = MockScheduler::default();
+    let manager = create_test_manager_with_storage(poll_fns, clock.clone(), storage).await;
+    create_test_workflow(&manager).await;
+    let mut manager = Some(manager);
+
+    let mut config = DriveConfig::new();
+    let mut tick_results = config.tick_results();
+    let driver_task = {
+        let manager = manager.as_ref().unwrap().clone();
+        async move { manager.drive(&mut commits_rx, config).await }
+    };
+
+    if drop_before_start {
+        manager.take();
+    }
+    let driver_task = task::spawn(driver_task);
+
+    let receipt = tick_results.next().await.unwrap().into_inner().unwrap();
+    assert!(receipt.events().any(|event| {
+        event.as_resource_event().map_or(false, |event| {
+            matches!(event.resource_id, ResourceId::Timer(TIMER_ID))
+        })
+    }));
+
+    manager.take();
+    clock.set_now(clock.now() + chrono::Duration::milliseconds(100));
+
+    let receipt = tick_results.next().await.unwrap().into_inner().unwrap();
+    let timer_event = receipt.events().find_map(|event| {
+        if let Some(event) = event.as_resource_event() {
+            if matches!(event.resource_id, ResourceId::Timer(TIMER_ID)) {
+                return Some(event.kind);
+            }
+        }
+        None
+    });
+    let timer_event = timer_event.unwrap();
+    assert_matches!(timer_event, ResourceEventKind::Polled(Poll::Ready(_)));
+
+    assert_matches!(driver_task.await, Termination::Finished);
+}
+
+#[async_std::test]
+async fn dropping_storage_before_driving_manager() {
+    test_dropping_storage_with_driver(true).await;
+}
+
+#[async_std::test]
+async fn dropping_storage_when_driving_manager() {
+    test_dropping_storage_with_driver(false).await;
+}
+
+#[async_std::test]
+async fn not_waiting_for_new_workflow_with_default_config() {
+    let poll_fns = MockAnswers::from_values([poll_orders, handle_order]);
+    let (storage, mut commits_rx) = create_storage();
+    let manager = create_test_manager(storage, poll_fns).await;
+
+    // The manager should immediately terminate.
+    let termination = manager.drive(&mut commits_rx, DriveConfig::new()).await;
+    assert_matches!(termination, Termination::Finished);
+}
+
+#[async_std::test]
+async fn waiting_for_new_workflow() {
+    let poll_fns = MockAnswers::from_values([poll_orders, handle_order]);
+    let (storage, mut commits_rx) = create_storage();
+    let manager = create_test_manager(storage, poll_fns).await;
+
+    let mut config = DriveConfig::new();
+    config.wait_for_workflows();
+    let mut results_rx = config.tick_results();
+    let driver_task = {
+        let manager = manager.clone();
+        task::spawn(async move { manager.drive(&mut commits_rx, config).await })
+    };
+
+    task::sleep(Duration::from_millis(50)).await;
+    assert!(driver_task.now_or_never().is_none());
+
+    let mut workflow = create_test_workflow(&manager).await;
+    let result = results_rx.next().await.unwrap();
+    assert_eq!(result.workflow_id(), workflow.id());
+
+    let receipt = result.into_inner().unwrap();
+    let has_polling_event = receipt.events().any(|event| {
+        if let Some(event) = event.as_channel_event() {
+            return matches!(
+                event.kind,
+                ChannelEventKind::ReceiverPolled {
+                    result: Poll::Pending,
+                }
+            );
+        }
+        false
+    });
+    assert!(has_polling_event, "{receipt:#?}");
+
+    workflow.update().await.unwrap();
+    assert_eq!(workflow.record().execution_count, 1);
+
+    let mut handle = workflow.handle().await.with_indexing();
+    let orders_sx = handle.remove(ReceiverAt("orders")).unwrap();
+    orders_sx.send(b"order".to_vec()).await.unwrap();
+    orders_sx.close().await;
+
+    let result = results_rx.next().await.unwrap();
+    assert_eq!(result.workflow_id(), workflow.id());
+    let receipt = result.into_inner().unwrap();
+    assert_main_task_completed(&receipt);
+
+    workflow.update().await.unwrap_err();
+    assert_eq!(workflow.record().execution_count, 2);
+    let workflow = manager.storage().any_workflow(workflow.id()).await.unwrap();
+    assert!(workflow.is_completed());
+}
+
+fn assert_main_task_completed(receipt: &Receipt) {
+    let main_execution = receipt
+        .executions()
+        .iter()
+        .find(|execution| {
+            matches!(
+                execution.function,
+                ExecutedFunction::Task { task_id: 0, .. }
+            )
+        })
+        .unwrap();
+    assert_matches!(main_execution.task_result, Some(Ok(_)));
+}
+
+#[async_std::test]
+async fn waiting_for_repaired_workflow() {
+    let poll_fns =
+        MockAnswers::from_values([poll_orders, error_after_consuming_message, handle_order]);
+    let (storage, mut commits_rx) = create_storage();
+    let manager = create_test_manager(storage, poll_fns).await;
+    let mut workflow = create_test_workflow(&manager).await;
+
+    let mut config = DriveConfig::new();
+    config.wait_for_workflows();
+    let mut results_rx = config.tick_results();
+    {
+        let manager = manager.clone();
+        task::spawn(async move { manager.drive(&mut commits_rx, config).await });
+    }
+
+    let result = results_rx.next().await.unwrap();
+    assert_eq!(result.workflow_id(), workflow.id());
+    workflow.update().await.unwrap();
+    assert_eq!(workflow.record().execution_count, 1);
+
+    let mut handle = workflow.handle().await.with_indexing();
+    let orders_sx = handle.remove(ReceiverAt("orders")).unwrap();
+    orders_sx.send(b"bogus".to_vec()).await.unwrap();
+
+    let result = results_rx.next().await.unwrap();
+    assert_eq!(result.workflow_id(), workflow.id());
+    let err = result.into_inner().unwrap_err();
+    let err = err.trap().to_string();
+    assert!(err.contains("oops"), "{err}");
+
+    workflow.update().await.unwrap_err();
+    assert_eq!(workflow.record().execution_count, 2);
+    let workflow_id = workflow.id();
+    let workflow = manager.storage().any_workflow(workflow_id).await.unwrap();
+    assert!(workflow.is_errored());
+
+    let workflow = workflow.unwrap_errored();
+    let mut err_messages: Vec<_> = workflow.messages().collect();
+    assert_eq!(err_messages.len(), 1);
+    let err_message = err_messages.pop().unwrap();
+    err_message.drop_for_workflow().await.unwrap();
+    workflow.consider_repaired().await.unwrap();
+
+    orders_sx.send(b"order".to_vec()).await.unwrap();
+    orders_sx.close().await;
+
+    let result = results_rx.next().await.unwrap();
+    let receipt = result.into_inner().unwrap();
+    assert_main_task_completed(&receipt);
+
+    let workflow = manager.storage().any_workflow(workflow_id).await.unwrap();
+    assert!(workflow.is_completed());
 }

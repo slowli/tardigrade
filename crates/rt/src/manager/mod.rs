@@ -7,7 +7,7 @@ use futures::lock::{Mutex, MutexGuard};
 use lru::LruCache;
 use tracing_tunnel::{LocalSpans, PersistedMetadata};
 
-use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
+use std::{collections::HashMap, fmt, num::NonZeroUsize, sync::Arc};
 
 mod driver;
 mod services;
@@ -22,8 +22,8 @@ pub(crate) use self::services::{Services, StashStub};
 pub use self::{
     driver::{DriveConfig, Termination},
     services::{Clock, Schedule, TimerFuture},
-    stubs::ManagerSpawner,
-    tick::{TickResult, WouldBlock},
+    stubs::{ManagerSpawner, MapFormat},
+    tick::{TickResult, WorkflowTickError, WouldBlock},
     traits::AsManager,
 };
 
@@ -32,11 +32,11 @@ use crate::{
     handle::StorageRef,
     storage::{
         helper::StorageHelper, CommitStream, DefinitionRecord, ModuleRecord, ReadModules, Storage,
-        StorageTransaction, Streaming, WriteModules,
+        StorageTransaction, Streaming, TransactionAsStorage, WriteModules,
     },
     workflow::Workflow,
 };
-use tardigrade::WorkflowId;
+use tardigrade::{Raw, WorkflowId};
 
 #[derive(Debug)]
 struct CachedDefinitions<D> {
@@ -92,7 +92,10 @@ impl<E: WorkflowEngine> Definitions<'_, E> {
         let entered = span.enter();
 
         let module = transaction.module(module_id).await?;
-        let module = self.engine.create_module(&module).await;
+        module.definitions.get(name_in_module)?;
+        // ^ Do not waste time on restoring the module if the `name_in_module` is bogus.
+
+        let module = self.engine.restore_module(&module).await;
         let module = match module {
             Ok(module) => module,
             Err(err) => {
@@ -168,6 +171,42 @@ impl<I> CachedWorkflows<I> {
                 "cached workflow is stale"
             );
             None
+        }
+    }
+}
+
+/// Part of the `WorkflowManager` not tied to the storage.
+///
+/// We need this as a separate type to make storage easily swappable (e.g., to implement
+/// driving the manager or transactional operations).
+#[derive(Debug)]
+struct ManagerInner<E: WorkflowEngine, C> {
+    engine: E,
+    clock: Arc<C>,
+    definitions: Mutex<CachedDefinitions<E::Definition>>,
+    cached_workflows: Mutex<CachedWorkflows<E::Instance>>,
+    local_spans: Mutex<HashMap<WorkflowId, LocalSpans>>,
+}
+
+impl<E: WorkflowEngine, C: Clock> ManagerInner<E, C> {
+    fn new(engine: E, clock: C, workflow_cache_capacity: NonZeroUsize) -> Self {
+        let definitions = CachedDefinitions {
+            inner: LruCache::unbounded(), // TODO: support bounded cache
+        };
+
+        Self {
+            engine,
+            clock: Arc::new(clock),
+            definitions: Mutex::new(definitions),
+            cached_workflows: Mutex::new(CachedWorkflows::new(workflow_cache_capacity)),
+            local_spans: Mutex::default(),
+        }
+    }
+
+    async fn definitions(&self) -> Definitions<'_, E> {
+        Definitions {
+            cached: self.definitions.lock().await,
+            engine: &self.engine,
         }
     }
 }
@@ -248,14 +287,34 @@ impl<I> CachedWorkflows<I> {
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug)]
 pub struct WorkflowManager<E: WorkflowEngine, C, S> {
-    engine: E,
-    pub(crate) clock: Arc<C>,
-    pub(crate) storage: S,
-    definitions: Mutex<CachedDefinitions<E::Definition>>,
-    cached_workflows: Mutex<CachedWorkflows<E::Instance>>,
-    local_spans: Mutex<HashMap<WorkflowId, LocalSpans>>,
+    inner: Arc<ManagerInner<E, C>>,
+    storage: S,
+}
+
+impl<E, C, S> fmt::Debug for WorkflowManager<E, C, S>
+where
+    E: WorkflowEngine + fmt::Debug,
+    E::Instance: fmt::Debug,
+    C: fmt::Debug,
+    S: fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WorkflowManager")
+            .field("inner", &self.inner)
+            .field("storage", &self.storage)
+            .finish()
+    }
+}
+
+impl<E: WorkflowEngine, C: Clock, S: Storage + Clone> Clone for WorkflowManager<E, C, S> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            storage: self.storage.clone(),
+        }
+    }
 }
 
 #[allow(clippy::mismatching_type_param_order, clippy::missing_panics_doc)] // false positive
@@ -273,17 +332,9 @@ impl<E: WorkflowEngine, S: Storage> WorkflowManager<E, (), S> {
 
 impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
     fn new(engine: E, clock: C, storage: S, workflow_cache_capacity: NonZeroUsize) -> Self {
-        let definitions = CachedDefinitions {
-            inner: LruCache::unbounded(), // TODO: support bounded cache
-        };
-
         Self {
-            engine,
-            clock: Arc::new(clock),
-            definitions: Mutex::new(definitions),
+            inner: Arc::new(ManagerInner::new(engine, clock, workflow_cache_capacity)),
             storage,
-            cached_workflows: Mutex::new(CachedWorkflows::new(workflow_cache_capacity)),
-            local_spans: Mutex::default(),
         }
     }
 
@@ -292,12 +343,13 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
     /// # Panics
     ///
     /// Panics if the module `id` contains ineligible chars, such as `:`.
-    pub async fn insert_module(&self, id: &str, module: E::Module) {
+    #[tracing::instrument(skip(self, module), ret)]
+    pub async fn insert_module(&self, id: &str, module: E::Module) -> ModuleRecord {
         assert!(!id.contains(':'), "module ID contains ineligible char `:`");
 
         let bytes = module.bytes();
         let mut definitions = HashMap::new();
-        let mut cached_definitions = self.definitions.lock().await;
+        let mut cached_definitions = self.inner.definitions.lock().await;
         for (name, def) in module {
             definitions.insert(
                 name.clone(),
@@ -317,8 +369,14 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
             tracing_metadata: PersistedMetadata::default(),
         };
         let mut transaction = self.storage.transaction().await;
-        transaction.insert_module(module_record).await;
+        transaction.insert_module(module_record.clone()).await;
         transaction.commit().await;
+        module_record
+    }
+
+    /// Returns a reference to the execution engine.
+    pub fn engine(&self) -> &E {
+        &self.inner.engine
     }
 
     /// Returns a reference to the underlying storage.
@@ -326,9 +384,14 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         StorageRef::from(&self.storage)
     }
 
-    /// Returns a spawner handle that can be used to create new workflows.
-    pub fn spawner(&self) -> ManagerSpawner<'_, Self> {
-        ManagerSpawner::new(self)
+    #[doc(hidden)] // not mature for external usage yet
+    pub fn clock(&self) -> &C {
+        self.inner.clock.as_ref()
+    }
+
+    #[doc(hidden)] // not mature for external usage yet
+    pub fn storage_mut(&mut self) -> &mut S {
+        &mut self.storage
     }
 
     /// Returns the encapsulated storage.
@@ -336,22 +399,71 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         self.storage
     }
 
-    async fn definitions(&self) -> Definitions<'_, E> {
-        Definitions {
-            cached: self.definitions.lock().await,
-            engine: &self.engine,
+    /// Creates a storage transaction and uses it for the further operations on the manager
+    /// (e.g., creating new workflows / channels). Beware of [`TransactionAsStorage`] drawbacks
+    /// documented in the type docs.
+    ///
+    /// The original transaction can be extracted back using [`Self::into_storage()`] and
+    /// then [`TransactionAsStorage::into_inner()`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use tardigrade::spawn::CreateWorkflow;
+    /// # use tardigrade_rt::{
+    /// #     engine::Wasmtime, manager::WorkflowManager,
+    /// #     storage::{LocalStorage, StorageTransaction},
+    /// # };
+    /// #
+    /// # async fn test_wrapper() -> anyhow::Result<()> {
+    /// let storage = LocalStorage::default();
+    /// let mut manager = WorkflowManager::builder(Wasmtime::default(), storage)
+    ///     .build();
+    /// // Obtain a manager operating in a transaction
+    /// let tx_manager = manager.in_transaction().await;
+    /// // Create a workflow and channels for it in a transaction
+    /// let spawner = tx_manager.spawner();
+    /// let builder = spawner.new_workflow::<()>("test::Workflow").await?;
+    /// let (handles, _) = builder.handles(|_| {}).await;
+    /// builder.build(vec![], handles).await?;
+    ///
+    /// // Unwrap the transaction and commit it.
+    /// if let Some(tx) = tx_manager.into_storage().into_inner() {
+    ///     tx.commit().await;
+    /// }
+    /// // If the transaction is not committed, the workflow and all channels created
+    /// // for it are gone.
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn in_transaction(
+        &mut self,
+    ) -> WorkflowManager<E, C, TransactionAsStorage<S::Transaction<'_>>> {
+        let transaction = self.storage.transaction().await;
+        WorkflowManager {
+            inner: Arc::clone(&self.inner),
+            storage: transaction.into(),
         }
+    }
+
+    /// Returns a spawner handle that can be used to create new workflows.
+    pub fn spawner(&self) -> ManagerSpawner<'_, Self> {
+        ManagerSpawner::new(self)
+    }
+
+    /// Returns a *raw* spawner handle that can be used to create new workflows.
+    /// In contrast to [`Self::spawner()`], the returned spawner uses channel IDs
+    /// rather than channel handles to create workflows, and returns the ID of a created workflow
+    /// rather than its handle.
+    pub fn raw_spawner(&self) -> ManagerSpawner<'_, Self, Raw> {
+        ManagerSpawner::new(self)
     }
 
     /// Sets the current time for this manager. This may expire timers in some of the contained
     /// workflows.
     #[tracing::instrument(skip(self))]
     pub async fn set_current_time(&self, time: DateTime<Utc>) {
-        self.do_set_current_time(&self.storage, time).await;
-    }
-
-    pub(super) async fn do_set_current_time(&self, storage: &S, time: DateTime<Utc>) {
-        let mut transaction = storage.transaction().await;
+        let mut transaction = self.storage.transaction().await;
         StorageHelper::new(&mut transaction)
             .set_current_time(time)
             .await;
@@ -366,7 +478,7 @@ where
     S: Storage + Clone,
 {
     /// Drives this manager using the provided config.
-    pub async fn drive(&self, commits_rx: &mut CommitStream, config: DriveConfig) -> Termination {
+    pub async fn drive(self, commits_rx: &mut CommitStream, config: DriveConfig) -> Termination {
         config.run(self, commits_rx).await
     }
 }

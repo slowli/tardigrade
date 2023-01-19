@@ -79,7 +79,8 @@ impl ReceiverState {
         self.is_closed
     }
 
-    pub(crate) fn waits_for_message(&self) -> bool {
+    /// Is this receiver currently waiting for a message?
+    pub fn waits_for_message(&self) -> bool {
         !self.is_closed && !self.wakes_on_next_element.is_empty()
     }
 
@@ -123,6 +124,11 @@ impl SenderState {
     /// Checks whether the channel is closed.
     pub fn is_closed(&self) -> bool {
         self.is_closed
+    }
+
+    /// Returns the number of messages flushed over the sender.
+    pub fn flushed_message_count(&self) -> usize {
+        self.flushed_messages
     }
 
     /// Is this channel ready to receive another message?
@@ -336,7 +342,8 @@ impl PersistedWorkflowData {
         channel_state.close();
     }
 
-    pub(crate) fn channels(&self) -> Channels<'_> {
+    /// Returns information about channels defined in this workflow interface.
+    pub fn channels(&self) -> Channels<'_> {
         Channels::new(&self.channels, &self.channels.mapping)
     }
 

@@ -1,0 +1,138 @@
+// gRPC wrapper for the Tardigrade runtime.
+
+syntax = "proto3";
+
+package tardigrade.v0;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "tardigrade/v0/types.proto";
+
+// Tardigrade runtime server interface.
+service RuntimeService {
+  // Gets information about this runtime.
+  rpc GetInfo(google.protobuf.Empty) returns (RuntimeInfo) {}
+
+  // Deploys a new module.
+  rpc DeployModule(DeployModuleRequest) returns (Module) {}
+  // Lists all deployed modules.
+  rpc ListModules(google.protobuf.Empty) returns (stream Module) {}
+
+  // Creates a workflow with the specified args and channel handles.
+  rpc CreateWorkflow(CreateWorkflowRequest) returns (Workflow) {}
+  // Gets information about the workflow with the specified ID.
+  rpc GetWorkflow(GetWorkflowRequest) returns (Workflow) {}
+  // Ticks a specific workflow.
+  rpc TickWorkflow(TickWorkflowRequest) returns (TickResult) {}
+  // Aborts workflow with the specified ID.
+  rpc AbortWorkflow(AbortWorkflowRequest) returns (Workflow) {}
+  // TODO: repair workflow
+}
+
+// Information about the Tardigrade runtime.
+message RuntimeInfo {
+  // Type of a clock used by the runtime.
+  enum ClockType {
+    // Unspecified clock.
+    CLOCK_TYPE_UNSPECIFIED = 0;
+    // OS clock.
+    CLOCK_TYPE_SYSTEM = 1;
+    // Mock clock that can be updated using the test service.
+    CLOCK_TYPE_MOCK = 2;
+  }
+
+  // The semantic version of the runtime, e.g. `0.1.0`.
+  string version = 1;
+  // Does this runtime have a driver, i.e. will automatically
+  // drive workflows to completion?
+  bool has_driver = 2;
+  // Type of the clock used by the runtime.
+  ClockType clock_type = 3;
+}
+
+// Request to deploy a new module.
+message DeployModuleRequest {
+  // ID of the module. This string should be globally unique
+  // and not contain the `:` char.
+  string id = 1;
+  // WASM module contents.
+  bytes bytes = 2;
+  // Do not actually deploy the module, just parse it.
+  bool dry_run = 3;
+}
+
+// Request to create a workflow.
+message CreateWorkflowRequest {
+  // ID of the module defining the workflow.
+  string module_id = 1;
+  // ID of the definition within the module.
+  string name_in_module = 2;
+
+  // Arguments supplied to the workflow. The serialization format
+  // is defined by the workflow (e.g., JSON).
+  oneof args {
+    // Arguments specified as raw bytes.
+    bytes raw_args = 3;
+    // Arguments specified as a UTF-8 string.
+    string str_args = 4;
+  }
+
+  // Configuration of the channels supplied to the workflow.
+  // Must correspond to the workflow interface.
+  map<string, ChannelConfig> channels = 5;
+}
+
+// Configuration of a channel handle in `CreateWorkflowRequest`.
+message ChannelConfig {
+  // Type of the handle (receiver or sender).
+  HandleType type = 1;
+  oneof reference {
+    // Use an existing channel. The 0th channel can be used as a
+    // special pre-closed channel.
+    uint64 existing = 2;
+    // Create a new channel.
+    google.protobuf.Empty new = 3;
+  }
+}
+
+// Request to get information about a workflow.
+message GetWorkflowRequest {
+  // Requested workflow ID.
+  uint64 id = 1;
+}
+
+// Request to abort a workflow,
+message AbortWorkflowRequest {
+  // ID of the workflow to be aborted.
+  uint64 id = 1;
+}
+
+// Request to tick a workflow.
+message TickWorkflowRequest {
+  // ID of the workflow to tick. If not specified, a workflow with pending events
+  // or messages will be ticked.
+  optional uint64 workflow_id = 1;
+}
+
+// Result of a workflow getting ticked.
+message TickResult {
+  // ID of the ticked workflow. Not present if requested to tick any workflow,
+  // and the outcome is `WouldBlock`.
+  optional uint64 workflow_id = 1;
+
+  oneof outcome {
+    // The workflow was executed successfully.
+    google.protobuf.Empty ok = 2; // TODO: add receipt?
+    // The workflow execution resulted in an error.
+    ExecutionError error = 3;
+    // The workflow cannot be advanced since it is blocked
+    // on an incoming message or a timer.
+    WouldBlock would_block = 4;
+  }
+}
+
+// Information about a blocked workflow.
+message WouldBlock {
+  // Nearest timer expiration.
+  optional google.protobuf.Timestamp nearest_timer = 1;
+}

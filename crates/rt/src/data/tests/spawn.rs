@@ -78,7 +78,7 @@ impl StashStub for MockWorkflowManager {
 }
 
 fn create_workflow_with_manager(poll_fns: MockAnswers) -> Workflow<MockInstance> {
-    let definition = MockDefinition::new(poll_fns);
+    let definition = MockDefinition::new(poll_fns, test_interface());
     let channel_ids = mock_channel_ids(definition.interface(), &mut 1);
     let mut data = WorkflowData::new(definition.interface(), channel_ids);
     data.set_services(Services {

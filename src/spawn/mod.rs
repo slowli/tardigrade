@@ -190,9 +190,10 @@ impl<M: CreateWorkflow, W> fmt::Debug for WorkflowBuilder<'_, M, W> {
     }
 }
 
-impl<M, W> WorkflowBuilder<'_, M, W>
+impl<'a, M, W> WorkflowBuilder<'a, M, W>
 where
     M: CreateWorkflow,
+    M::Spawned<W>: 'a,
     W: WorkflowFn + WithHandle,
 {
     /// Creates a new workflow.
@@ -201,14 +202,13 @@ where
     ///
     /// Returns an error if the workflow cannot be spawned, e.g., if the provided `args`
     /// are incorrect.
-    pub async fn build(
+    pub fn build(
         self,
         args: W::Args,
         handles: W::Handle<M::Fmt>,
-    ) -> Result<M::Spawned<W>, M::Error> {
+    ) -> impl Future<Output = Result<M::Spawned<W>, M::Error>> + Send + 'a {
         self.manager
             .new_workflow_unchecked::<W>(self.definition_id, args, handles)
-            .await
     }
 }
 

@@ -5,23 +5,24 @@ use async_trait::async_trait;
 use futures::{StreamExt, TryStreamExt};
 use test_casing::test_casing;
 
-use std::{collections::HashSet, task::Poll};
+use std::{collections::HashSet, sync::Arc, task::Poll};
 
 use tardigrade::{
     handle::{ReceiverAt, SenderAt, WithIndexing},
     Codec, Json,
 };
 use tardigrade_rt::{
-    engine::{WasmtimeDefinition, WasmtimeInstance, WasmtimeModule, WorkflowEngine},
+    engine::{
+        PersistedWorkflowData, WasmtimeDefinition, WasmtimeInstance, WasmtimeModule, WorkflowEngine,
+    },
     handle::MessageReceiver,
     manager::WorkflowManager,
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, ExecutionError, Receipt,
         ResourceEvent, ResourceEventKind, ResourceId, WakeUpCause,
     },
-    storage::{LocalStorageSnapshot, ModuleRecord, Storage},
+    storage::{LocalStorageSnapshot, Storage},
     test::MockScheduler,
-    PersistedWorkflow,
 };
 
 use super::{create_manager, create_module, enable_tracing_assertions, spawn_workflow, TestResult};
@@ -86,11 +87,8 @@ async fn basic_workflow() -> TestResult {
     assert!(execution.task_result.is_none());
 
     assert_eq!(execution.events.len(), 1);
-    let orders_id = workflow
-        .persisted()
-        .channels()
-        .channel_id("orders")
-        .unwrap();
+    let persisted = workflow.persisted().common();
+    let orders_id = persisted.channels().channel_id("orders").unwrap();
     assert_matches!(
         &execution.events[0],
         Event::Channel(ChannelEvent {
@@ -101,7 +99,7 @@ async fn basic_workflow() -> TestResult {
     );
 
     workflow.update().await?;
-    let persisted = workflow.persisted();
+    let persisted = workflow.persisted().common();
     let mut tasks: Vec<_> = persisted.tasks().collect();
     assert_eq!(tasks.len(), 1);
     let (_, main_task) = tasks.pop().unwrap();
@@ -116,13 +114,13 @@ async fn basic_workflow() -> TestResult {
     handle.orders.send(order).await?;
     let receipt = manager.tick().await?.into_inner()?;
     workflow.update().await?;
-    assert_send_receipt(&receipt, workflow.persisted());
+    assert_send_receipt(&receipt, workflow.persisted().common());
 
     let event = handle.shared.events.receive_message(0).await?;
     assert_eq!(event.decode()?, DomainEvent::OrderTaken { index: 1, order });
 
     workflow.update().await?;
-    let persisted = workflow.persisted();
+    let persisted = workflow.persisted().common();
     let wakeup_causes: Vec<_> = persisted.pending_wakeup_causes().collect();
     assert_eq!(wakeup_causes.len(), 1);
     let events_id = handle.shared.events.channel_id();
@@ -146,7 +144,7 @@ async fn basic_workflow() -> TestResult {
 
     let new_time = {
         workflow.update().await?;
-        let persisted = workflow.persisted();
+        let persisted = workflow.persisted().common();
         let timers: Vec<_> = persisted.timers().collect();
         assert_eq!(timers.len(), 1);
         let (_, timer) = timers[0];
@@ -158,7 +156,7 @@ async fn basic_workflow() -> TestResult {
     manager.set_current_time(new_time).await;
 
     let receipt = manager.tick().await?.into_inner()?;
-    assert_time_update_receipt(&receipt, workflow.persisted());
+    assert_time_update_receipt(&receipt, workflow.persisted().common());
     let events = handle.shared.events.receive_message(1).await?;
     assert_eq!(events.decode()?, DomainEvent::Baked { index: 1, order });
 
@@ -178,7 +176,7 @@ async fn basic_workflow() -> TestResult {
     Ok(())
 }
 
-fn assert_send_receipt(receipt: &Receipt, persisted: &PersistedWorkflow) {
+fn assert_send_receipt(receipt: &Receipt, persisted: &PersistedWorkflowData) {
     let root_cause = receipt.executions().first().unwrap().cause();
     assert_matches!(
         root_cause,
@@ -214,7 +212,7 @@ fn assert_send_receipt(receipt: &Receipt, persisted: &PersistedWorkflow) {
     assert!(is_event_sent, "{receipt:#?}");
 }
 
-fn assert_time_update_receipt(receipt: &Receipt, persisted: &PersistedWorkflow) {
+fn assert_time_update_receipt(receipt: &Receipt, persisted: &PersistedWorkflowData) {
     let root_cause = receipt.executions().first().unwrap().cause();
     assert_matches!(root_cause, Some(WakeUpCause::Timer { id: 0 }));
 
@@ -316,8 +314,7 @@ impl WorkflowEngine for SingleModuleEngine {
     type Definition = WasmtimeDefinition;
     type Module = WasmtimeModule;
 
-    async fn create_module(&self, module: &ModuleRecord) -> anyhow::Result<Self::Module> {
-        assert_eq!(module.id, "test");
+    async fn create_module(&self, _bytes: Arc<[u8]>) -> anyhow::Result<Self::Module> {
         Ok(create_module().await)
     }
 }
@@ -422,7 +419,7 @@ async fn untyped_workflow() -> TestResult {
         .send(Json::encode_value(order))
         .await?;
     let receipt = manager.tick().await?.into_inner()?;
-    assert_send_receipt(&receipt, workflow.persisted());
+    assert_send_receipt(&receipt, workflow.persisted().common());
 
     let event = handle[SenderAt("events")].receive_message(0).await?;
     let event: DomainEvent = Json::try_decode_bytes(event.decode().unwrap())?;

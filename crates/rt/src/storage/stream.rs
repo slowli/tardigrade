@@ -199,6 +199,7 @@ impl<S: Storage> Storage for Streaming<S> {
             inner: transaction,
             message_events_sx: self.message_events_sx.clone(),
             commits_sx: self.commits_sx.clone(),
+            has_active_workflow_updates: false,
             new_messages: HashMap::new(),
         }
     }
@@ -236,6 +237,7 @@ pub struct StreamingTransaction<T> {
     inner: T,
     message_events_sx: mpsc::Sender<MessageEvent>,
     commits_sx: mpsc::Sender<()>,
+    has_active_workflow_updates: bool,
     new_messages: HashMap<ChannelId, usize>,
 }
 
@@ -307,8 +309,11 @@ impl<T: StorageTransaction> WriteWorkflows for StreamingTransaction<T> {
     }
 
     #[inline]
-    async fn insert_workflow(&mut self, state: WorkflowRecord) {
-        self.inner.insert_workflow(state).await;
+    async fn insert_workflow(&mut self, record: WorkflowRecord) {
+        if matches!(&record.state, WorkflowState::Active(_)) {
+            self.has_active_workflow_updates = true;
+        }
+        self.inner.insert_workflow(record).await;
     }
 
     #[inline]
@@ -318,6 +323,9 @@ impl<T: StorageTransaction> WriteWorkflows for StreamingTransaction<T> {
 
     #[inline]
     async fn update_workflow(&mut self, id: WorkflowId, state: WorkflowState) {
+        if matches!(&state, WorkflowState::Active(_)) {
+            self.has_active_workflow_updates = true;
+        }
         self.inner.update_workflow(id, state).await;
     }
 
@@ -330,7 +338,7 @@ impl<T: StorageTransaction> WriteWorkflows for StreamingTransaction<T> {
 
     #[inline]
     async fn workflow_with_consumable_channel_for_update(
-        &self,
+        &mut self,
     ) -> Option<WorkflowRecord<ActiveWorkflowState>> {
         self.inner
             .workflow_with_consumable_channel_for_update()
@@ -371,7 +379,7 @@ impl<T: StorageTransaction> WriteWorkflowWakers for StreamingTransaction<T> {
 impl<T: StorageTransaction> StorageTransaction for StreamingTransaction<T> {
     async fn commit(mut self) {
         self.inner.commit().await;
-        if !self.new_messages.is_empty() {
+        if self.has_active_workflow_updates || !self.new_messages.is_empty() {
             // If sending fails, the consumer has an unprocessed event, which is OK
             // for our purposes.
             self.commits_sx.try_send(()).ok();
