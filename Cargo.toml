@@ -54,5 +54,6 @@ members = [
   "crates/derive",
   "crates/rt",
   "crates/grpc",
+  "crates/worker",
   "e2e-tests/pizza",
 ]
