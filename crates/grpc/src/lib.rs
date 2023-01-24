@@ -61,6 +61,8 @@
     clippy::doc_markdown // false positive on "gRPC"
 )]
 
+#[cfg(feature = "client")]
+mod client;
 mod mapping;
 mod service;
 
@@ -73,6 +75,7 @@ mod proto {
 }
 
 pub use crate::{
+    client::Client,
     proto::{
         channels_service_server::ChannelsServiceServer,
         runtime_service_server::RuntimeServiceServer, test_service_server::TestServiceServer,
