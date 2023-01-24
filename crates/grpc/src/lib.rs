@@ -61,22 +61,26 @@
     clippy::doc_markdown // false positive on "gRPC"
 )]
 
+#[cfg(not(any(feature = "server", feature = "client")))]
+compile_error!(
+    "At least one of `server` and `client` features should be enabled; \
+     the crate is useless otherwise"
+);
+
 #[cfg(feature = "client")]
 mod client;
-mod mapping;
-// TODO: make conditional via feature
+#[cfg(feature = "server")]
 mod service;
-
-#[cfg(test)]
-mod tests;
 
 #[allow(clippy::pedantic)] // too may lints triggered
 mod proto {
     tonic::include_proto!("tardigrade.v0");
 }
 
+#[cfg(feature = "client")]
+pub use crate::client::Client;
+#[cfg(feature = "server")]
 pub use crate::{
-    client::Client,
     proto::{
         channels_service_server::ChannelsServiceServer,
         runtime_service_server::RuntimeServiceServer, test_service_server::TestServiceServer,
@@ -85,4 +89,5 @@ pub use crate::{
 };
 
 /// Serialized file descriptor set for messages and services declared in this crate.
+#[cfg(feature = "server")]
 pub const SERVICE_DESCRIPTOR: &[u8] = tonic::include_file_descriptor_set!("tardigrade_descriptor");

@@ -8,11 +8,15 @@ use tonic::{Request, Response, Status};
 
 use std::collections::HashMap;
 
+mod mapping;
 mod storage;
+
+#[cfg(test)]
+mod tests;
 
 pub use self::storage::StorageWrapper;
 
-use crate::mapping::from_timestamp;
+use self::mapping::from_timestamp;
 use crate::proto::{
     channel_config, create_workflow_request, runtime_info::ClockType,
     runtime_service_server::RuntimeService, test_service_server::TestService, AbortWorkflowRequest,

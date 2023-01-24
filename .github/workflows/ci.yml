@@ -150,6 +150,12 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           name: "Clippy: runtime, no features"
           args: -p tardigrade-rt --lib --no-default-features -- -D warnings
+      - name: Clippy (gRPC client)
+        uses: actions-rs/clippy-check@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          name: "Clippy: gRPC client"
+          args: -p tardigrade-grpc --lib --no-default-features --features client -- -D warnings
       - name: Clippy (CLI)
         uses: actions-rs/clippy-check@v1
         with:
