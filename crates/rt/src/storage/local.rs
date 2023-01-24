@@ -14,6 +14,7 @@ use std::{
     borrow::Cow,
     cmp,
     collections::{HashMap, VecDeque},
+    convert::Infallible,
     ops,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -29,6 +30,7 @@ use super::{
 };
 use crate::{utils::Message, PersistedWorkflow};
 use tardigrade::{ChannelId, WakerId, WorkflowId};
+use tardigrade_worker::{WorkerRecord, WorkerStorageView};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LocalChannel {
@@ -66,6 +68,7 @@ struct Inner {
     channels: HashMap<ChannelId, LocalChannel>,
     workflows: HashMap<WorkflowId, WorkflowRecord>,
     workflow_wakers: Vec<WorkflowWakerRecord>,
+    workers: HashMap<u64, WorkerRecord>,
 }
 
 impl Default for Inner {
@@ -76,6 +79,7 @@ impl Default for Inner {
             channels: HashMap::from_iter([(0, closed_channel)]),
             workflows: HashMap::new(),
             workflow_wakers: Vec::new(),
+            workers: HashMap::new(),
         }
     }
 }
@@ -108,6 +112,7 @@ pub struct LocalStorageSnapshot<'a> {
     next_channel_id: u64,
     next_workflow_id: u64,
     next_waker_id: u64,
+    next_worker_id: u64,
     inner: Cow<'a, Inner>,
 }
 
@@ -176,6 +181,7 @@ pub struct LocalStorage {
     next_channel_id: AtomicU64,
     next_workflow_id: AtomicU64,
     next_waker_id: AtomicU64,
+    next_worker_id: AtomicU64,
     truncate_messages: bool,
 }
 
@@ -185,7 +191,8 @@ impl Default for LocalStorage {
             inner: Mutex::default(),
             next_channel_id: AtomicU64::new(1), // skip the closed channel
             next_workflow_id: AtomicU64::new(1),
-            next_waker_id: AtomicU64::new(0),
+            next_waker_id: AtomicU64::new(1),
+            next_worker_id: AtomicU64::new(1),
             truncate_messages: false,
         }
     }
@@ -199,6 +206,7 @@ impl LocalStorage {
             next_channel_id: *self.next_channel_id.get_mut(),
             next_workflow_id: *self.next_workflow_id.get_mut(),
             next_waker_id: *self.next_waker_id.get_mut(),
+            next_worker_id: *self.next_worker_id.get_mut(),
         }
     }
 
@@ -215,6 +223,7 @@ impl From<LocalStorageSnapshot<'_>> for LocalStorage {
             next_channel_id: AtomicU64::new(snapshot.next_channel_id),
             next_workflow_id: AtomicU64::new(snapshot.next_workflow_id),
             next_waker_id: AtomicU64::new(snapshot.next_waker_id),
+            next_worker_id: AtomicU64::new(snapshot.next_worker_id),
             truncate_messages: false,
         }
     }
@@ -227,6 +236,7 @@ pub struct LocalReadonlyTransaction<'a> {
     next_channel_id: &'a AtomicU64,
     next_workflow_id: &'a AtomicU64,
     next_waker_id: &'a AtomicU64,
+    next_worker_id: &'a AtomicU64,
 }
 
 impl LocalReadonlyTransaction<'_> {
@@ -547,6 +557,56 @@ impl WriteWorkflowWakers for LocalTransaction<'_> {
 }
 
 #[async_trait]
+impl WorkerStorageView for LocalTransaction<'_> {
+    type Error = Infallible;
+
+    async fn get_or_create_worker(&mut self, name: &str) -> Result<WorkerRecord, Self::Error> {
+        let mut workers = self.inner().workers.values();
+        let existing_worker = workers.find(|worker| worker.name == name);
+        Ok(if let Some(worker) = existing_worker {
+            worker.clone()
+        } else {
+            let id = self.readonly.next_worker_id.fetch_add(1, Ordering::SeqCst);
+            let inbound_channel_id = self.allocate_channel_id().await;
+            self.insert_channel(inbound_channel_id, ChannelRecord::owned_by_host())
+                .await;
+
+            let record = WorkerRecord {
+                id,
+                name: name.to_owned(),
+                inbound_channel_id,
+                cursor: 0,
+            };
+            self.inner_mut().workers.insert(id, record.clone());
+            record
+        })
+    }
+
+    async fn update_worker_cursor(
+        &mut self,
+        worker_id: u64,
+        cursor: usize,
+    ) -> Result<(), Self::Error> {
+        let worker = self.inner_mut().workers.get_mut(&worker_id).unwrap();
+        worker.cursor = cursor;
+        Ok(())
+    }
+
+    async fn push_message(
+        &mut self,
+        channel_id: ChannelId,
+        message: Vec<u8>,
+    ) -> Result<(), Self::Error> {
+        self.push_messages(channel_id, vec![message]).await;
+        Ok(())
+    }
+
+    async fn commit(mut self) {
+        <Self as StorageTransaction>::commit(self).await;
+    }
+}
+
+#[async_trait]
 impl StorageTransaction for LocalTransaction<'_> {
     async fn commit(mut self) {
         if self.truncate_messages {
@@ -579,6 +639,7 @@ impl Storage for LocalStorage {
                 next_channel_id: &self.next_channel_id,
                 next_workflow_id: &self.next_workflow_id,
                 next_waker_id: &self.next_waker_id,
+                next_worker_id: &self.next_worker_id,
             },
             target,
             truncate_messages: self.truncate_messages,
@@ -591,6 +652,7 @@ impl Storage for LocalStorage {
             next_channel_id: &self.next_channel_id,
             next_workflow_id: &self.next_workflow_id,
             next_waker_id: &self.next_waker_id,
+            next_worker_id: &self.next_worker_id,
         }
     }
 }

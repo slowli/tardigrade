@@ -30,16 +30,6 @@ pub(crate) enum ChannelSide {
 }
 
 impl ChannelRecord {
-    fn owned_by_host() -> Self {
-        Self {
-            receiver_workflow_id: None,
-            sender_workflow_ids: HashSet::new(),
-            has_external_sender: true,
-            is_closed: false,
-            received_messages: 0,
-        }
-    }
-
     fn owned_by_workflow(workflow_id: WorkflowId) -> Self {
         Self {
             receiver_workflow_id: Some(workflow_id),

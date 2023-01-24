@@ -118,6 +118,17 @@ impl ChannelRecord {
             received_messages: 0,
         }
     }
+
+    /// Returns a record for a channel with both sides owned by the host.
+    pub fn owned_by_host() -> Self {
+        Self {
+            receiver_workflow_id: None,
+            sender_workflow_ids: HashSet::new(),
+            has_external_sender: true,
+            is_closed: false,
+            received_messages: 0,
+        }
+    }
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // required by serde

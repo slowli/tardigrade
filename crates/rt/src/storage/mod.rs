@@ -44,10 +44,10 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use futures::stream::BoxStream;
+use futures::{channel::mpsc, future, stream::BoxStream, FutureExt, StreamExt};
 use tracing_tunnel::PersistedMetadata;
 
-use std::{ops, sync::Arc};
+use std::{convert::Infallible, ops, sync::Arc};
 
 #[macro_use]
 mod macros;
@@ -74,6 +74,7 @@ pub use self::{
 };
 
 use tardigrade::{ChannelId, WakerId, WorkflowId};
+use tardigrade_worker::{MessageStream, WorkerConnection, WorkerStorageView};
 
 /// Async, transactional storage for workflows and workflow channels.
 ///
@@ -327,3 +328,41 @@ impl<T: ReadonlyStorageTransaction> AsRef<T> for Readonly<T> {
 }
 
 delegate_read_traits!(Readonly<T> { inner: T });
+
+/// Wrapper around a [`Storage`] implementing [`WorkerConnection`] trait.
+/// This can be used for in-process workers.
+#[derive(Debug, Clone)]
+pub struct WorkerStorage<S>(pub S);
+
+#[async_trait]
+impl<S> WorkerConnection for WorkerStorage<S>
+where
+    S: StreamMessages,
+    for<'a> S::Transaction<'a>: WorkerStorageView<Error = Infallible>,
+{
+    type Error = Infallible;
+    type View<'a> = S::Transaction<'a> where Self: 'a;
+
+    async fn view(&self) -> Self::View<'_> {
+        self.0.transaction().await
+    }
+
+    fn stream_messages(
+        &self,
+        channel_id: ChannelId,
+        start_idx: usize,
+    ) -> MessageStream<Self::Error> {
+        let (sx, rx) = mpsc::channel(16);
+        self.0
+            .stream_messages(channel_id, start_idx, sx)
+            .map(|()| rx)
+            .flatten_stream()
+            .filter_map(|message| {
+                future::ready(match message {
+                    MessageOrEof::Message(idx, payload) => Some(Ok((idx, payload))),
+                    MessageOrEof::Eof => None,
+                })
+            })
+            .boxed()
+    }
+}
