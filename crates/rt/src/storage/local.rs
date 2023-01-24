@@ -30,7 +30,7 @@ use super::{
 };
 use crate::{utils::Message, PersistedWorkflow};
 use tardigrade::{ChannelId, WakerId, WorkflowId};
-use tardigrade_worker::{WorkerRecord, WorkerStorageView};
+use tardigrade_worker::{WorkerRecord, WorkerStorageConnection};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LocalChannel {
@@ -557,8 +557,14 @@ impl WriteWorkflowWakers for LocalTransaction<'_> {
 }
 
 #[async_trait]
-impl WorkerStorageView for LocalTransaction<'_> {
+impl WorkerStorageConnection for LocalTransaction<'_> {
     type Error = Infallible;
+
+    async fn worker(&mut self, name: &str) -> Result<Option<WorkerRecord>, Self::Error> {
+        let mut workers = self.inner().workers.values();
+        let existing_worker = workers.find(|worker| worker.name == name);
+        Ok(existing_worker.cloned())
+    }
 
     async fn get_or_create_worker(&mut self, name: &str) -> Result<WorkerRecord, Self::Error> {
         let mut workers = self.inner().workers.values();
@@ -601,7 +607,7 @@ impl WorkerStorageView for LocalTransaction<'_> {
         Ok(())
     }
 
-    async fn commit(mut self) {
+    async fn release(mut self) {
         <Self as StorageTransaction>::commit(self).await;
     }
 }

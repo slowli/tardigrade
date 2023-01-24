@@ -74,7 +74,7 @@ pub use self::{
 };
 
 use tardigrade::{ChannelId, WakerId, WorkflowId};
-use tardigrade_worker::{MessageStream, WorkerConnection, WorkerStorageView};
+use tardigrade_worker::{MessageStream, WorkerStorageConnection, WorkerStoragePool};
 
 /// Async, transactional storage for workflows and workflow channels.
 ///
@@ -335,15 +335,15 @@ delegate_read_traits!(Readonly<T> { inner: T });
 pub struct WorkerStorage<S>(pub S);
 
 #[async_trait]
-impl<S> WorkerConnection for WorkerStorage<S>
+impl<S> WorkerStoragePool for WorkerStorage<S>
 where
     S: StreamMessages,
-    for<'a> S::Transaction<'a>: WorkerStorageView<Error = Infallible>,
+    for<'a> S::Transaction<'a>: WorkerStorageConnection<Error = Infallible>,
 {
     type Error = Infallible;
-    type View<'a> = S::Transaction<'a> where Self: 'a;
+    type Connection<'a> = S::Transaction<'a> where Self: 'a;
 
-    async fn view(&self) -> Self::View<'_> {
+    async fn view(&self) -> Self::Connection<'_> {
         self.0.transaction().await
     }
 

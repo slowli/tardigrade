@@ -11,18 +11,18 @@ use tardigrade_shared::ChannelId;
 /// Stream of messages together with their indices.
 pub type MessageStream<Err> = BoxStream<'static, Result<(usize, Vec<u8>), Err>>;
 
-/// Connection to the worker storage.
+/// Connection pool for the worker storage.
 #[async_trait]
-pub trait WorkerConnection: Send + Sync {
+pub trait WorkerStoragePool: Send + Sync {
     /// Errors that can occur when applying changes to the storage.
     type Error: error::Error + Send + Sync + 'static;
-    /// Read-write view of the storage.
-    type View<'a>: WorkerStorageView<Error = Self::Error>
+    /// Read-write connection to the storage.
+    type Connection<'a>: WorkerStorageConnection<Error = Self::Error>
     where
         Self: 'a;
 
     /// Creates a new storage view.
-    async fn view(&self) -> Self::View<'_>;
+    async fn view(&self) -> Self::Connection<'_>;
 
     /// Streams messages from a specific channel starting with the specified index.
     fn stream_messages(
@@ -32,14 +32,17 @@ pub trait WorkerConnection: Send + Sync {
     ) -> MessageStream<Self::Error>;
 }
 
-/// Read-write view of the worker storage.
+/// Read-write connection to the worker storage.
 ///
 /// This view is not required to be transactional, although it can be if the underlying storage
 /// supports this.
 #[async_trait]
-pub trait WorkerStorageView: Send {
+pub trait WorkerStorageConnection: Send {
     /// Errors that can occur when applying changes to the storage.
     type Error: error::Error + Send + Sync + 'static;
+
+    /// Gets a [`WorkerRecord`] by the (globally unique) worker name.
+    async fn worker(&mut self, name: &str) -> Result<Option<WorkerRecord>, Self::Error>;
 
     /// Gets or creates a [`WorkerRecord`] by the (globally unique) worker name.
     async fn get_or_create_worker(&mut self, name: &str) -> Result<WorkerRecord, Self::Error>;
@@ -58,11 +61,12 @@ pub trait WorkerStorageView: Send {
         message: Vec<u8>,
     ) -> Result<(), Self::Error>;
 
-    /// Commits changes in this view to the storage.
+    /// Releases the connection back to the pool.
     ///
-    /// If this view is not transactional, the changes in the view are expected to take
-    /// effect immediately, and this method can be no-op.
-    async fn commit(self);
+    /// - If this connection is transactional, commits changes to the storage.
+    /// - If this connection is not transactional, the changes are expected to take
+    ///   effect immediately, and this method can be no-op.
+    async fn release(self);
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

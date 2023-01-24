@@ -23,6 +23,7 @@ use super::{
     WorkflowWakerRecord, WriteChannels, WriteModules, WriteWorkflowWakers, WriteWorkflows,
 };
 use tardigrade::{ChannelId, WakerId, WorkflowId};
+use tardigrade_worker::{WorkerRecord, WorkerStorageConnection};
 
 /// Event signalling that one or more messages were added to the channel.
 #[derive(Debug)]
@@ -393,6 +394,39 @@ impl<T: StorageTransaction> StorageTransaction for StreamingTransaction<T> {
             .send_all(&mut stream::iter(events))
             .await
             .ok();
+    }
+}
+
+#[async_trait]
+impl<T: WorkerStorageConnection> WorkerStorageConnection for StreamingTransaction<T> {
+    type Error = T::Error;
+
+    async fn worker(&mut self, name: &str) -> Result<Option<WorkerRecord>, Self::Error> {
+        self.inner.worker(name).await
+    }
+
+    async fn get_or_create_worker(&mut self, name: &str) -> Result<WorkerRecord, Self::Error> {
+        self.inner.get_or_create_worker(name).await
+    }
+
+    async fn update_worker_cursor(
+        &mut self,
+        worker_id: u64,
+        cursor: usize,
+    ) -> Result<(), Self::Error> {
+        self.inner.update_worker_cursor(worker_id, cursor).await
+    }
+
+    async fn push_message(
+        &mut self,
+        channel_id: ChannelId,
+        message: Vec<u8>,
+    ) -> Result<(), Self::Error> {
+        self.inner.push_message(channel_id, message).await
+    }
+
+    async fn release(self) {
+        self.inner.release().await;
     }
 }
 

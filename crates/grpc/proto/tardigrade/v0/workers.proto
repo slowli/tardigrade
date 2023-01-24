@@ -18,6 +18,8 @@ service WorkersService {
 message GetOrCreateWorkerRequest {
   // Globally unique worker name, such as `tardigrade.v0.Timer`.
   string name = 1;
+  // Create a new worker record if it was missing?
+  bool create_if_missing = 2;
 }
 
 // Worker record.

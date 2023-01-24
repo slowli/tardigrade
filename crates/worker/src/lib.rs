@@ -5,13 +5,15 @@ use futures::TryStreamExt;
 
 mod connection;
 
-pub use crate::connection::{MessageStream, WorkerConnection, WorkerRecord, WorkerStorageView};
+pub use crate::connection::{
+    MessageStream, WorkerRecord, WorkerStorageConnection, WorkerStoragePool,
+};
 
 use tardigrade_shared::{self as shared, ChannelId, Codec};
 
 /// Handler of requests of a certain type.
 #[async_trait]
-pub trait HandleRequest<Req, Tx: WorkerStorageView> {
+pub trait HandleRequest<Req, Tx: WorkerStorageConnection> {
     /// Response to the request.
     type Response;
 
@@ -29,7 +31,9 @@ pub trait HandleRequest<Req, Tx: WorkerStorageView> {
     }
 }
 
-pub trait RegisterHandler<Tx: WorkerStorageView>: HandleRequest<Self::Request, Tx> + Send {
+pub trait RegisterHandler<Tx: WorkerStorageConnection>:
+    HandleRequest<Self::Request, Tx> + Send
+{
     const REGISTERED_NAME: &'static str;
 
     type Request;
@@ -69,7 +73,7 @@ pub struct Response<'a, T, Tx> {
     response_mapper: fn(shared::Response<T>) -> Vec<u8>,
 }
 
-impl<T, Tx: WorkerStorageView> Response<'_, T, Tx> {
+impl<T, Tx: WorkerStorageConnection> Response<'_, T, Tx> {
     /// Returns the underlying storage transaction.
     pub fn transaction(&mut self) -> &mut Tx {
         &mut *self.transaction
@@ -103,8 +107,8 @@ pub struct Worker<H, C> {
 
 impl<H, C> Worker<H, C>
 where
-    C: WorkerConnection,
-    for<'tx> H: RegisterHandler<C::View<'tx>>,
+    C: WorkerStoragePool,
+    for<'tx> H: RegisterHandler<C::Connection<'tx>>,
 {
     pub fn new(handler: H, connection: C) -> Self {
         Self {
@@ -122,7 +126,7 @@ where
     pub async fn run(mut self) -> Result<(), C::Error> {
         let mut transaction = self.connection.view().await;
         let worker = transaction.get_or_create_worker(H::REGISTERED_NAME).await?;
-        transaction.commit().await;
+        transaction.release().await;
         tracing::info!(
             self.name = H::REGISTERED_NAME,
             ?worker,
@@ -194,7 +198,7 @@ where
             }
         }
         transaction.update_worker_cursor(self.id, idx + 1).await?;
-        transaction.commit().await;
+        transaction.release().await;
         Ok(())
     }
 }

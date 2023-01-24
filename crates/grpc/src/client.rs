@@ -2,7 +2,7 @@
 
 use futures::StreamExt;
 use tardigrade::ChannelId;
-use tonic::{transport::Channel, Status};
+use tonic::{transport::Channel, Code, Status};
 
 use std::error;
 
@@ -15,9 +15,9 @@ use crate::proto::{
     GetOrCreateWorkerRequest, MessageCodec, PushMessagesRequest, StreamMessagesRequest,
     UpdateWorkerRequest,
 };
-use tardigrade_worker::{MessageStream, WorkerConnection, WorkerRecord, WorkerStorageView};
+use tardigrade_worker::{MessageStream, WorkerRecord, WorkerStorageConnection, WorkerStoragePool};
 
-/// gRPC client for the [Tardigrade runtime service](crate::ManagerService).
+/// gRPC client for the [Tardigrade runtime service](crate::ManagerWrapper).
 #[derive(Debug, Clone)]
 pub struct Client {
     channels: ChannelsServiceClient<Channel>,
@@ -34,6 +34,22 @@ impl Client {
         let channel = Channel::from_shared(uri)?.connect().await?;
         Ok(Self::from(channel))
     }
+
+    #[allow(clippy::cast_possible_truncation)]
+    async fn get_worker(
+        &mut self,
+        request: GetOrCreateWorkerRequest,
+    ) -> Result<WorkerRecord, Status> {
+        let worker = self.workers.get_or_create_worker(request).await?;
+
+        let worker = worker.into_inner();
+        Ok(WorkerRecord {
+            id: worker.id,
+            name: worker.name,
+            inbound_channel_id: worker.inbound_channel_id,
+            cursor: worker.cursor as usize,
+        })
+    }
 }
 
 impl From<Channel> for Client {
@@ -46,11 +62,11 @@ impl From<Channel> for Client {
 }
 
 #[tonic::async_trait]
-impl WorkerConnection for Client {
+impl WorkerStoragePool for Client {
     type Error = Status;
-    type View<'a> = Self;
+    type Connection<'a> = Self;
 
-    async fn view(&self) -> Self::View<'_> {
+    async fn view(&self) -> Self::Connection<'_> {
         self.clone()
     }
 
@@ -93,24 +109,29 @@ impl WorkerConnection for Client {
 }
 
 #[tonic::async_trait]
-impl WorkerStorageView for Client {
+impl WorkerStorageConnection for Client {
     type Error = Status;
 
     #[tracing::instrument(level = "debug", err)]
-    #[allow(clippy::cast_possible_truncation)]
+    async fn worker(&mut self, name: &str) -> Result<Option<WorkerRecord>, Self::Error> {
+        let request = GetOrCreateWorkerRequest {
+            name: name.to_owned(),
+            create_if_missing: false,
+        };
+        match self.get_worker(request).await {
+            Ok(worker) => Ok(Some(worker)),
+            Err(err) if err.code() == Code::NotFound => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+
+    #[tracing::instrument(level = "debug", err)]
     async fn get_or_create_worker(&mut self, name: &str) -> Result<WorkerRecord, Self::Error> {
         let request = GetOrCreateWorkerRequest {
             name: name.to_owned(),
+            create_if_missing: true,
         };
-        let worker = self.workers.get_or_create_worker(request).await?;
-
-        let worker = worker.into_inner();
-        Ok(WorkerRecord {
-            id: worker.id,
-            name: worker.name,
-            inbound_channel_id: worker.inbound_channel_id,
-            cursor: worker.cursor as usize,
-        })
+        self.get_worker(request).await
     }
 
     #[tracing::instrument(level = "debug", err)]
@@ -142,7 +163,7 @@ impl WorkerStorageView for Client {
         self.channels.push_messages(request).await.map(drop)
     }
 
-    async fn commit(self) {
+    async fn release(self) {
         // Does nothing.
     }
 }
