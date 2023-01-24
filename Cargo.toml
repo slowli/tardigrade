@@ -37,7 +37,7 @@ rand = "0.8.5"
 version-sync = "0.9.4"
 
 [features]
-default = ["serde_json", "tracing"]
+default = ["tracing"]
 tracing = ["dep:tracing", "tracing-tunnel", "serde_json"]
 
 [profile.wasm]

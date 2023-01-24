@@ -1,5 +1,7 @@
 //! Codecs for converting values from / to bytes.
 
+use serde::{de::DeserializeOwned, Serialize};
+
 use std::{convert::Infallible, error};
 
 /// Codec for a particular data type.
@@ -52,31 +54,20 @@ impl Codec<Vec<u8>> for Raw {
     }
 }
 
-#[cfg(feature = "serde_json")]
-mod json {
-    use serde::{de::DeserializeOwned, Serialize};
+/// JSON codec.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Json;
 
-    use super::Codec;
+/// Panics if the value cannot be serialized. Serialization errors are usually confined
+/// to edge cases (e.g., very deeply nested / recursive objects).
+impl<T: Serialize + DeserializeOwned> Codec<T> for Json {
+    type Error = serde_json::Error;
 
-    /// JSON codec.
-    #[derive(Debug, Clone, Copy, Default)]
-    #[cfg_attr(docsrs, doc(cfg(feature = "serde_json")))]
-    pub struct Json;
+    fn encode_value(value: T) -> Vec<u8> {
+        serde_json::to_vec(&value).expect("cannot serialize value")
+    }
 
-    /// Panics if the value cannot be serialized. Serialization errors are usually confined
-    /// to edge cases (e.g., very deeply nested / recursive objects).
-    impl<T: Serialize + DeserializeOwned> Codec<T> for Json {
-        type Error = serde_json::Error;
-
-        fn encode_value(value: T) -> Vec<u8> {
-            serde_json::to_vec(&value).expect("cannot serialize value")
-        }
-
-        fn try_decode_bytes(bytes: Vec<u8>) -> Result<T, Self::Error> {
-            serde_json::from_slice(&bytes)
-        }
+    fn try_decode_bytes(bytes: Vec<u8>) -> Result<T, Self::Error> {
+        serde_json::from_slice(&bytes)
     }
 }
-
-#[cfg(feature = "serde_json")]
-pub use self::json::Json;

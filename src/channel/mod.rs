@@ -39,10 +39,9 @@ pub use self::{
 pub use crate::error::SendError;
 
 use crate::{
-    codec::{Codec, Raw},
     handle::{AccessError, AccessErrorKind, Handle, HandlePath, ReceiverAt, SenderAt},
     workflow::{HandleFormat, InsertHandles, IntoRaw, TakeHandles, TryFromRaw, WithHandle},
-    ChannelId,
+    ChannelId, Codec, Raw,
 };
 
 pin_project! {
