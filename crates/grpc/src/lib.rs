@@ -32,7 +32,7 @@
 //!     .build();
 //!
 //! // Create services based on the manager
-//! let service = ManagerService::new(manager);
+//! let service = ManagerWrapper::new(manager);
 //! let runtime_service = RuntimeServiceServer::new(service.clone());
 //! let channels_service = ChannelsServiceServer::new(service);
 //!
@@ -64,6 +64,7 @@
 #[cfg(feature = "client")]
 mod client;
 mod mapping;
+// TODO: make conditional via feature
 mod service;
 
 #[cfg(test)]
@@ -80,7 +81,7 @@ pub use crate::{
         channels_service_server::ChannelsServiceServer,
         runtime_service_server::RuntimeServiceServer, test_service_server::TestServiceServer,
     },
-    service::{ManagerService, WithClockType},
+    service::{ManagerWrapper, StorageWrapper, WithClockType},
 };
 
 /// Serialized file descriptor set for messages and services declared in this crate.

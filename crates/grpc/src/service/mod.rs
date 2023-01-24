@@ -8,15 +8,16 @@ use tonic::{Request, Response, Status};
 
 use std::collections::HashMap;
 
+mod storage;
+
+pub use self::storage::StorageWrapper;
+
 use crate::mapping::from_timestamp;
 use crate::proto::{
-    channel_config, channels_service_server::ChannelsService, create_workflow_request,
-    push_messages_request::pushed, runtime_info::ClockType, runtime_service_server::RuntimeService,
-    test_service_server::TestService, AbortWorkflowRequest, Channel, ChannelConfig,
-    CloseChannelRequest, CreateChannelRequest, CreateWorkflowRequest, DeployModuleRequest,
-    GetChannelRequest, GetMessageRequest, GetWorkflowRequest, HandleType, Message, MessageCodec,
-    Module, PushMessagesRequest, RuntimeInfo, StreamMessagesRequest, TickResult,
-    TickWorkflowRequest, Workflow,
+    channel_config, create_workflow_request, runtime_info::ClockType,
+    runtime_service_server::RuntimeService, test_service_server::TestService, AbortWorkflowRequest,
+    ChannelConfig, CreateWorkflowRequest, DeployModuleRequest, GetWorkflowRequest, HandleType,
+    Module, RuntimeInfo, TickResult, TickWorkflowRequest, Workflow,
 };
 use tardigrade::{
     handle::{Handle, HandlePathBuf},
@@ -68,13 +69,13 @@ impl WithClockType for MockScheduler {
 ///
 /// See [crate-level docs](index.html#examples) for the examples of usage.
 #[derive(Debug, Clone)]
-pub struct ManagerService<M> {
+pub struct ManagerWrapper<M> {
     inner: M,
     has_driver: bool,
     clock_type: ClockType,
 }
 
-impl<S, M: AsManager<Storage = Streaming<S>>> ManagerService<M>
+impl<S, M: AsManager<Storage = Streaming<S>>> ManagerWrapper<M>
 where
     S: Storage + Clone + 'static,
     M::Clock: Schedule,
@@ -101,7 +102,7 @@ where
     }
 }
 
-impl<M: AsManager> ManagerService<M>
+impl<M: AsManager> ManagerWrapper<M>
 where
     M::Clock: WithClockType,
 {
@@ -112,7 +113,7 @@ where
 }
 
 /// Wraps the specified manager. Unlike [`Self::new()`], does not start any background tasks.
-impl<S, M: AsManager<Storage = Streaming<S>>> From<M> for ManagerService<M>
+impl<S, M: AsManager<Storage = Streaming<S>>> From<M> for ManagerWrapper<M>
 where
     S: Storage + Clone + 'static,
     M::Clock: Schedule,
@@ -126,7 +127,7 @@ where
     }
 }
 
-impl<M: AsManager> ManagerService<M>
+impl<M: AsManager> ManagerWrapper<M>
 where
     M::Storage: StreamMessages + Clone + 'static,
 {
@@ -239,7 +240,7 @@ where
 }
 
 #[tonic::async_trait]
-impl<M> RuntimeService for ManagerService<M>
+impl<M> RuntimeService for ManagerWrapper<M>
 where
     M: AsManager + 'static,
     M::Storage: StreamMessages + Clone + 'static,
@@ -374,175 +375,7 @@ where
 }
 
 #[tonic::async_trait]
-impl<M> ChannelsService for ManagerService<M>
-where
-    M: AsManager + 'static,
-    M::Storage: StreamMessages + Clone + 'static,
-{
-    #[tracing::instrument(skip_all, err)]
-    async fn create_channel(
-        &self,
-        _request: Request<CreateChannelRequest>,
-    ) -> Result<Response<Channel>, Status> {
-        let manager = self.inner.as_manager();
-        let (sender, _) = manager.storage().new_channel().await;
-        let channel = sender.channel_info().clone();
-        let channel = Channel::from_record(sender.channel_id(), channel);
-        Ok(Response::new(channel))
-    }
-
-    #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
-    async fn get_channel(
-        &self,
-        request: Request<GetChannelRequest>,
-    ) -> Result<Response<Channel>, Status> {
-        let channel_id = request.get_ref().id;
-        let manager = self.inner.as_manager();
-        let channel = manager.storage().channel(channel_id).await;
-        let channel = channel
-            .ok_or_else(|| Status::not_found(format!("channel {channel_id} does not exist")))?;
-        let channel = Channel::from_record(channel_id, channel);
-        Ok(Response::new(channel))
-    }
-
-    #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
-    async fn close_channel(
-        &self,
-        request: Request<CloseChannelRequest>,
-    ) -> Result<Response<Channel>, Status> {
-        let channel_id = request.get_ref().id;
-        let handle_to_close = HandleType::from_i32(request.get_ref().half)
-            .ok_or_else(|| Status::invalid_argument("invalid channel half specified"))?;
-
-        let storage = self.inner.as_manager().storage();
-        match handle_to_close {
-            HandleType::Sender => {
-                let sender = storage.sender(channel_id).await.ok_or_else(|| {
-                    Status::not_found(format!("channel {channel_id} does not exist"))
-                })?;
-                sender.close().await;
-            }
-
-            HandleType::Receiver => {
-                let receiver = storage.receiver(channel_id).await.ok_or_else(|| {
-                    Status::not_found(format!("channel {channel_id} does not exist"))
-                })?;
-                receiver.close().await;
-            }
-
-            HandleType::Unspecified => {
-                let message = "invalid channel half specified";
-                return Err(Status::invalid_argument(message));
-            }
-        }
-
-        // The channel should exist at this point, but we handle errors just in case.
-        let channel = storage
-            .channel(channel_id)
-            .await
-            .ok_or_else(|| Status::not_found(format!("channel {channel_id} does not exist")))?;
-        let channel = Channel::from_record(channel_id, channel);
-        Ok(Response::new(channel))
-    }
-
-    #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
-    async fn get_message(
-        &self,
-        request: Request<GetMessageRequest>,
-    ) -> Result<Response<Message>, Status> {
-        let request = request.into_inner();
-        let codec = MessageCodec::from_i32(request.codec)
-            .ok_or_else(|| Status::invalid_argument("invalid message codec specified"))?;
-
-        let reference = request
-            .r#ref
-            .ok_or_else(|| Status::invalid_argument("message reference is not specified"))?;
-        let channel_id = reference.channel_id;
-        let message_idx = usize::try_from(reference.index)
-            .map_err(|_| Status::invalid_argument("message index is too large"))?;
-
-        let manager = self.inner.as_manager();
-        let receiver = manager.storage().receiver(channel_id).await;
-        let receiver = receiver
-            .ok_or_else(|| Status::not_found(format!("channel {channel_id} does not exist")))?;
-        let receiver = receiver.into_owned();
-
-        let message = receiver.receive_message(message_idx).await;
-        let message = message.map_err(|err| Status::not_found(err.to_string()))?;
-        let message = Message::try_from_data(channel_id, message, codec)?;
-        Ok(Response::new(message))
-    }
-
-    type StreamMessagesStream = BoxStream<'static, Result<Message, Status>>;
-
-    #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
-    async fn stream_messages(
-        &self,
-        request: Request<StreamMessagesRequest>,
-    ) -> Result<Response<Self::StreamMessagesStream>, Status> {
-        let request = request.get_ref();
-        let codec = MessageCodec::from_i32(request.codec)
-            .ok_or_else(|| Status::invalid_argument("invalid message codec specified"))?;
-        let channel_id = request.channel_id;
-        let start_index = usize::try_from(request.start_index)
-            .map_err(|_| Status::invalid_argument("message index is too large"))?;
-
-        let manager = self.inner.as_manager();
-        let receiver = manager.storage().receiver(channel_id).await;
-        let receiver = receiver
-            .ok_or_else(|| Status::not_found(format!("channel {channel_id} does not exist")))?;
-
-        let messages = if request.follow {
-            receiver
-                .stream_messages(start_index..)
-                .map(move |message| Message::try_from_data(channel_id, message, codec))
-                .boxed()
-        } else {
-            let receiver = receiver.into_owned();
-            let messages = stream! {
-                let messages = receiver.receive_messages(start_index..);
-                for await message in messages {
-                    yield Message::try_from_data(channel_id, message, codec);
-                }
-            };
-            messages.boxed()
-        };
-        Ok(Response::new(messages))
-    }
-
-    #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
-    async fn push_messages(
-        &self,
-        request: Request<PushMessagesRequest>,
-    ) -> Result<Response<()>, Status> {
-        let request = request.into_inner();
-        let channel_id = request.channel_id;
-
-        let manager = self.inner.as_manager();
-        let sender = manager.storage().sender(channel_id).await;
-        let sender = sender
-            .ok_or_else(|| Status::not_found(format!("channel {channel_id} does not exist")))?;
-
-        let messages: Result<Vec<_>, _> = request
-            .messages
-            .into_iter()
-            .map(|message| match message.payload {
-                None => Err(Status::invalid_argument("no message payload specified")),
-                Some(pushed::Payload::Raw(bytes)) => Ok(bytes),
-                Some(pushed::Payload::Str(string)) => Ok(string.into_bytes()),
-            })
-            .collect();
-
-        sender
-            .send_all(messages?)
-            .await
-            .map_err(|err| Status::aborted(err.to_string()))?;
-        Ok(Response::new(()))
-    }
-}
-
-#[tonic::async_trait]
-impl<M> TestService for ManagerService<M>
+impl<M> TestService for ManagerWrapper<M>
 where
     M: AsManager<Clock = MockScheduler> + 'static,
     M::Storage: StreamMessages + Clone + 'static,

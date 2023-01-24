@@ -27,6 +27,7 @@ use tardigrade_rt::{
     },
     Channels, ChildWorkflow, ReceiverState, SenderState, TaskState, TimerState,
 };
+use tardigrade_worker::WorkerRecord;
 
 pub(crate) fn from_timestamp(mut ts: Timestamp) -> Option<DateTime<Utc>> {
     ts.normalize();
@@ -432,6 +433,17 @@ impl proto::WouldBlock {
     fn from_data(data: &WouldBlock) -> Self {
         Self {
             nearest_timer: data.nearest_timer_expiration().map(to_timestamp),
+        }
+    }
+}
+
+impl proto::Worker {
+    pub(crate) fn from_data(data: WorkerRecord) -> Self {
+        Self {
+            id: data.id,
+            name: data.name,
+            inbound_channel_id: data.inbound_channel_id,
+            cursor: data.cursor as u64,
         }
     }
 }
