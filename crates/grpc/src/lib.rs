@@ -17,22 +17,22 @@
 //! # use std::{net::SocketAddr, sync::Arc};
 //!
 //! use tardigrade_rt::{
-//!     engine::Wasmtime, manager::WorkflowManager, TokioScheduler,
+//!     engine::Wasmtime, runtime::Runtime, TokioScheduler,
 //!     storage::{LocalStorage, Streaming},
 //! };
 //! use tardigrade_grpc::*;
 //!
 //! # async fn test_wrapper() -> anyhow::Result<()> {
-//! // Build a workflow manager
+//! // Build a workflow runtime
 //! let storage = Arc::new(LocalStorage::default());
 //! let (storage, routing_task) = Streaming::new(storage);
 //! task::spawn(routing_task);
-//! let manager = WorkflowManager::builder(Wasmtime::default(), storage)
+//! let runtime = Runtime::builder(Wasmtime::default(), storage)
 //!     .with_clock(TokioScheduler)
 //!     .build();
 //!
-//! // Create services based on the manager
-//! let service = ManagerWrapper::new(manager);
+//! // Create services based on the runtime
+//! let service = RuntimeWrapper::new(runtime);
 //! let runtime_service = RuntimeServiceServer::new(service.clone());
 //! let channels_service = ChannelsServiceServer::new(service);
 //!
@@ -85,7 +85,7 @@ pub use crate::{
         channels_service_server::ChannelsServiceServer,
         runtime_service_server::RuntimeServiceServer, test_service_server::TestServiceServer,
     },
-    service::{ManagerWrapper, StorageWrapper, WithClockType},
+    service::{RuntimeWrapper, StorageWrapper, WithClockType},
 };
 
 /// Serialized file descriptor set for messages and services declared in this crate.

@@ -17,7 +17,7 @@ use crate::proto::{
 };
 use tardigrade_worker::{MessageStream, WorkerRecord, WorkerStorageConnection, WorkerStoragePool};
 
-/// gRPC client for the [Tardigrade runtime service](crate::ManagerWrapper).
+/// gRPC client for the [Tardigrade runtime service](crate::RuntimeWrapper).
 #[derive(Debug, Clone)]
 pub struct Client {
     channels: ChannelsServiceClient<Channel>,

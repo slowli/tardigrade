@@ -32,7 +32,7 @@ use tardigrade::{
 use tardigrade_rt::{
     engine::WorkflowEngine,
     handle::AnyWorkflowHandle,
-    manager::{AsManager, DriveConfig, ManagerSpawner, WorkflowManager, WorkflowTickError},
+    runtime::{AsRuntime, DriveConfig, Runtime, RuntimeSpawner, WorkflowTickError},
     storage::{
         ReadModules, ReadWorkflows, Storage, StorageTransaction, StreamMessages, Streaming,
         TransactionAsStorage,
@@ -43,10 +43,10 @@ use tardigrade_rt::{
 
 type TxStorage<'a, S> = TransactionAsStorage<<S as Storage>::Transaction<'a>>;
 
-type TxManager<'a, M> = WorkflowManager<
-    <M as AsManager>::Engine,
-    <M as AsManager>::Clock,
-    TxStorage<'a, <M as AsManager>::Storage>,
+type TxRuntime<'a, R> = Runtime<
+    <R as AsRuntime>::Engine,
+    <R as AsRuntime>::Clock,
+    TxStorage<'a, <R as AsRuntime>::Storage>,
 >;
 
 /// Scheduler that can be described.
@@ -67,39 +67,39 @@ impl WithClockType for MockScheduler {
     }
 }
 
-/// gRPC service wrapper for the [Tardigrade runtime](WorkflowManager).
+/// gRPC service wrapper for the [Tardigrade runtime](Runtime).
 ///
 /// # Examples
 ///
 /// See [crate-level docs](index.html#examples) for the examples of usage.
 #[derive(Debug, Clone)]
-pub struct ManagerWrapper<M> {
-    inner: M,
+pub struct RuntimeWrapper<R> {
+    inner: R,
     has_driver: bool,
     clock_type: ClockType,
 }
 
-impl<S, M: AsManager<Storage = Streaming<S>>> ManagerWrapper<M>
+impl<S, R: AsRuntime<Storage = Streaming<S>>> RuntimeWrapper<R>
 where
     S: Storage + Clone + 'static,
-    M::Clock: Schedule,
+    R::Clock: Schedule,
 {
-    /// Creates a new wrapper around the provided `manager`. Drives the manager in the background
-    /// task using [`WorkflowManager::drive()`].
-    pub fn new(mut manager: M) -> Self {
-        let storage = manager.as_manager_mut().storage_mut();
+    /// Creates a new wrapper around the provided `runtime`. Drives the runtime in the background
+    /// task using [`Runtime::drive()`].
+    pub fn new(mut runtime: R) -> Self {
+        let storage = runtime.as_runtime_mut().storage_mut();
         let mut commits_rx = storage.stream_commits();
         {
-            let manager = manager.as_manager().clone();
+            let runtime = runtime.as_runtime().clone();
             let mut config = DriveConfig::new();
             config.wait_for_workflows();
             task::spawn(async move {
-                manager.drive(&mut commits_rx, config).await;
+                runtime.drive(&mut commits_rx, config).await;
             });
         }
 
         Self {
-            inner: manager,
+            inner: runtime,
             has_driver: true,
             clock_type: ClockType::Unspecified,
         }
@@ -107,43 +107,43 @@ where
 
     /// Returns a service wrapper for the underlying storage.
     pub fn storage_wrapper(&self) -> StorageWrapper<Streaming<S>> {
-        let storage = self.inner.as_manager().storage();
+        let storage = self.inner.as_runtime().storage();
         StorageWrapper::new(storage.as_ref().clone())
     }
 }
 
-impl<M: AsManager> ManagerWrapper<M>
+impl<R: AsRuntime> RuntimeWrapper<R>
 where
-    M::Clock: WithClockType,
+    R::Clock: WithClockType,
 {
     /// Records the clock type used in the wrapped runtime.
     pub fn set_clock_type(&mut self) {
-        self.clock_type = <M::Clock>::clock_type();
+        self.clock_type = <R::Clock>::clock_type();
     }
 }
 
-/// Wraps the specified manager. Unlike [`Self::new()`], does not start any background tasks.
-impl<S, M: AsManager<Storage = Streaming<S>>> From<M> for ManagerWrapper<M>
+/// Wraps the specified runtime. Unlike [`Self::new()`], does not start any background tasks.
+impl<S, R: AsRuntime<Storage = Streaming<S>>> From<R> for RuntimeWrapper<R>
 where
     S: Storage + Clone + 'static,
-    M::Clock: Schedule,
+    R::Clock: Schedule,
 {
-    fn from(manager: M) -> Self {
+    fn from(runtime: R) -> Self {
         Self {
-            inner: manager,
+            inner: runtime,
             has_driver: false,
             clock_type: ClockType::Unspecified,
         }
     }
 }
 
-impl<M: AsManager> ManagerWrapper<M>
+impl<R: AsRuntime> RuntimeWrapper<R>
 where
-    M::Storage: StreamMessages + Clone + 'static,
+    R::Storage: StreamMessages + Clone + 'static,
 {
     #[tracing::instrument(level = "debug", skip(spawner), err)]
     async fn create_handles<'r, 'a: 'r>(
-        spawner: &ManagerSpawner<'r, TxManager<'a, M>, Raw>,
+        spawner: &RuntimeSpawner<'r, TxRuntime<'a, R>, Raw>,
         config: &HashMap<String, ChannelConfig>,
     ) -> Result<UntypedHandles<Raw>, Status> {
         let mut handles = UntypedHandles::<Raw>::new();
@@ -164,7 +164,7 @@ where
 
     #[tracing::instrument(level = "debug", skip(spawner), err)]
     async fn create_handle<'r, 'a: 'r>(
-        spawner: &ManagerSpawner<'r, TxManager<'a, M>, Raw>,
+        spawner: &RuntimeSpawner<'r, TxRuntime<'a, R>, Raw>,
         ty: i32,
         path: &HandlePathBuf,
     ) -> Result<Handle<ChannelId>, Status> {
@@ -203,7 +203,7 @@ where
     }
 
     async fn do_get_workflow(&self, workflow_id: WorkflowId) -> Result<Response<Workflow>, Status> {
-        let storage = self.inner.as_manager().storage();
+        let storage = self.inner.as_runtime().storage();
         let storage = storage.as_ref();
         let transaction = storage.readonly_transaction().await;
         let workflow = transaction.workflow(workflow_id).await;
@@ -226,10 +226,10 @@ where
         };
 
         let definition_id = format!("{}::{}", request.module_id, request.name_in_module);
-        let mut manager = self.inner.as_manager().clone();
-        let tx_manager = manager.in_transaction().await;
+        let mut runtime = self.inner.as_runtime().clone();
+        let tx_runtime = runtime.in_transaction().await;
 
-        let spawner = tx_manager.raw_spawner();
+        let spawner = tx_runtime.raw_spawner();
         let builder = spawner.new_workflow::<()>(&definition_id).await;
         let builder = builder.map_err(|_| {
             let message = format!("workflow definition `{definition_id}` does not exist");
@@ -241,7 +241,7 @@ where
         let workflow_id =
             workflow_id.map_err(|err| Status::invalid_argument(format!("{err:#}")))?;
 
-        let Some(transaction) = tx_manager.into_storage().into_inner() else {
+        let Some(transaction) = tx_runtime.into_storage().into_inner() else {
             return Err(Status::internal("cannot commit transaction"));
         };
         transaction.commit().await;
@@ -250,10 +250,10 @@ where
 }
 
 #[tonic::async_trait]
-impl<M> RuntimeService for ManagerWrapper<M>
+impl<R> RuntimeService for RuntimeWrapper<R>
 where
-    M: AsManager + 'static,
-    M::Storage: StreamMessages + Clone + 'static,
+    R: AsRuntime + 'static,
+    R::Storage: StreamMessages + Clone + 'static,
 {
     #[tracing::instrument(skip_all, err)]
     async fn get_info(&self, _request: Request<()>) -> Result<Response<RuntimeInfo>, Status> {
@@ -269,9 +269,9 @@ where
         &self,
         request: Request<DeployModuleRequest>,
     ) -> Result<Response<Module>, Status> {
-        let manager = self.inner.as_manager();
+        let runtime = self.inner.as_runtime();
         let request = request.into_inner();
-        let module = manager
+        let module = runtime
             .engine()
             .create_module(request.bytes.into())
             .await
@@ -280,7 +280,7 @@ where
         let module = if request.dry_run {
             Module::from_engine_module(request.id, module)
         } else {
-            let module = manager.insert_module(&request.id, module).await;
+            let module = runtime.insert_module(&request.id, module).await;
             Module::from_record(module)
         };
         Ok(Response::new(module))
@@ -293,7 +293,7 @@ where
         &self,
         _request: Request<()>,
     ) -> Result<Response<Self::ListModulesStream>, Status> {
-        let storage = self.inner.as_manager().storage();
+        let storage = self.inner.as_runtime().storage();
         let storage = storage.as_ref().clone();
 
         let modules = stream! {
@@ -330,9 +330,9 @@ where
     ) -> Result<Response<TickResult>, Status> {
         let workflow_id = request.get_ref().workflow_id;
 
-        let manager = self.inner.as_manager();
+        let runtime = self.inner.as_runtime();
         let result = if let Some(workflow_id) = workflow_id {
-            match manager.tick_workflow(workflow_id).await {
+            match runtime.tick_workflow(workflow_id).await {
                 Ok(result) => Ok(result),
                 Err(WorkflowTickError::WouldBlock(err)) => Err(err),
                 Err(WorkflowTickError::NotFound) => {
@@ -345,7 +345,7 @@ where
                 }
             }
         } else {
-            manager.tick().await
+            runtime.tick().await
         };
         let result = result.map_err(|would_block| (workflow_id, would_block));
 
@@ -360,7 +360,7 @@ where
     ) -> Result<Response<Workflow>, Status> {
         let workflow_id = request.get_ref().id;
 
-        let storage = self.inner.as_manager().storage();
+        let storage = self.inner.as_runtime().storage();
         let workflow = storage.any_workflow(workflow_id).await;
         let workflow = workflow
             .ok_or_else(|| Status::not_found(format!("workflow {workflow_id} does not exist")))?;
@@ -385,10 +385,10 @@ where
 }
 
 #[tonic::async_trait]
-impl<M> TestService for ManagerWrapper<M>
+impl<R> TestService for RuntimeWrapper<R>
 where
-    M: AsManager<Clock = MockScheduler> + 'static,
-    M::Storage: StreamMessages + Clone + 'static,
+    R: AsRuntime<Clock = MockScheduler> + 'static,
+    R::Storage: StreamMessages + Clone + 'static,
 {
     #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
     async fn set_time(&self, request: Request<Timestamp>) -> Result<Response<()>, Status> {
@@ -396,10 +396,10 @@ where
         let timestamp = from_timestamp(timestamp)
             .ok_or_else(|| Status::invalid_argument("provided timestamp is invalid"))?;
 
-        let manager = self.inner.as_manager();
-        manager.clock().set_now(timestamp);
+        let runtime = self.inner.as_runtime();
+        runtime.clock().set_now(timestamp);
         if !self.has_driver {
-            manager.set_current_time(timestamp).await;
+            runtime.set_current_time(timestamp).await;
         }
 
         Ok(Response::new(()))

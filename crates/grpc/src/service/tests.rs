@@ -1,4 +1,4 @@
-//! Tests for `ManagerWrapper`.
+//! Tests for `RuntimeWrapper`.
 
 use assert_matches::assert_matches;
 use futures::TryStreamExt;
@@ -19,7 +19,7 @@ use crate::{
         update_worker_request::UpdateType,
         workers_service_server::WorkersService,
     },
-    ManagerWrapper, StorageWrapper,
+    RuntimeWrapper, StorageWrapper,
 };
 use tardigrade::{
     interface::{ArgsSpec, InterfaceBuilder, ReceiverSpec, SenderSpec},
@@ -27,7 +27,7 @@ use tardigrade::{
 };
 use tardigrade_rt::{
     engine::AsWorkflowData,
-    manager::WorkflowManager,
+    runtime::Runtime,
     storage::{LocalStorage, Streaming},
     test::{
         engine::{MockAnswers, MockEngine, MockInstance},
@@ -36,7 +36,7 @@ use tardigrade_rt::{
     Schedule, TokioScheduler,
 };
 
-type TestManager<C> = WorkflowManager<MockEngine, C, Streaming<Arc<LocalStorage>>>;
+type TestRuntime<C> = Runtime<MockEngine, C, Streaming<Arc<LocalStorage>>>;
 
 fn create_storage() -> Streaming<Arc<LocalStorage>> {
     let storage = Arc::new(LocalStorage::default());
@@ -45,8 +45,8 @@ fn create_storage() -> Streaming<Arc<LocalStorage>> {
     storage
 }
 
-fn create_manager<C: Schedule>(engine: MockEngine, clock: C) -> TestManager<C> {
-    WorkflowManager::builder(engine, create_storage())
+fn create_runtime<C: Schedule>(engine: MockEngine, clock: C) -> TestRuntime<C> {
+    Runtime::builder(engine, create_storage())
         .with_clock(clock)
         .build()
 }
@@ -173,8 +173,8 @@ async fn channel_management() {
 #[tokio::test]
 async fn server_basics() {
     let (poll_fns, mut poll_fns_sx) = MockAnswers::channel();
-    let manager = create_manager(mock_engine(poll_fns), TokioScheduler);
-    let runtime = ManagerWrapper::new(manager);
+    let runtime = create_runtime(mock_engine(poll_fns), TokioScheduler);
+    let runtime = RuntimeWrapper::new(runtime);
     let channels = runtime.storage_wrapper();
 
     test_module_deployment(&runtime).await;
@@ -391,11 +391,11 @@ fn resolve_timer(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
 
 async fn test_workflow_with_mock_scheduler(has_driver: bool) {
     let (poll_fns, mut poll_fns_sx) = MockAnswers::channel();
-    let manager = create_manager(mock_engine(poll_fns), MockScheduler::default());
+    let runtime = create_runtime(mock_engine(poll_fns), MockScheduler::default());
     let service = if has_driver {
-        ManagerWrapper::new(manager)
+        RuntimeWrapper::new(runtime)
     } else {
-        ManagerWrapper::from(manager)
+        RuntimeWrapper::from(runtime)
     };
 
     test_module_deployment(&service).await;

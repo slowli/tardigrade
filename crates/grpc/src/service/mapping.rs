@@ -19,8 +19,8 @@ use tardigrade::{
 use tardigrade_rt::{
     engine::{DefineWorkflow, PersistedWorkflowData, WorkflowModule},
     handle::ReceivedMessage,
-    manager::{TickResult, WouldBlock},
     receipt::ExecutionError,
+    runtime::{TickResult, WouldBlock},
     storage::{
         ActiveWorkflowState, ChannelRecord, CompletedWorkflowState, DefinitionRecord,
         ErroredWorkflowState, ModuleRecord, WorkflowRecord, WorkflowState,
