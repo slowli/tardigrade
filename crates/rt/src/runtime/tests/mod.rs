@@ -1,4 +1,4 @@
-//! Tests for `WorkflowManager`.
+//! Tests for `Runtime`.
 
 use anyhow::anyhow;
 use assert_matches::assert_matches;
@@ -31,17 +31,17 @@ use tardigrade::{
 
 const DEFINITION_ID: &str = "test@latest::TestWorkflow";
 
-type LocalManager<C = (), S = LocalStorage> = WorkflowManager<MockEngine, C, S>;
+type LocalRuntime<C = (), S = LocalStorage> = Runtime<MockEngine, C, S>;
 
 fn channel_id(channel_ids: &ChannelIds, path: &str) -> ChannelId {
     channel_ids[&HandlePath::new(path)].factor()
 }
 
-async fn create_test_manager_with_storage<S: Storage, C: Clock>(
+async fn create_test_runtime_with_storage<S: Storage, C: Clock>(
     poll_fns: MockAnswers,
     clock: C,
     storage: S,
-) -> LocalManager<C, S> {
+) -> LocalRuntime<C, S> {
     let engine = MockEngine::new(poll_fns).with_module(b"test", "TestWorkflow", test_interface());
 
     let module_record = ModuleRecord {
@@ -52,21 +52,19 @@ async fn create_test_manager_with_storage<S: Storage, C: Clock>(
     };
     let module = engine.restore_module(&module_record).await.unwrap();
 
-    let manager = WorkflowManager::builder(engine, storage)
-        .with_clock(clock)
-        .build();
-    manager.insert_module("test@latest", module).await;
-    manager
+    let runtime = Runtime::builder(engine, storage).with_clock(clock).build();
+    runtime.insert_module("test@latest", module).await;
+    runtime
 }
 
-async fn create_test_manager<C: Clock>(poll_fns: MockAnswers, clock: C) -> LocalManager<C> {
-    create_test_manager_with_storage(poll_fns, clock, LocalStorage::default()).await
+async fn create_test_runtime<C: Clock>(poll_fns: MockAnswers, clock: C) -> LocalRuntime<C> {
+    create_test_runtime_with_storage(poll_fns, clock, LocalStorage::default()).await
 }
 
 async fn create_test_workflow<C: Clock, S: Storage>(
-    manager: &LocalManager<C, S>,
+    runtime: &LocalRuntime<C, S>,
 ) -> WorkflowHandle<(), &S> {
-    let spawner = manager.spawner().close_senders();
+    let spawner = runtime.spawner().close_senders();
     let builder = spawner.new_workflow::<()>(DEFINITION_ID).await.unwrap();
     let (handles, _) = builder.handles(|_| { /* use default config */ }).await;
     builder
@@ -75,11 +73,11 @@ async fn create_test_workflow<C: Clock, S: Storage>(
         .unwrap()
 }
 
-async fn tick_workflow(manager: &LocalManager, id: WorkflowId) -> Result<Receipt, ExecutionError> {
-    let mut transaction = manager.storage.transaction().await;
+async fn tick_workflow(runtime: &LocalRuntime, id: WorkflowId) -> Result<Receipt, ExecutionError> {
+    let mut transaction = runtime.storage.transaction().await;
     transaction.prepare_wakers_for_workflow(id);
     transaction.commit().await;
-    let result = manager.tick().await.unwrap();
+    let result = runtime.tick().await.unwrap();
     assert_eq!(result.workflow_id(), id);
     result.into_inner()
 }
@@ -99,11 +97,11 @@ pub(crate) fn is_consumption(event: &Event, channel_id: ChannelId) -> bool {
 }
 
 async fn feed_message(
-    manager: &LocalManager,
+    runtime: &LocalRuntime,
     workflow_id: WorkflowId,
     channel_id: ChannelId,
 ) -> Result<Receipt, ExecutionError> {
-    let result = tick_workflow(manager, workflow_id).await;
+    let result = tick_workflow(runtime, workflow_id).await;
     let receipt = result.as_ref().unwrap_or_else(ExecutionError::receipt);
     let consumed = receipt
         .events()
@@ -131,10 +129,10 @@ fn initialize_task(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
 #[async_std::test]
 async fn instantiating_workflow() {
     let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
-    let manager = create_test_manager(poll_fns, ()).await;
-    let workflow = create_test_workflow(&manager).await;
+    let runtime = create_test_runtime(poll_fns, ()).await;
+    let workflow = create_test_workflow(&runtime).await;
 
-    let storage = manager.storage.readonly_transaction().await;
+    let storage = runtime.storage.readonly_transaction().await;
     let record = storage.workflow(workflow.id()).await.unwrap();
     assert_eq!(record.module_id, "test@latest");
     assert_eq!(record.name_in_module, "TestWorkflow");
@@ -156,7 +154,7 @@ async fn instantiating_workflow() {
     poll_fn_sx
         .send(initialize_task)
         .async_scope(test_initializing_workflow(
-            &manager,
+            &runtime,
             workflow.id(),
             workflow.channel_ids(),
         ))
@@ -164,49 +162,49 @@ async fn instantiating_workflow() {
 }
 
 async fn test_initializing_workflow(
-    manager: &LocalManager<()>,
+    runtime: &LocalRuntime<()>,
     workflow_id: WorkflowId,
     channel_ids: &ChannelIds,
 ) {
-    let workflow_cache = manager.inner.cached_workflows.lock().await;
+    let workflow_cache = runtime.inner.cached_workflows.lock().await;
     assert!(workflow_cache.inner.is_empty());
     drop(workflow_cache);
 
-    let receipt = manager.tick_workflow(workflow_id).await.unwrap();
+    let receipt = runtime.tick_workflow(workflow_id).await.unwrap();
     let receipt = receipt.into_inner().unwrap();
     assert_eq!(receipt.executions().len(), 2);
     let main_execution = &receipt.executions()[0];
     assert_matches!(main_execution.function, ExecutedFunction::Entry { .. });
 
     let traces_id = channel_id(channel_ids, "traces");
-    let transaction = manager.storage.readonly_transaction().await;
+    let transaction = runtime.storage.readonly_transaction().await;
     let traces = transaction.channel(traces_id).await.unwrap();
     assert_eq!(traces.received_messages, 1);
     let message = transaction.channel_message(traces_id, 0).await.unwrap();
     assert_eq!(message, b"trace #1");
 
-    let workflow_cache = manager.inner.cached_workflows.lock().await;
+    let workflow_cache = runtime.inner.cached_workflows.lock().await;
     assert_eq!(workflow_cache.inner.len(), 1);
 }
 
 #[async_std::test]
 async fn creating_workflow_in_transaction() {
     let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
-    let mut manager = create_test_manager(poll_fns, ()).await;
+    let mut runtime = create_test_runtime(poll_fns, ()).await;
 
-    let tx_manager = manager.in_transaction().await;
-    let workflow_id = create_test_workflow(&tx_manager).await.id();
+    let tx_runtime = runtime.in_transaction().await;
+    let workflow_id = create_test_workflow(&tx_runtime).await.id();
     let tick_result = poll_fn_sx
         .send(initialize_task)
-        .async_scope(tx_manager.tick())
+        .async_scope(tx_runtime.tick())
         .await;
     tick_result.unwrap().into_inner().unwrap();
 
     // Finally commit the transaction.
-    let transaction = tx_manager.into_storage().into_inner().unwrap();
+    let transaction = tx_runtime.into_storage().into_inner().unwrap();
     transaction.commit().await;
 
-    let workflow = manager.storage().workflow(workflow_id).await.unwrap();
+    let workflow = runtime.storage().workflow(workflow_id).await.unwrap();
     let handle = workflow.handle().await.with_indexing();
     let message = handle[SenderAt("traces")].receive_message(0).await.unwrap();
     let message = message.decode().unwrap();
@@ -216,29 +214,29 @@ async fn creating_workflow_in_transaction() {
 #[async_std::test]
 async fn discarding_workflow_in_transaction() {
     let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
-    let mut manager = create_test_manager(poll_fns, ()).await;
+    let mut runtime = create_test_runtime(poll_fns, ()).await;
 
-    let tx_manager = manager.in_transaction().await;
-    let workflow = create_test_workflow(&tx_manager).await;
+    let tx_runtime = runtime.in_transaction().await;
+    let workflow = create_test_workflow(&tx_runtime).await;
     let workflow_id = workflow.id();
     let channel_ids = workflow.channel_ids().values().copied();
     let channel_ids: HashSet<_> = channel_ids.map(Handle::factor).collect();
     let tick_result = poll_fn_sx
         .send(initialize_task)
-        .async_scope(tx_manager.tick())
+        .async_scope(tx_runtime.tick())
         .await;
     tick_result.unwrap().into_inner().unwrap();
 
-    // Drop the manager with the transaction, thus discarding it.
-    drop(tx_manager);
+    // Drop the runtime with the transaction, thus discarding it.
+    drop(tx_runtime);
 
-    assert!(manager.storage().workflow(workflow_id).await.is_none());
+    assert!(runtime.storage().workflow(workflow_id).await.is_none());
     for &id in &channel_ids {
-        assert!(manager.storage().channel(id).await.is_none());
+        assert!(runtime.storage().channel(id).await.is_none());
     }
 
     // Check that if a new workflow is created, its IDs are never reused.
-    let workflow = create_test_workflow(&manager).await;
+    let workflow = create_test_workflow(&runtime).await;
     assert_ne!(workflow.id(), workflow_id);
 
     let new_channel_ids = workflow.channel_ids().values().copied();
@@ -266,8 +264,8 @@ async fn initializing_workflow_with_closed_channels() {
     };
 
     let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
-    let manager = create_test_manager(poll_fns, ()).await;
-    let spawner = manager.spawner();
+    let runtime = create_test_runtime(poll_fns, ()).await;
+    let spawner = runtime.spawner();
     let builder = spawner.new_workflow::<()>(DEFINITION_ID).await.unwrap();
     let handles = builder.handles(|config| {
         let config = config.with_indexing();
@@ -286,11 +284,11 @@ async fn initializing_workflow_with_closed_channels() {
 
     poll_fn_sx
         .send(test_channels)
-        .async_scope(tick_workflow(&manager, workflow_id))
+        .async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
 
-    let workflow = manager.storage().workflow(workflow_id).await.unwrap();
+    let workflow = runtime.storage().workflow(workflow_id).await.unwrap();
     let mut handle = workflow.handle().await.with_indexing();
     let channel_info = handle[ReceiverAt("orders")].channel_info();
     assert!(channel_info.is_closed);
@@ -334,19 +332,19 @@ async fn closing_workflow_channels() {
     };
 
     let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
-    let manager = create_test_manager(poll_fns, ()).await;
-    let mut workflow = create_test_workflow(&manager).await;
+    let runtime = create_test_runtime(poll_fns, ()).await;
+    let mut workflow = create_test_workflow(&runtime).await;
     let workflow_id = workflow.id();
     let events_id = channel_id(workflow.channel_ids(), "events");
     let orders_id = channel_id(workflow.channel_ids(), "orders");
 
     poll_fn_sx
         .send(block_on_flush)
-        .async_scope(tick_workflow(&manager, workflow_id))
+        .async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
-    helper::close_host_receiver(&manager.storage, events_id).await;
-    let channel_info = manager.storage().channel(events_id).await.unwrap();
+    helper::close_host_receiver(&runtime.storage, events_id).await;
+    let channel_info = runtime.storage().channel(events_id).await.unwrap();
     assert!(channel_info.is_closed);
 
     workflow.update().await.unwrap();
@@ -362,10 +360,10 @@ async fn closing_workflow_channels() {
 
     poll_fn_sx
         .send(drop_receiver)
-        .async_scope(tick_workflow(&manager, workflow_id))
+        .async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
-    let channel_info = manager.storage().channel(orders_id).await.unwrap();
+    let channel_info = runtime.storage().channel(orders_id).await.unwrap();
     assert!(channel_info.is_closed);
 }
 
@@ -408,27 +406,27 @@ async fn test_closing_receiver_from_host_side(with_message: bool) {
     };
 
     let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
-    let manager = create_test_manager(poll_fns, ()).await;
-    let workflow = create_test_workflow(&manager).await;
+    let runtime = create_test_runtime(poll_fns, ()).await;
+    let workflow = create_test_workflow(&runtime).await;
     let workflow_id = workflow.id();
     let orders_id = channel_id(workflow.channel_ids(), "orders");
 
     poll_fn_sx
         .send(initialize_task)
-        .async_scope(tick_workflow(&manager, workflow_id))
+        .async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
     if with_message {
-        helper::send_messages(&manager.storage, orders_id, vec![b"order #1".to_vec()])
+        helper::send_messages(&runtime.storage, orders_id, vec![b"order #1".to_vec()])
             .await
             .unwrap();
     }
-    helper::close_host_sender(&manager.storage, orders_id).await;
+    helper::close_host_sender(&runtime.storage, orders_id).await;
 
     if with_message {
         let receipt = poll_fn_sx
             .send(poll_receiver)
-            .async_scope(feed_message(&manager, workflow_id, orders_id))
+            .async_scope(feed_message(&runtime, workflow_id, orders_id))
             .await
             .unwrap();
         let order_events = extract_channel_events(&receipt, orders_id);
@@ -447,7 +445,7 @@ async fn test_closing_receiver_from_host_side(with_message: bool) {
 
     let receipt = poll_fn_sx
         .send(test_closed_channel)
-        .async_scope(tick_workflow(&manager, workflow_id))
+        .async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
     let order_events = extract_channel_events(&receipt, orders_id);
@@ -472,24 +470,24 @@ async fn closing_receiver_with_message_from_host_side() {
 #[async_std::test]
 async fn error_initializing_workflow() {
     let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
-    let manager = create_test_manager(poll_fns, ()).await;
-    let mut workflow = create_test_workflow(&manager).await;
+    let runtime = create_test_runtime(poll_fns, ()).await;
+    let mut workflow = create_test_workflow(&runtime).await;
     let workflow_id = workflow.id();
 
     let err = poll_fn_sx
         .send(|_| Err(anyhow!("oops")))
-        .async_scope(tick_workflow(&manager, workflow_id))
+        .async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap_err();
     let err = err.trap().to_string();
     assert!(err.contains("oops"), "{err}");
 
     workflow.update().await.unwrap_err();
-    let block_err = manager.tick().await.unwrap_err();
+    let block_err = runtime.tick().await.unwrap_err();
     assert!(block_err.nearest_timer_expiration().is_none());
 
     {
-        let workflow = manager.storage().any_workflow(workflow_id).await.unwrap();
+        let workflow = runtime.storage().any_workflow(workflow_id).await.unwrap();
         assert!(workflow.is_errored());
         let workflow = workflow.unwrap_errored();
         assert_eq!(workflow.id(), workflow_id);
@@ -502,7 +500,7 @@ async fn error_initializing_workflow() {
 
     let receipt = poll_fn_sx
         .send(initialize_task)
-        .async_scope(tick_workflow(&manager, workflow_id))
+        .async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
     assert!(!receipt.executions().is_empty());
@@ -531,22 +529,22 @@ fn consume_message(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
 #[async_std::test]
 async fn sending_message_to_workflow() {
     let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
-    let manager = create_test_manager(poll_fns, ()).await;
-    let mut workflow = create_test_workflow(&manager).await;
+    let runtime = create_test_runtime(poll_fns, ()).await;
+    let mut workflow = create_test_workflow(&runtime).await;
     let workflow_id = workflow.id();
     let orders_id = channel_id(workflow.channel_ids(), "orders");
 
     poll_fn_sx
         .send(poll_receiver)
-        .async_scope(tick_workflow(&manager, workflow_id))
+        .async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
-    helper::send_messages(&manager.storage, orders_id, vec![b"order #1".to_vec()])
+    helper::send_messages(&runtime.storage, orders_id, vec![b"order #1".to_vec()])
         .await
         .unwrap();
 
     {
-        let transaction = manager.storage.readonly_transaction().await;
+        let transaction = runtime.storage.readonly_transaction().await;
         let order_count = transaction
             .channel(orders_id)
             .await
@@ -559,7 +557,7 @@ async fn sending_message_to_workflow() {
 
     let receipt = poll_fn_sx
         .send(consume_message)
-        .async_scope(feed_message(&manager, workflow_id, orders_id))
+        .async_scope(feed_message(&runtime, workflow_id, orders_id))
         .await
         .unwrap();
     assert_eq!(receipt.executions().len(), 2); // waker + task
@@ -590,33 +588,33 @@ fn error_after_consuming_message(ctx: &mut MockInstance) -> anyhow::Result<Poll<
 #[async_std::test]
 async fn error_processing_inbound_message_in_workflow() {
     let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
-    let manager = create_test_manager(poll_fns, ()).await;
-    let mut workflow = create_test_workflow(&manager).await;
+    let runtime = create_test_runtime(poll_fns, ()).await;
+    let mut workflow = create_test_workflow(&runtime).await;
     let workflow_id = workflow.id();
     let orders_id = channel_id(workflow.channel_ids(), "orders");
 
     poll_fn_sx
         .send(initialize_task)
-        .async_scope(tick_workflow(&manager, workflow_id))
+        .async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
-    helper::send_messages(&manager.storage, orders_id, vec![b"test".to_vec()])
+    helper::send_messages(&runtime.storage, orders_id, vec![b"test".to_vec()])
         .await
         .unwrap();
     let err = poll_fn_sx
         .send(error_after_consuming_message)
-        .async_scope(feed_message(&manager, workflow_id, orders_id))
+        .async_scope(feed_message(&runtime, workflow_id, orders_id))
         .await
         .unwrap_err();
     let err = err.trap().to_string();
     assert!(err.contains("oops"), "{err}");
 
-    let channel_info = manager.storage().channel(orders_id).await.unwrap();
+    let channel_info = runtime.storage().channel(orders_id).await.unwrap();
     assert!(!channel_info.is_closed);
     assert_eq!(channel_info.received_messages, 1);
 
     {
-        let workflow = manager.storage().any_workflow(workflow_id).await.unwrap();
+        let workflow = runtime.storage().any_workflow(workflow_id).await.unwrap();
         let workflow = workflow.unwrap_errored();
         let mut message_refs: Vec<_> = workflow.messages().collect();
         assert_eq!(message_refs.len(), 1);
@@ -645,26 +643,26 @@ async fn error_processing_inbound_message_in_workflow() {
 #[async_std::test]
 async fn workflow_not_consuming_inbound_message() {
     let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
-    let manager = create_test_manager(poll_fns, ()).await;
-    let mut workflow = create_test_workflow(&manager).await;
+    let runtime = create_test_runtime(poll_fns, ()).await;
+    let mut workflow = create_test_workflow(&runtime).await;
     let workflow_id = workflow.id();
     let orders_id = channel_id(workflow.channel_ids(), "orders");
 
     poll_fn_sx
         .send(poll_receiver)
-        .async_scope(tick_workflow(&manager, workflow_id))
+        .async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
-    helper::send_messages(&manager.storage, orders_id, vec![b"order #1".to_vec()])
+    helper::send_messages(&runtime.storage, orders_id, vec![b"order #1".to_vec()])
         .await
         .unwrap();
     let tick_result = poll_fn_sx
         .send(|_| Ok(Poll::Pending))
-        .async_scope(manager.tick())
+        .async_scope(runtime.tick())
         .await;
     tick_result.unwrap().into_inner().unwrap();
 
-    let transaction = manager.storage.readonly_transaction().await;
+    let transaction = runtime.storage.readonly_transaction().await;
     let orders_channel = transaction.channel(orders_id).await.unwrap();
     assert_eq!(orders_channel.received_messages, 1);
     let order = transaction.channel_message(orders_id, 0).await.unwrap();
@@ -684,9 +682,9 @@ async fn workflow_not_consuming_inbound_message() {
 #[async_std::test]
 async fn handles_shape_mismatch_error() {
     let (poll_fns, _) = MockAnswers::channel();
-    let manager = create_test_manager(poll_fns, ()).await;
-    let spawner = manager.spawner();
-    let storage = manager.storage();
+    let runtime = create_test_runtime(poll_fns, ()).await;
+    let spawner = runtime.spawner();
+    let storage = runtime.storage();
 
     let builder = spawner.new_workflow::<()>(DEFINITION_ID).await.unwrap();
     let err = builder
@@ -714,13 +712,13 @@ async fn handles_shape_mismatch_error() {
 #[async_std::test]
 async fn non_owned_channel_error() {
     let (poll_fns, _) = MockAnswers::channel();
-    let manager = create_test_manager(poll_fns, ()).await;
-    let spawner = manager.spawner();
-    let storage = &manager.storage;
-    let workflow = create_test_workflow(&manager).await;
+    let runtime = create_test_runtime(poll_fns, ()).await;
+    let spawner = runtime.spawner();
+    let storage = &runtime.storage;
+    let workflow = create_test_workflow(&runtime).await;
 
     let orders_id = channel_id(workflow.channel_ids(), "orders");
-    let orders_rx = manager.storage().receiver(orders_id).await.unwrap();
+    let orders_rx = runtime.storage().receiver(orders_id).await.unwrap();
     let (traces_sx, _) = spawner.new_channel().await;
     let mut handles = HandleMap::new();
     handles.insert("orders".into(), Handle::Receiver(orders_rx));
@@ -775,8 +773,8 @@ async fn resolving_workflow_definition() {
     const STUB_ID: u64 = 1;
 
     let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
-    let manager = create_test_manager(poll_fns, ()).await;
-    let workflow = create_test_workflow(&manager).await;
+    let runtime = create_test_runtime(poll_fns, ()).await;
+    let workflow = create_test_workflow(&runtime).await;
     let workflow_id = workflow.id();
 
     let request_definition: MockPollFn = |ctx| {
@@ -792,8 +790,8 @@ async fn resolving_workflow_definition() {
     poll_fn_sx
         .send_all([request_definition, assert_on_definition])
         .async_scope(async {
-            tick_workflow(&manager, workflow_id).await.unwrap();
-            tick_workflow(&manager, workflow_id).await.unwrap();
+            tick_workflow(&runtime, workflow_id).await.unwrap();
+            tick_workflow(&runtime, workflow_id).await.unwrap();
         })
         .await;
 }
@@ -804,8 +802,8 @@ async fn workflow_definition_errors() {
     const MISSING_STUB_ID: u64 = 2;
 
     let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
-    let manager = create_test_manager(poll_fns, ()).await;
-    let workflow = create_test_workflow(&manager).await;
+    let runtime = create_test_runtime(poll_fns, ()).await;
+    let workflow = create_test_workflow(&runtime).await;
     let workflow_id = workflow.id();
 
     let request_definition: MockPollFn = |ctx| {
@@ -823,8 +821,8 @@ async fn workflow_definition_errors() {
     poll_fn_sx
         .send_all([request_definition, assert_on_definition])
         .async_scope(async {
-            tick_workflow(&manager, workflow_id).await.unwrap();
-            tick_workflow(&manager, workflow_id).await.unwrap();
+            tick_workflow(&runtime, workflow_id).await.unwrap();
+            tick_workflow(&runtime, workflow_id).await.unwrap();
         })
         .await;
 }

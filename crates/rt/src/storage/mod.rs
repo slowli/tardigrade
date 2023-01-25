@@ -78,7 +78,7 @@ use tardigrade_worker::{MessageStream, WorkerStorageConnection, WorkerStoragePoo
 
 /// Async, transactional storage for workflows and workflow channels.
 ///
-/// A storage is required to instantiate a [`WorkflowManager`](crate::manager::WorkflowManager).
+/// A storage is required to instantiate a [`Runtime`](crate::runtime::Runtime).
 #[async_trait]
 pub trait Storage: Send + Sync {
     /// Read/write transaction for the storage. See [`StorageTransaction`] for required
@@ -159,13 +159,13 @@ impl<T> ReadonlyStorageTransaction for T where
 ///
 /// [`Self::commit()`] must be called for before the transaction is dropped.
 /// Explicit transaction rollback support is not required; all transactions instantiated
-/// by a [`WorkflowManager`] are guaranteed to eventually be committed (save for corner cases,
+/// by a [`Runtime`] are guaranteed to eventually be committed (save for corner cases,
 /// e.g., panicking when the transaction is active).
 /// If rollback *is* supported by the storage, it is assumed to be the default behavior
 /// on transaction drop. It would be an error to commit transactions on drop,
 /// since this would produce errors in the aforementioned corner cases.
 ///
-/// [`WorkflowManager`]: crate::manager::WorkflowManager
+/// [`Runtime`]: crate::runtime::Runtime
 #[must_use = "transactions must be committed to take effect"]
 #[async_trait]
 pub trait StorageTransaction:

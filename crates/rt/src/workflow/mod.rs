@@ -11,11 +11,11 @@ pub use self::persistence::PersistedWorkflow;
 use crate::{
     data::{PersistedWorkflowData, WakerOrTask, WorkflowData},
     engine::{DefineWorkflow, PersistWorkflow, RunWorkflow},
-    manager::Services,
     receipt::{
         Event, ExecutedFunction, Execution, ExecutionError, Receipt, ResourceEventKind, ResourceId,
         WakeUpCause,
     },
+    runtime::Services,
     utils::Message,
 };
 use tardigrade::{

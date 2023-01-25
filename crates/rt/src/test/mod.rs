@@ -46,10 +46,10 @@ use tardigrade::test::MockScheduler as SchedulerBase;
 ///
 /// # Examples
 ///
-/// A primary use case is to use the scheduler with a [`WorkflowManager`]
+/// A primary use case is to use the scheduler with a [`Runtime`]
 /// for integration testing:
 ///
-/// [`WorkflowManager`]: crate::manager::WorkflowManager
+/// [`Runtime`]: crate::runtime::Runtime
 ///
 /// ```
 /// # use async_std::task;
@@ -59,26 +59,26 @@ use tardigrade::test::MockScheduler as SchedulerBase;
 /// # use tardigrade::{handle::{SenderAt, WithIndexing}, spawn::CreateWorkflow};
 /// # use tardigrade_rt::{
 /// #     engine::{Wasmtime, WasmtimeModule},
-/// #     manager::{DriveConfig, WorkflowManager},
+/// #     runtime::{DriveConfig, Runtime},
 /// #     storage::{LocalStorage, Streaming},
 /// #     handle::WorkflowHandle, test::MockScheduler,
 /// # };
 /// # async fn test_wrapper(module: WasmtimeModule) -> anyhow::Result<()> {
-/// // We need `Streaming` storage to drive a `WorkflowManager`.
+/// // We need `Streaming` storage to drive a `Runtime`.
 /// let storage = Arc::new(LocalStorage::default());
 /// let (mut storage, storage_task) = Streaming::new(storage);
 /// let mut commits_rx = storage.stream_commits();
 /// task::spawn(storage_task);
 ///
-/// // Set the mocked wall clock for the workflow manager.
+/// // Set the mocked wall clock for the workflow runtime.
 /// let scheduler = MockScheduler::default();
-/// let manager = WorkflowManager::builder(Wasmtime::default(), storage)
+/// let runtime = Runtime::builder(Wasmtime::default(), storage)
 ///     .with_clock(scheduler.clone())
 ///     .build();
 ///
 /// let inputs: Vec<u8> = // ...
 /// #   vec![];
-/// let spawner = manager.spawner();
+/// let spawner = runtime.spawner();
 /// let builder = spawner.new_workflow::<()>("test::Workflow").await?;
 /// let (handles, self_handles) = builder.handles(|_| {}).await;
 /// builder.build(inputs, handles).await?;
@@ -88,9 +88,9 @@ use tardigrade::test::MockScheduler as SchedulerBase;
 /// let events_rx = self_handles.remove(SenderAt("events")).unwrap();
 /// let mut events_rx = events_rx.stream_messages(0..);
 ///
-/// let manager = manager.clone();
+/// let runtime = runtime.clone();
 /// task::spawn(async move {
-///     manager.drive(&mut commits_rx, DriveConfig::new()).await
+///     runtime.drive(&mut commits_rx, DriveConfig::new()).await
 /// });
 ///
 /// // Advance mocked wall clock.

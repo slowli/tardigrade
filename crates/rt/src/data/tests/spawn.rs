@@ -1,7 +1,7 @@
 //! Workflow tests for spawning child workflows.
 
 use super::*;
-use crate::{engine::DefineWorkflow, manager::StashStub, workflow::WorkflowAndChannelIds};
+use crate::{engine::DefineWorkflow, runtime::StashStub, workflow::WorkflowAndChannelIds};
 use tardigrade::{handle::Handle, interface::Interface, spawn::HostError};
 
 #[derive(Debug)]
@@ -11,12 +11,12 @@ struct NewWorkflowCall {
 }
 
 #[derive(Debug)]
-struct MockWorkflowManager {
+struct MockRuntime {
     interface: Interface,
     calls: Vec<NewWorkflowCall>,
 }
 
-impl MockWorkflowManager {
+impl MockRuntime {
     const INTERFACE_BYTES: &'static [u8] = br#"{
         "v": 0,
         "handles": {
@@ -55,7 +55,7 @@ impl MockWorkflowManager {
     }
 }
 
-impl StashStub for MockWorkflowManager {
+impl StashStub for MockRuntime {
     fn stash_definition(&mut self, _stub_id: u64, _definition_id: &str) {
         // Do nothing
     }
@@ -77,13 +77,13 @@ impl StashStub for MockWorkflowManager {
     }
 }
 
-fn create_workflow_with_manager(poll_fns: MockAnswers) -> Workflow<MockInstance> {
+fn create_workflow_with_runtime(poll_fns: MockAnswers) -> Workflow<MockInstance> {
     let definition = MockDefinition::new(poll_fns, test_interface());
     let channel_ids = mock_channel_ids(definition.interface(), &mut 1);
     let mut data = WorkflowData::new(definition.interface(), channel_ids);
     data.set_services(Services {
         clock: Arc::new(MockScheduler::default()),
-        stubs: Some(Box::new(MockWorkflowManager::new())),
+        stubs: Some(Box::new(MockRuntime::new())),
         tracer: None,
     });
     let args = vec![].into();
@@ -125,9 +125,9 @@ fn configure_handles() -> ChannelIds {
 }
 
 fn init_child(workflow: &mut Workflow<MockInstance>) {
-    let manager = workflow.take_services().stubs.unwrap();
-    let manager = manager.downcast::<MockWorkflowManager>();
-    manager.init_single_child(workflow);
+    let runtime = workflow.take_services().stubs.unwrap();
+    let runtime = runtime.downcast::<MockRuntime>();
+    runtime.init_single_child(workflow);
 }
 
 #[test]
@@ -135,7 +135,7 @@ fn spawning_child_workflow() {
     let (poll_fns, mut poll_fns_sx) = MockAnswers::channel();
     let mut workflow = poll_fns_sx
         .send(spawn_child_workflow)
-        .scope(|| create_workflow_with_manager(poll_fns));
+        .scope(|| create_workflow_with_runtime(poll_fns));
     init_child(&mut workflow);
     poll_fns_sx
         .send(get_child_workflow_channel)
@@ -176,7 +176,7 @@ fn consuming_message_from_child_workflow() {
     let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
     let mut workflow = poll_fn_sx
         .send(spawn_child_workflow)
-        .scope(|| create_workflow_with_manager(poll_fns));
+        .scope(|| create_workflow_with_runtime(poll_fns));
 
     init_child(&mut workflow);
     workflow.data_mut().current_wakeup_cause = Some(WakeUpCause::StubInitialized);

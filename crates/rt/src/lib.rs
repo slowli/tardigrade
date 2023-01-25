@@ -1,6 +1,6 @@
 //! Tardigrade runtime library.
 //!
-//! The runtime provides a [`WorkflowManager`] in which workflows defined in a WASM module
+//! The runtime provides a [`Runtime`] in which workflows defined in a WASM module
 //! can be executed and [persisted](PersistedWorkflow) / restored. Interaction with a workflow
 //! (e.g., submitting messages to channel receivers or taking messages from senders)
 //! can be performed using [`WorkflowHandle`]s.
@@ -19,7 +19,7 @@
 //!
 //! See the linked module docs for more details on abstractions.
 //!
-//! [`WorkflowManager`]: manager::WorkflowManager
+//! [`Runtime`]: runtime::Runtime
 //! [`WorkflowHandle`]: handle::WorkflowHandle
 //! [`wasmtime`]: https://docs.rs/wasmtime/
 //! [(de)serialize]: https://docs.rs/serde/
@@ -47,7 +47,7 @@
 //!
 //! ```
 //! use tardigrade_rt::{
-//!     engine::{Wasmtime, WorkflowEngine}, manager::WorkflowManager, storage::LocalStorage,
+//!     engine::{Wasmtime, WorkflowEngine}, runtime::Runtime, storage::LocalStorage,
 //! };
 //! use tardigrade::spawn::CreateWorkflow;
 //!
@@ -61,21 +61,21 @@
 //!     println!("{workflow_name}: {interface:?}");
 //! }
 //!
-//! // Let's instantiate a manager and add the module to it.
+//! // Let's instantiate a runtime and add the module to it.
 //! let storage = LocalStorage::default();
-//! let manager = WorkflowManager::builder(engine, storage).build();
-//! manager.insert_module("test", module).await;
+//! let runtime = Runtime::builder(engine, storage).build();
+//! runtime.insert_module("test", module).await;
 //!
-//! // Workflows are created within a manager that is responsible
+//! // Workflows are created within a runtime that is responsible
 //! // for their persistence and managing channels, time, and child workflows.
-//! let spawner = manager.spawner();
+//! let spawner = runtime.spawner();
 //! let builder = spawner.new_workflow::<()>("test::Workflow").await?;
 //! let (handles, self_handles) = builder.handles(|_| {}).await;
 //! let new_workflow =
 //!     builder.build(b"data".to_vec(), handles).await?;
 //!
 //! // Let's initialize the workflow.
-//! let receipt = manager.tick().await?.into_inner()?;
+//! let receipt = runtime.tick().await?.into_inner()?;
 //! // `receipt` contains information about WASM code execution. E.g.,
 //! // this will print the executed functions and a list of important
 //! // events for each of executions:
@@ -86,30 +86,30 @@
 //! # }
 //! ```
 //!
-//! See [`WorkflowManager`] docs for examples of what to do with workflows after instantiation.
+//! See [`Runtime`] docs for examples of what to do with workflows after instantiation.
 //!
 //! ## Persisting and restoring workflow
 //!
 //! ```
 //! # use tardigrade::WorkflowId;
 //! # use tardigrade_rt::{
-//! #     engine::Wasmtime, manager::WorkflowManager, storage::LocalStorage, PersistedWorkflow,
+//! #     engine::Wasmtime, runtime::Runtime, storage::LocalStorage, PersistedWorkflow,
 //! # };
 //! #
 //! # async fn test_wrapper(
-//! #     manager: WorkflowManager<Wasmtime, (), LocalStorage>,
+//! #     runtime: Runtime<Wasmtime, (), LocalStorage>,
 //! #     workflow_id: WorkflowId,
 //! # ) -> anyhow::Result<()> {
-//! let manager: WorkflowManager<Wasmtime, (), LocalStorage> = // ...
-//! #   manager;
-//! let workflow = manager.storage().workflow(workflow_id).await.unwrap();
+//! let runtime: Runtime<Wasmtime, (), LocalStorage> = // ...
+//! #   runtime;
+//! let workflow = runtime.storage().workflow(workflow_id).await.unwrap();
 //! let persisted: &PersistedWorkflow = workflow.persisted();
 //! // The persisted workflow can be serialized:
 //! let json = serde_json::to_string(persisted)?;
 //!
 //! // In case of using `LocalStorage`, the entire state can be serialized
 //! // as well:
-//! let mut storage = manager.into_storage();
+//! let mut storage = runtime.into_storage();
 //! let json = serde_json::to_string(&storage.snapshot())?;
 //! # Ok(())
 //! # }
@@ -131,8 +131,8 @@ mod backends;
 mod data;
 pub mod engine;
 pub mod handle;
-pub mod manager;
 pub mod receipt;
+pub mod runtime;
 pub mod storage;
 #[cfg(any(test, feature = "test"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "test")))]
@@ -146,6 +146,6 @@ pub use crate::backends::AsyncIoScheduler;
 pub use crate::backends::TokioScheduler;
 pub use crate::{
     data::{Channels, ChildWorkflow, ReceiverState, SenderState, TaskState, TimerState},
-    manager::{Clock, Schedule, TimerFuture},
+    runtime::{Clock, Schedule, TimerFuture},
     workflow::PersistedWorkflow,
 };

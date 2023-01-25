@@ -10,7 +10,7 @@ use super::{
     time::Timers,
     PersistedWorkflowData, WorkflowData,
 };
-use crate::{manager::Services, workflow::ChannelIds};
+use crate::{runtime::Services, workflow::ChannelIds};
 use tardigrade::{
     handle::{Handle, HandlePath, ReceiverAt, SenderAt},
     interface::Interface,

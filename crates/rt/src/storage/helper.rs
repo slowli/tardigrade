@@ -1,4 +1,4 @@
-//! Persistence for `WorkflowManager`.
+//! Persistence for `Runtime`.
 
 use chrono::{DateTime, Utc};
 use futures::{Future, FutureExt};

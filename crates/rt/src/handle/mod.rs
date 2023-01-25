@@ -1,4 +1,4 @@
-//! Handles for workflows in a [`WorkflowManager`] and their components (e.g., channels).
+//! Handles for workflows in a [`Runtime`] and their components (e.g., channels).
 //!
 //! The root of the handle hierarchy is [`StorageRef`], a thin wrapper around a [`Storage`].
 //! Its methods allow accessing workflows and channels contained in the storage.
@@ -25,7 +25,7 @@
 //! # }
 //! ```
 //!
-//! [`WorkflowManager`]: crate::manager::WorkflowManager
+//! [`Runtime`]: crate::runtime::Runtime
 
 use async_trait::async_trait;
 use futures::{Future, FutureExt};

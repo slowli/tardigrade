@@ -1,4 +1,4 @@
-//! Driving `WorkflowManager` to completion.
+//! Driving workflows in a `Runtime` to completion.
 
 use chrono::{DateTime, TimeZone, Utc};
 use futures::{
@@ -12,22 +12,22 @@ use std::mem;
 
 use crate::{
     handle::{AnyWorkflowHandle, StorageRef},
-    manager::{traits::IntoManager, AsManager, TickResult},
+    runtime::{traits::IntoRuntime, AsRuntime, TickResult},
     storage::{CommitStream, Storage, Streaming},
     Schedule, TimerFuture,
 };
 use tardigrade::WorkflowId;
 
-/// Terminal status of [driving] a [`WorkflowManager`].
+/// Terminal status of [driving] a [`Runtime`].
 ///
-/// [driving]: crate::manager::WorkflowManager::drive()
-/// [`WorkflowManager`]: crate::manager::WorkflowManager
+/// [driving]: crate::runtime::Runtime::drive()
+/// [`Runtime`]: crate::runtime::Runtime
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Termination {
-    /// The workflow manager is finished: all workflows managed by it have run to completion.
+    /// The workflow runtime is finished: all workflows managed by it have run to completion.
     Finished,
-    /// The manager has stalled: its progress does not depend on any external futures
+    /// The runtime has stalled: its progress does not depend on any external futures
     /// (inbound messages or timers).
     Stalled,
 }
@@ -46,13 +46,13 @@ impl Default for CachedTimer {
     }
 }
 
-/// Configuration for driving workflow execution in a [`WorkflowManager`].
+/// Configuration for driving workflow execution in a [`Runtime`].
 ///
-/// [`WorkflowManager`]: crate::manager::WorkflowManager
+/// [`Runtime`]: crate::runtime::Runtime
 ///
 /// # Error handling
 ///
-/// Erroneous workflow executions in [`WorkflowManager::drive()`] lead to the corresponding workflow
+/// Erroneous workflow executions in [`Runtime::drive()`] lead to the corresponding workflow
 /// getting the [errored state], so that it will not be executed again.
 /// To drop incoming messages that may have led to an error,
 /// call [`Self::drop_erroneous_messages()`]. Dropping a message
@@ -61,8 +61,8 @@ impl Default for CachedTimer {
 /// Whether this makes sense, depends on a use case; e.g., it seems reasonable to roll back
 /// deserialization errors for dynamically typed workflows.
 ///
-/// [`WorkflowManager::drive()`]: crate::manager::WorkflowManager::drive()
-/// [errored state]: crate::manager::WorkflowManager#workflow-lifecycle
+/// [`Runtime::drive()`]: crate::runtime::Runtime::drive()
+/// [errored state]: crate::runtime::Runtime#workflow-lifecycle
 ///
 /// # Examples
 ///
@@ -73,7 +73,7 @@ impl Default for CachedTimer {
 /// use tardigrade::handle::{ReceiverAt, SenderAt, WithIndexing};
 /// # use tardigrade::WorkflowId;
 /// use tardigrade_rt::{
-///     manager::{DriveConfig, WorkflowManager},
+///     runtime::{DriveConfig, Runtime},
 ///     storage::{LocalStorage, Streaming, CommitStream},
 ///     AsyncIoScheduler,
 /// };
@@ -84,14 +84,14 @@ impl Default for CachedTimer {
 /// type StreamingStorage = Streaming<Arc<LocalStorage>>;
 ///
 /// # async fn test_wrapper(
-/// #     manager: WorkflowManager<Wasmtime, AsyncIoScheduler, StreamingStorage>,
+/// #     runtime: Runtime<Wasmtime, AsyncIoScheduler, StreamingStorage>,
 /// #     commits_rx: CommitStream,
 /// #     workflow_id: WorkflowId,
 /// # ) -> anyhow::Result<()> {
 /// // Assume we have a dynamically typed workflow:
-/// let manager: WorkflowManager<_, AsyncIoScheduler, StreamingStorage> = // ...
-/// #   manager;
-/// let workflow = manager.storage().workflow(workflow_id).await.unwrap();
+/// let runtime: Runtime<_, AsyncIoScheduler, StreamingStorage> = // ...
+/// #   runtime;
+/// let workflow = runtime.storage().workflow(workflow_id).await.unwrap();
 /// // ...and a commits stream from the storage:
 /// let mut commits_rx: CommitStream = // ...
 /// #   commits_rx;
@@ -102,11 +102,10 @@ impl Default for CachedTimer {
 /// let events_rx = handle.remove(SenderAt("events")).unwrap();
 /// let events_rx = events_rx.stream_messages(0..);
 ///
-/// // Run the manager in a separate task. To retain handles, we clone
-/// // the manager (recall that it was wrapped in `Arc`).
-/// let manager = manager.clone();
+/// // Run the runtime in a separate task.
+/// let runtime = runtime.clone();
 /// task::spawn(async move {
-///     manager.drive(&mut commits_rx, DriveConfig::new()).await
+///     runtime.drive(&mut commits_rx, DriveConfig::new()).await
 /// });
 /// // Let's send a message via an inbound channel...
 /// let message = b"hello".to_vec();
@@ -149,53 +148,53 @@ impl DriveConfig {
         self.wait_for_workflows = true;
     }
 
-    /// Executes the provided [`WorkflowManager`] until all workflows in it have completed
+    /// Executes the provided [`Runtime`] until all workflows in it have completed
     /// or errored. As the workflows execute, outbound messages and
     /// [`TickResult`]s will be sent using respective channels.
     ///
     /// Note that it is possible to cancel this future (e.g., by [`select`]ing between it
-    /// and a cancellation signal) and continue working with the provided workflow manager.
+    /// and a cancellation signal) and continue working with the provided workflow runtime.
     ///
-    /// [`WorkflowManager`]: manager::WorkflowManager
+    /// [`Runtime`]: runtime::Runtime
     /// [`select`]: futures::select
-    pub(super) async fn run<S, M: IntoManager<Storage = Streaming<S>>>(
+    pub(super) async fn run<S, R: IntoRuntime<Storage = Streaming<S>>>(
         mut self,
-        manager: M,
+        runtime: R,
         commits_rx: &mut CommitStream,
     ) -> Termination
     where
         S: Storage + Clone,
-        M::Clock: Schedule,
+        R::Clock: Schedule,
     {
-        let mut manager = manager.into_manager();
+        let mut runtime = runtime.into_runtime();
         // This is to prevent echoing commit events. Ugly, but seems the easiest solution.
-        drop(manager.storage.stream_commits());
+        drop(runtime.storage.stream_commits());
 
         let mut cached_timer = CachedTimer::default();
         loop {
-            if let Some(termination) = self.tick(&manager, commits_rx, &mut cached_timer).await {
+            if let Some(termination) = self.tick(&runtime, commits_rx, &mut cached_timer).await {
                 return termination;
             }
         }
     }
 
     #[tracing::instrument(level = "debug", skip_all, ret)]
-    async fn tick<M: AsManager>(
+    async fn tick<R: AsRuntime>(
         &mut self,
-        manager: &M,
+        runtime: &R,
         commits_rx: &mut CommitStream,
         cached_timer: &mut CachedTimer,
     ) -> Option<Termination>
     where
-        M::Clock: Schedule,
+        R::Clock: Schedule,
     {
-        let nearest_timer_expiration = self.tick_manager(manager).await;
-        let manager_ref = manager.as_manager();
+        let nearest_timer_expiration = self.tick_runtime(runtime).await;
+        let runtime_ref = runtime.as_runtime();
         if nearest_timer_expiration.is_none() {
             let no_workflows = if self.wait_for_workflows {
                 false
             } else {
-                manager_ref.storage().workflow_count().await == 0
+                runtime_ref.storage().workflow_count().await == 0
             };
 
             if commits_rx.is_terminated() || no_workflows {
@@ -221,7 +220,7 @@ impl DriveConfig {
                         return cached.right_future();
                     }
                 }
-                let timer = manager_ref.inner.clock.create_timer(timestamp);
+                let timer = runtime_ref.inner.clock.create_timer(timestamp);
                 timer.right_future()
             },
         );
@@ -235,22 +234,22 @@ impl DriveConfig {
                 }
             }
             Either::Right((timestamp, _)) => {
-                manager_ref.set_current_time(timestamp).await;
+                runtime_ref.set_current_time(timestamp).await;
             }
         }
         None
     }
 
-    async fn tick_manager<M: AsManager>(&mut self, manager: &M) -> Option<DateTime<Utc>> {
-        let manager = manager.as_manager();
+    async fn tick_runtime<R: AsRuntime>(&mut self, runtime: &R) -> Option<DateTime<Utc>> {
+        let runtime = runtime.as_runtime();
         loop {
-            let tick_result = match manager.tick().await {
+            let tick_result = match runtime.tick().await {
                 Ok(result) => result,
                 Err(blocked) => break blocked.nearest_timer_expiration(),
             };
 
             if self.drop_erroneous_messages && tick_result.as_ref().is_err() {
-                Self::repair_workflow(manager.storage(), tick_result.workflow_id()).await;
+                Self::repair_workflow(runtime.storage(), tick_result.workflow_id()).await;
             }
             if let Some(sx) = &self.results_sx {
                 sx.unbounded_send(tick_result).ok();

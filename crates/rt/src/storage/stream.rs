@@ -65,7 +65,7 @@ impl<S: StreamMessages + ?Sized> StreamMessages for &S {
 pin_project! {
     /// Stream of commits returned from [`Streaming::stream_commits()`].
     #[derive(Debug)]
-    #[must_use = "should be plugged into `WorkflowManager::drive()`"]
+    #[must_use = "should be plugged into `Runtime::drive()`"]
     pub struct CommitStream {
         #[pin]
         inner: mpsc::Receiver<()>,

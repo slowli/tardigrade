@@ -22,10 +22,10 @@ const PARENT_ID: WorkflowId = 1;
 const CHILD_ID: WorkflowId = 2;
 
 async fn wakers_for_workflow(
-    manager: &LocalManager,
+    runtime: &LocalRuntime,
     workflow_id: WorkflowId,
 ) -> Vec<WorkflowWaker> {
-    let transaction = manager.storage.readonly_transaction().await;
+    let transaction = runtime.storage.readonly_transaction().await;
     transaction
         .wakers_for_workflow(workflow_id)
         .cloned()
@@ -70,7 +70,7 @@ fn poll_child_traces(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
 }
 
 async fn initialize_child(
-    manager: &LocalManager,
+    runtime: &LocalRuntime,
     workflow_id: WorkflowId,
     poll_fn_sx: &mut AnswersSender<MockPollFn>,
 ) -> (Receipt, Receipt) {
@@ -78,9 +78,9 @@ async fn initialize_child(
         .send_all([allocate_channels, spawn_child])
         .async_scope(async {
             // Allocate channels for the created child.
-            let channels_receipt = tick_workflow(manager, workflow_id).await.unwrap();
+            let channels_receipt = tick_workflow(runtime, workflow_id).await.unwrap();
             // ...Then initialize the child.
-            let child_receipt = tick_workflow(manager, workflow_id).await.unwrap();
+            let child_receipt = tick_workflow(runtime, workflow_id).await.unwrap();
             (channels_receipt, child_receipt)
         })
         .await
@@ -89,12 +89,12 @@ async fn initialize_child(
 #[async_std::test]
 async fn spawning_child_workflow() {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let manager = create_test_manager(poll_fns, ()).await;
-    let mut workflow = create_test_workflow(&manager).await;
+    let runtime = create_test_runtime(poll_fns, ()).await;
+    let mut workflow = create_test_workflow(&runtime).await;
     let workflow_id = workflow.id();
 
     let (channels_receipt, child_receipt) =
-        initialize_child(&manager, workflow_id, &mut poll_fn_sx).await;
+        initialize_child(&runtime, workflow_id, &mut poll_fn_sx).await;
     let executions = channels_receipt.executions().iter();
     let init_count = executions
         .filter(|execution| execution.function.is_stub_initialization())
@@ -145,7 +145,7 @@ async fn spawning_child_workflow() {
 
     poll_fn_sx
         .send(poll_child_traces)
-        .async_scope(tick_workflow(&manager, workflow_id))
+        .async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
     workflow.update().await.unwrap();
@@ -154,7 +154,7 @@ async fn spawning_child_workflow() {
     assert!(wakeup_causes.is_empty(), "{wakeup_causes:?}");
 
     {
-        let transaction = manager.storage.readonly_transaction().await;
+        let transaction = runtime.storage.readonly_transaction().await;
         assert_eq!(transaction.count_active_workflows().await, 2);
         assert!(transaction.workflow(child_id).await.is_some());
 
@@ -164,21 +164,21 @@ async fn spawning_child_workflow() {
         assert!(!traces.has_external_sender);
     }
 
-    send_message_from_child(&manager, traces_id, &mut poll_fn_sx).await;
+    send_message_from_child(&runtime, traces_id, &mut poll_fn_sx).await;
 }
 
 async fn send_message_from_child(
-    manager: &LocalManager,
+    runtime: &LocalRuntime,
     traces_id: ChannelId,
     poll_fn_sx: &mut AnswersSender<MockPollFn>,
 ) {
     // Emulate the child workflow putting a message to the `traces` channel.
     poll_fn_sx
         .send(|_| Ok(Poll::Pending))
-        .async_scope(tick_workflow(manager, CHILD_ID))
+        .async_scope(tick_workflow(runtime, CHILD_ID))
         .await
         .unwrap();
-    helper::send_messages(&manager.storage, traces_id, vec![b"trace".to_vec()])
+    helper::send_messages(&runtime.storage, traces_id, vec![b"trace".to_vec()])
         .await
         .unwrap();
 
@@ -198,7 +198,7 @@ async fn send_message_from_child(
     };
     let receipt = poll_fn_sx
         .send(receive_child_trace)
-        .async_scope(feed_message(manager, PARENT_ID, traces_id))
+        .async_scope(feed_message(runtime, PARENT_ID, traces_id))
         .await
         .unwrap();
 
@@ -211,7 +211,7 @@ async fn send_message_from_child(
     );
 
     // Check channel handles for child workflow
-    let workflow = manager.storage().workflow(CHILD_ID).await.unwrap();
+    let workflow = runtime.storage().workflow(CHILD_ID).await.unwrap();
     let mut handle = workflow.handle().await.with_indexing();
     let child_orders = handle.remove(ReceiverAt("orders")).unwrap();
     let child_orders_id = child_orders.channel_id();
@@ -222,7 +222,7 @@ async fn send_message_from_child(
     assert!(!child_events.can_manipulate());
     child_events.close().await; // no-op: the channel receiver is not owned by the host
 
-    let transaction = manager.storage.readonly_transaction().await;
+    let transaction = runtime.storage.readonly_transaction().await;
     let child_orders = transaction.channel(child_orders_id).await.unwrap();
     assert!(!child_orders.is_closed);
     let child_events = transaction.channel(child_events_id).await.unwrap();
@@ -232,12 +232,12 @@ async fn send_message_from_child(
 #[async_std::test]
 async fn spawning_child_workflow_with_cold_cache() {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let manager = create_test_manager(poll_fns, ()).await;
-    let workflow = create_test_workflow(&manager).await;
+    let runtime = create_test_runtime(poll_fns, ()).await;
+    let workflow = create_test_workflow(&runtime).await;
     let workflow_id = workflow.id();
 
-    manager.inner.definitions.lock().await.inner.clear();
-    initialize_child(&manager, workflow_id, &mut poll_fn_sx).await;
+    runtime.inner.definitions.lock().await.inner.clear();
+    initialize_child(&runtime, workflow_id, &mut poll_fn_sx).await;
 }
 
 async fn test_spawning_child_with_error(
@@ -246,22 +246,22 @@ async fn test_spawning_child_with_error(
     assert_fn: impl FnOnce(&str),
 ) {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let manager = create_test_manager(poll_fns, ()).await;
-    let mut workflow = create_test_workflow(&manager).await;
+    let runtime = create_test_runtime(poll_fns, ()).await;
+    let mut workflow = create_test_workflow(&runtime).await;
     let workflow_id = workflow.id();
 
     let child_receipt = poll_fn_sx
         .send_all([channels_fn, spawn_fn])
         .async_scope(async {
             // Allocate channels for the created child.
-            tick_workflow(&manager, workflow_id).await.unwrap();
+            tick_workflow(&runtime, workflow_id).await.unwrap();
             // ...Then try initializing the child.
-            tick_workflow(&manager, workflow_id).await.unwrap()
+            tick_workflow(&runtime, workflow_id).await.unwrap()
         })
         .await;
 
     assert_child_spawn_error(&child_receipt, assert_fn);
-    assert_eq!(manager.storage().workflow_count().await, 1);
+    assert_eq!(runtime.storage().workflow_count().await, 1);
     workflow.update().await.unwrap();
     assert!(workflow
         .persisted()
@@ -363,10 +363,10 @@ async fn spawning_child_with_extra_channel() {
 #[async_std::test]
 async fn sending_message_to_child() {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let manager = create_test_manager(poll_fns, ()).await;
-    let workflow = create_test_workflow(&manager).await;
+    let runtime = create_test_runtime(poll_fns, ()).await;
+    let workflow = create_test_workflow(&runtime).await;
     let workflow_id = workflow.id();
-    initialize_child(&manager, workflow_id, &mut poll_fn_sx).await;
+    initialize_child(&runtime, workflow_id, &mut poll_fn_sx).await;
 
     let send_message_to_child: MockPollFn = |ctx| {
         let child = ctx.data().persisted.child_workflow(CHILD_ID);
@@ -382,15 +382,15 @@ async fn sending_message_to_child() {
     };
     poll_fn_sx
         .send(send_message_to_child)
-        .async_scope(tick_workflow(&manager, workflow_id))
+        .async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
 
-    let child = manager.storage().workflow(CHILD_ID).await.unwrap();
+    let child = runtime.storage().workflow(CHILD_ID).await.unwrap();
     let child_channels = child.persisted().common().channels();
     let child_orders_id = child_channels.channel_id("orders").unwrap();
     {
-        let transaction = manager.storage.readonly_transaction().await;
+        let transaction = runtime.storage.readonly_transaction().await;
         let child_orders = peek_channel(&transaction, child_orders_id).await;
         assert_eq!(child_orders.len(), 1);
         assert_eq!(child_orders[0], b"child_order");
@@ -406,7 +406,7 @@ async fn sending_message_to_child() {
     };
     poll_fn_sx
         .send(init_child)
-        .async_scope(tick_workflow(&manager, CHILD_ID))
+        .async_scope(tick_workflow(&runtime, CHILD_ID))
         .await
         .unwrap();
 
@@ -420,7 +420,7 @@ async fn sending_message_to_child() {
     };
     poll_fn_sx
         .send(poll_orders_in_child)
-        .async_scope(feed_message(&manager, CHILD_ID, child_orders_id))
+        .async_scope(feed_message(&runtime, CHILD_ID, child_orders_id))
         .await
         .unwrap();
 }
@@ -448,11 +448,11 @@ fn test_child_channels_after_closure(ctx: &mut MockInstance) -> anyhow::Result<P
 
 async fn test_child_workflow_channel_management(complete_child: bool) {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let manager = create_test_manager(poll_fns, ()).await;
-    let mut workflow = create_test_workflow(&manager).await;
+    let runtime = create_test_runtime(poll_fns, ()).await;
+    let mut workflow = create_test_workflow(&runtime).await;
     let workflow_id = workflow.id();
 
-    initialize_child(&manager, workflow_id, &mut poll_fn_sx).await;
+    initialize_child(&runtime, workflow_id, &mut poll_fn_sx).await;
 
     let poll_child_traces_and_completion: MockPollFn = |ctx| {
         let _ = poll_child_traces(ctx)?;
@@ -464,7 +464,7 @@ async fn test_child_workflow_channel_management(complete_child: bool) {
     };
     poll_fn_sx
         .send(poll_child_traces_and_completion)
-        .async_scope(tick_workflow(&manager, workflow_id))
+        .async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
 
@@ -491,16 +491,16 @@ async fn test_child_workflow_channel_management(complete_child: bool) {
     };
     poll_fn_sx
         .send(poll_child_workflow)
-        .async_scope(tick_workflow(&manager, child_id))
+        .async_scope(tick_workflow(&runtime, child_id))
         .await
         .unwrap();
 
-    let channel_info = manager.storage().channel(orders_id).await.unwrap();
+    let channel_info = runtime.storage().channel(orders_id).await.unwrap();
     assert!(channel_info.is_closed);
-    let channel_info = manager.storage().channel(traces_id).await.unwrap();
+    let channel_info = runtime.storage().channel(traces_id).await.unwrap();
     assert!(channel_info.is_closed);
 
-    let wakers = wakers_for_workflow(&manager, workflow_id).await;
+    let wakers = wakers_for_workflow(&runtime, workflow_id).await;
     assert_matches!(
         wakers[0],
         WorkflowWaker::SenderClosure(id) if id == orders_id
@@ -512,15 +512,15 @@ async fn test_child_workflow_channel_management(complete_child: bool) {
         assert_eq!(wakers.len(), 1);
     }
 
-    test_child_resources_after_drop(&manager, poll_fn_sx, complete_child).await;
+    test_child_resources_after_drop(&runtime, poll_fn_sx, complete_child).await;
 }
 
 async fn test_child_resources_after_drop(
-    manager: &LocalManager,
+    runtime: &LocalRuntime,
     mut poll_fn_sx: AnswersSender<MockPollFn>,
     complete_child: bool,
 ) {
-    let mut workflow = manager.storage().workflow(PARENT_ID).await.unwrap();
+    let mut workflow = runtime.storage().workflow(PARENT_ID).await.unwrap();
 
     let test_child_resources: MockPollFn = if complete_child {
         |ctx| {
@@ -536,7 +536,7 @@ async fn test_child_resources_after_drop(
     };
     let receipt = poll_fn_sx
         .send(test_child_resources)
-        .async_scope(tick_workflow(manager, PARENT_ID))
+        .async_scope(tick_workflow(runtime, PARENT_ID))
         .await
         .unwrap();
 
@@ -622,7 +622,7 @@ fn poll_child_completion_with_copied_channel(ctx: &mut MockInstance) -> anyhow::
 }
 
 async fn init_workflow_with_copied_child_channel(
-    manager: &LocalManager,
+    runtime: &LocalRuntime,
     workflow_id: WorkflowId,
     poll_fn_sx: &mut AnswersSender<MockPollFn>,
 ) {
@@ -635,9 +635,9 @@ async fn init_workflow_with_copied_child_channel(
             poll_child_completion_with_copied_channel,
         ])
         .async_scope(async {
-            tick_workflow(manager, workflow_id).await.unwrap(); // allocate channels
-            tick_workflow(manager, workflow_id).await.unwrap(); // spawn child
-            tick_workflow(manager, workflow_id).await.unwrap(); // poll child completion
+            tick_workflow(runtime, workflow_id).await.unwrap(); // allocate channels
+            tick_workflow(runtime, workflow_id).await.unwrap(); // spawn child
+            tick_workflow(runtime, workflow_id).await.unwrap(); // poll child completion
         })
         .await;
 }
@@ -645,19 +645,19 @@ async fn init_workflow_with_copied_child_channel(
 #[async_std::test]
 async fn spawning_child_with_copied_sender() {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let manager = create_test_manager(poll_fns, ()).await;
-    let workflow = create_test_workflow(&manager).await;
+    let runtime = create_test_runtime(poll_fns, ()).await;
+    let workflow = create_test_workflow(&runtime).await;
     let workflow_id = workflow.id();
     let events_id = channel_id(workflow.channel_ids(), "events");
 
-    init_workflow_with_copied_child_channel(&manager, workflow_id, &mut poll_fn_sx).await;
+    init_workflow_with_copied_child_channel(&runtime, workflow_id, &mut poll_fn_sx).await;
 
-    let events_channel = manager.storage().channel(events_id).await.unwrap();
+    let events_channel = runtime.storage().channel(events_id).await.unwrap();
     assert_eq!(
         events_channel.sender_workflow_ids,
         HashSet::from_iter([workflow_id, CHILD_ID])
     );
-    let child = manager.storage().workflow(CHILD_ID).await.unwrap();
+    let child = runtime.storage().workflow(CHILD_ID).await.unwrap();
     let child_events_id = child
         .persisted()
         .common()
@@ -675,35 +675,35 @@ async fn spawning_child_with_copied_sender() {
     };
     poll_fn_sx
         .send(write_event_and_complete_child)
-        .async_scope(tick_workflow(&manager, CHILD_ID))
+        .async_scope(tick_workflow(&runtime, CHILD_ID))
         .await
         .unwrap();
 
-    let events_channel = manager.storage().channel(events_id).await.unwrap();
+    let events_channel = runtime.storage().channel(events_id).await.unwrap();
     assert_eq!(
         events_channel.sender_workflow_ids,
         HashSet::from_iter([workflow_id])
     );
     assert_eq!(events_channel.receiver_workflow_id, None);
 
-    let transaction = manager.storage.readonly_transaction().await;
+    let transaction = runtime.storage.readonly_transaction().await;
     let events = peek_channel(&transaction, events_id).await;
     assert_eq!(events, [b"child_event"]);
 }
 
 async fn test_child_with_copied_closed_sender(close_before_spawn: bool) {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let manager = create_test_manager(poll_fns, ()).await;
-    let workflow = create_test_workflow(&manager).await;
+    let runtime = create_test_runtime(poll_fns, ()).await;
+    let workflow = create_test_workflow(&runtime).await;
     let workflow_id = workflow.id();
     let events_id = channel_id(workflow.channel_ids(), "events");
 
     if close_before_spawn {
-        helper::close_host_receiver(&manager.storage, events_id).await;
+        helper::close_host_receiver(&runtime.storage, events_id).await;
     }
-    init_workflow_with_copied_child_channel(&manager, workflow_id, &mut poll_fn_sx).await;
+    init_workflow_with_copied_child_channel(&runtime, workflow_id, &mut poll_fn_sx).await;
     if !close_before_spawn {
-        helper::close_host_receiver(&manager.storage, events_id).await;
+        helper::close_host_receiver(&runtime.storage, events_id).await;
     }
 
     let test_writing_event_in_child: MockPollFn = |ctx| {
@@ -716,7 +716,7 @@ async fn test_child_with_copied_closed_sender(close_before_spawn: bool) {
     };
     poll_fn_sx
         .send(test_writing_event_in_child)
-        .async_scope(tick_workflow(&manager, CHILD_ID))
+        .async_scope(tick_workflow(&runtime, CHILD_ID))
         .await
         .unwrap();
 }
@@ -733,8 +733,8 @@ async fn spawning_child_with_copied_then_closed_sender() {
 
 async fn test_child_with_aliased_sender(complete_child: bool) {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let manager = create_test_manager(poll_fns, ()).await;
-    let workflow = create_test_workflow(&manager).await;
+    let runtime = create_test_runtime(poll_fns, ()).await;
+    let workflow = create_test_workflow(&runtime).await;
     let workflow_id = workflow.id();
     let events_id = channel_id(workflow.channel_ids(), "events");
 
@@ -747,18 +747,18 @@ async fn test_child_with_aliased_sender(complete_child: bool) {
             poll_child_completion_with_copied_channel,
         ])
         .async_scope(async {
-            tick_workflow(&manager, workflow_id).await.unwrap(); // allocate channels
-            tick_workflow(&manager, workflow_id).await.unwrap(); // spawn child workflow
-            tick_workflow(&manager, workflow_id).await.unwrap(); // poll child completion
+            tick_workflow(&runtime, workflow_id).await.unwrap(); // allocate channels
+            tick_workflow(&runtime, workflow_id).await.unwrap(); // spawn child workflow
+            tick_workflow(&runtime, workflow_id).await.unwrap(); // poll child completion
         })
         .await;
 
-    let events_channel = manager.storage().channel(events_id).await.unwrap();
+    let events_channel = runtime.storage().channel(events_id).await.unwrap();
     assert_eq!(
         events_channel.sender_workflow_ids,
         HashSet::from_iter([workflow_id, CHILD_ID])
     );
-    let child = manager.storage().workflow(CHILD_ID).await.unwrap();
+    let child = runtime.storage().workflow(CHILD_ID).await.unwrap();
     assert_eq!(channel_id(child.channel_ids(), "events"), events_id);
     assert_eq!(channel_id(child.channel_ids(), "traces"), events_id);
 
@@ -779,16 +779,16 @@ async fn test_child_with_aliased_sender(complete_child: bool) {
     };
     poll_fn_sx
         .send(write_event_and_drop_events)
-        .async_scope(tick_workflow(&manager, CHILD_ID))
+        .async_scope(tick_workflow(&runtime, CHILD_ID))
         .await
         .unwrap();
 
-    let events_channel = manager.storage().channel(events_id).await.unwrap();
+    let events_channel = runtime.storage().channel(events_id).await.unwrap();
     assert_eq!(
         events_channel.sender_workflow_ids,
         HashSet::from_iter([workflow_id, CHILD_ID])
     );
-    let transaction = manager.storage.readonly_transaction().await;
+    let transaction = runtime.storage.readonly_transaction().await;
     let outbound_messages = peek_channel(&transaction, events_id).await;
     assert_eq!(outbound_messages, [b"child_event" as &[u8], b"child_trace"]);
     drop(transaction);
@@ -804,11 +804,11 @@ async fn test_child_with_aliased_sender(complete_child: bool) {
         })
     };
     guard
-        .async_scope(tick_workflow(&manager, CHILD_ID))
+        .async_scope(tick_workflow(&runtime, CHILD_ID))
         .await
         .unwrap();
 
-    let events_channel = manager.storage().channel(events_id).await.unwrap();
+    let events_channel = runtime.storage().channel(events_id).await.unwrap();
     assert_eq!(
         events_channel.sender_workflow_ids,
         HashSet::from_iter([workflow_id])
@@ -835,19 +835,19 @@ fn poll_child_completion(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
 #[async_std::test]
 async fn completing_child_with_error() {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let manager = create_test_manager(poll_fns, ()).await;
-    let workflow_id = create_test_workflow(&manager).await.id();
+    let runtime = create_test_runtime(poll_fns, ()).await;
+    let workflow_id = create_test_workflow(&runtime).await.id();
 
-    initialize_child(&manager, workflow_id, &mut poll_fn_sx).await;
+    initialize_child(&runtime, workflow_id, &mut poll_fn_sx).await;
     poll_fn_sx
         .send_all([poll_child_completion, complete_task_with_error])
         .async_scope(async {
-            tick_workflow(&manager, workflow_id).await.unwrap();
-            tick_workflow(&manager, CHILD_ID).await.unwrap();
+            tick_workflow(&runtime, workflow_id).await.unwrap();
+            tick_workflow(&runtime, CHILD_ID).await.unwrap();
         })
         .await;
 
-    let child = manager.storage().any_workflow(CHILD_ID).await.unwrap();
+    let child = runtime.storage().any_workflow(CHILD_ID).await.unwrap();
     assert!(child.is_completed());
     let child = child.unwrap_completed();
     assert_matches!(
@@ -868,7 +868,7 @@ async fn completing_child_with_error() {
     };
     let receipt = poll_fn_sx
         .send(check_child_completion)
-        .async_scope(tick_workflow(&manager, workflow_id))
+        .async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
 
@@ -915,21 +915,21 @@ fn check_aborted_child_completion(ctx: &mut MockInstance) -> anyhow::Result<Poll
 #[async_std::test]
 async fn completing_child_with_panic() {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let manager = create_test_manager(poll_fns, ()).await;
-    let workflow_id = create_test_workflow(&manager).await.id();
+    let runtime = create_test_runtime(poll_fns, ()).await;
+    let workflow_id = create_test_workflow(&runtime).await.id();
 
     let tick_result = poll_fn_sx
         .send_all([allocate_channels, spawn_child])
         .async_scope(async {
-            let result = manager.tick_workflow(workflow_id).await.unwrap();
+            let result = runtime.tick_workflow(workflow_id).await.unwrap();
             result.into_inner().unwrap();
-            manager.tick_workflow(workflow_id).await.unwrap()
+            runtime.tick_workflow(workflow_id).await.unwrap()
         })
         .await;
     assert_eq!(tick_result.workflow_id(), workflow_id);
     tick_result.into_inner().unwrap();
 
-    let child = manager.storage().workflow(CHILD_ID).await.unwrap();
+    let child = runtime.storage().workflow(CHILD_ID).await.unwrap();
     let child_events_id = channel_id(child.channel_ids(), "events");
 
     let tick_result = poll_fn_sx
@@ -937,8 +937,8 @@ async fn completing_child_with_panic() {
         .async_scope(async {
             // Both workflows are ready to be polled at this point;
             // control which one is polled first.
-            tick_workflow(&manager, workflow_id).await.unwrap();
-            manager.tick().await.unwrap()
+            tick_workflow(&runtime, workflow_id).await.unwrap();
+            runtime.tick().await.unwrap()
         })
         .await;
     assert_eq!(tick_result.workflow_id(), CHILD_ID);
@@ -947,10 +947,10 @@ async fn completing_child_with_panic() {
         err_handle.panic_info().unwrap().message.as_deref(),
         Some("panic message")
     );
-    let err_handle = manager.storage().any_workflow(CHILD_ID).await.unwrap();
+    let err_handle = runtime.storage().any_workflow(CHILD_ID).await.unwrap();
     let err_handle = err_handle.unwrap_errored();
 
-    let child = manager.storage().any_workflow(CHILD_ID).await.unwrap();
+    let child = runtime.storage().any_workflow(CHILD_ID).await.unwrap();
     assert!(child.is_errored());
     let other_err_handle = child.unwrap_errored();
     assert_eq!(other_err_handle.id(), err_handle.id());
@@ -958,28 +958,28 @@ async fn completing_child_with_panic() {
     // The aliased handle now cannot be used for any actions:
     other_err_handle.consider_repaired().await.unwrap_err();
 
-    let child = manager.storage().any_workflow(CHILD_ID).await.unwrap();
+    let child = runtime.storage().any_workflow(CHILD_ID).await.unwrap();
     assert!(child.is_completed());
     let child = child.unwrap_completed();
     assert_matches!(child.result(), Err(JoinError::Aborted));
 
-    assert_child_abort(&manager, &mut poll_fn_sx, workflow_id, child_events_id).await;
+    assert_child_abort(&runtime, &mut poll_fn_sx, workflow_id, child_events_id).await;
 }
 
 async fn assert_child_abort(
-    manager: &LocalManager,
+    runtime: &LocalRuntime,
     poll_fn_sx: &mut AnswersSender<MockPollFn>,
     workflow_id: WorkflowId,
     child_events_id: ChannelId,
 ) {
     // Check that the event emitted by the panicking workflow was not committed.
-    let child_events = manager.storage().channel(child_events_id).await.unwrap();
+    let child_events = runtime.storage().channel(child_events_id).await.unwrap();
     assert_eq!(child_events.received_messages, 0);
     assert!(child_events.is_closed);
 
     let receipt = poll_fn_sx
         .send(check_aborted_child_completion)
-        .async_scope(tick_workflow(manager, workflow_id))
+        .async_scope(tick_workflow(runtime, workflow_id))
         .await
         .unwrap();
     let is_child_polled = receipt.events().any(|event| {
@@ -992,39 +992,39 @@ async fn assert_child_abort(
 }
 
 async fn init_workflow_with_child(
-    manager: &LocalManager,
+    runtime: &LocalRuntime,
     workflow_id: WorkflowId,
     poll_fn_sx: &mut AnswersSender<MockPollFn>,
 ) {
-    initialize_child(manager, workflow_id, poll_fn_sx).await;
+    initialize_child(runtime, workflow_id, poll_fn_sx).await;
     poll_fn_sx
         .send(poll_child_completion)
-        .async_scope(tick_workflow(manager, workflow_id))
+        .async_scope(tick_workflow(runtime, workflow_id))
         .await
         .unwrap();
 }
 
 async fn test_aborting_child(initialize_child: bool) {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let manager = create_test_manager(poll_fns, ()).await;
-    let workflow_id = create_test_workflow(&manager).await.id();
+    let runtime = create_test_runtime(poll_fns, ()).await;
+    let workflow_id = create_test_workflow(&runtime).await.id();
 
-    init_workflow_with_child(&manager, workflow_id, &mut poll_fn_sx).await;
+    init_workflow_with_child(&runtime, workflow_id, &mut poll_fn_sx).await;
 
-    let child = manager.storage().workflow(CHILD_ID).await.unwrap();
+    let child = runtime.storage().workflow(CHILD_ID).await.unwrap();
     let child_events_id = channel_id(child.channel_ids(), "events");
     if initialize_child {
         poll_fn_sx
             .send(|_| Ok(Poll::Pending))
-            .async_scope(tick_workflow(&manager, CHILD_ID))
+            .async_scope(tick_workflow(&runtime, CHILD_ID))
             .await
             .unwrap();
     }
-    helper::abort_workflow(&manager.storage, CHILD_ID)
+    helper::abort_workflow(&runtime.storage, CHILD_ID)
         .await
         .unwrap();
 
-    assert_child_abort(&manager, &mut poll_fn_sx, workflow_id, child_events_id).await;
+    assert_child_abort(&runtime, &mut poll_fn_sx, workflow_id, child_events_id).await;
 }
 
 #[async_std::test]
@@ -1040,20 +1040,20 @@ async fn aborting_child_after_initialization() {
 #[async_std::test]
 async fn aborting_parent() {
     let (poll_fns, mut poll_fn_sx) = Answers::channel();
-    let manager = create_test_manager(poll_fns, ()).await;
-    let workflow_id = create_test_workflow(&manager).await.id();
+    let runtime = create_test_runtime(poll_fns, ()).await;
+    let workflow_id = create_test_workflow(&runtime).await.id();
 
-    init_workflow_with_child(&manager, workflow_id, &mut poll_fn_sx).await;
+    init_workflow_with_child(&runtime, workflow_id, &mut poll_fn_sx).await;
 
-    let child = manager.storage().workflow(CHILD_ID).await.unwrap();
+    let child = runtime.storage().workflow(CHILD_ID).await.unwrap();
     let child_events_id = channel_id(child.channel_ids(), "events");
     let child_orders_id = channel_id(child.channel_ids(), "orders");
-    helper::abort_workflow(&manager.storage, workflow_id)
+    helper::abort_workflow(&runtime.storage, workflow_id)
         .await
         .unwrap();
-    let child_events = manager.storage().channel(child_events_id).await.unwrap();
+    let child_events = runtime.storage().channel(child_events_id).await.unwrap();
     assert!(child_events.is_closed);
-    let child_orders = manager.storage().channel(child_orders_id).await.unwrap();
+    let child_orders = runtime.storage().channel(child_orders_id).await.unwrap();
     assert!(child_orders.is_closed);
 
     let check_child_channels: MockPollFn = |ctx| {
@@ -1072,9 +1072,9 @@ async fn aborting_parent() {
     };
     poll_fn_sx
         .send(check_child_channels)
-        .async_scope(tick_workflow(&manager, CHILD_ID))
+        .async_scope(tick_workflow(&runtime, CHILD_ID))
         .await
         .unwrap();
 
-    assert!(manager.storage().workflow(CHILD_ID).await.is_none());
+    assert!(runtime.storage().workflow(CHILD_ID).await.is_none());
 }

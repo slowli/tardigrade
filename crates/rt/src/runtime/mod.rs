@@ -1,6 +1,6 @@
-//! [`WorkflowManager`] and tightly related types.
+//! [`Runtime`] and tightly related types.
 //!
-//! See `WorkflowManager` docs for an overview and examples of usage.
+//! See `Runtime` docs for an overview and examples of usage.
 
 use chrono::{DateTime, Utc};
 use futures::lock::{Mutex, MutexGuard};
@@ -22,9 +22,9 @@ pub(crate) use self::services::{Services, StashStub};
 pub use self::{
     driver::{DriveConfig, Termination},
     services::{Clock, Schedule, TimerFuture},
-    stubs::{ManagerSpawner, MapFormat},
+    stubs::{MapFormat, RuntimeSpawner},
     tick::{TickResult, WorkflowTickError, WouldBlock},
-    traits::AsManager,
+    traits::AsRuntime,
 };
 
 use crate::{
@@ -125,7 +125,7 @@ struct CachedWorkflow<I> {
 ///
 /// # Assumptions
 ///
-/// - Workflows are never modified outside of `WorkflowManager` methods (e.g., no manual storage
+/// - Workflows are never modified outside of `Runtime` methods (e.g., no manual storage
 ///   edits). This is used when checking cache staleness.
 /// - A specific workflow is never executed concurrently. This should be enforced by the storage
 ///   implementation.
@@ -175,12 +175,12 @@ impl<I> CachedWorkflows<I> {
     }
 }
 
-/// Part of the `WorkflowManager` not tied to the storage.
+/// Part of the `Runtime` not tied to the storage.
 ///
 /// We need this as a separate type to make storage easily swappable (e.g., to implement
-/// driving the manager or transactional operations).
+/// driving the runtime or transactional operations).
 #[derive(Debug)]
-struct ManagerInner<E: WorkflowEngine, C> {
+struct RuntimeInner<E: WorkflowEngine, C> {
     engine: E,
     clock: Arc<C>,
     definitions: Mutex<CachedDefinitions<E::Definition>>,
@@ -188,7 +188,7 @@ struct ManagerInner<E: WorkflowEngine, C> {
     local_spans: Mutex<HashMap<WorkflowId, LocalSpans>>,
 }
 
-impl<E: WorkflowEngine, C: Clock> ManagerInner<E, C> {
+impl<E: WorkflowEngine, C: Clock> RuntimeInner<E, C> {
     fn new(engine: E, clock: C, workflow_cache_capacity: NonZeroUsize) -> Self {
         let definitions = CachedDefinitions {
             inner: LruCache::unbounded(), // TODO: support bounded cache
@@ -211,13 +211,13 @@ impl<E: WorkflowEngine, C: Clock> ManagerInner<E, C> {
     }
 }
 
-/// Manager for workflow modules, workflows and channels.
+/// Runtime for workflow modules, workflows and channels.
 ///
-/// A workflow manager is responsible for managing the state and interfacing with workflows
-/// and channels connected to the workflows. In particular, a manager supports the following
+/// A workflow runtime is responsible for managing the state and interfacing with workflows
+/// and channels connected to the workflows. In particular, a runtime supports the following
 /// operations:
 ///
-/// - Spawning new workflows (including from the workflow code) using a [`ManagerSpawner`] handle
+/// - Spawning new workflows (including from the workflow code) using a [`RuntimeSpawner`] handle
 ///   obtained via [`Self::spawner()`]
 /// - Manipulating channels (writing / reading messages) and workflows using a [`StorageRef`] handle
 ///   obtained via [`Self::storage()`]
@@ -249,25 +249,25 @@ impl<E: WorkflowEngine, C: Clock> ManagerInner<E, C> {
 /// ```
 /// # use tardigrade_rt::{
 /// #     engine::{Wasmtime, WasmtimeModule},
-/// #     handle::WorkflowHandle, manager::WorkflowManager, storage::LocalStorage, AsyncIoScheduler,
+/// #     handle::WorkflowHandle, runtime::Runtime, storage::LocalStorage, AsyncIoScheduler,
 /// # };
 /// #
 /// # async fn test_wrapper(module: WasmtimeModule) -> anyhow::Result<()> {
-/// // A manager is instantiated using the builder pattern:
+/// // A runtime is instantiated using the builder pattern:
 /// let storage = LocalStorage::default();
-/// let manager = WorkflowManager::builder(Wasmtime::default(), storage)
+/// let runtime = Runtime::builder(Wasmtime::default(), storage)
 ///     .with_clock(AsyncIoScheduler)
 ///     .build();
 /// // After this, modules may be added:
 /// let module: WasmtimeModule = // ...
 /// #   module;
-/// manager.insert_module("test", module).await;
+/// runtime.insert_module("test", module).await;
 ///
 /// // After that, new workflows can be spawned using `ManageWorkflowsExt`
 /// // trait from the `tardigrade` crate:
 /// use tardigrade::spawn::CreateWorkflow;
 ///
-/// let spawner = manager.spawner();
+/// let spawner = runtime.spawner();
 /// let definition_id = "test::Workflow";
 /// // ^ The definition ID is the ID of the module and the name of a workflow
 /// //   within the module separated by `::`.
@@ -279,7 +279,7 @@ impl<E: WorkflowEngine, C: Clock> ManagerInner<E, C> {
 /// // using `self_handles`...
 ///
 /// // Initialize the workflow:
-/// let receipt = manager.tick().await?.into_inner()?;
+/// let receipt = runtime.tick().await?.into_inner()?;
 /// println!("{receipt:?}");
 /// // Check the workflow state:
 /// workflow.update().await?;
@@ -287,12 +287,12 @@ impl<E: WorkflowEngine, C: Clock> ManagerInner<E, C> {
 /// # Ok(())
 /// # }
 /// ```
-pub struct WorkflowManager<E: WorkflowEngine, C, S> {
-    inner: Arc<ManagerInner<E, C>>,
+pub struct Runtime<E: WorkflowEngine, C, S> {
+    inner: Arc<RuntimeInner<E, C>>,
     storage: S,
 }
 
-impl<E, C, S> fmt::Debug for WorkflowManager<E, C, S>
+impl<E, C, S> fmt::Debug for Runtime<E, C, S>
 where
     E: WorkflowEngine + fmt::Debug,
     E::Instance: fmt::Debug,
@@ -301,14 +301,14 @@ where
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("WorkflowManager")
+            .debug_struct("Runtime")
             .field("inner", &self.inner)
             .field("storage", &self.storage)
             .finish()
     }
 }
 
-impl<E: WorkflowEngine, C: Clock, S: Storage + Clone> Clone for WorkflowManager<E, C, S> {
+impl<E: WorkflowEngine, C: Clock, S: Storage + Clone> Clone for Runtime<E, C, S> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
@@ -318,10 +318,10 @@ impl<E: WorkflowEngine, C: Clock, S: Storage + Clone> Clone for WorkflowManager<
 }
 
 #[allow(clippy::mismatching_type_param_order, clippy::missing_panics_doc)] // false positive
-impl<E: WorkflowEngine, S: Storage> WorkflowManager<E, (), S> {
+impl<E: WorkflowEngine, S: Storage> Runtime<E, (), S> {
     /// Creates a builder that will use the specified storage.
-    pub fn builder(engine: E, storage: S) -> WorkflowManagerBuilder<E, (), S> {
-        WorkflowManagerBuilder {
+    pub fn builder(engine: E, storage: S) -> RuntimeBuilder<E, (), S> {
+        RuntimeBuilder {
             engine,
             clock: (),
             storage,
@@ -330,15 +330,15 @@ impl<E: WorkflowEngine, S: Storage> WorkflowManager<E, (), S> {
     }
 }
 
-impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
+impl<E: WorkflowEngine, C: Clock, S: Storage> Runtime<E, C, S> {
     fn new(engine: E, clock: C, storage: S, workflow_cache_capacity: NonZeroUsize) -> Self {
         Self {
-            inner: Arc::new(ManagerInner::new(engine, clock, workflow_cache_capacity)),
+            inner: Arc::new(RuntimeInner::new(engine, clock, workflow_cache_capacity)),
             storage,
         }
     }
 
-    /// Inserts the specified module into the manager.
+    /// Inserts the specified module into the runtime.
     ///
     /// # Panics
     ///
@@ -399,7 +399,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         self.storage
     }
 
-    /// Creates a storage transaction and uses it for the further operations on the manager
+    /// Creates a storage transaction and uses it for the further operations on the runtime
     /// (e.g., creating new workflows / channels). Beware of [`TransactionAsStorage`] drawbacks
     /// documented in the type docs.
     ///
@@ -411,24 +411,24 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
     /// ```
     /// # use tardigrade::spawn::CreateWorkflow;
     /// # use tardigrade_rt::{
-    /// #     engine::Wasmtime, manager::WorkflowManager,
+    /// #     engine::Wasmtime, runtime::Runtime,
     /// #     storage::{LocalStorage, StorageTransaction},
     /// # };
     /// #
     /// # async fn test_wrapper() -> anyhow::Result<()> {
     /// let storage = LocalStorage::default();
-    /// let mut manager = WorkflowManager::builder(Wasmtime::default(), storage)
+    /// let mut runtime = Runtime::builder(Wasmtime::default(), storage)
     ///     .build();
-    /// // Obtain a manager operating in a transaction
-    /// let tx_manager = manager.in_transaction().await;
+    /// // Obtain a runtime operating in a transaction
+    /// let tx_runtime = runtime.in_transaction().await;
     /// // Create a workflow and channels for it in a transaction
-    /// let spawner = tx_manager.spawner();
+    /// let spawner = tx_runtime.spawner();
     /// let builder = spawner.new_workflow::<()>("test::Workflow").await?;
     /// let (handles, _) = builder.handles(|_| {}).await;
     /// builder.build(vec![], handles).await?;
     ///
     /// // Unwrap the transaction and commit it.
-    /// if let Some(tx) = tx_manager.into_storage().into_inner() {
+    /// if let Some(tx) = tx_runtime.into_storage().into_inner() {
     ///     tx.commit().await;
     /// }
     /// // If the transaction is not committed, the workflow and all channels created
@@ -438,28 +438,28 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
     /// ```
     pub async fn in_transaction(
         &mut self,
-    ) -> WorkflowManager<E, C, TransactionAsStorage<S::Transaction<'_>>> {
+    ) -> Runtime<E, C, TransactionAsStorage<S::Transaction<'_>>> {
         let transaction = self.storage.transaction().await;
-        WorkflowManager {
+        Runtime {
             inner: Arc::clone(&self.inner),
             storage: transaction.into(),
         }
     }
 
     /// Returns a spawner handle that can be used to create new workflows.
-    pub fn spawner(&self) -> ManagerSpawner<'_, Self> {
-        ManagerSpawner::new(self)
+    pub fn spawner(&self) -> RuntimeSpawner<'_, Self> {
+        RuntimeSpawner::new(self)
     }
 
     /// Returns a *raw* spawner handle that can be used to create new workflows.
     /// In contrast to [`Self::spawner()`], the returned spawner uses channel IDs
     /// rather than channel handles to create workflows, and returns the ID of a created workflow
     /// rather than its handle.
-    pub fn raw_spawner(&self) -> ManagerSpawner<'_, Self, Raw> {
-        ManagerSpawner::new(self)
+    pub fn raw_spawner(&self) -> RuntimeSpawner<'_, Self, Raw> {
+        RuntimeSpawner::new(self)
     }
 
-    /// Sets the current time for this manager. This may expire timers in some of the contained
+    /// Sets the current time for this runtime. This may expire timers in some of the contained
     /// workflows.
     #[tracing::instrument(skip(self))]
     pub async fn set_current_time(&self, time: DateTime<Utc>) {
@@ -471,21 +471,21 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
     }
 }
 
-impl<E, C, S> WorkflowManager<E, C, Streaming<S>>
+impl<E, C, S> Runtime<E, C, Streaming<S>>
 where
     E: WorkflowEngine,
     C: Schedule,
     S: Storage + Clone,
 {
-    /// Drives this manager using the provided config.
+    /// Drives this runtime using the provided config.
     pub async fn drive(self, commits_rx: &mut CommitStream, config: DriveConfig) -> Termination {
         config.run(self, commits_rx).await
     }
 }
 
-/// Builder for a [`WorkflowManager`].
+/// Builder for a [`Runtime`].
 #[derive(Debug)]
-pub struct WorkflowManagerBuilder<E, C, S> {
+pub struct RuntimeBuilder<E, C, S> {
     engine: E,
     clock: C,
     storage: S,
@@ -493,11 +493,11 @@ pub struct WorkflowManagerBuilder<E, C, S> {
 }
 
 #[allow(clippy::mismatching_type_param_order)] // false positive
-impl<E: WorkflowEngine, S: Storage> WorkflowManagerBuilder<E, (), S> {
-    /// Sets the wall clock to be used in the manager.
+impl<E: WorkflowEngine, S: Storage> RuntimeBuilder<E, (), S> {
+    /// Sets the wall clock to be used in the runtime.
     #[must_use]
-    pub fn with_clock<C: Clock>(self, clock: C) -> WorkflowManagerBuilder<E, C, S> {
-        WorkflowManagerBuilder {
+    pub fn with_clock<C: Clock>(self, clock: C) -> RuntimeBuilder<E, C, S> {
+        RuntimeBuilder {
             engine: self.engine,
             clock,
             storage: self.storage,
@@ -506,7 +506,7 @@ impl<E: WorkflowEngine, S: Storage> WorkflowManagerBuilder<E, (), S> {
     }
 }
 
-impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManagerBuilder<E, C, S> {
+impl<E: WorkflowEngine, C: Clock, S: Storage> RuntimeBuilder<E, C, S> {
     /// Sets the capacity of the LRU cache of the recently executed workflows. Depending
     /// on the workflow engine, caching workflows can significantly speed up workflow execution.
     ///
@@ -520,9 +520,9 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManagerBuilder<E, C, S> {
         self
     }
 
-    /// Finishes building the manager.
-    pub fn build(self) -> WorkflowManager<E, C, S> {
-        WorkflowManager::new(
+    /// Finishes building the runtime.
+    pub fn build(self) -> Runtime<E, C, S> {
+        Runtime::new(
             self.engine,
             self.clock,
             self.storage,

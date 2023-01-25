@@ -141,7 +141,7 @@ impl LocalStorageSnapshot<'_> {
 /// # use async_std::fs;
 /// # use std::str;
 /// # use tardigrade_rt::{
-/// #     engine::Wasmtime, manager::WorkflowManager, storage::{LocalStorage, LocalStorageSnapshot},
+/// #     engine::Wasmtime, runtime::Runtime, storage::{LocalStorage, LocalStorageSnapshot},
 /// # };
 /// #
 /// # async fn test_wrapper() -> anyhow::Result<()> {
@@ -149,10 +149,10 @@ impl LocalStorageSnapshot<'_> {
 /// let mut storage = LocalStorage::default();
 /// // Remove messages consumed by workflows.
 /// storage.truncate_workflow_messages();
-/// let manager = WorkflowManager::builder(engine, storage).build();
-/// // Do something with the manager...
+/// let runtime = Runtime::builder(engine, storage).build();
+/// // Do something with the runtime...
 ///
-/// let mut storage = manager.into_storage();
+/// let mut storage = runtime.into_storage();
 /// let mut snapshot = storage.snapshot();
 /// for mut module in snapshot.modules_mut() {
 ///     // Save modules to the file system, rather than using the storage.
@@ -349,8 +349,8 @@ impl ReadWorkflows for LocalReadonlyTransaction<'_> {
 pub struct LocalTransaction<'a> {
     // Alternatively, we could manipulate the guarded data directly.
     // This wouldn't break isolation because of the `Mutex`, and wouldn't break atomicity
-    // in `WorkflowManager` because there are no rollbacks, and all storage operations
-    // are synchronous. That is, there are no wait points in the `WorkflowManager`-produced futures
+    // in `Runtime` because there are no rollbacks, and all storage operations
+    // are synchronous. That is, there are no wait points in the `Runtime`-produced futures
     // at which the future may be cancelled to observe a partially applied transaction.
     // However, this approach is hard to reason about in the general case; it is not cancel-safe
     // if used together with "true" async operations. Hence, foolproof cloning of `Inner`.

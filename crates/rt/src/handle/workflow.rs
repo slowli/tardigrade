@@ -21,14 +21,14 @@ use tardigrade::{
     Raw, WorkflowId,
 };
 
-/// Handle to an active workflow in a [`WorkflowManager`].
+/// Handle to an active workflow in a [`Runtime`].
 ///
 /// A workflow handle allows [getting handles](Self::handle()) for the channels specified
 /// in the workflow interface. The returned handles
 /// allow interacting with the workflow by [sending messages](MessageSender)
 /// and/or [receiving messages](MessageReceiver).
 ///
-/// [`WorkflowManager`]: crate::manager::WorkflowManager
+/// [`Runtime`]: crate::runtime::Runtime
 ///
 /// # Examples
 ///
@@ -211,14 +211,14 @@ impl<'a, W: WithHandle, S: Storage> WorkflowHandle<W, &'a S> {
     }
 }
 
-/// Handle for an errored workflow in a [`WorkflowManager`].
+/// Handle for an errored workflow in a [`Runtime`].
 ///
 /// The handle can be used to get information about the error, inspect potentially bogus
-/// inbound messages, and repair the workflow. See the [manager docs] for more information
+/// inbound messages, and repair the workflow. See the [runtime docs] for more information
 /// about workflow lifecycle.
 ///
-/// [`WorkflowManager`]: crate::manager::WorkflowManager
-/// [manager docs]: crate::manager::WorkflowManager#workflow-lifecycle
+/// [`Runtime`]: crate::runtime::Runtime
+/// [runtime docs]: crate::runtime::Runtime#workflow-lifecycle
 ///
 /// # Examples
 ///
@@ -366,14 +366,14 @@ impl<S: Storage> ErroneousMessage<S> {
     }
 }
 
-/// Handle to a completed workflow in a [`WorkflowManager`].
+/// Handle to a completed workflow in a [`Runtime`].
 ///
 /// There isn't much to do with a completed workflow, other than retrieving
-/// the execution [result](Self::result()). See the [manager docs] for more information
+/// the execution [result](Self::result()). See the [runtime docs] for more information
 /// about workflow lifecycle.
 ///
-/// [`WorkflowManager`]: crate::manager::WorkflowManager
-/// [manager docs]: crate::manager::WorkflowManager#workflow-lifecycle
+/// [`Runtime`]: crate::runtime::Runtime
+/// [runtime docs]: crate::runtime::Runtime#workflow-lifecycle
 #[derive(Debug)]
 pub struct CompletedWorkflowHandle {
     record: WorkflowRecord<()>,

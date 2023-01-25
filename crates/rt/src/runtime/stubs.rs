@@ -1,4 +1,4 @@
-//! Transactions for `WorkflowManager`.
+//! Transactions for `Runtime`.
 
 use anyhow::{anyhow, ensure, Context as _};
 use async_trait::async_trait;
@@ -14,7 +14,7 @@ use std::{
     sync::Arc,
 };
 
-use super::{AsManager, CachedDefinitions, Definitions, StashStub};
+use super::{AsRuntime, CachedDefinitions, Definitions, StashStub};
 use crate::{
     data::WorkflowData,
     engine::{DefineWorkflow, WorkflowEngine},
@@ -347,7 +347,7 @@ impl StashStub for Stubs {
 }
 
 /// Type mapper from [channel handles](crate::handle) to a [`HandleFormat`]. Used as a boundary
-/// for [`ManagerSpawner`].
+/// for [`RuntimeSpawner`].
 pub trait MapFormat {
     /// Handle format output by this mapper.
     type Fmt<'a, S: 'a + Storage>: HandleFormat;
@@ -387,17 +387,17 @@ impl MapFormat for Raw {
     }
 }
 
-/// Specialized handle to a [`WorkflowManager`] allowing to spawn new workflows.
+/// Specialized handle to a [`Runtime`] allowing to spawn new workflows.
 ///
-/// [`WorkflowManager`]: crate::manager::WorkflowManager
+/// [`Runtime`]: crate::runtime::Runtime
 #[derive(Debug)]
-pub struct ManagerSpawner<'a, M, Fmt = ()> {
+pub struct RuntimeSpawner<'a, M, Fmt = ()> {
     inner: &'a M,
     close_senders: bool,
     _format: PhantomData<fn(Fmt)>,
 }
 
-impl<M, Fmt> Clone for ManagerSpawner<'_, M, Fmt> {
+impl<M, Fmt> Clone for RuntimeSpawner<'_, M, Fmt> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner,
@@ -407,10 +407,10 @@ impl<M, Fmt> Clone for ManagerSpawner<'_, M, Fmt> {
     }
 }
 
-impl<M, Fmt> Copy for ManagerSpawner<'_, M, Fmt> {}
+impl<M, Fmt> Copy for RuntimeSpawner<'_, M, Fmt> {}
 
-impl<'a, M: AsManager, Fmt: MapFormat> ManagerSpawner<'a, M, Fmt> {
-    pub(super) fn new(inner: &'a M) -> Self {
+impl<'a, R: AsRuntime, Fmt: MapFormat> RuntimeSpawner<'a, R, Fmt> {
+    pub(super) fn new(inner: &'a R) -> Self {
         Self {
             inner,
             close_senders: false,
@@ -446,13 +446,13 @@ impl<'a, M: AsManager, Fmt: MapFormat> ManagerSpawner<'a, M, Fmt> {
             vec![]
         };
 
-        let manager = self.inner.as_manager();
+        let runtime = self.inner.as_runtime();
         let mut stubs = Stubs::new(None);
         stubs.stash_workflow(0, definition_id, raw_args, channel_ids);
         async move {
             // TODO: This borrows cached definitions for too long
-            let definitions = manager.inner.definitions().await;
-            manager
+            let definitions = runtime.inner.definitions().await;
+            runtime
                 .storage
                 .transaction()
                 .then(|transaction| {
@@ -465,9 +465,9 @@ impl<'a, M: AsManager, Fmt: MapFormat> ManagerSpawner<'a, M, Fmt> {
 }
 
 #[async_trait]
-impl<M, Fmt> ManageInterfaces for ManagerSpawner<'_, M, Fmt>
+impl<R, Fmt> ManageInterfaces for RuntimeSpawner<'_, R, Fmt>
 where
-    M: AsManager,
+    R: AsRuntime,
     Fmt: MapFormat,
 {
     async fn interface(&self, definition_id: &str) -> Option<Cow<'_, Interface>> {
@@ -485,9 +485,9 @@ where
             async move { definitions.get(definition_id, &transaction).await }
         }
 
-        let manager = self.inner.as_manager();
-        let definitions = manager.inner.definitions().await;
-        let definition = manager
+        let runtime = self.inner.as_runtime();
+        let definitions = runtime.inner.definitions().await;
+        let definition = runtime
             .storage
             .readonly_transaction()
             .then(|transaction| get_definition(definitions, definition_id, transaction));
@@ -497,21 +497,21 @@ where
 }
 
 #[async_trait]
-impl<'a, M, Fmt> CreateChannel for ManagerSpawner<'a, M, Fmt>
+impl<'a, R, Fmt> CreateChannel for RuntimeSpawner<'a, R, Fmt>
 where
-    M: AsManager,
+    R: AsRuntime,
     Fmt: MapFormat,
 {
-    type Fmt = Fmt::Fmt<'a, M::Storage>;
+    type Fmt = Fmt::Fmt<'a, R::Storage>;
 
     fn closed_receiver(&self) -> <Self::Fmt as HandleFormat>::RawReceiver {
-        let manager = self.inner.as_manager();
-        Fmt::map_receiver(manager.storage().closed_receiver())
+        let runtime = self.inner.as_runtime();
+        Fmt::map_receiver(runtime.storage().closed_receiver())
     }
 
     fn closed_sender(&self) -> <Self::Fmt as HandleFormat>::RawSender {
-        let manager = self.inner.as_manager();
-        Fmt::map_sender(manager.storage().closed_sender())
+        let runtime = self.inner.as_runtime();
+        Fmt::map_sender(runtime.storage().closed_sender())
     }
 
     async fn new_channel(
@@ -520,14 +520,14 @@ where
         <Self::Fmt as HandleFormat>::RawSender,
         <Self::Fmt as HandleFormat>::RawReceiver,
     ) {
-        let manager = self.inner.as_manager();
-        let (sx, rx) = manager.storage().new_channel().await;
+        let runtime = self.inner.as_runtime();
+        let (sx, rx) = runtime.storage().new_channel().await;
         (Fmt::map_sender(sx), Fmt::map_receiver(rx))
     }
 }
 
-impl<'a, M: AsManager> CreateWorkflow for ManagerSpawner<'a, M> {
-    type Spawned<W: WorkflowFn + WithHandle> = WorkflowHandle<W, &'a M::Storage>;
+impl<'a, R: AsRuntime> CreateWorkflow for RuntimeSpawner<'a, R> {
+    type Spawned<W: WorkflowFn + WithHandle> = WorkflowHandle<W, &'a R::Storage>;
     type Error = anyhow::Error;
 
     fn new_workflow_unchecked<W: WorkflowFn + WithHandle>(
@@ -544,8 +544,8 @@ impl<'a, M: AsManager> CreateWorkflow for ManagerSpawner<'a, M> {
         let spawn_future = self.spawn_workflow(definition_id, raw_args, channel_ids);
         async move {
             let workflow_id = spawn_future.await?;
-            let manager = self.inner.as_manager();
-            Ok(manager
+            let runtime = self.inner.as_runtime();
+            Ok(runtime
                 .storage()
                 .workflow(workflow_id)
                 .await
@@ -556,7 +556,7 @@ impl<'a, M: AsManager> CreateWorkflow for ManagerSpawner<'a, M> {
     }
 }
 
-impl<'a, M: AsManager> CreateWorkflow for ManagerSpawner<'a, M, Raw> {
+impl<'a, R: AsRuntime> CreateWorkflow for RuntimeSpawner<'a, R, Raw> {
     type Spawned<W: WorkflowFn + WithHandle> = WorkflowId;
     type Error = anyhow::Error;
 
