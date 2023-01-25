@@ -110,7 +110,7 @@ fn assert_raw_payload(message: &proto::Message, expected: &[u8]) {
 #[tokio::test]
 async fn channel_management() {
     let storage = create_storage();
-    let service = StorageWrapper::from(storage);
+    let service = StorageWrapper::new(storage);
 
     let request = proto::CreateChannelRequest {};
     let channel = service.create_channel(Request::new(request)).await;
@@ -174,9 +174,8 @@ async fn channel_management() {
 async fn server_basics() {
     let (poll_fns, mut poll_fns_sx) = MockAnswers::channel();
     let manager = create_manager(mock_engine(poll_fns), TokioScheduler);
-    let storage = manager.storage().as_ref().clone();
-    let channels = StorageWrapper::from(storage);
     let runtime = ManagerWrapper::new(manager);
+    let channels = runtime.storage_wrapper();
 
     test_module_deployment(&runtime).await;
     test_workflow_creation_errors(&runtime).await;
@@ -502,7 +501,7 @@ async fn workflow_with_mock_scheduler_and_driver() {
 #[tokio::test]
 async fn workers_basics() {
     let storage = create_storage();
-    let storage = StorageWrapper::from(storage);
+    let storage = StorageWrapper::new(storage);
 
     let mut req = proto::GetOrCreateWorkerRequest {
         name: "tardigrade.v0.Timers".to_owned(),

@@ -26,8 +26,11 @@ pub struct StorageWrapper<S> {
     storage: S,
 }
 
-impl<S> From<S> for StorageWrapper<S> {
-    fn from(storage: S) -> Self {
+impl<S> StorageWrapper<S>
+where
+    S: StreamMessages + Clone + 'static,
+{
+    pub(super) fn new(storage: S) -> Self {
         Self { storage }
     }
 }

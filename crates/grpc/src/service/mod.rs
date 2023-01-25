@@ -104,6 +104,12 @@ where
             clock_type: ClockType::Unspecified,
         }
     }
+
+    /// Returns a service wrapper for the underlying storage.
+    pub fn storage_wrapper(&self) -> StorageWrapper<Streaming<S>> {
+        let storage = self.inner.as_manager().storage();
+        StorageWrapper::new(storage.as_ref().clone())
+    }
 }
 
 impl<M: AsManager> ManagerWrapper<M>
