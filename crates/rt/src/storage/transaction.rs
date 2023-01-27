@@ -12,6 +12,7 @@ use super::{
     WriteModules, WriteWorkflowWakers, WriteWorkflows,
 };
 use tardigrade::{ChannelId, WakerId, WorkflowId};
+use tardigrade_worker::{WorkerRecord, WorkerStorageConnection};
 
 /// [Transaction](StorageTransaction) acting as a [`Storage`]. This allows atomically
 /// committing multiple operations which would normally require multiple transactions
@@ -212,6 +213,39 @@ impl<T: StorageTransaction> WriteWorkflowWakers for TransactionLock<'_, T> {
 
     async fn delete_wakers(&mut self, workflow_id: WorkflowId, waker_ids: &[WakerId]) {
         self.inner.delete_wakers(workflow_id, waker_ids).await;
+    }
+}
+
+#[async_trait]
+impl<T: StorageTransaction> WorkerStorageConnection for TransactionLock<'_, T> {
+    type Error = T::Error;
+
+    async fn worker(&mut self, name: &str) -> Result<Option<WorkerRecord>, Self::Error> {
+        self.inner.worker(name).await
+    }
+
+    async fn get_or_create_worker(&mut self, name: &str) -> Result<WorkerRecord, Self::Error> {
+        self.inner.get_or_create_worker(name).await
+    }
+
+    async fn update_worker_cursor(
+        &mut self,
+        worker_id: u64,
+        cursor: usize,
+    ) -> Result<(), Self::Error> {
+        self.inner.update_worker_cursor(worker_id, cursor).await
+    }
+
+    async fn push_message(
+        &mut self,
+        channel_id: ChannelId,
+        message: Vec<u8>,
+    ) -> Result<(), Self::Error> {
+        self.inner.push_message(channel_id, message).await
+    }
+
+    async fn release(mut self) {
+        self.was_rolled_back = false;
     }
 }
 

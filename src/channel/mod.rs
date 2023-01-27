@@ -34,9 +34,10 @@ mod requests;
 
 pub use self::{
     broadcast::{BroadcastError, BroadcastPublisher, BroadcastSubscriber},
-    requests::{Request, RequestHandles, Requests, RequestsBuilder, Response},
+    requests::{RequestHandles, Requests, RequestsBuilder},
 };
 pub use crate::error::SendError;
+pub use tardigrade_shared::{Request, Response};
 
 use crate::{
     handle::{AccessError, AccessErrorKind, Handle, HandlePath, ReceiverAt, SenderAt},

@@ -608,7 +608,7 @@ impl WorkerStorageConnection for LocalTransaction<'_> {
     }
 
     async fn release(mut self) {
-        <Self as StorageTransaction>::commit(self).await;
+        self.commit().await;
     }
 }
 

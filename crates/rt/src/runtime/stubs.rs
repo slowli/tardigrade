@@ -10,7 +10,6 @@ use std::{
     collections::{HashMap, HashSet},
     fmt::Write as _,
     marker::PhantomData,
-    mem,
     sync::Arc,
 };
 
@@ -22,14 +21,14 @@ use crate::{
     receipt::Receipt,
     storage::{
         helper::{self, ChannelSide, StorageHelper},
-        ActiveWorkflowState, ChannelRecord, ReadModules, ReadonlyStorageTransaction, Storage,
+        ActiveWorkflowState, ChannelRecord, ReadonlyStorageTransaction, Storage,
         StorageTransaction, WorkflowRecord, WorkflowWaker,
     },
     workflow::{ChannelIds, PersistedWorkflow, Workflow, WorkflowAndChannelIds},
 };
 use tardigrade::{
     handle::{Handle, HandlePath, HandlePathBuf},
-    interface::Interface,
+    interface::{Interface, SenderSpec},
     spawn::{CreateChannel, CreateWorkflow, HostError, ManageInterfaces},
     workflow::{HandleFormat, InsertHandles, WithHandle, WorkflowFn},
     ChannelId, Codec, Raw, WorkflowId,
@@ -44,23 +43,50 @@ struct WorkflowStub {
 
 impl WorkflowStub {
     async fn spawn<E: WorkflowEngine>(
-        mut self,
+        self,
         definitions: &mut Definitions<'_, E>,
-        transaction: &impl ReadModules,
+        transaction: &mut impl StorageTransaction,
     ) -> anyhow::Result<(PersistedWorkflow, ChannelIds)> {
         let definition = definitions
             .get(&self.definition_id, transaction)
             .await
             .ok_or_else(|| anyhow!("definition `{}` not found", self.definition_id))?;
 
-        definition
-            .interface()
+        let interface = definition.interface();
+        interface
             .check_shape(&self.channel_ids, true)
             .context("invalid shape of provided handles")?;
 
-        let args = mem::take(&mut self.args);
-        let channel_ids = mem::take(&mut self.channel_ids);
-        let data = WorkflowData::new(definition.interface(), channel_ids.clone());
+        let args = self.args;
+        let mut channel_ids = self.channel_ids;
+        for (path, spec) in interface.handles() {
+            if let Handle::Sender(SenderSpec {
+                worker: Some(worker_name),
+                ..
+            }) = spec
+            {
+                let worker = transaction.worker(worker_name).await.unwrap();
+                let worker = worker.ok_or_else(|| {
+                    anyhow!(
+                        "worker `{worker_name}` not found; required to instantiate the sender \
+                         at `{path}` for workflow definition `{}`",
+                        self.definition_id
+                    )
+                })?;
+
+                let channel_id = channel_ids.get_mut(&path).unwrap();
+                debug_assert!(matches!(channel_id, Handle::Sender(_)));
+                *channel_id = Handle::Sender(worker.inbound_channel_id);
+                tracing::debug!(
+                    %path,
+                    worker_name,
+                    channel_id = worker.inbound_channel_id,
+                    "resolved channel ID for worker sender"
+                );
+            }
+        }
+
+        let data = WorkflowData::new(interface, channel_ids.clone());
         let mut workflow = Workflow::new(definition.as_ref(), data, Some(args.into()))?;
         let persisted = workflow.persist();
         Ok((persisted, channel_ids))

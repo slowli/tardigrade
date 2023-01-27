@@ -71,7 +71,13 @@ impl<Fmt: HandleFormat> Spawner<Fmt> {
             let config = spec
                 .as_ref()
                 .map_receiver(|_| SharedSpawnConfig::default())
-                .map_sender(|_| SharedSpawnConfig::default());
+                .map_sender(|spec| {
+                    if spec.worker.is_some() {
+                        SharedSpawnConfig::new(Cell::new(ChannelSpawnConfig::Closed))
+                    } else {
+                        SharedSpawnConfig::default()
+                    }
+                });
             (path.to_owned(), config)
         });
 

@@ -398,7 +398,7 @@ impl<T: StorageTransaction> StorageTransaction for StreamingTransaction<T> {
 }
 
 #[async_trait]
-impl<T: WorkerStorageConnection> WorkerStorageConnection for StreamingTransaction<T> {
+impl<T: StorageTransaction> WorkerStorageConnection for StreamingTransaction<T> {
     type Error = T::Error;
 
     async fn worker(&mut self, name: &str) -> Result<Option<WorkerRecord>, Self::Error> {
@@ -422,11 +422,12 @@ impl<T: WorkerStorageConnection> WorkerStorageConnection for StreamingTransactio
         channel_id: ChannelId,
         message: Vec<u8>,
     ) -> Result<(), Self::Error> {
-        self.inner.push_message(channel_id, message).await
+        self.push_messages(channel_id, vec![message]).await;
+        Ok(())
     }
 
     async fn release(self) {
-        self.inner.release().await;
+        self.commit().await;
     }
 }
 

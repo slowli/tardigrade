@@ -169,7 +169,13 @@ impl<T> ReadonlyStorageTransaction for T where
 #[must_use = "transactions must be committed to take effect"]
 #[async_trait]
 pub trait StorageTransaction:
-    Send + Sync + WriteModules + WriteChannels + WriteWorkflows + WriteWorkflowWakers
+    Send
+    + Sync
+    + WriteModules
+    + WriteChannels
+    + WriteWorkflows
+    + WriteWorkflowWakers
+    + WorkerStorageConnection<Error = Infallible>
 {
     /// Commits this transaction to the storage. This method must be called
     /// to (atomically) apply transaction changes.
@@ -343,7 +349,7 @@ where
     type Error = Infallible;
     type Connection<'a> = S::Transaction<'a> where Self: 'a;
 
-    async fn view(&self) -> Self::Connection<'_> {
+    async fn connect(&self) -> Self::Connection<'_> {
         self.0.transaction().await
     }
 

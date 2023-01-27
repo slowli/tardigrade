@@ -8,6 +8,7 @@ use std::{collections::HashSet, task::Poll};
 
 mod driver;
 mod spawn;
+mod worker;
 
 use super::*;
 use crate::{

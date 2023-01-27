@@ -30,6 +30,9 @@ pub struct SenderSpec {
     /// the channel needs to be flushed. `None` means unbounded capacity.
     #[serde(default = "SenderSpec::default_capacity")]
     pub capacity: Option<usize>,
+    /// Worker to connect the sender to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker: Option<String>,
 }
 
 impl Default for SenderSpec {
@@ -37,6 +40,7 @@ impl Default for SenderSpec {
         Self {
             description: String::new(),
             capacity: Self::default_capacity(),
+            worker: None,
         }
     }
 }
@@ -101,13 +105,9 @@ pub type HandleSpec = Handle<ReceiverSpec, SenderSpec>;
 pub struct Interface {
     #[serde(rename = "v")]
     version: u32,
-    #[serde(
-        rename = "handles",
-        default,
-        skip_serializing_if = "HandleMap::is_empty"
-    )]
+    #[serde(default, skip_serializing_if = "HandleMap::is_empty")]
     handles: HandleMap<ReceiverSpec, SenderSpec>,
-    #[serde(rename = "args", default)]
+    #[serde(default)]
     args: ArgsSpec,
 }
 

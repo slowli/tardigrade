@@ -14,7 +14,7 @@ use futures::{
 
 use std::{collections::HashMap, future::Future, marker::PhantomData};
 
-pub use tardigrade_shared::{Request, Response};
+use tardigrade_shared::{Request, Response};
 
 use crate::{
     channel::{Receiver, Sender},
