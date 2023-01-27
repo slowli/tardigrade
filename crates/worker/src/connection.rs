@@ -69,9 +69,10 @@ pub trait WorkerStorageConnection: Send {
     async fn release(self);
 }
 
+/// Storage record for a worker.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerRecord {
-    /// Primary key of the worker record.
+    /// Primary key of this worker record.
     pub id: u64,
     /// Globally unique worker name, such as `tardigrade.v0.Timer`.
     pub name: String,

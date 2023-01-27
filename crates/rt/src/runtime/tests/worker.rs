@@ -189,7 +189,6 @@ async fn test_executing_worker(
 struct Handler;
 
 impl WorkerInterface for Handler {
-    const REGISTERED_NAME: &'static str = "tardigrade.test.v0.Baking";
     type Request = String;
     type Response = String;
     type Codec = Json;
@@ -199,10 +198,9 @@ impl WorkerInterface for Handler {
 impl<C: WorkerStorageConnection> HandleRequest<C> for Handler {
     async fn handle_request(
         &mut self,
-        request: Request<String>,
-        response: Response<'_, String, C>,
-    ) {
-        response.send(request.into_inner()).await;
+        request: Request<'_, String, C>,
+    ) -> Option<Response<String>> {
+        Some(Response::new(request.into_inner()))
     }
 }
 
@@ -212,7 +210,7 @@ async fn executing_worker() {
     let runtime = create_test_runtime_with_worker(poll_fns, ()).await;
     let storage = runtime.storage().as_ref().clone();
     let worker = Worker::new(Handler, WorkerStorage(storage));
-    task::spawn(worker.run());
+    task::spawn(worker.bind("tardigrade.test.v0.Baking"));
     task::sleep(Duration::from_millis(50)).await; // wait for the handler to be registered
 
     test_executing_worker(&runtime, &mut poll_fn_sx).await;
@@ -227,7 +225,7 @@ async fn restarting_worker() {
     for _ in 0..2 {
         let storage = storage.as_ref().clone();
         let worker = Worker::new(Handler, WorkerStorage(storage));
-        let worker_handle = task::spawn(worker.run());
+        let worker_handle = task::spawn(worker.bind("tardigrade.test.v0.Baking"));
         task::sleep(Duration::from_millis(50)).await;
 
         test_executing_worker(&runtime, &mut poll_fn_sx).await;
