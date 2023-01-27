@@ -219,7 +219,7 @@ where
 
         let storage = WorkerStorage(self.storage.clone());
         let worker = storage
-            .view()
+            .connect()
             .then(|view| get_or_create_worker(view, request))
             .await?;
         let worker = Worker::from_data(worker);
@@ -238,7 +238,7 @@ where
             Some(UpdateType::Cursor(cursor)) => {
                 let storage = WorkerStorage(self.storage.clone());
                 storage
-                    .view()
+                    .connect()
                     .then(|view| update_worker(view, request.worker_id, cursor as usize))
                     .await;
             }

@@ -21,8 +21,8 @@ pub trait WorkerStoragePool: Send + Sync {
     where
         Self: 'a;
 
-    /// Creates a new storage view.
-    async fn view(&self) -> Self::Connection<'_>;
+    /// Connects to the worker storage.
+    async fn connect(&self) -> Self::Connection<'_>;
 
     /// Streams messages from a specific channel starting with the specified index.
     fn stream_messages(

@@ -11,33 +11,34 @@ pub use crate::connection::{
 
 use tardigrade_shared::{self as shared, ChannelId, Codec};
 
+/// Interface of a worker that can handle requests of a certain type.
+pub trait WorkerInterface: Send {
+    /// Registered name of this worker, such as `tardigrade.v1.Timer`.
+    const REGISTERED_NAME: &'static str;
+
+    /// Request input into this worker.
+    type Request;
+    /// Response output from this worker.
+    type Response;
+    /// Codec for requests / responses.
+    type Codec: Codec<shared::Request<Self::Request>> + Codec<shared::Response<Self::Response>>;
+}
+
 /// Handler of requests of a certain type.
 #[async_trait]
-pub trait HandleRequest<Req, Tx: WorkerStorageConnection> {
-    /// Response to the request.
-    type Response;
-
+pub trait HandleRequest<C: WorkerStorageConnection>: WorkerInterface {
     /// Handles a request.
     async fn handle_request(
         &mut self,
-        request: Request<Req>,
-        response: Response<'_, Self::Response, Tx>,
+        request: Request<Self::Request>,
+        response: Response<'_, Self::Response, C>,
     );
 
     /// Handles request cancellation.
     #[allow(unused)]
-    async fn handle_cancellation(&mut self, cancellation: Request<()>, transaction: &mut Tx) {
+    async fn handle_cancellation(&mut self, cancellation: Request<()>, connection: &mut C) {
         // Do nothing
     }
-}
-
-pub trait RegisterHandler<Tx: WorkerStorageConnection>:
-    HandleRequest<Self::Request, Tx> + Send
-{
-    const REGISTERED_NAME: &'static str;
-
-    type Request;
-    type Codec: Codec<shared::Request<Self::Request>> + Codec<shared::Response<Self::Response>>;
 }
 
 /// Request payload together with additional metadata allowing to identify the request.
@@ -57,26 +58,26 @@ impl<T> Request<T> {
         self.request_id
     }
 
-    pub fn data(&self) -> &T {
+    pub fn get_ref(&self) -> &T {
         &self.data
     }
 
-    pub fn into_data(self) -> T {
+    pub fn into_inner(self) -> T {
         self.data
     }
 }
 
 #[derive(Debug)]
-pub struct Response<'a, T, Tx> {
+pub struct Response<'a, T, C> {
     request_metadata: Request<()>,
-    transaction: &'a mut Tx,
+    connection: &'a mut C,
     response_mapper: fn(shared::Response<T>) -> Vec<u8>,
 }
 
-impl<T, Tx: WorkerStorageConnection> Response<'_, T, Tx> {
-    /// Returns the underlying storage transaction.
-    pub fn transaction(&mut self) -> &mut Tx {
-        &mut *self.transaction
+impl<T, C: WorkerStorageConnection> Response<'_, T, C> {
+    /// Returns the underlying storage connection.
+    pub fn connection(&mut self) -> &mut C {
+        &mut *self.connection
     }
 
     /// Sends the provided response back to the requester.
@@ -92,7 +93,7 @@ impl<T, Tx: WorkerStorageConnection> Response<'_, T, Tx> {
         };
         let response = (self.response_mapper)(response);
         let channel_id = self.request_metadata.response_channel_id;
-        if let Err(err) = self.transaction.push_message(channel_id, response).await {
+        if let Err(err) = self.connection.push_message(channel_id, response).await {
             tracing::warn!(%err, "failed sending message");
         }
     }
@@ -108,7 +109,7 @@ pub struct Worker<H, C> {
 impl<H, C> Worker<H, C>
 where
     C: WorkerStoragePool,
-    for<'tx> H: RegisterHandler<C::Connection<'tx>>,
+    for<'conn> H: HandleRequest<C::Connection<'conn>>,
 {
     pub fn new(handler: H, connection: C) -> Self {
         Self {
@@ -124,9 +125,9 @@ where
         fields(self.name = H::REGISTERED_NAME)
     )]
     pub async fn run(mut self) -> Result<(), C::Error> {
-        let mut transaction = self.connection.view().await;
-        let worker = transaction.get_or_create_worker(H::REGISTERED_NAME).await?;
-        transaction.release().await;
+        let mut connection = self.connection.connect().await;
+        let worker = connection.get_or_create_worker(H::REGISTERED_NAME).await?;
+        connection.release().await;
         tracing::info!(
             self.name = H::REGISTERED_NAME,
             ?worker,
@@ -159,7 +160,7 @@ where
             }
         };
 
-        let mut transaction = self.connection.view().await;
+        let mut connection = self.connection.connect().await;
         match message {
             shared::Request::New {
                 response_channel_id,
@@ -178,7 +179,7 @@ where
                         data: (),
                     },
                     response_mapper: <H::Codec>::encode_value,
-                    transaction: &mut transaction,
+                    connection: &mut connection,
                 };
                 self.handler.handle_request(request, response).await;
             }
@@ -193,12 +194,12 @@ where
                     data: (),
                 };
                 self.handler
-                    .handle_cancellation(cancellation, &mut transaction)
+                    .handle_cancellation(cancellation, &mut connection)
                     .await;
             }
         }
-        transaction.update_worker_cursor(self.id, idx + 1).await?;
-        transaction.release().await;
+        connection.update_worker_cursor(self.id, idx + 1).await?;
+        connection.release().await;
         Ok(())
     }
 }

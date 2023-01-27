@@ -66,7 +66,7 @@ impl WorkerStoragePool for Client {
     type Error = Status;
     type Connection<'a> = Self;
 
-    async fn view(&self) -> Self::Connection<'_> {
+    async fn connect(&self) -> Self::Connection<'_> {
         self.clone()
     }
 
