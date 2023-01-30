@@ -338,12 +338,12 @@ delegate_read_traits!(Readonly<T> { inner: T });
 /// Wrapper around a [`Storage`] implementing [`WorkerConnection`] trait.
 /// This can be used for in-process workers.
 #[derive(Debug, Clone)]
-pub struct WorkerStorage<S>(pub S);
+pub struct InProcessConnection<S>(pub S);
 
 #[async_trait]
-impl<S> WorkerStoragePool for WorkerStorage<S>
+impl<S> WorkerStoragePool for InProcessConnection<S>
 where
-    S: StreamMessages,
+    S: StreamMessages + 'static,
     for<'a> S::Transaction<'a>: WorkerStorageConnection<Error = Infallible>,
 {
     type Error = Infallible;

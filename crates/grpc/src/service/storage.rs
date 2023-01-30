@@ -16,7 +16,7 @@ use crate::proto::{
 use tardigrade::spawn::CreateChannel;
 use tardigrade_rt::{
     handle::StorageRef,
-    storage::{Storage, StreamMessages, WorkerStorage},
+    storage::{InProcessConnection, Storage, StreamMessages},
 };
 use tardigrade_worker::{WorkerRecord, WorkerStorageConnection, WorkerStoragePool};
 
@@ -208,7 +208,7 @@ where
 impl<S> WorkersService for StorageWrapper<S>
 where
     S: Storage + Clone + 'static,
-    WorkerStorage<S>: WorkerStoragePool<Error = Infallible>,
+    InProcessConnection<S>: WorkerStoragePool<Error = Infallible>,
 {
     #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
     async fn get_or_create_worker(
@@ -217,7 +217,7 @@ where
     ) -> Result<Response<Worker>, Status> {
         let request = request.into_inner();
 
-        let storage = WorkerStorage(self.storage.clone());
+        let storage = InProcessConnection(self.storage.clone());
         let worker = storage
             .connect()
             .then(|view| get_or_create_worker(view, request))
@@ -236,7 +236,7 @@ where
 
         match request.update_type {
             Some(UpdateType::Cursor(cursor)) => {
-                let storage = WorkerStorage(self.storage.clone());
+                let storage = InProcessConnection(self.storage.clone());
                 storage
                     .connect()
                     .then(|view| update_worker(view, request.worker_id, cursor as usize))

@@ -13,7 +13,7 @@ pub type MessageStream<Err> = BoxStream<'static, Result<(usize, Vec<u8>), Err>>;
 
 /// Connection pool for the worker storage.
 #[async_trait]
-pub trait WorkerStoragePool: Send + Sync {
+pub trait WorkerStoragePool: Send + Sync + 'static {
     /// Errors that can occur when applying changes to the storage.
     type Error: error::Error + Send + Sync + 'static;
     /// Read-write connection to the storage.

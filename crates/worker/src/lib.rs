@@ -58,35 +58,43 @@ pub trait WorkerInterface: Send {
 
 /// Handler of requests of a certain type.
 #[async_trait]
-pub trait HandleRequest<C: WorkerStorageConnection>: WorkerInterface {
+pub trait HandleRequest<P: WorkerStoragePool>: WorkerInterface {
+    /// Initializes this handler.
+    #[allow(unused)]
+    async fn initialize(&mut self, connection_pool: &P) {
+        // Do nothing
+    }
+
     /// Handles a request.
     ///
     /// # Return value
     ///
     /// Returns `None` if the request will be handled asynchronously (e.g., in a separate
     /// task spawned using `task::spawn()` from `tokio` or `async-std`).
-    async fn handle_request(
-        &mut self,
-        request: Request<'_, Self::Request, C>,
-    ) -> Option<Response<Self::Response>>;
+    async fn handle_request(&mut self, request: Request<Self>, connection: &mut P::Connection<'_>);
 
     /// Handles request cancellation.
     #[allow(unused)]
-    async fn handle_cancellation(&mut self, cancellation: Request<'_, (), C>) {
+    async fn handle_cancellation(&mut self, connection: &mut P::Connection<'_>) {
         // Do nothing
     }
 }
 
 /// Request payload together with additional metadata allowing to identify the request.
 #[derive(Debug)]
-pub struct Request<'a, T, C> {
+pub struct Request<T>
+where
+    T: WorkerInterface + ?Sized,
+{
     response_channel_id: ChannelId,
     request_id: u64,
-    data: T,
-    connection: &'a mut C,
+    data: T::Request,
 }
 
-impl<T, C: WorkerStorageConnection> Request<'_, T, C> {
+impl<T> Request<T>
+where
+    T: WorkerInterface + ?Sized,
+{
     /// Returns the ID of the channel that the response to this request should be sent to.
     pub fn response_channel_id(&self) -> ChannelId {
         self.response_channel_id
@@ -100,65 +108,59 @@ impl<T, C: WorkerStorageConnection> Request<'_, T, C> {
     }
 
     /// Returns a shared reference to the request data.
-    pub fn get_ref(&self) -> &T {
+    pub fn get_ref(&self) -> &T::Request {
         &self.data
     }
 
     /// Converts this request into data.
-    pub fn into_inner(self) -> T {
-        self.data
-    }
-
-    /// Returns the underlying storage connection.
-    ///
-    /// This connection can be used to make changes to the storage (provided that
-    /// the connection is transactional) that will be atomic with consuming the message
-    /// by the worker. This can lead to the "exactly once" semantics for request processing
-    /// (as opposed to the default "at least once" semantics).
-    pub fn connection(&mut self) -> &mut C {
-        &mut *self.connection
+    pub fn into_parts(self) -> (T::Request, ResponseSender<T>) {
+        let sender = ResponseSender {
+            response_channel_id: self.response_channel_id,
+            request_id: self.request_id,
+            _interface: PhantomData,
+        };
+        (self.data, sender)
     }
 }
 
-/// Response to a [`Request`].
+/// Sender of responses.
 #[derive(Debug)]
-pub struct Response<T> {
-    data: T,
+pub struct ResponseSender<T: ?Sized> {
+    response_channel_id: ChannelId,
+    request_id: u64,
+    _interface: PhantomData<T>,
 }
 
-impl<T> Response<T> {
-    /// Creates a new response with the provided data.
-    pub const fn new(data: T) -> Self {
-        Self { data }
-    }
-
-    async fn send<C, Conn>(
+impl<T: WorkerInterface + ?Sized> ResponseSender<T> {
+    /// Sends a response.
+    ///
+    /// # Errors
+    ///
+    /// Surfaces connection errors.
+    pub async fn send<Conn: WorkerStorageConnection>(
         self,
+        response: T::Response,
         connection: &mut Conn,
-        request_id: u64,
-        response_channel_id: ChannelId,
-    ) -> Result<(), Conn::Error>
-    where
-        C: Codec<shared::Response<T>>,
-        Conn: WorkerStorageConnection,
-    {
-        let response = C::encode_value(shared::Response {
-            id: request_id,
-            data: self.data,
+    ) -> Result<(), Conn::Error> {
+        let response = <T::Codec>::encode_value(shared::Response {
+            id: self.request_id,
+            data: response,
         });
-        connection.push_message(response_channel_id, response).await
+        connection
+            .push_message(self.response_channel_id, response)
+            .await
     }
 }
 
 /// [Worker handler](HandleRequest) based on a function.
 #[derive(Debug)]
-pub struct FnHandler<F, Req, Fut, C = Json> {
+pub struct FnHandler<F, Req, C = Json> {
     function: F,
-    _signature: PhantomData<fn(Req) -> Fut>,
+    _signature: PhantomData<fn(Req)>,
     _codec: PhantomData<C>,
 }
 
-impl<F, Req, Fut> FnHandler<F, Req, Fut>
+impl<F, Req, Fut> FnHandler<F, Req>
 where
     F: FnMut(Req) -> Fut + Send,
     Req: Send,
@@ -174,7 +176,7 @@ where
     }
 }
 
-impl<F, Req, Fut, C> WorkerInterface for FnHandler<F, Req, Fut, C>
+impl<F, Req, Fut, C> WorkerInterface for FnHandler<F, Req, C>
 where
     F: FnMut(Req) -> Fut + Send,
     Req: Send,
@@ -187,17 +189,19 @@ where
 }
 
 #[async_trait]
-impl<F, Req, Fut, C, Conn> HandleRequest<Conn> for FnHandler<F, Req, Fut, C>
+impl<F, Req, Fut, C, P> HandleRequest<P> for FnHandler<F, Req, C>
 where
     F: FnMut(Req) -> Fut + Send,
     Req: Send,
     Fut: Future + Send,
+    Fut::Output: Send,
     C: Codec<shared::Request<Req>> + Codec<shared::Response<Fut::Output>>,
-    Conn: WorkerStorageConnection,
+    P: WorkerStoragePool + 'static,
 {
-    async fn handle_request(&mut self, request: Request<'_, Self::Request, Conn>) -> Option<Response<Self::Response>> {
-        let response = (self.function)(request.into_inner()).await;
-        Some(Response::new(response))
+    async fn handle_request(&mut self, request: Request<Self>, connection: &mut P::Connection<'_>) {
+        let (data, sender) = request.into_parts();
+        let response = (self.function)(data).await;
+        sender.send(response, connection).await.ok();
     }
 }
 
@@ -206,20 +210,20 @@ where
 pub struct Worker<H, C> {
     id: u64,
     handler: H,
-    connection: C,
+    connection_pool: C,
 }
 
-impl<H, C> Worker<H, C>
+impl<H, P> Worker<H, P>
 where
-    C: WorkerStoragePool,
-    for<'conn> H: HandleRequest<C::Connection<'conn>>,
+    P: WorkerStoragePool,
+    H: HandleRequest<P>,
 {
     /// Creates a new worker.
-    pub fn new(handler: H, connection: C) -> Self {
+    pub fn new(handler: H, connection: P) -> Self {
         Self {
             id: 0,
             handler,
-            connection,
+            connection_pool: connection,
         }
     }
 
@@ -231,19 +235,16 @@ where
     /// by the encapsulated [connection](WorkerStorageConnection) failures (e.g., connectivity
     /// issues).
     #[tracing::instrument(skip(self), err)]
-    pub async fn bind(mut self, name: &str) -> Result<(), C::Error> {
-        let mut connection = self.connection.connect().await;
+    pub async fn listen(mut self, name: &str) -> Result<(), P::Error> {
+        let mut connection = self.connection_pool.connect().await;
         let worker = connection.get_or_create_worker(name).await?;
         connection.release().await;
-        tracing::info!(
-            self.name = name,
-            ?worker,
-            "obtained worker record"
-        );
+        tracing::info!(self.name = name, ?worker, "obtained worker record");
         self.id = worker.id;
+        self.handler.initialize(&self.connection_pool).await;
 
         let mut messages = self
-            .connection
+            .connection_pool
             .stream_messages(worker.inbound_channel_id, worker.cursor);
         while let Some((idx, raw_message)) = messages.try_next().await? {
             self.handle_message(idx, raw_message).await?;
@@ -257,7 +258,7 @@ where
         err,
         fields(message.len = raw_message.len())
     )]
-    async fn handle_message(&mut self, idx: usize, raw_message: Vec<u8>) -> Result<(), C::Error> {
+    async fn handle_message(&mut self, idx: usize, raw_message: Vec<u8>) -> Result<(), P::Error> {
         let message = <H::Codec>::try_decode_bytes(raw_message);
         let message: shared::Request<H::Request> = match message {
             Ok(message) => message,
@@ -267,7 +268,7 @@ where
             }
         };
 
-        let mut connection = self.connection.connect().await;
+        let mut connection = self.connection_pool.connect().await;
         match message {
             shared::Request::New {
                 response_channel_id,
@@ -278,27 +279,12 @@ where
                     response_channel_id,
                     request_id: id,
                     data,
-                    connection: &mut connection,
                 };
-                let response = self.handler.handle_request(request).await;
-                if let Some(response) = response {
-                    response
-                        .send::<H::Codec, _>(&mut connection, id, response_channel_id)
-                        .await?;
-                }
+                self.handler.handle_request(request, &mut connection).await;
             }
 
-            shared::Request::Cancel {
-                response_channel_id,
-                id,
-            } => {
-                let cancellation = Request {
-                    response_channel_id,
-                    request_id: id,
-                    data: (),
-                    connection: &mut connection,
-                };
-                self.handler.handle_cancellation(cancellation).await;
+            shared::Request::Cancel { .. } => {
+                self.handler.handle_cancellation(&mut connection).await;
             }
         }
         connection.update_worker_cursor(self.id, idx + 1).await?;

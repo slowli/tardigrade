@@ -8,10 +8,10 @@ use mimicry::AnswersSender;
 use std::time::Duration;
 
 use super::*;
-use crate::storage::WorkerStorage;
+use crate::storage::InProcessConnection;
 use tardigrade::{channel, interface::Interface, Codec, Json};
 use tardigrade_worker::{
-    HandleRequest, Request, Response, Worker, WorkerInterface, WorkerStorageConnection,
+    HandleRequest, Request, Worker, WorkerInterface, WorkerStorageConnection, WorkerStoragePool,
 };
 
 type StreamingStorage = Streaming<Arc<LocalStorage>>;
@@ -195,12 +195,10 @@ impl WorkerInterface for Handler {
 }
 
 #[async_trait]
-impl<C: WorkerStorageConnection> HandleRequest<C> for Handler {
-    async fn handle_request(
-        &mut self,
-        request: Request<'_, String, C>,
-    ) -> Option<Response<String>> {
-        Some(Response::new(request.into_inner()))
+impl<P: WorkerStoragePool + 'static> HandleRequest<P> for Handler {
+    async fn handle_request(&mut self, request: Request<Self>, connection: &mut P::Connection<'_>) {
+        let (request, response_sx) = request.into_parts();
+        response_sx.send(request, connection).await.ok();
     }
 }
 
@@ -209,8 +207,8 @@ async fn executing_worker() {
     let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
     let runtime = create_test_runtime_with_worker(poll_fns, ()).await;
     let storage = runtime.storage().as_ref().clone();
-    let worker = Worker::new(Handler, WorkerStorage(storage));
-    task::spawn(worker.bind("tardigrade.test.v0.Baking"));
+    let worker = Worker::new(Handler, InProcessConnection(storage));
+    task::spawn(worker.listen("tardigrade.test.v0.Baking"));
     task::sleep(Duration::from_millis(50)).await; // wait for the handler to be registered
 
     test_executing_worker(&runtime, &mut poll_fn_sx).await;
@@ -224,8 +222,8 @@ async fn restarting_worker() {
 
     for _ in 0..2 {
         let storage = storage.as_ref().clone();
-        let worker = Worker::new(Handler, WorkerStorage(storage));
-        let worker_handle = task::spawn(worker.bind("tardigrade.test.v0.Baking"));
+        let worker = Worker::new(Handler, InProcessConnection(storage));
+        let worker_handle = task::spawn(worker.listen("tardigrade.test.v0.Baking"));
         task::sleep(Duration::from_millis(50)).await;
 
         test_executing_worker(&runtime, &mut poll_fn_sx).await;
