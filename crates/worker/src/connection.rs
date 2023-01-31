@@ -61,9 +61,13 @@ pub trait WorkerStorageConnection: Send {
         message: Vec<u8>,
     ) -> Result<(), Self::Error>;
 
+    /// Closes a channel from the sender side. Returns `true` if the channel was actually closed
+    /// and `false` otherwise (i.e., if the channel has other senders).
+    async fn close_response_channel(&mut self, channel_id: ChannelId) -> Result<bool, Self::Error>;
+
     /// Releases the connection back to the pool.
     ///
-    /// - If this connection is transactional, commits changes to the storage.
+    /// - If this connection is transactional, atomically commits changes to the storage.
     /// - If this connection is not transactional, the changes are expected to take
     ///   effect immediately, and this method can be no-op.
     async fn release(self);

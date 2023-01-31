@@ -182,8 +182,9 @@ impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
         }
     }
 
+    /// Returns whether the channel is closed after this action.
     #[tracing::instrument(skip(self))]
-    pub async fn close_channel_side(&mut self, channel_id: ChannelId, side: ChannelSide) {
+    pub async fn close_channel_side(&mut self, channel_id: ChannelId, side: ChannelSide) -> bool {
         let channel_state = self
             .inner
             .manipulate_channel(channel_id, |state| {
@@ -194,13 +195,14 @@ impl<'a, T: StorageTransaction> StorageHelper<'a, T> {
 
         tracing::info!(is_closed = channel_state.is_closed, "channel closed");
         if !channel_state.is_closed {
-            return;
+            return false;
         }
 
         for &sender_workflow_id in &channel_state.sender_workflow_ids {
             let waker = WorkflowWaker::SenderClosure(channel_id);
             self.inner.insert_waker(sender_workflow_id, waker).await;
         }
+        channel_state.is_closed
     }
 
     pub async fn push_messages(&mut self, messages: HashMap<ChannelId, Vec<Message>>) {

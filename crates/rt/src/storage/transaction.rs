@@ -244,6 +244,10 @@ impl<T: StorageTransaction> WorkerStorageConnection for TransactionLock<'_, T> {
         self.inner.push_message(channel_id, message).await
     }
 
+    async fn close_response_channel(&mut self, channel_id: ChannelId) -> Result<bool, Self::Error> {
+        self.inner.close_response_channel(channel_id).await
+    }
+
     async fn release(mut self) {
         self.was_rolled_back = false;
     }

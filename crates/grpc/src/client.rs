@@ -12,8 +12,8 @@ use crate::proto::{
     push_messages_request::{pushed, Pushed},
     update_worker_request::UpdateType,
     workers_service_client::WorkersServiceClient,
-    GetOrCreateWorkerRequest, MessageCodec, PushMessagesRequest, StreamMessagesRequest,
-    UpdateWorkerRequest,
+    CloseChannelRequest, GetOrCreateWorkerRequest, HandleType, MessageCodec, PushMessagesRequest,
+    StreamMessagesRequest, UpdateWorkerRequest,
 };
 use tardigrade_worker::{MessageStream, WorkerRecord, WorkerStorageConnection, WorkerStoragePool};
 
@@ -161,6 +161,16 @@ impl WorkerStorageConnection for Client {
             }],
         };
         self.channels.push_messages(request).await.map(drop)
+    }
+
+    #[tracing::instrument(level = "debug", err)]
+    async fn close_response_channel(&mut self, channel_id: ChannelId) -> Result<bool, Self::Error> {
+        let request = CloseChannelRequest {
+            id: channel_id,
+            half: HandleType::Sender.into(),
+        };
+        let channel = self.channels.close_channel(request).await?.into_inner();
+        Ok(channel.is_closed)
     }
 
     async fn release(self) {

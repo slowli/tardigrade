@@ -23,6 +23,7 @@ use std::{
 };
 
 use super::{
+    helper::{ChannelSide, StorageHelper},
     ActiveWorkflowState, ChannelRecord, MessageError, ModuleRecord, ReadChannels, ReadModules,
     ReadWorkflows, Storage, StorageTransaction, WorkflowRecord, WorkflowSelectionCriteria,
     WorkflowState, WorkflowWaker, WorkflowWakerRecord, WriteChannels, WriteModules,
@@ -605,6 +606,12 @@ impl WorkerStorageConnection for LocalTransaction<'_> {
     ) -> Result<(), Self::Error> {
         self.push_messages(channel_id, vec![message]).await;
         Ok(())
+    }
+
+    async fn close_response_channel(&mut self, channel_id: ChannelId) -> Result<bool, Self::Error> {
+        Ok(StorageHelper::new(self)
+            .close_channel_side(channel_id, ChannelSide::HostSender)
+            .await)
     }
 
     async fn release(mut self) {

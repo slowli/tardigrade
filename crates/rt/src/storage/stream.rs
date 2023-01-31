@@ -426,6 +426,15 @@ impl<T: StorageTransaction> WorkerStorageConnection for StreamingTransaction<T> 
         Ok(())
     }
 
+    async fn close_response_channel(&mut self, channel_id: ChannelId) -> Result<bool, Self::Error> {
+        let result = self.inner.close_response_channel(channel_id).await.unwrap();
+        if result {
+            // TODO: this logic leads to false positives if the channel was already closed
+            self.new_messages.entry(channel_id).or_default();
+        }
+        Ok(result)
+    }
+
     async fn release(self) {
         self.commit().await;
     }

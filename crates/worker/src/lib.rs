@@ -17,12 +17,11 @@
 //! is encapsulated in [pool](WorkerStoragePool) and [connection](WorkerStorageConnection) traits.
 //! In-process connections enable "exactly once" semantics for request handling; otherwise,
 //! handling has "at least once" semantics (a request may be handled repeatedly if the worker
-//! crashed during handling).
+//! crashes during handling).
 //!
 //! [sender specification]: tardigrade_shared::interface::SenderSpec
 
 // Documentation settings.
-#![cfg_attr(docsrs, feature(doc_cfg))]
 #![doc(html_root_url = "https://docs.rs/tardigrade-worker/0.1.0")]
 // Linter settings.
 #![warn(missing_debug_implementations, missing_docs, bare_trait_objects)]
@@ -75,7 +74,11 @@ pub trait HandleRequest<P: WorkerStoragePool>: WorkerInterface {
 
     /// Handles request cancellation.
     #[allow(unused)]
-    async fn handle_cancellation(&mut self, connection: &mut P::Connection<'_>) {
+    async fn handle_cancellation(
+        &mut self,
+        cancellation: Cancellation,
+        connection: &mut P::Connection<'_>,
+    ) {
         // Do nothing
     }
 }
@@ -112,7 +115,7 @@ where
         &self.data
     }
 
-    /// Converts this request into data.
+    /// Converts this request into data and the sender for the response.
     pub fn into_parts(self) -> (T::Request, ResponseSender<T>) {
         let sender = ResponseSender {
             response_channel_id: self.response_channel_id,
@@ -123,7 +126,46 @@ where
     }
 }
 
-/// Sender of responses.
+/// Information about a request cancellation.
+#[derive(Debug)]
+pub struct Cancellation {
+    response_channel_id: ChannelId,
+    request_id: u64,
+}
+
+impl Cancellation {
+    /// Returns the ID of the channel that the response to this request should be sent to.
+    pub fn response_channel_id(&self) -> ChannelId {
+        self.response_channel_id
+    }
+
+    /// Returns the ID of this request.
+    ///
+    /// - The ID should be unique for the same [response channel].
+    /// - The request with the provided ID should be previously handled
+    ///   by [`HandleRequest::handle_request()`].
+    ///
+    /// These conditions are up to the (potentially untrusted) workflow infrastructure code
+    /// to enforce; i.e., they may be violated.
+    ///
+    /// [response channel]: Self::response_channel_id()
+    pub fn request_id(&self) -> u64 {
+        self.request_id
+    }
+}
+
+/// Sender of responses for a [handler](HandleRequest).
+///
+/// A single sender can be used to send a single request. It can be retrieved using
+/// [`Request::into_parts()`] and, if necessary, moved to an async task.
+/// In this case, sending a response cannot be executed in the same transaction
+/// as the worker state update, and the caller is responsible for procuring a [connection]
+/// to the worker storage, e.g., by stashing a copy of the [connection pool] in
+/// [`HandleRequest::initialize()`].
+///
+/// [connection]: WorkerStorageConnection
+/// [connection pool]: WorkerStoragePool
+#[must_use = "Response to the request should be sent using this sender"]
 #[derive(Debug)]
 pub struct ResponseSender<T: ?Sized> {
     response_channel_id: ChannelId,
@@ -149,6 +191,26 @@ impl<T: WorkerInterface + ?Sized> ResponseSender<T> {
         connection
             .push_message(self.response_channel_id, response)
             .await
+    }
+
+    /// Sends a response and then closes the response channel from the sender side.
+    /// Returns whether
+    ///
+    /// If the workflow code is correctly implemented, closing the response channel
+    /// leads to to all outstanding requests being dropped, and no new requests should come through.
+    /// However, this is not currently checked by the framework code.
+    ///
+    /// # Errors
+    ///
+    /// Surfaces connection errors.
+    pub async fn send_and_close<Conn: WorkerStorageConnection>(
+        self,
+        response: T::Response,
+        connection: &mut Conn,
+    ) -> Result<bool, Conn::Error> {
+        let response_channel_id = self.response_channel_id;
+        self.send(response, connection).await?;
+        connection.close_response_channel(response_channel_id).await
     }
 }
 
@@ -283,8 +345,17 @@ where
                 self.handler.handle_request(request, &mut connection).await;
             }
 
-            shared::Request::Cancel { .. } => {
-                self.handler.handle_cancellation(&mut connection).await;
+            shared::Request::Cancel {
+                response_channel_id,
+                id,
+            } => {
+                let cancellation = Cancellation {
+                    response_channel_id,
+                    request_id: id,
+                };
+                self.handler
+                    .handle_cancellation(cancellation, &mut connection)
+                    .await;
             }
         }
         connection.update_worker_cursor(self.id, idx + 1).await?;
