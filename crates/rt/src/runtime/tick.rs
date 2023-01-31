@@ -494,10 +494,10 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> Runtime<E, C, S> {
         let result = self.do_tick(transaction, workflow, waker_records).await;
         if let Ok(receipt) = &result {
             if receipt.executions().is_empty() {
-                return Err(WouldBlock {
+                let err = WouldBlock {
                     nearest_timer_expiration,
-                }
-                .into());
+                };
+                return Err(err.into());
             }
         }
 
