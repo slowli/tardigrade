@@ -4,18 +4,39 @@
 
 ## Key abstractions
 
-There are two major abstractions involved in workflow management:
+There are 3 major abstractions involved in workflow management:
 
 - **Engine:** how to instantiate and run workflows
+- **Workers:** how to execute tasks that cannot (or shouldn't) be executed
+  in the workflow code
 - **Storage:** how to persist workflows
 
-Both of this are abstracted (to a reasonable degree) in the runtime crate;
-see its `engine` and `storage` modules respectively.
+Engine and storage are abstracted (to a reasonable degree) in the runtime crate;
+see its `engine` and `storage` modules respectively. APIs and implementation
+framework for workers is placed in a separate crate. (This is because a worker
+can be connected to a runtime using gRPC; thus, bringing the runtime would
+bring many unnecessary dependencies such as `wasmtime`.)
 
 Conceptually, the engine uses *message passing* as the foundational
 architecture pattern (in particular defining what workflow interfaces look like
 and how workflows can interact with the external world), and *WASM* modules / instances
 as the implementation tool.
+
+Workers conceptually are similar to message consumers in Kafka. A worker
+has a single inbound request channel and a cursor of the last processed message.
+The worker records are placed in the same storage as other runtime records,
+meaning "exactly once" processing is possible, although it depends on the kind
+of connection to the storage used. (E.g., gRPC connections have "at least once" semantics.)
+From the workflow perspective, worker implementation is largely opaque; even the cursor-based
+request handling and a single inbound request channel are just implementation details.
+
+So far, workers do not utilize an app-level protocol (e.g., [RSocket]) for out-of-the-box
+support of different communication patterns, and the only supported pattern is "request-response".
+This can be amended in post-PoC releases; for now, embedding such a protocol seems to bring
+more open questions than it would solve. (E.g., the flow control logic in RSocket seems to
+conceptually clash with `Sink` / `Stream`-based flow control inherent in workflows;
+and parts of the protocol like framing are unnecessary given that Tardigrade channels deal
+with whole messages rather than bytes.)
 
 The storage conceptually contains a relational model for workflows and communication channels
 that should be reasonably easy to map to relational DBs (e.g., Postgres).
@@ -83,6 +104,7 @@ as JSON in a custom WASM section, similar to how it is done in `wasm-bindgen`.
 [`Slab`]: https://docs.rs/slab/latest/slab/struct.Slab.html
 [Canonical ABI]: https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md
 [`wit-bindgen`]: https://github.com/bytecodealliance/wit-bindgen
+[RSocket]: https://rsocket.io/
 
 ### Error handling
 
@@ -136,6 +158,8 @@ is also flexible enough to allow workflows with the interface not known at compi
   that are used by multiple crates, in particular, the macro crate.
 - The [`tardigrade-rt`](crates/rt) crate provides an embeddable runtime
   for workflow modules.
+- The [`tardigrade-worker`](crates/worker) crate provides API definitions
+  and implementation framework for workers.
 - The [`tardigrade-grpc`](crates/grpc) crate provides a gRPC service wrapper
   for the runtime. (Actually, there are multiple services split by the domain;
   e.g., functionality related to channels is extracted into a separate service.)

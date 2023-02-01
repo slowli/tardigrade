@@ -158,7 +158,8 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 
 /// [`Request`] sender based on a pair of channels: an outbound channel to send requests,
 /// and the corresponding inbound channel to listen to responses.
-/// Can be used to call to external task executors.
+/// Can be used to call a worker; for this, the outbound channel must specify the `worker`
+/// name.
 ///
 /// # Examples
 ///

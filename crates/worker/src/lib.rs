@@ -5,12 +5,21 @@
 //! the [worker name](WorkerInterface::REGISTERED_NAME) in the relevant [sender specification].
 //! A single worker can serve multiple workflows; i.e., it can be thought of as a server
 //! in the client-server model, with workflows acting as clients. So far, workers
-//! only implement only the request-response communication pattern. Similar to modern RPC
+//! only implement the request-response communication pattern. Similar to modern RPC
 //! protocols (e.g., gRPC), communication is non-blocking; multiple requests may be simultaneously
 //! in flight. Concurrency restrictions, if desired, can be enforced on the workflow side
 //! (see `channels::Requests`) and/or on the handler level. As with other Tardigrade components,
 //! passing messages via channels leads to lax worker availability requirements; a worker
 //! does not need to be highly available or work without failures.
+//!
+//! # Implementation details
+//!
+//! Internally, a [`Worker`] is implemented storing a [`WorkerRecord`] in the same database
+//! as other runtime-related entities (e.g., workflows). Worker records maintain the mapping
+//! between the (unique) worker name and the inbound channel for requests sent to the worker,
+//! which is used by the runtime to resolve channels in the workflow interface specification.
+//! Additionally, a worker record contains the cursor position for the inbound channel,
+//! similar to message consumers in Kafka.
 //!
 //! Workers poll new requests using a connection to the Tardigrade runtime, either
 //! an in-process one, or a remote one via the gRPC service wrapper. This variability
@@ -18,6 +27,87 @@
 //! In-process connections enable "exactly once" semantics for request handling; otherwise,
 //! handling has "at least once" semantics (a request may be handled repeatedly if the worker
 //! crashes during handling).
+//!
+//! # Examples
+//!
+//! ## Sequential handler
+//!
+//! In this simplest implementation, the worker processes requests sequentially. This allows
+//! "exactly once" processing, but can be restricting in terms of throughput.
+//!
+//! ```
+//! # use async_trait::async_trait;
+//! # use tardigrade_shared::Json;
+//! # use tardigrade_worker::{HandleRequest, Request, WorkerInterface, WorkerStoragePool};
+//! struct SequentialHandler {
+//!     // fields snipped
+//! }
+//!
+//! impl WorkerInterface for SequentialHandler {
+//!     type Request = String;
+//!     type Response = String;
+//!     type Codec = Json;
+//! }
+//!
+//! #[async_trait]
+//! impl<P: WorkerStoragePool> HandleRequest<P> for SequentialHandler {
+//!     async fn handle_request(
+//!         &mut self,
+//!         request: Request<Self>,
+//!         connection: &mut P::Connection<'_>,
+//!     ) {
+//!         let (request, response_sx) = request.into_parts();
+//!         let response = request.repeat(2);
+//!         response_sx.send(response, connection).await.ok();
+//!     }
+//! }
+//! ```
+//!
+//! ## Concurrent handler
+//!
+//! In this implementation, several requests can be handled simultaneously. As a downside,
+//! sending response is not atomic with updating the worker cursor position (i.e.,
+//! only "at least once" request processing is guaranteed).
+//!
+//! ```
+//! # use async_trait::async_trait;
+//! # use tardigrade_shared::Json;
+//! # use tardigrade_worker::{
+//! #     HandleRequest, Request, WorkerInterface, WorkerStorageConnection, WorkerStoragePool,
+//! # };
+//! struct ConcurrentHandler<P> {
+//!     connection_pool: Option<P>,
+//!     // other fields snipped
+//! }
+//!
+//! impl<P: WorkerStoragePool + Clone> WorkerInterface for ConcurrentHandler<P> {
+//!     type Request = String;
+//!     type Response = String;
+//!     type Codec = Json;
+//! }
+//!
+//! #[async_trait]
+//! impl<P: WorkerStoragePool + Clone> HandleRequest<P> for ConcurrentHandler<P> {
+//!     async fn initialize(&mut self, connection_pool: &P) {
+//!         self.connection_pool = Some(connection_pool.clone());
+//!     }
+//!
+//!     async fn handle_request(
+//!         &mut self,
+//!         request: Request<Self>,
+//!         _connection: &mut P::Connection<'_>,
+//!     ) {
+//!         let (request, response_sx) = request.into_parts();
+//!         let connection_pool = self.connection_pool.clone().unwrap();
+//!         tokio::task::spawn(async move {
+//!             let response = request.repeat(2);
+//!             let mut connection = connection_pool.connect().await;
+//!             response_sx.send(response, &mut connection).await.ok();
+//!             connection.release().await;
+//!         });
+//!     }
+//! }
+//! ```
 //!
 //! [sender specification]: tardigrade_shared::interface::SenderSpec
 
@@ -58,7 +148,8 @@ pub trait WorkerInterface: Send {
 /// Handler of requests of a certain type.
 #[async_trait]
 pub trait HandleRequest<P: WorkerStoragePool>: WorkerInterface {
-    /// Initializes this handler.
+    /// Initializes this handler. This method will be called and awaited before any other methods
+    /// are called for the handler instance.
     #[allow(unused)]
     async fn initialize(&mut self, connection_pool: &P) {
         // Do nothing
@@ -214,7 +305,22 @@ impl<T: WorkerInterface + ?Sized> ResponseSender<T> {
     }
 }
 
-/// [Worker handler](HandleRequest) based on a function.
+/// [Worker handler](HandleRequest) based on a function. Mostly useful for quick prototyping
+/// and testing.
+///
+/// # Examples
+///
+/// ```
+/// # use tardigrade_worker::{FnHandler, WorkerInterface};
+/// fn uses_handler(handler: impl WorkerInterface) {
+///     // snipped
+/// }
+///
+/// let handler = FnHandler::json(|req: String| async move {
+///     req.repeat(2)
+/// });
+/// uses_handler(handler);
+/// ```
 #[derive(Debug)]
 pub struct FnHandler<F, Req, C = Json> {
     function: F,
@@ -258,7 +364,7 @@ where
     Fut: Future + Send,
     Fut::Output: Send,
     C: Codec<shared::Request<Req>> + Codec<shared::Response<Fut::Output>>,
-    P: WorkerStoragePool + 'static,
+    P: WorkerStoragePool,
 {
     async fn handle_request(&mut self, request: Request<Self>, connection: &mut P::Connection<'_>) {
         let (data, sender) = request.into_parts();
