@@ -28,12 +28,12 @@ use std::path::PathBuf;
 use std::{error, fmt, future::Future, io, net::SocketAddr, str::FromStr, sync::Arc};
 
 use tardigrade_grpc::{
-    ChannelsServiceServer, ManagerService, RuntimeServiceServer, TestServiceServer, WithClockType,
-    SERVICE_DESCRIPTOR,
+    ChannelsServiceServer, RuntimeServiceServer, RuntimeWrapper, StorageWrapper, TestServiceServer,
+    WithClockType, SERVICE_DESCRIPTOR,
 };
 use tardigrade_rt::{
     engine::Wasmtime,
-    manager::WorkflowManager,
+    runtime::Runtime,
     storage::{LocalStorage, Streaming},
     test::MockScheduler,
     Schedule, TokioScheduler,
@@ -66,14 +66,15 @@ impl TracingOptions {
 }
 
 type LocalStreamingStorage = Streaming<Arc<LocalStorage>>;
-type LocalService<C> = ManagerService<WorkflowManager<Wasmtime, C, LocalStreamingStorage>>;
-type LocalTestService = TestServiceServer<LocalService<MockScheduler>>;
+type LocalStorageWrapper = StorageWrapper<LocalStreamingStorage>;
+type LocalRuntimeWrapper<C> = RuntimeWrapper<Runtime<Wasmtime, C, LocalStreamingStorage>>;
+type LocalTestService = TestServiceServer<LocalRuntimeWrapper<MockScheduler>>;
 
 #[derive(Debug)]
 struct Services<C: Schedule> {
-    runtime_service: RuntimeServiceServer<LocalService<C>>,
+    runtime_service: RuntimeServiceServer<LocalRuntimeWrapper<C>>,
     test_service: Option<LocalTestService>,
-    channels_service: ChannelsServiceServer<LocalService<C>>,
+    channels_service: ChannelsServiceServer<LocalStorageWrapper>,
 }
 
 impl<C: Schedule> Services<C> {
@@ -230,24 +231,24 @@ impl Cli {
     fn create_services<C: WithClockType>(
         &self,
         clock: C,
-        map_service: impl FnOnce(LocalService<C>) -> Option<LocalService<MockScheduler>>,
+        map_service: impl FnOnce(LocalRuntimeWrapper<C>) -> Option<LocalRuntimeWrapper<MockScheduler>>,
     ) -> Services<C> {
         let storage = Arc::new(LocalStorage::default());
         let (storage, routing_task) = Streaming::new(storage);
         task::spawn(routing_task);
-        let manager = WorkflowManager::builder(Wasmtime::default(), storage)
+        let manager = Runtime::builder(Wasmtime::default(), storage)
             .with_clock(clock)
             .build();
 
         let mut service = if self.no_driver {
-            ManagerService::from(manager)
+            RuntimeWrapper::from(manager)
         } else {
-            ManagerService::new(manager)
+            RuntimeWrapper::new(manager)
         };
         service.set_clock_type();
 
         let runtime_service = RuntimeServiceServer::new(service.clone());
-        let channels_service = ChannelsServiceServer::new(service.clone());
+        let channels_service = ChannelsServiceServer::new(service.storage_wrapper());
         let test_service = map_service(service).map(TestServiceServer::new);
         Services {
             runtime_service,

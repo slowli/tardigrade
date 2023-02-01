@@ -33,8 +33,8 @@
 //!
 //! // Create services based on the runtime
 //! let service = RuntimeWrapper::new(runtime);
-//! let runtime_service = RuntimeServiceServer::new(service.clone());
-//! let channels_service = ChannelsServiceServer::new(service);
+//! let channels_service = ChannelsServiceServer::new(service.storage_wrapper());
+//! let runtime_service = RuntimeServiceServer::new(service);
 //!
 //! // Create gRPC server with the services
 //! let addr: SocketAddr = "[::]:9000".parse()?;
