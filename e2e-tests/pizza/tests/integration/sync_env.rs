@@ -16,11 +16,11 @@ use tardigrade_rt::{
         PersistedWorkflowData, WasmtimeDefinition, WasmtimeInstance, WasmtimeModule, WorkflowEngine,
     },
     handle::MessageReceiver,
-    manager::WorkflowManager,
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, ExecutionError, Receipt,
         ResourceEvent, ResourceEventKind, ResourceId, WakeUpCause,
     },
+    runtime::Runtime,
     storage::{LocalStorageSnapshot, Storage},
     test::MockScheduler,
 };
@@ -357,7 +357,7 @@ async fn persisting_workflow() -> TestResult {
     let snapshot: LocalStorageSnapshot<'_> = serde_json::from_str(&persisted_json)?;
     storage = snapshot.into();
 
-    let manager = WorkflowManager::builder(SingleModuleEngine, storage)
+    let manager = Runtime::builder(SingleModuleEngine, storage)
         .with_clock(clock.clone())
         .build();
 

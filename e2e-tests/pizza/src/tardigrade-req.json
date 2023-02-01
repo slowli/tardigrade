@@ -13,7 +13,8 @@
     },
     "baking/requests": {
       "sender":{
-        "description": "Tasks to bake pizzas"
+        "description": "Requests to bake pizzas",
+        "worker": "tardigrade.test.Baking"
       }
     },
     "baking/responses": {

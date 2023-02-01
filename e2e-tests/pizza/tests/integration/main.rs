@@ -18,7 +18,7 @@ use tardigrade::{
 use tardigrade_rt::{
     engine::{Wasmtime, WasmtimeModule, WorkflowEngine},
     handle::{HostHandles, WorkflowHandle},
-    manager::WorkflowManager,
+    runtime::Runtime,
     storage::{CommitStream, LocalStorage, Storage, Streaming},
     test::{ModuleCompiler, WasmOpt},
     Clock,
@@ -31,7 +31,7 @@ mod sync_env;
 mod tasks;
 
 type TestResult<T = ()> = Result<T, Box<dyn error::Error>>;
-type LocalManager<C, S = LocalStorage> = WorkflowManager<Wasmtime, C, S>;
+type LocalManager<C, S = LocalStorage> = Runtime<Wasmtime, C, S>;
 type StreamingStorage = Streaming<Arc<LocalStorage>>;
 type StreamingManager<C> = LocalManager<C, StreamingStorage>;
 
@@ -57,7 +57,7 @@ async fn do_create_manager<C: Clock, S: Storage>(
     storage: S,
 ) -> TestResult<LocalManager<C, S>> {
     let module = create_module().await;
-    let manager = WorkflowManager::builder(Wasmtime::default(), storage)
+    let manager = Runtime::builder(Wasmtime::default(), storage)
         .with_clock(clock)
         .build();
     manager.insert_module("test", module).await;

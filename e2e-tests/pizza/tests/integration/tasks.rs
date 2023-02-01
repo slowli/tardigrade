@@ -14,10 +14,10 @@ use std::{
 use tardigrade::{Json, TaskId};
 use tardigrade_rt::{
     handle::MessageSender,
-    manager::{DriveConfig, Termination},
     receipt::{
         Event, ExecutedFunction, Execution, Receipt, ResourceEvent, ResourceEventKind, ResourceId,
     },
+    runtime::{DriveConfig, Termination},
     test::MockScheduler,
 };
 
