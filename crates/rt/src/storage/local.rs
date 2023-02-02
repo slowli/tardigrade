@@ -426,13 +426,13 @@ impl WriteChannels for LocalTransaction<'_> {
 
     async fn push_messages(&mut self, id: ChannelId, messages: Vec<Vec<u8>>) {
         let channel = self.inner_mut().channels.get_mut(&id).unwrap();
-        debug_assert!(!channel.record.is_closed);
-
-        let len = messages.len();
-        channel
-            .messages
-            .extend(messages.into_iter().map(Message::from));
-        channel.record.received_messages += len;
+        if !channel.record.is_closed {
+            let len = messages.len();
+            channel
+                .messages
+                .extend(messages.into_iter().map(Message::from));
+            channel.record.received_messages += len;
+        }
     }
 
     async fn truncate_channel(&mut self, id: ChannelId, min_index: usize) {

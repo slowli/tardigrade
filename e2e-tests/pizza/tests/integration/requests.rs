@@ -10,7 +10,14 @@ use futures::{
 };
 use test_casing::{test_casing, Product};
 
-use std::{cmp, convert::identity, time::Duration};
+use std::{
+    cmp,
+    convert::identity,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+};
 
 use tardigrade::Json;
 use tardigrade_rt::{
@@ -102,9 +109,10 @@ async fn test_external_tasks(
     let storage = manager.storage().as_ref().clone();
     let (executor_events_sx, executor_events_rx) = mpsc::unbounded();
     let baking = ConcurrentBaking::new(executor_events_sx, task_concurrency);
-    let worker = Worker::new(baking, InProcessConnection(storage));
+    let mut worker = Worker::new(baking, InProcessConnection(storage));
+    let worker_ready = worker.wait_until_ready();
     let worker_task = task::spawn(worker.listen("tardigrade.test.Baking"));
-    task::sleep(Duration::from_millis(25)).await; // wait for the worker to initialize
+    worker_ready.await.unwrap();
 
     let args = Args { oven_count };
     let (_, handle) =
@@ -156,6 +164,8 @@ async fn concurrent_external_tasks(
 
 struct RestrictedBaking<P> {
     tasks_sx: mpsc::UnboundedSender<BoxFuture<'static, ()>>,
+    task_count: Arc<AtomicUsize>,
+    successful_task_count: usize,
     connection_pool: Option<P>,
 }
 
@@ -163,13 +173,15 @@ impl<P> RestrictedBaking<P> {
     fn new(successful_task_count: usize) -> Self {
         let (tasks_sx, tasks_rx) = mpsc::unbounded();
         let executor_task = tasks_rx
-            .buffer_unordered(successful_task_count)
-            .take(successful_task_count)
+            .buffer_unordered(successful_task_count + 1)
+            .take(successful_task_count + 1)
             .for_each(future::ready);
         task::spawn(executor_task);
 
         Self {
             tasks_sx,
+            task_count: Arc::new(AtomicUsize::new(0)),
+            successful_task_count,
             connection_pool: None,
         }
     }
@@ -187,32 +199,32 @@ impl<P: WorkerStoragePool + Clone + 'static> HandleRequest<P> for RestrictedBaki
         self.connection_pool = Some(connection_pool.clone());
     }
 
-    async fn handle_request(&mut self, request: Request<Self>, connection: &mut P::Connection<'_>) {
+    async fn handle_request(&mut self, request: Request<Self>, _: &mut P::Connection<'_>) {
+        // Do not create a task if we know it cannot be sent for execution.
+        if self.tasks_sx.is_closed() {
+            return;
+        }
+
         let response_channel_id = request.response_channel_id();
         let (order, response_sx) = request.into_parts();
         let connection_pool = self.connection_pool.clone().unwrap();
-
-        // Do not create a task if we know it cannot be sent for execution.
-        if self.tasks_sx.is_closed() {
-            connection
-                .close_response_channel(response_channel_id)
-                .await
-                .ok();
-            return;
-        }
+        let task_count = Arc::clone(&self.task_count);
+        let successful_task_count = self.successful_task_count;
 
         let task = async move {
             task::sleep(order.kind.baking_time()).await;
             let mut connection = connection_pool.connect().await;
-            response_sx.send((), &mut connection).await.ok();
+            if task_count.fetch_add(1, Ordering::SeqCst) >= successful_task_count {
+                connection
+                    .close_response_channel(response_channel_id)
+                    .await
+                    .ok();
+            } else {
+                response_sx.send((), &mut connection).await.ok();
+            }
             connection.release().await;
         };
-        if self.tasks_sx.unbounded_send(task.boxed()).is_err() {
-            connection
-                .close_response_channel(response_channel_id)
-                .await
-                .ok();
-        }
+        self.tasks_sx.unbounded_send(task.boxed()).ok();
     }
 }
 
@@ -225,9 +237,10 @@ async fn closing_task_responses_on_host(
     let (manager, mut commits_rx) = create_streaming_manager(AsyncIoScheduler).await?;
     let storage = manager.storage().as_ref().clone();
     let baking = RestrictedBaking::new(successful_task_count);
-    let worker = Worker::new(baking, InProcessConnection(storage));
+    let mut worker = Worker::new(baking, InProcessConnection(storage));
+    let worker_ready = worker.wait_until_ready();
     task::spawn(worker.listen("tardigrade.test.Baking"));
-    task::sleep(Duration::from_millis(25)).await; // wait for the worker to initialize
+    worker_ready.await.unwrap();
 
     let args = Args { oven_count: 2 };
     let (_, handle) =

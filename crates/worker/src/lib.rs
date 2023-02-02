@@ -123,7 +123,10 @@
 )]
 
 use async_trait::async_trait;
-use futures::{Future, TryStreamExt};
+use futures::{
+    channel::oneshot::{self, Canceled},
+    Future, TryStreamExt,
+};
 
 use std::marker::PhantomData;
 
@@ -377,6 +380,7 @@ where
 #[derive(Debug)]
 pub struct Worker<H, C> {
     id: u64,
+    ready_sx: Option<oneshot::Sender<()>>,
     handler: H,
     connection_pool: C,
 }
@@ -390,9 +394,26 @@ where
     pub fn new(handler: H, connection: P) -> Self {
         Self {
             id: 0,
+            ready_sx: None,
             handler,
             connection_pool: connection,
         }
+    }
+
+    /// Returns a future allowing to monitor the readiness state of this worker. The future
+    /// will be resolved once the worker handler is [initialized](HandleRequest::initialize()).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`Canceled`] error in any of the following cases:
+    ///
+    /// - An error occurs before the handler initialization
+    /// - If `wait_until_ready()` is called again
+    #[allow(clippy::similar_names)]
+    pub fn wait_until_ready(&mut self) -> impl Future<Output = Result<(), Canceled>> {
+        let (ready_sx, ready_rx) = oneshot::channel();
+        self.ready_sx = Some(ready_sx);
+        ready_rx
     }
 
     /// Drives this worker to completion.
@@ -410,6 +431,10 @@ where
         tracing::info!(self.name = name, ?worker, "obtained worker record");
         self.id = worker.id;
         self.handler.initialize(&self.connection_pool).await;
+
+        if let Some(ready_sx) = self.ready_sx.take() {
+            ready_sx.send(()).ok();
+        }
 
         let mut messages = self
             .connection_pool

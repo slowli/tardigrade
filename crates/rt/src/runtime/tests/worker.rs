@@ -208,9 +208,10 @@ async fn executing_worker() {
     let (poll_fns, mut poll_fn_sx) = MockAnswers::channel();
     let runtime = create_test_runtime_with_worker(poll_fns, ()).await;
     let storage = runtime.storage().as_ref().clone();
-    let worker = Worker::new(Handler, InProcessConnection(storage));
+    let mut worker = Worker::new(Handler, InProcessConnection(storage));
+    let worker_ready = worker.wait_until_ready();
     task::spawn(worker.listen("tardigrade.test.v0.Baking"));
-    task::sleep(Duration::from_millis(20)).await; // wait for the handler to be registered
+    worker_ready.await.unwrap();
 
     test_executing_worker(&runtime, &mut poll_fn_sx).await;
 }
@@ -223,9 +224,10 @@ async fn restarting_worker() {
 
     for _ in 0..2 {
         let storage = storage.as_ref().clone();
-        let worker = Worker::new(Handler, InProcessConnection(storage));
+        let mut worker = Worker::new(Handler, InProcessConnection(storage));
+        let worker_ready = worker.wait_until_ready();
         let worker_handle = task::spawn(worker.listen("tardigrade.test.v0.Baking"));
-        task::sleep(Duration::from_millis(20)).await;
+        worker_ready.await.unwrap();
 
         test_executing_worker(&runtime, &mut poll_fn_sx).await;
         worker_handle.cancel().await;
@@ -275,9 +277,10 @@ async fn executing_concurrent_worker() {
     let runtime = create_test_runtime_with_worker(poll_fns, ()).await;
     let storage = runtime.storage().as_ref().clone();
     let handler = ConcurrentHandler::new();
-    let worker = Worker::new(handler, InProcessConnection(storage));
+    let mut worker = Worker::new(handler, InProcessConnection(storage));
+    let worker_ready = worker.wait_until_ready();
     task::spawn(worker.listen("tardigrade.test.v0.Baking"));
-    task::sleep(Duration::from_millis(20)).await; // wait for the handler to be registered
+    worker_ready.await.unwrap();
 
     for _ in 0..3 {
         test_executing_worker(&runtime, &mut poll_fn_sx).await;
@@ -324,9 +327,10 @@ async fn worker_with_response_channel_closure() {
     let runtime = create_test_runtime_with_worker(poll_fns, ()).await;
     let storage = runtime.storage().as_ref().clone();
     let handler = ClosingHandler::new(1);
-    let worker = Worker::new(handler, InProcessConnection(storage));
+    let mut worker = Worker::new(handler, InProcessConnection(storage));
+    let worker_ready = worker.wait_until_ready();
     task::spawn(worker.listen("tardigrade.test.v0.Baking"));
-    task::sleep(Duration::from_millis(20)).await; // wait for the handler to be registered
+    worker_ready.await.unwrap();
 
     test_closing_worker(&runtime, &mut poll_fn_sx).await;
 }
