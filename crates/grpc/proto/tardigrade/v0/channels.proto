@@ -7,6 +7,7 @@ package tardigrade.v0;
 import "google/protobuf/empty.proto";
 import "tardigrade/v0/types.proto";
 
+// Service allowing to access and manipulate Tardigrade channels.
 service ChannelsService {
   // Creates a new channel.
   rpc CreateChannel(CreateChannelRequest) returns (Channel) {}

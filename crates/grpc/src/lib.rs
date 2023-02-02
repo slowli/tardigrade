@@ -9,6 +9,26 @@
 //! [`tonic`]: https://docs.rs/tonic/
 //! [the CLI app]: https://crates.io/crates/tardigrade-cli
 //!
+//! # Crate features
+//!
+//! At least one of `server` and `client` features should be enabled, since the crate
+//! is useless otherwise.
+//!
+//! ## `server`
+//!
+//! *(On by default)*
+//!
+//! Exposes server functionality for Tardigrade [`Runtime`] and [`Storage`] abstractions.
+//!
+//! ## `client`
+//!
+//! *(Off by default)*
+//!
+//! Exposes client functionality to connect to the runtime.
+//!
+//! [`Runtime`]: tardigrade_rt::runtime::Runtime
+//! [`Storage`]: tardigrade_rt::storage::Storage
+//!
 //! # Examples
 //!
 //! ```
@@ -78,8 +98,10 @@ mod proto {
 }
 
 #[cfg(feature = "client")]
+#[cfg_attr(docsrs, doc(cfg(feature = "client")))]
 pub use crate::client::Client;
 #[cfg(feature = "server")]
+#[cfg_attr(docsrs, doc(cfg(feature = "server")))]
 pub use crate::{
     proto::{
         channels_service_server::ChannelsServiceServer,
@@ -90,4 +112,5 @@ pub use crate::{
 
 /// Serialized file descriptor set for messages and services declared in this crate.
 #[cfg(feature = "server")]
+#[cfg_attr(docsrs, doc(cfg(feature = "server")))]
 pub const SERVICE_DESCRIPTOR: &[u8] = tonic::include_file_descriptor_set!("tardigrade_descriptor");

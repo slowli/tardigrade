@@ -18,6 +18,16 @@ use crate::proto::{
 use tardigrade_worker::{MessageStream, WorkerRecord, WorkerStorageConnection, WorkerStoragePool};
 
 /// gRPC client for the [Tardigrade runtime service](crate::RuntimeWrapper).
+///
+/// The client does not expose all gRPC service methods directly; rather, it implements
+/// the [`WorkerStoragePool`] and [`WorkerStorageConnection`] traits to enable
+/// *remote* workers connecting to the runtime server via gRPC (as opposed to the in-process
+/// workers enabled by the runtime crate).
+///
+/// A client can be created either from the given URI using [`Self::new()`], or [`From`]
+/// an initialized [`Channel`]. The latter approach allows for more customization
+/// (e.g., multiplexing the channel with other clients, or using non-TCP/IP transport such as
+/// Unix domain sockets).
 #[derive(Debug, Clone)]
 pub struct Client {
     channels: ChannelsServiceClient<Channel>,
