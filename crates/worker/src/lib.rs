@@ -2,7 +2,7 @@
 //!
 //! A worker represents a piece of functionality external to Tardigrade workflows.
 //! A workflow can connect to the worker by specifying
-//! the [worker name](WorkerInterface::REGISTERED_NAME) in the relevant [sender specification].
+//! the worker name in the relevant [sender specification].
 //! A single worker can serve multiple workflows; i.e., it can be thought of as a server
 //! in the client-server model, with workflows acting as clients. So far, workers
 //! only implement the request-response communication pattern. Similar to modern RPC
@@ -160,10 +160,10 @@ pub trait HandleRequest<P: WorkerStoragePool>: WorkerInterface {
 
     /// Handles a request.
     ///
-    /// # Return value
-    ///
-    /// Returns `None` if the request will be handled asynchronously (e.g., in a separate
-    /// task spawned using `task::spawn()` from `tokio` or `async-std`).
+    /// A request can be handled either synchronously (by calling [`Request::into_parts()`]
+    /// and then the relevant [`ResponseSender`] method with `connection`), or asynchronously
+    /// (by moving the [`ResponseSender`] into a task and creating a dedicated connection for
+    /// sending the response).
     async fn handle_request(&mut self, request: Request<Self>, connection: &mut P::Connection<'_>);
 
     /// Handles request cancellation.

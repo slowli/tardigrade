@@ -124,7 +124,7 @@ impl fmt::Display for TaskError {
             if self.contexts.len() == 1 {
                 write!(formatter, "{context} (+1 cause)")
             } else {
-                write!(formatter, "{context} (+{} cause)", self.contexts.len())
+                write!(formatter, "{context} (+{} causes)", self.contexts.len())
             }
         } else {
             write!(formatter, "{}: {}", self.location, self.cause)

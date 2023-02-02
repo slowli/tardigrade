@@ -230,6 +230,7 @@ jobs:
           cargo clean --doc && \
           cargo rustdoc -p tardigrade-shared --all-features -- --cfg docsrs && \
           cargo rustdoc -p tardigrade --all-features -- --cfg docsrs && \
+          cargo rustdoc -p tardigrade-worker --all-features -- --cfg docsrs && \
           cargo rustdoc -p tardigrade-rt --all-features -- --cfg docsrs && \
           cargo rustdoc -p tardigrade-grpc --all-features -- --cfg docsrs
 
