@@ -222,10 +222,7 @@ impl<T, C: Codec<T>, S: Storage> MessageReceiver<T, C, S> {
     /// # Errors
     ///
     /// Returns an error if the message is not available.
-    pub async fn receive_message(
-        &self,
-        index: usize,
-    ) -> Result<ReceivedMessage<T, C>, MessageError> {
+    pub async fn receive_message(&self, index: u64) -> Result<ReceivedMessage<T, C>, MessageError> {
         let transaction = self.storage.readonly_transaction().await;
         let raw_message = transaction.channel_message(self.channel_id, index).await?;
 
@@ -244,7 +241,7 @@ impl<T, C: Codec<T>, S: Storage> MessageReceiver<T, C, S> {
     /// range.
     pub fn receive_messages(
         &self,
-        indices: impl ops::RangeBounds<usize>,
+        indices: impl ops::RangeBounds<u64>,
     ) -> impl Stream<Item = ReceivedMessage<T, C>> + '_ {
         let indices = unify_index_range(indices);
         let messages_future = async {
@@ -271,7 +268,7 @@ impl<T, C: Codec<T>, S: Storage> MessageReceiver<T, C, S> {
 
     /// Truncates this channel so that its minimum message index is no less than `min_index`.
     /// If [`Self::can_manipulate()`] returns `false`, this is a no-op.
-    pub async fn truncate(&self, min_index: usize) {
+    pub async fn truncate(&self, min_index: u64) {
         if self.can_manipulate() {
             let mut transaction = self.storage.transaction().await;
             transaction
@@ -290,14 +287,14 @@ impl<T, C: Codec<T>, S: Storage> MessageReceiver<T, C, S> {
     }
 }
 
-fn unify_index_range(indices: impl ops::RangeBounds<usize>) -> ops::RangeInclusive<usize> {
+fn unify_index_range(indices: impl ops::RangeBounds<u64>) -> ops::RangeInclusive<u64> {
     let start_idx = match indices.start_bound() {
         ops::Bound::Unbounded => 0,
         ops::Bound::Included(i) => *i,
         ops::Bound::Excluded(i) => *i + 1,
     };
     let end_idx = match indices.end_bound() {
-        ops::Bound::Unbounded => usize::MAX,
+        ops::Bound::Unbounded => u64::MAX,
         ops::Bound::Included(i) => *i,
         ops::Bound::Excluded(i) => i.saturating_sub(1),
     };
@@ -318,7 +315,7 @@ impl<T, C: Codec<T>, S: Storage + Clone> MessageReceiver<T, C, &S> {
 
 impl<T: 'static, C: Codec<T>, S: StreamMessages> MessageReceiver<T, C, S> {
     /// Streams messages from this channel starting from the specified index.
-    pub fn stream_messages(&self, indices: ops::RangeFrom<usize>) -> MessageStream<T, C> {
+    pub fn stream_messages(&self, indices: ops::RangeFrom<u64>) -> MessageStream<T, C> {
         // TODO: what is the reasonable value for channel capacity? Should it be configurable?
         let (sx, rx) = mpsc::channel(16);
         let stream_registration = self
@@ -365,13 +362,13 @@ where
 /// Message received from a workflow channel.
 #[derive(Debug)]
 pub struct ReceivedMessage<T, C> {
-    index: usize,
+    index: u64,
     raw_message: Vec<u8>,
     _ty: PhantomData<(C, fn() -> T)>,
 }
 
 impl<T, C: Codec<T>> ReceivedMessage<T, C> {
-    pub(super) fn new(index: usize, raw_message: Vec<u8>) -> Self {
+    pub(super) fn new(index: u64, raw_message: Vec<u8>) -> Self {
         Self {
             index,
             raw_message,
@@ -380,7 +377,7 @@ impl<T, C: Codec<T>> ReceivedMessage<T, C> {
     }
 
     /// Returns the zero-based message index.
-    pub fn index(&self) -> usize {
+    pub fn index(&self) -> u64 {
         self.index
     }
 

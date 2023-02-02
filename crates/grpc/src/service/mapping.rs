@@ -132,7 +132,7 @@ impl Channel {
             sender_workflow_ids: record.sender_workflow_ids.into_iter().collect(),
             has_external_sender: record.has_external_sender,
             is_closed: record.is_closed,
-            received_messages: record.received_messages as u64,
+            received_messages: record.received_messages,
         }
     }
 }
@@ -146,7 +146,7 @@ impl Message {
         Ok(Self {
             reference: Some(MessageRef {
                 channel_id,
-                index: message.index() as u64,
+                index: message.index(),
             }),
             payload: Some(codec.decode(message.into_bytes())?),
         })
@@ -175,7 +175,7 @@ impl Workflow {
             parent_id: record.parent_id,
             module_id: record.module_id,
             name_in_module: record.name_in_module,
-            execution_count: record.execution_count as u64,
+            execution_count: record.execution_count,
             state: Some(proto::workflow::State::from_record(record.state)),
         }
     }
@@ -214,7 +214,7 @@ impl proto::ErroredWorkflowState {
             .into_iter()
             .map(|message_ref| MessageRef {
                 channel_id: message_ref.channel_id,
-                index: message_ref.index as u64,
+                index: message_ref.index,
             })
             .collect();
 
@@ -339,7 +339,7 @@ impl persisted_workflow::Receiver {
     fn from_data(state: &ReceiverState) -> Self {
         Self {
             is_closed: state.is_closed(),
-            received_message_count: state.received_message_count() as u64,
+            received_message_count: state.received_message_count(),
             waits_for_message: state.waits_for_message(),
         }
     }
@@ -443,7 +443,7 @@ impl proto::Worker {
             id: data.id,
             name: data.name,
             inbound_channel_id: data.inbound_channel_id,
-            cursor: data.cursor as u64,
+            cursor: data.cursor,
         }
     }
 }

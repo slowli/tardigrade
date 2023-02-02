@@ -35,7 +35,7 @@ pub struct MessageEvent {
 #[derive(Debug)]
 pub enum MessageOrEof {
     /// Message payload together with the 0-based message index.
-    Message(usize, Vec<u8>),
+    Message(u64, Vec<u8>),
     /// Channel end marker.
     Eof,
 }
@@ -46,7 +46,7 @@ pub trait StreamMessages: Storage {
     fn stream_messages(
         &self,
         channel_id: ChannelId,
-        start_index: usize,
+        start_index: u64,
         sink: mpsc::Sender<MessageOrEof>,
     ) -> BoxFuture<'static, ()>;
 }
@@ -55,7 +55,7 @@ impl<S: StreamMessages + ?Sized> StreamMessages for &S {
     fn stream_messages(
         &self,
         channel_id: ChannelId,
-        start_index: usize,
+        start_index: u64,
         sink: mpsc::Sender<MessageOrEof>,
     ) -> BoxFuture<'static, ()> {
         (**self).stream_messages(channel_id, start_index, sink)
@@ -114,7 +114,7 @@ impl FusedStream for CommitStream {
 #[derive(Debug)]
 struct MessageStreamRequest {
     channel_id: ChannelId,
-    start_index: usize,
+    start_index: u64,
     message_sx: mpsc::Sender<MessageOrEof>,
 }
 
@@ -214,7 +214,7 @@ impl<S: Storage> StreamMessages for Streaming<S> {
     fn stream_messages(
         &self,
         channel_id: ChannelId,
-        start_index: usize,
+        start_index: u64,
         sink: mpsc::Sender<MessageOrEof>,
     ) -> BoxFuture<'static, ()> {
         let request = MessageStreamRequest {
@@ -239,7 +239,7 @@ pub struct StreamingTransaction<T> {
     message_events_sx: mpsc::Sender<MessageEvent>,
     commits_sx: mpsc::Sender<()>,
     has_active_workflow_updates: bool,
-    new_messages: HashMap<ChannelId, usize>,
+    new_messages: HashMap<ChannelId, u64>,
 }
 
 delegate_read_traits!(StreamingTransaction<T> { inner: T });
@@ -291,13 +291,13 @@ impl<T: StorageTransaction> WriteChannels for StreamingTransaction<T> {
     }
 
     async fn push_messages(&mut self, id: ChannelId, messages: Vec<Vec<u8>>) {
-        let len = messages.len();
+        let len = messages.len() as u64;
         self.inner.push_messages(id, messages).await;
         *self.new_messages.entry(id).or_default() += len;
     }
 
     #[inline]
-    async fn truncate_channel(&mut self, id: ChannelId, min_index: usize) {
+    async fn truncate_channel(&mut self, id: ChannelId, min_index: u64) {
         self.inner.truncate_channel(id, min_index).await;
     }
 }
@@ -412,7 +412,7 @@ impl<T: StorageTransaction> WorkerStorageConnection for StreamingTransaction<T> 
     async fn update_worker_cursor(
         &mut self,
         worker_id: u64,
-        cursor: usize,
+        cursor: u64,
     ) -> Result<(), Self::Error> {
         self.inner.update_worker_cursor(worker_id, cursor).await
     }
@@ -444,7 +444,7 @@ impl<T: StorageTransaction> WorkerStorageConnection for StreamingTransaction<T> 
 struct Subscription {
     message_sx: mpsc::Sender<MessageOrEof>,
     channel_id: ChannelId,
-    cursor: usize,
+    cursor: u64,
     commits_rx: CommitStream,
 }
 

@@ -33,7 +33,7 @@ const DEFINITION_ID: &str = "test::PizzaDelivery";
 #[derive(Debug)]
 struct Drain<T, C, S> {
     receiver: MessageReceiver<T, C, S>,
-    cursor: usize,
+    cursor: u64,
 }
 
 impl<T, C: Codec<T>, S: Storage> Drain<T, C, S> {
@@ -501,7 +501,7 @@ async fn workflow_recovery_after_trap() -> TestResult {
             assert_eq!(err_messages.len(), 1);
             let err_message = err_messages.pop().unwrap();
             let received = err_message.receive().await.unwrap();
-            assert_eq!(received.index(), i);
+            assert_eq!(received.index(), i as u64);
             assert_eq!(received.decode()?, b"invalid");
 
             err_message.drop_for_workflow().await?;

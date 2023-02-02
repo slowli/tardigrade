@@ -57,7 +57,7 @@ impl Client {
             id: worker.id,
             name: worker.name,
             inbound_channel_id: worker.inbound_channel_id,
-            cursor: worker.cursor as usize,
+            cursor: worker.cursor,
         })
     }
 }
@@ -81,16 +81,11 @@ impl WorkerStoragePool for Client {
     }
 
     #[tracing::instrument(level = "debug")]
-    #[allow(clippy::cast_possible_truncation)] // TODO: use `u64` for indexing messages
-    fn stream_messages(
-        &self,
-        channel_id: ChannelId,
-        start_idx: usize,
-    ) -> MessageStream<Self::Error> {
+    fn stream_messages(&self, channel_id: ChannelId, start_idx: u64) -> MessageStream<Self::Error> {
         let mut client = self.channels.clone();
         let request = StreamMessagesRequest {
             channel_id,
-            start_index: start_idx as u64,
+            start_index: start_idx,
             codec: MessageCodec::Unspecified.into(),
             follow: true,
         };
@@ -111,7 +106,7 @@ impl WorkerStoragePool for Client {
                 let payload = payload.ok_or_else(|| {
                     Status::invalid_argument("unexpected payload for returned message")
                 })?;
-                yield (reference.index as usize, payload);
+                yield (reference.index, payload);
             }
         };
         messages.boxed()
@@ -148,11 +143,11 @@ impl WorkerStorageConnection for Client {
     async fn update_worker_cursor(
         &mut self,
         worker_id: u64,
-        cursor: usize,
+        cursor: u64,
     ) -> Result<(), Self::Error> {
         let request = UpdateWorkerRequest {
             worker_id,
-            update_type: Some(UpdateType::Cursor(cursor as u64)),
+            update_type: Some(UpdateType::Cursor(cursor)),
         };
         self.workers.update_worker(request).await?;
         Ok(())

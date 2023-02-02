@@ -175,13 +175,13 @@ impl<'a, S: Storage> StorageRef<'a, S> {
         }
     }
 
-    /// Returns the number of active workflows.
-    pub async fn workflow_count(&self) -> usize {
+    /// Returns the current number of active workflows.
+    pub async fn workflow_count(&self) -> u64 {
         #[allow(clippy::manual_async_fn)] // manual impl is required because of the `Send` bound
         #[inline]
         fn count_workflows<'t, T: 't + ReadonlyStorageTransaction>(
             transaction: T,
-        ) -> impl Future<Output = usize> + Send + 't {
+        ) -> impl Future<Output = u64> + Send + 't {
             async move { transaction.count_active_workflows().await }
         }
 

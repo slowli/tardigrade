@@ -9,7 +9,7 @@ use std::error;
 use tardigrade_shared::ChannelId;
 
 /// Stream of messages together with their indices.
-pub type MessageStream<Err> = BoxStream<'static, Result<(usize, Vec<u8>), Err>>;
+pub type MessageStream<Err> = BoxStream<'static, Result<(u64, Vec<u8>), Err>>;
 
 /// Connection pool for the worker storage.
 #[async_trait]
@@ -25,11 +25,7 @@ pub trait WorkerStoragePool: Send + Sync + 'static {
     async fn connect(&self) -> Self::Connection<'_>;
 
     /// Streams messages from a specific channel starting with the specified index.
-    fn stream_messages(
-        &self,
-        channel_id: ChannelId,
-        start_idx: usize,
-    ) -> MessageStream<Self::Error>;
+    fn stream_messages(&self, channel_id: ChannelId, start_idx: u64) -> MessageStream<Self::Error>;
 }
 
 /// Read-write connection to the worker storage.
@@ -51,7 +47,7 @@ pub trait WorkerStorageConnection: Send {
     async fn update_worker_cursor(
         &mut self,
         worker_id: u64,
-        cursor: usize,
+        cursor: u64,
     ) -> Result<(), Self::Error>;
 
     /// Sends the message over a channel.
@@ -83,5 +79,5 @@ pub struct WorkerRecord {
     /// Index of the inbound channel used by the worker.
     pub inbound_channel_id: ChannelId,
     /// The current cursor position of the worker.
-    pub cursor: usize,
+    pub cursor: u64,
 }

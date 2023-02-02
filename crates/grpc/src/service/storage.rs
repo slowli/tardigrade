@@ -120,8 +120,6 @@ where
             .r#ref
             .ok_or_else(|| Status::invalid_argument("message reference is not specified"))?;
         let channel_id = reference.channel_id;
-        let message_idx = usize::try_from(reference.index)
-            .map_err(|_| Status::invalid_argument("message index is too large"))?;
 
         let storage = StorageRef::from(&self.storage);
         let receiver = storage.receiver(channel_id).await;
@@ -129,7 +127,7 @@ where
             .ok_or_else(|| Status::not_found(format!("channel {channel_id} does not exist")))?;
         let receiver = receiver.into_owned();
 
-        let message = receiver.receive_message(message_idx).await;
+        let message = receiver.receive_message(reference.index).await;
         let message = message.map_err(|err| Status::not_found(err.to_string()))?;
         let message = Message::try_from_data(channel_id, message, codec)?;
         Ok(Response::new(message))
@@ -146,8 +144,7 @@ where
         let codec = MessageCodec::from_i32(request.codec)
             .ok_or_else(|| Status::invalid_argument("invalid message codec specified"))?;
         let channel_id = request.channel_id;
-        let start_index = usize::try_from(request.start_index)
-            .map_err(|_| Status::invalid_argument("message index is too large"))?;
+        let start_index = request.start_index;
 
         let storage = StorageRef::from(&self.storage);
         let receiver = storage.receiver(channel_id).await;
@@ -239,7 +236,7 @@ where
                 let storage = InProcessConnection(self.storage.clone());
                 storage
                     .connect()
-                    .then(|view| update_worker(view, request.worker_id, cursor as usize))
+                    .then(|view| update_worker(view, request.worker_id, cursor))
                     .await;
             }
             _ => return Err(Status::invalid_argument("invalid update type")),
@@ -275,7 +272,7 @@ where
 fn update_worker<'a, V>(
     mut view: V,
     worker_id: u64,
-    cursor: usize,
+    cursor: u64,
 ) -> impl Future<Output = ()> + Send + 'a
 where
     V: 'a + WorkerStorageConnection<Error = Infallible>,

@@ -104,7 +104,7 @@ impl error::Error for WorkflowTickError {}
 #[derive(Debug)]
 struct PendingChannel {
     channel_id: ChannelId,
-    message_idx: usize,
+    message_idx: u64,
     waits_for_message: bool,
 }
 

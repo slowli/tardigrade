@@ -57,7 +57,7 @@ fn flip_bool(&flag: &bool) -> bool {
 pub struct ReceiverState {
     #[serde(default, skip_serializing_if = "flip_bool")]
     pub(super) is_closed: bool,
-    pub(super) received_messages: usize,
+    pub(super) received_messages: u64,
     #[serde(default, skip)]
     pub(super) pending_message: Option<Message>,
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]
@@ -70,7 +70,7 @@ impl ReceiverState {
     }
 
     /// Returns the number of messages received over the channel.
-    pub fn received_message_count(&self) -> usize {
+    pub fn received_message_count(&self) -> u64 {
         self.received_messages
     }
 

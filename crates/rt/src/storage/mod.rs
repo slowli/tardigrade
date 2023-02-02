@@ -220,14 +220,14 @@ pub trait ReadChannels {
     /// # Errors
     ///
     /// Returns an error if the message cannot be retrieved.
-    async fn channel_message(&self, id: ChannelId, index: usize) -> Result<Vec<u8>, MessageError>;
+    async fn channel_message(&self, id: ChannelId, index: u64) -> Result<Vec<u8>, MessageError>;
 
     /// Gets messages with indices in the specified range from the specified channel.
     fn channel_messages(
         &self,
         id: ChannelId,
-        indices: ops::RangeInclusive<usize>,
-    ) -> BoxStream<'_, (usize, Vec<u8>)>;
+        indices: ops::RangeInclusive<u64>,
+    ) -> BoxStream<'_, (u64, Vec<u8>)>;
 }
 
 /// Allows modifying stored information about channels.
@@ -252,14 +252,14 @@ pub trait WriteChannels: ReadChannels {
     async fn push_messages(&mut self, id: ChannelId, messages: Vec<Vec<u8>>);
 
     /// Truncates the channel so that `min_index` is the minimum retained index.
-    async fn truncate_channel(&mut self, id: ChannelId, min_index: usize);
+    async fn truncate_channel(&mut self, id: ChannelId, min_index: u64);
 }
 
 /// Allows reading information about workflows.
 #[async_trait]
 pub trait ReadWorkflows {
     /// Returns the number of active workflows.
-    async fn count_active_workflows(&self) -> usize;
+    async fn count_active_workflows(&self) -> u64;
     /// Retrieves a snapshot of the workflow with the specified ID.
     async fn workflow(&self, id: WorkflowId) -> Option<WorkflowRecord>;
 
@@ -353,11 +353,7 @@ where
         self.0.transaction().await
     }
 
-    fn stream_messages(
-        &self,
-        channel_id: ChannelId,
-        start_idx: usize,
-    ) -> MessageStream<Self::Error> {
+    fn stream_messages(&self, channel_id: ChannelId, start_idx: u64) -> MessageStream<Self::Error> {
         let (sx, rx) = mpsc::channel(16);
         self.0
             .stream_messages(channel_id, start_idx, sx)

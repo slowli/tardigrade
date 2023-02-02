@@ -118,7 +118,7 @@ impl<E: WorkflowEngine> Definitions<'_, E> {
 #[derive(Debug)]
 struct CachedWorkflow<I> {
     inner: Workflow<I>,
-    execution_count: usize,
+    execution_count: u64,
 }
 
 /// In-memory LRU cache for recently executed `Workflow`s.
@@ -146,7 +146,7 @@ impl<I> CachedWorkflows<I> {
         skip(self, workflow),
         fields(self.len = self.inner.len())
     )]
-    fn insert(&mut self, id: WorkflowId, workflow: Workflow<I>, execution_count: usize) {
+    fn insert(&mut self, id: WorkflowId, workflow: Workflow<I>, execution_count: u64) {
         self.inner.push(
             id,
             CachedWorkflow {
@@ -157,7 +157,7 @@ impl<I> CachedWorkflows<I> {
     }
 
     #[tracing::instrument(level = "debug", skip(self), fields(self.len = self.inner.len()))]
-    fn take(&mut self, id: WorkflowId, execution_count: usize) -> Option<Workflow<I>> {
+    fn take(&mut self, id: WorkflowId, execution_count: u64) -> Option<Workflow<I>> {
         let cached = self.inner.pop(&id);
         tracing::debug!(is_cached = cached.is_some(), "accessing workflow cache");
         let cached = cached?;

@@ -451,7 +451,7 @@ where
         err,
         fields(message.len = raw_message.len())
     )]
-    async fn handle_message(&mut self, idx: usize, raw_message: Vec<u8>) -> Result<(), P::Error> {
+    async fn handle_message(&mut self, idx: u64, raw_message: Vec<u8>) -> Result<(), P::Error> {
         let message = <H::Codec>::try_decode_bytes(raw_message);
         let message: shared::Request<H::Request> = match message {
             Ok(message) => message,

@@ -153,7 +153,7 @@ impl<T: StorageTransaction> WriteChannels for TransactionLock<'_, T> {
         self.inner.push_messages(id, messages).await;
     }
 
-    async fn truncate_channel(&mut self, id: ChannelId, min_index: usize) {
+    async fn truncate_channel(&mut self, id: ChannelId, min_index: u64) {
         self.inner.truncate_channel(id, min_index).await;
     }
 }
@@ -231,7 +231,7 @@ impl<T: StorageTransaction> WorkerStorageConnection for TransactionLock<'_, T> {
     async fn update_worker_cursor(
         &mut self,
         worker_id: u64,
-        cursor: usize,
+        cursor: u64,
     ) -> Result<(), Self::Error> {
         self.inner.update_worker_cursor(worker_id, cursor).await
     }
