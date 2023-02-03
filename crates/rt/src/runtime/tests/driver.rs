@@ -14,7 +14,7 @@ use super::*;
 use crate::{
     receipt::{ResourceEventKind, ResourceId},
     storage::Streaming,
-    test::MockScheduler,
+    MockScheduler,
 };
 use tardigrade::{TimerDefinition, TimerId};
 

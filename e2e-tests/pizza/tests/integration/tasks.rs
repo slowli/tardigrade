@@ -18,7 +18,7 @@ use tardigrade_rt::{
         Event, ExecutedFunction, Execution, Receipt, ResourceEvent, ResourceEventKind, ResourceId,
     },
     runtime::{DriveConfig, Termination},
-    test::MockScheduler,
+    MockScheduler,
 };
 
 use crate::{create_streaming_manager, spawn_workflow, StreamingStorage, TestResult};

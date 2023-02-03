@@ -134,7 +134,7 @@ pub mod handle;
 pub mod receipt;
 pub mod runtime;
 pub mod storage;
-#[cfg(any(test, feature = "test"))]
+#[cfg(feature = "test")]
 #[cfg_attr(docsrs, doc(cfg(feature = "test")))]
 pub mod test;
 mod utils;
@@ -145,6 +145,7 @@ pub use crate::backends::AsyncIoScheduler;
 #[cfg(feature = "tokio")]
 pub use crate::backends::TokioScheduler;
 pub use crate::{
+    backends::MockScheduler,
     data::{Channels, ChildWorkflow, ReceiverState, SenderState, TaskState, TimerState},
     runtime::{Clock, Schedule, TimerFuture},
     workflow::PersistedWorkflow,

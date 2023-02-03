@@ -29,11 +29,8 @@ use tardigrade_rt::{
     engine::AsWorkflowData,
     runtime::Runtime,
     storage::{LocalStorage, Streaming},
-    test::{
-        engine::{MockAnswers, MockEngine, MockInstance},
-        MockScheduler,
-    },
-    Schedule, TokioScheduler,
+    test::engine::{MockAnswers, MockEngine, MockInstance},
+    MockScheduler, Schedule, TokioScheduler,
 };
 
 type TestRuntime<C> = Runtime<MockEngine, C, Streaming<Arc<LocalStorage>>>;

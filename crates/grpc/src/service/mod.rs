@@ -37,8 +37,7 @@ use tardigrade_rt::{
         ReadModules, ReadWorkflows, Storage, StorageTransaction, StreamMessages, Streaming,
         TransactionAsStorage,
     },
-    test::MockScheduler,
-    Schedule, TokioScheduler,
+    MockScheduler, Schedule, TokioScheduler,
 };
 
 type TxStorage<'a, S> = TransactionAsStorage<<S as Storage>::Transaction<'a>>;

@@ -22,7 +22,7 @@ use tardigrade_rt::{
     },
     runtime::Runtime,
     storage::{LocalStorageSnapshot, Storage},
-    test::MockScheduler,
+    MockScheduler,
 };
 
 use super::{create_manager, create_module, enable_tracing_assertions, spawn_workflow, TestResult};

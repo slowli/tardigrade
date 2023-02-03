@@ -35,8 +35,7 @@ use tardigrade_rt::{
     engine::Wasmtime,
     runtime::Runtime,
     storage::{LocalStorage, Streaming},
-    test::MockScheduler,
-    Schedule, TokioScheduler,
+    MockScheduler, Schedule, TokioScheduler,
 };
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

@@ -10,8 +10,7 @@ use std::{collections::HashMap, task::Poll};
 use tardigrade_rt::{
     receipt::{Event, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
     runtime::{DriveConfig, Termination},
-    test::MockScheduler,
-    AsyncIoScheduler,
+    AsyncIoScheduler, MockScheduler,
 };
 
 use crate::{

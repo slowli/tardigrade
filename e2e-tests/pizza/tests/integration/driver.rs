@@ -26,8 +26,7 @@ use tardigrade_rt::{
     receipt::{Event, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
     runtime::{DriveConfig, Termination, TickResult},
     storage::CommitStream,
-    test::MockScheduler,
-    AsyncIoScheduler,
+    AsyncIoScheduler, MockScheduler,
 };
 
 use super::{
