@@ -25,7 +25,7 @@ tracing-tunnel = { version = "0.1.0", optional = true, features = ["sender"] }
 tardigrade-shared = { version = "0.1.0", path = "crates/shared" }
 tardigrade-derive = { version = "0.1.0", path = "crates/derive" }
 
-[dependencies.externref]
+[target.'cfg(target_arch = "wasm32")'.dependencies.externref]
 version = "0.1.0"
 git = "https://github.com/slowli/externref.git"
 rev = "2e7ce459f98d0493d7734fe20b1945e41838250e"
