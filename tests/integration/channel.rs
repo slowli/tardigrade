@@ -95,8 +95,7 @@ where
         assert_eq!(output.len(), expected_len);
         assert!(
             output.iter().copied().eq(0..expected_len as u32),
-            "{:?}",
-            output
+            "{output:?}"
         );
     }
 }

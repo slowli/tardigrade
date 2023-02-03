@@ -8,7 +8,7 @@ import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 import "tardigrade/v0/types.proto";
 
-// Test extensions for the Tardigrade runtime wrapper.
+// Test extensions for the Tardigrade runtime.
 service TestService {
   // Sets the current time for the runtime.
   rpc SetTime(google.protobuf.Timestamp) returns (google.protobuf.Empty) {}

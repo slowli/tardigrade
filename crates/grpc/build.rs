@@ -8,11 +8,12 @@ fn main() {
         "proto/tardigrade/v0/runtime.proto",
         "proto/tardigrade/v0/channels.proto",
         "proto/tardigrade/v0/test.proto",
+        "proto/tardigrade/v0/workers.proto",
     ];
 
     tonic_build::configure()
         .file_descriptor_set_path(out_dir.join("tardigrade_descriptor.bin"))
-        .build_client(false)
+        .client_mod_attribute("tardigrade.v0", r#"#[cfg(feature = "client")]"#)
         .compile(protos, &["proto"])
         .unwrap();
 }

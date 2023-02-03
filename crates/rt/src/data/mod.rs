@@ -33,8 +33,8 @@ use self::{
     time::Timers,
 };
 use crate::{
-    manager::Services,
     receipt::{PanicInfo, WakeUpCause},
+    runtime::Services,
     workflow::ChannelIds,
 };
 use tardigrade::{

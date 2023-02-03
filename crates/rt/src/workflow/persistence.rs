@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     data::{PersistError, PersistedWorkflowData, ReceiverState, SenderState},
     engine::{DefineWorkflow, PersistWorkflow},
-    manager::Services,
+    runtime::Services,
     utils::Message,
     workflow::Workflow,
 };

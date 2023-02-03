@@ -1,11 +1,11 @@
-//! Tick logic for `WorkflowManager`.
+//! Tick logic for `Runtime`.
 
 use chrono::{DateTime, Utc};
 use tracing_tunnel::TracingEventReceiver;
 
 use std::{error, fmt, sync::Arc};
 
-use super::{stubs::Stubs, CachedDefinitions, Clock, ManagerInner, Services, WorkflowManager};
+use super::{stubs::Stubs, CachedDefinitions, Clock, Runtime, RuntimeInner, Services};
 use crate::{
     data::PersistedWorkflowData,
     engine::{DefineWorkflow, WorkflowEngine},
@@ -19,7 +19,7 @@ use crate::{
 };
 use tardigrade::{ChannelId, WorkflowId};
 
-/// Result of [ticking](WorkflowManager::tick()) a [`WorkflowManager`].
+/// Result of [ticking](Runtime::tick()) a [`Runtime`].
 #[derive(Debug)]
 #[must_use = "Result can contain an execution error which should be handled"]
 pub struct TickResult {
@@ -46,14 +46,14 @@ impl TickResult {
     }
 }
 
-/// An error returned by [`WorkflowManager::tick()`] if the manager cannot progress.
+/// An error returned by [`Runtime::tick()`] if the runtime cannot progress.
 #[derive(Debug)]
 pub struct WouldBlock {
     nearest_timer_expiration: Option<DateTime<Utc>>,
 }
 
 impl WouldBlock {
-    /// Returns the nearest timer expiration for the workflows within the manager.
+    /// Returns the nearest timer expiration for the workflows within the runtime.
     pub fn nearest_timer_expiration(&self) -> Option<DateTime<Utc>> {
         self.nearest_timer_expiration
     }
@@ -61,7 +61,7 @@ impl WouldBlock {
 
 impl fmt::Display for WouldBlock {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "cannot progress workflow manager")?;
+        write!(formatter, "cannot progress workflow runtime")?;
         if let Some(expiration) = self.nearest_timer_expiration {
             write!(formatter, " (nearest timer expiration: {expiration})")?;
         }
@@ -71,7 +71,7 @@ impl fmt::Display for WouldBlock {
 
 impl error::Error for WouldBlock {}
 
-/// Errors that can occur when [ticking a specific workflow](WorkflowManager::tick_workflow()).
+/// Errors that can occur when [ticking a specific workflow](Runtime::tick_workflow()).
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum WorkflowTickError {
@@ -104,7 +104,7 @@ impl error::Error for WorkflowTickError {}
 #[derive(Debug)]
 struct PendingChannel {
     channel_id: ChannelId,
-    message_idx: usize,
+    message_idx: u64,
     waits_for_message: bool,
 }
 
@@ -266,7 +266,7 @@ impl<D: DefineWorkflow> WorkflowSeed<D> {
     }
 }
 
-impl<E: WorkflowEngine, C: Clock> ManagerInner<E, C> {
+impl<E: WorkflowEngine, C: Clock> RuntimeInner<E, C> {
     #[tracing::instrument(
         level = "debug",
         skip_all,
@@ -319,7 +319,7 @@ impl<E: WorkflowEngine, C: Clock> ManagerInner<E, C> {
     }
 }
 
-impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
+impl<E: WorkflowEngine, C: Clock, S: Storage> Runtime<E, C, S> {
     #[tracing::instrument(
         skip_all,
         fields(
@@ -389,7 +389,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         (result, pending_channel)
     }
 
-    /// Attempts to advance a single workflow within this manager.
+    /// Attempts to advance a single workflow within this runtime.
     ///
     /// A workflow can be advanced if it has outstanding wakers, e.g., ones produced by
     /// [expiring timers](Self::set_current_time()) or by flushing outbound messages
@@ -398,7 +398,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
     ///
     /// # Errors
     ///
-    /// Returns an error if the manager cannot be progressed.
+    /// Returns an error if the runtime cannot be progressed.
     pub async fn tick(&self) -> Result<TickResult, WouldBlock> {
         let span = tracing::info_span!("tick");
         let _entered = span.enter();
@@ -418,7 +418,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
             let err = WouldBlock {
                 nearest_timer_expiration: transaction.nearest_timer_expiration().await,
             };
-            tracing::info!(%err, "workflow manager blocked");
+            tracing::info!(%err, "workflow runtime blocked");
             return Err(err);
         };
         let workflow_id = workflow.id;
@@ -466,7 +466,7 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         result
     }
 
-    /// Attempts to advance a specific workflow within this manager.
+    /// Attempts to advance a specific workflow within this runtime.
     ///
     /// # Errors
     ///
@@ -494,10 +494,10 @@ impl<E: WorkflowEngine, C: Clock, S: Storage> WorkflowManager<E, C, S> {
         let result = self.do_tick(transaction, workflow, waker_records).await;
         if let Ok(receipt) = &result {
             if receipt.executions().is_empty() {
-                return Err(WouldBlock {
+                let err = WouldBlock {
                     nearest_timer_expiration,
-                }
-                .into());
+                };
+                return Err(err.into());
             }
         }
 

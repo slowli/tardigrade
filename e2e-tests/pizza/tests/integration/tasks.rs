@@ -14,11 +14,11 @@ use std::{
 use tardigrade::{Json, TaskId};
 use tardigrade_rt::{
     handle::MessageSender,
-    manager::{DriveConfig, Termination},
     receipt::{
         Event, ExecutedFunction, Execution, Receipt, ResourceEvent, ResourceEventKind, ResourceId,
     },
-    test::MockScheduler,
+    runtime::{DriveConfig, Termination},
+    MockScheduler,
 };
 
 use crate::{create_streaming_manager, spawn_workflow, StreamingStorage, TestResult};

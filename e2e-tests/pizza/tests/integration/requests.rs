@@ -2,15 +2,31 @@
 
 use assert_matches::assert_matches;
 use async_std::task;
-use futures::{channel::mpsc, future, FutureExt, StreamExt, TryStreamExt};
+use async_trait::async_trait;
+use futures::{
+    channel::mpsc,
+    future::{self, BoxFuture},
+    FutureExt, StreamExt, TryStreamExt,
+};
 use test_casing::{test_casing, Product};
 
-use std::cmp;
+use std::{
+    cmp,
+    convert::identity,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+};
 
-use tardigrade::channel::{Request, Response};
+use tardigrade::Json;
 use tardigrade_rt::{
-    manager::{DriveConfig, Termination},
+    runtime::{DriveConfig, Termination},
+    storage::InProcessConnection,
     AsyncIoScheduler,
+};
+use tardigrade_worker::{
+    HandleRequest, Request, Worker, WorkerInterface, WorkerStorageConnection, WorkerStoragePool,
 };
 
 use crate::{
@@ -25,20 +41,82 @@ use tardigrade_pizza::{
 
 const DEFINITION_ID: &str = "test::PizzaDeliveryWithRequests";
 
+/// Baking worker that is able to perform several requests concurrently.
+struct ConcurrentBaking<P> {
+    events_sx: mpsc::UnboundedSender<DomainEvent>,
+    tasks_sx: mpsc::UnboundedSender<BoxFuture<'static, ()>>,
+    connection_pool: Option<P>,
+}
+
+impl<P> ConcurrentBaking<P> {
+    fn new(events_sx: mpsc::UnboundedSender<DomainEvent>, task_concurrency: Option<usize>) -> Self {
+        let (tasks_sx, tasks_rx) = mpsc::unbounded();
+        let executor_task = tasks_rx.for_each_concurrent(task_concurrency, identity);
+        task::spawn(executor_task);
+
+        Self {
+            events_sx,
+            tasks_sx,
+            connection_pool: None,
+        }
+    }
+}
+
+impl<P: WorkerStoragePool> WorkerInterface for ConcurrentBaking<P> {
+    type Request = PizzaOrder;
+    type Response = ();
+    type Codec = Json;
+}
+
+#[async_trait]
+impl<P: WorkerStoragePool + Clone + 'static> HandleRequest<P> for ConcurrentBaking<P> {
+    async fn initialize(&mut self, connection_pool: &P) {
+        self.connection_pool = Some(connection_pool.clone());
+    }
+
+    async fn handle_request(
+        &mut self,
+        request: Request<Self>,
+        _connection: &mut P::Connection<'_>,
+    ) {
+        let index = request.request_id() as usize;
+        let (order, response_sx) = request.into_parts();
+        let connection_pool = self.connection_pool.clone().unwrap();
+        let events_sx = self.events_sx.clone();
+
+        let task = async move {
+            events_sx
+                .unbounded_send(DomainEvent::OrderTaken { index, order })
+                .unwrap();
+            task::sleep(order.kind.baking_time()).await;
+            let mut connection = connection_pool.connect().await;
+            response_sx.send((), &mut connection).await.ok();
+            connection.release().await;
+            events_sx
+                .unbounded_send(DomainEvent::Baked { index, order })
+                .unwrap();
+        };
+        self.tasks_sx.unbounded_send(task.boxed()).unwrap();
+    }
+}
+
 async fn test_external_tasks(
     oven_count: usize,
     order_count: usize,
     task_concurrency: Option<usize>,
 ) -> TestResult {
     let (manager, mut commits_rx) = create_streaming_manager(AsyncIoScheduler).await?;
+    let storage = manager.storage().as_ref().clone();
+    let (executor_events_sx, executor_events_rx) = mpsc::unbounded();
+    let baking = ConcurrentBaking::new(executor_events_sx, task_concurrency);
+    let mut worker = Worker::new(baking, InProcessConnection(storage));
+    let worker_ready = worker.wait_until_ready();
+    let worker_task = task::spawn(worker.listen("tardigrade.test.Baking"));
+    worker_ready.await.unwrap();
 
     let args = Args { oven_count };
     let (_, handle) =
         spawn_workflow::<_, PizzaDeliveryWithRequests>(&manager, DEFINITION_ID, args).await?;
-    let responses_sx = handle.baking.responses.into_owned();
-    let responses_id = responses_sx.channel_id();
-    let baking_tasks_rx = handle.baking.requests.into_owned().stream_messages(0..);
-    let baking_tasks_rx = baking_tasks_rx.map(|message| message.decode());
     let orders_sx = handle.orders;
     let events_rx = handle.shared.events.stream_messages(0..);
     let events_rx = events_rx.map(|message| message.decode());
@@ -47,42 +125,17 @@ async fn test_external_tasks(
     let join_handle =
         task::spawn(async move { manager.drive(&mut commits_rx, DriveConfig::new()).await });
 
-    let (executor_events_sx, executor_events_rx) = mpsc::unbounded();
-    let tasks_stream = baking_tasks_rx.try_for_each_concurrent(task_concurrency, move |request| {
-        let Request::New { id, data: order, response_channel_id } = request else {
-            return future::ok(()).left_future();
-        };
-        assert_eq!(response_channel_id, responses_id);
-
-        let responses = responses_sx.clone();
-        let executor_events_sx = executor_events_sx.clone();
-        let index = id as usize;
-        async move {
-            executor_events_sx
-                .unbounded_send(DomainEvent::OrderTaken { index, order })
-                .unwrap();
-            task::sleep(order.kind.baking_time()).await;
-            responses.send(Response { id, data: () }).await.ok();
-            executor_events_sx
-                .unbounded_send(DomainEvent::Baked { index, order })
-                .unwrap();
-            Ok(())
-        }
-        .right_future()
-    });
-    let tasks_handle = task::spawn(tasks_stream);
-
     send_orders(orders_sx, order_count).await?;
     let events: Vec<_> = events_rx.try_collect().await?;
     assert_eq!(events.len(), 2 * order_count, "{events:?}");
     assert_event_completeness(&events, order_count);
 
     // Check that concurrency is properly controlled by the workflow.
+    worker_task.cancel().await;
     let executor_events: Vec<_> = executor_events_rx.collect().await;
     let expected_concurrency = cmp::min(oven_count, task_concurrency.unwrap_or(usize::MAX));
     assert_event_concurrency(&executor_events, expected_concurrency);
 
-    tasks_handle.await?;
     assert_matches!(join_handle.await, Termination::Finished);
     Ok(())
 }
@@ -109,6 +162,72 @@ async fn concurrent_external_tasks(
     test_external_tasks(oven_count, 10, task_concurrency).await
 }
 
+struct RestrictedBaking<P> {
+    tasks_sx: mpsc::UnboundedSender<BoxFuture<'static, ()>>,
+    task_count: Arc<AtomicUsize>,
+    successful_task_count: usize,
+    connection_pool: Option<P>,
+}
+
+impl<P> RestrictedBaking<P> {
+    fn new(successful_task_count: usize) -> Self {
+        let (tasks_sx, tasks_rx) = mpsc::unbounded();
+        let executor_task = tasks_rx
+            .buffer_unordered(successful_task_count + 1)
+            .take(successful_task_count + 1)
+            .for_each(future::ready);
+        task::spawn(executor_task);
+
+        Self {
+            tasks_sx,
+            task_count: Arc::new(AtomicUsize::new(0)),
+            successful_task_count,
+            connection_pool: None,
+        }
+    }
+}
+
+impl<P: WorkerStoragePool> WorkerInterface for RestrictedBaking<P> {
+    type Request = PizzaOrder;
+    type Response = ();
+    type Codec = Json;
+}
+
+#[async_trait]
+impl<P: WorkerStoragePool + Clone + 'static> HandleRequest<P> for RestrictedBaking<P> {
+    async fn initialize(&mut self, connection_pool: &P) {
+        self.connection_pool = Some(connection_pool.clone());
+    }
+
+    async fn handle_request(&mut self, request: Request<Self>, _: &mut P::Connection<'_>) {
+        // Do not create a task if we know it cannot be sent for execution.
+        if self.tasks_sx.is_closed() {
+            return;
+        }
+
+        let response_channel_id = request.response_channel_id();
+        let (order, response_sx) = request.into_parts();
+        let connection_pool = self.connection_pool.clone().unwrap();
+        let task_count = Arc::clone(&self.task_count);
+        let successful_task_count = self.successful_task_count;
+
+        let task = async move {
+            task::sleep(order.kind.baking_time()).await;
+            let mut connection = connection_pool.connect().await;
+            if task_count.fetch_add(1, Ordering::SeqCst) >= successful_task_count {
+                connection
+                    .close_response_channel(response_channel_id)
+                    .await
+                    .ok();
+            } else {
+                response_sx.send((), &mut connection).await.ok();
+            }
+            connection.release().await;
+        };
+        self.tasks_sx.unbounded_send(task.boxed()).ok();
+    }
+}
+
 #[test_casing(4, [(5, 2), (5, 4), (10, 3), (10, 7)])]
 #[async_std::test]
 async fn closing_task_responses_on_host(
@@ -116,12 +235,17 @@ async fn closing_task_responses_on_host(
     successful_task_count: usize,
 ) -> TestResult {
     let (manager, mut commits_rx) = create_streaming_manager(AsyncIoScheduler).await?;
+    let storage = manager.storage().as_ref().clone();
+    let baking = RestrictedBaking::new(successful_task_count);
+    let mut worker = Worker::new(baking, InProcessConnection(storage));
+    let worker_ready = worker.wait_until_ready();
+    task::spawn(worker.listen("tardigrade.test.Baking"));
+    worker_ready.await.unwrap();
+
     let args = Args { oven_count: 2 };
     let (_, handle) =
         spawn_workflow::<_, PizzaDeliveryWithRequests>(&manager, DEFINITION_ID, args).await?;
 
-    let responses_sx = handle.baking.responses.into_owned();
-    let baking_tasks = handle.baking.requests.into_owned();
     let orders_sx = handle.orders;
     let events_rx = handle.shared.events.stream_messages(0..);
     let events_rx = events_rx.map(|message| message.decode());
@@ -129,30 +253,6 @@ async fn closing_task_responses_on_host(
     let manager = manager.clone();
     let join_handle =
         task::spawn(async move { manager.drive(&mut commits_rx, DriveConfig::default()).await });
-
-    // Complete first `successful_task_count` tasks, then close the responses channel.
-    let tasks_handle = task::spawn(async move {
-        let baking_tasks_rx = baking_tasks.stream_messages(0..);
-        let responses_sx_to_close = responses_sx.clone();
-        let tasks_stream = baking_tasks_rx.map(move |message| {
-            let Request::New { id, data: order, .. } = message.decode().unwrap() else {
-                return future::ready(()).left_future();
-            };
-
-            let responses_sx = responses_sx.clone();
-            async move {
-                task::sleep(order.kind.baking_time()).await;
-                responses_sx.send(Response { id, data: () }).await.ok();
-            }
-            .right_future()
-        });
-        tasks_stream
-            .buffer_unordered(successful_task_count)
-            .take(successful_task_count)
-            .for_each(future::ready)
-            .await;
-        responses_sx_to_close.close().await;
-    });
 
     let orders = (0..order_count).map(|i| PizzaOrder {
         kind: match i % 3 {
@@ -178,7 +278,6 @@ async fn closing_task_responses_on_host(
         .count();
     assert_eq!(baked_count, successful_task_count, "{events:?}");
 
-    tasks_handle.await;
     assert_matches!(join_handle.await, Termination::Finished);
     Ok(())
 }

@@ -16,13 +16,13 @@ use tardigrade_rt::{
         PersistedWorkflowData, WasmtimeDefinition, WasmtimeInstance, WasmtimeModule, WorkflowEngine,
     },
     handle::MessageReceiver,
-    manager::WorkflowManager,
     receipt::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, ExecutionError, Receipt,
         ResourceEvent, ResourceEventKind, ResourceId, WakeUpCause,
     },
+    runtime::Runtime,
     storage::{LocalStorageSnapshot, Storage},
-    test::MockScheduler,
+    MockScheduler,
 };
 
 use super::{create_manager, create_module, enable_tracing_assertions, spawn_workflow, TestResult};
@@ -33,7 +33,7 @@ const DEFINITION_ID: &str = "test::PizzaDelivery";
 #[derive(Debug)]
 struct Drain<T, C, S> {
     receiver: MessageReceiver<T, C, S>,
-    cursor: usize,
+    cursor: u64,
 }
 
 impl<T, C: Codec<T>, S: Storage> Drain<T, C, S> {
@@ -357,7 +357,7 @@ async fn persisting_workflow() -> TestResult {
     let snapshot: LocalStorageSnapshot<'_> = serde_json::from_str(&persisted_json)?;
     storage = snapshot.into();
 
-    let manager = WorkflowManager::builder(SingleModuleEngine, storage)
+    let manager = Runtime::builder(SingleModuleEngine, storage)
         .with_clock(clock.clone())
         .build();
 
@@ -501,7 +501,7 @@ async fn workflow_recovery_after_trap() -> TestResult {
             assert_eq!(err_messages.len(), 1);
             let err_message = err_messages.pop().unwrap();
             let received = err_message.receive().await.unwrap();
-            assert_eq!(received.index(), i);
+            assert_eq!(received.index(), i as u64);
             assert_eq!(received.decode()?, b"invalid");
 
             err_message.drop_for_workflow().await?;

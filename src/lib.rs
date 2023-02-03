@@ -36,12 +36,6 @@
 //!
 //! # Crate features
 //!
-//! ## `serde_json`
-//!
-//! *(On by default)*
-//!
-//! Exposes [`Json`] [codec](Codec) for messages received by a workflow.
-//!
 //! ## `tracing`
 //!
 //! *(On by default)*
@@ -66,7 +60,6 @@
 #[doc(hidden)] // used by runtime; low-level and unstable
 pub mod abi;
 pub mod channel;
-mod codec;
 mod error;
 pub mod spawn;
 pub mod task;
@@ -79,14 +72,9 @@ mod tracing;
 mod wasm_utils;
 pub mod workflow;
 
-#[cfg(feature = "serde_json")]
-pub use crate::codec::Json;
-pub use crate::{
-    codec::{Codec, Raw},
-    time::{now, sleep, Timer, TimerDefinition},
-};
+pub use crate::time::{now, sleep, Timer, TimerDefinition};
 
-pub use tardigrade_shared::{handle, interface};
+pub use tardigrade_shared::{handle, interface, Codec, Json, Raw};
 
 #[doc(hidden)] // used by the derive macros; not public
 pub mod _reexports {
@@ -96,15 +84,4 @@ pub mod _reexports {
     pub use once_cell::sync::Lazy; // used by `GetInterface` derive macro
 }
 
-/// ID of a [`Waker`](std::task::Waker) defined by a workflow.
-pub type WakerId = u64;
-/// ID of a workflow task.
-pub type TaskId = u64;
-/// ID of a workflow timer.
-pub type TimerId = u64;
-/// ID of a (traced) future defined by a workflow.
-pub type FutureId = u64;
-/// ID of a workflow.
-pub type WorkflowId = u64;
-/// ID of a channel.
-pub type ChannelId = u64;
+pub use tardigrade_shared::{ChannelId, TaskId, TimerId, WakerId, WorkflowId};

@@ -8,10 +8,9 @@ use test_casing::test_casing;
 use std::{collections::HashMap, task::Poll};
 
 use tardigrade_rt::{
-    manager::{DriveConfig, Termination},
     receipt::{Event, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
-    test::MockScheduler,
-    AsyncIoScheduler,
+    runtime::{DriveConfig, Termination},
+    AsyncIoScheduler, MockScheduler,
 };
 
 use crate::{

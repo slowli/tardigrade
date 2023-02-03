@@ -14,6 +14,7 @@ use std::{
     borrow::Cow,
     cmp,
     collections::{HashMap, VecDeque},
+    convert::Infallible,
     ops,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -22,6 +23,7 @@ use std::{
 };
 
 use super::{
+    helper::{ChannelSide, StorageHelper},
     ActiveWorkflowState, ChannelRecord, MessageError, ModuleRecord, ReadChannels, ReadModules,
     ReadWorkflows, Storage, StorageTransaction, WorkflowRecord, WorkflowSelectionCriteria,
     WorkflowState, WorkflowWaker, WorkflowWakerRecord, WriteChannels, WriteModules,
@@ -29,6 +31,7 @@ use super::{
 };
 use crate::{utils::Message, PersistedWorkflow};
 use tardigrade::{ChannelId, WakerId, WorkflowId};
+use tardigrade_worker::{WorkerRecord, WorkerStorageConnection};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LocalChannel {
@@ -45,16 +48,17 @@ impl LocalChannel {
         }
     }
 
-    fn contains_index(&self, idx: usize) -> bool {
+    fn contains_index(&self, idx: u64) -> bool {
         let received_messages = self.record.received_messages;
-        let start_idx = received_messages - self.messages.len();
+        let start_idx = received_messages - self.messages.len() as u64;
         (start_idx..received_messages).contains(&idx)
             || (self.record.is_closed && idx == received_messages) // EOF marker
     }
 
-    fn truncate(&mut self, min_index: usize) {
-        let start_idx = self.record.received_messages - self.messages.len();
-        let messages_to_truncate = min_index.saturating_sub(start_idx);
+    fn truncate(&mut self, min_index: u64) {
+        let start_idx = self.record.received_messages - self.messages.len() as u64;
+        let messages_to_truncate = usize::try_from(min_index.saturating_sub(start_idx))
+            .expect("integer overflow when truncating messages");
         let messages_to_truncate = cmp::min(messages_to_truncate, self.messages.len());
         self.messages = self.messages.split_off(messages_to_truncate);
     }
@@ -66,6 +70,7 @@ struct Inner {
     channels: HashMap<ChannelId, LocalChannel>,
     workflows: HashMap<WorkflowId, WorkflowRecord>,
     workflow_wakers: Vec<WorkflowWakerRecord>,
+    workers: HashMap<u64, WorkerRecord>,
 }
 
 impl Default for Inner {
@@ -76,6 +81,7 @@ impl Default for Inner {
             channels: HashMap::from_iter([(0, closed_channel)]),
             workflows: HashMap::new(),
             workflow_wakers: Vec::new(),
+            workers: HashMap::new(),
         }
     }
 }
@@ -108,6 +114,7 @@ pub struct LocalStorageSnapshot<'a> {
     next_channel_id: u64,
     next_workflow_id: u64,
     next_waker_id: u64,
+    next_worker_id: u64,
     inner: Cow<'a, Inner>,
 }
 
@@ -136,7 +143,7 @@ impl LocalStorageSnapshot<'_> {
 /// # use async_std::fs;
 /// # use std::str;
 /// # use tardigrade_rt::{
-/// #     engine::Wasmtime, manager::WorkflowManager, storage::{LocalStorage, LocalStorageSnapshot},
+/// #     engine::Wasmtime, runtime::Runtime, storage::{LocalStorage, LocalStorageSnapshot},
 /// # };
 /// #
 /// # async fn test_wrapper() -> anyhow::Result<()> {
@@ -144,10 +151,10 @@ impl LocalStorageSnapshot<'_> {
 /// let mut storage = LocalStorage::default();
 /// // Remove messages consumed by workflows.
 /// storage.truncate_workflow_messages();
-/// let manager = WorkflowManager::builder(engine, storage).build();
-/// // Do something with the manager...
+/// let runtime = Runtime::builder(engine, storage).build();
+/// // Do something with the runtime...
 ///
-/// let mut storage = manager.into_storage();
+/// let mut storage = runtime.into_storage();
 /// let mut snapshot = storage.snapshot();
 /// for mut module in snapshot.modules_mut() {
 ///     // Save modules to the file system, rather than using the storage.
@@ -176,6 +183,7 @@ pub struct LocalStorage {
     next_channel_id: AtomicU64,
     next_workflow_id: AtomicU64,
     next_waker_id: AtomicU64,
+    next_worker_id: AtomicU64,
     truncate_messages: bool,
 }
 
@@ -185,7 +193,8 @@ impl Default for LocalStorage {
             inner: Mutex::default(),
             next_channel_id: AtomicU64::new(1), // skip the closed channel
             next_workflow_id: AtomicU64::new(1),
-            next_waker_id: AtomicU64::new(0),
+            next_waker_id: AtomicU64::new(1),
+            next_worker_id: AtomicU64::new(1),
             truncate_messages: false,
         }
     }
@@ -199,6 +208,7 @@ impl LocalStorage {
             next_channel_id: *self.next_channel_id.get_mut(),
             next_workflow_id: *self.next_workflow_id.get_mut(),
             next_waker_id: *self.next_waker_id.get_mut(),
+            next_worker_id: *self.next_worker_id.get_mut(),
         }
     }
 
@@ -215,6 +225,7 @@ impl From<LocalStorageSnapshot<'_>> for LocalStorage {
             next_channel_id: AtomicU64::new(snapshot.next_channel_id),
             next_workflow_id: AtomicU64::new(snapshot.next_workflow_id),
             next_waker_id: AtomicU64::new(snapshot.next_waker_id),
+            next_worker_id: AtomicU64::new(snapshot.next_worker_id),
             truncate_messages: false,
         }
     }
@@ -227,6 +238,7 @@ pub struct LocalReadonlyTransaction<'a> {
     next_channel_id: &'a AtomicU64,
     next_workflow_id: &'a AtomicU64,
     next_waker_id: &'a AtomicU64,
+    next_worker_id: &'a AtomicU64,
 }
 
 impl LocalReadonlyTransaction<'_> {
@@ -273,18 +285,21 @@ impl ReadChannels for LocalReadonlyTransaction<'_> {
         Some(channel.record.clone())
     }
 
-    async fn channel_message(&self, id: ChannelId, index: usize) -> Result<Vec<u8>, MessageError> {
+    async fn channel_message(&self, id: ChannelId, index: u64) -> Result<Vec<u8>, MessageError> {
         let channel = self
             .inner
             .channels
             .get(&id)
             .ok_or(MessageError::UnknownChannelId)?;
 
-        let start_idx = channel.record.received_messages - channel.messages.len();
+        let start_idx = channel.record.received_messages - channel.messages.len() as u64;
         let idx_in_channel = index
             .checked_sub(start_idx)
             .ok_or(MessageError::Truncated)?;
+
         let is_closed = channel.record.is_closed;
+        let idx_in_channel = usize::try_from(idx_in_channel)
+            .map_err(|_| MessageError::NonExistingIndex { is_closed })?;
         channel
             .messages
             .get(idx_in_channel)
@@ -292,11 +307,12 @@ impl ReadChannels for LocalReadonlyTransaction<'_> {
             .ok_or(MessageError::NonExistingIndex { is_closed })
     }
 
+    #[allow(clippy::cast_possible_truncation)] // cast is safe due to previous checks
     fn channel_messages(
         &self,
         id: ChannelId,
-        indices: ops::RangeInclusive<usize>,
-    ) -> BoxStream<'_, (usize, Vec<u8>)> {
+        indices: ops::RangeInclusive<u64>,
+    ) -> BoxStream<'_, (u64, Vec<u8>)> {
         let Some(channel) = self.inner.channels.get(&id) else {
             return stream::empty().boxed();
         };
@@ -304,23 +320,28 @@ impl ReadChannels for LocalReadonlyTransaction<'_> {
             // If the channel has no messages stored, it can only return an empty stream.
             return stream::empty().boxed();
         };
+        let max_idx = max_idx as u64;
 
-        let first_idx = channel.record.received_messages - channel.messages.len();
+        let first_idx = channel.record.received_messages - channel.messages.len() as u64;
         let start_idx = indices.start().saturating_sub(first_idx);
         if start_idx > max_idx {
             return stream::empty().boxed();
         }
         let end_idx = indices.end().saturating_sub(first_idx).min(max_idx);
-        let indexed_messages = (start_idx..=end_idx)
-            .map(move |i| (first_idx + i, channel.messages[i].as_ref().to_vec()));
+        let indexed_messages = (start_idx..=end_idx).map(move |i| {
+            (
+                first_idx + i,
+                channel.messages[i as usize].as_ref().to_vec(),
+            )
+        });
         stream::iter(indexed_messages).boxed()
     }
 }
 
 #[async_trait]
 impl ReadWorkflows for LocalReadonlyTransaction<'_> {
-    async fn count_active_workflows(&self) -> usize {
-        self.active_workflow_states().count()
+    async fn count_active_workflows(&self) -> u64 {
+        self.active_workflow_states().count() as u64
     }
 
     async fn workflow(&self, id: WorkflowId) -> Option<WorkflowRecord> {
@@ -339,8 +360,8 @@ impl ReadWorkflows for LocalReadonlyTransaction<'_> {
 pub struct LocalTransaction<'a> {
     // Alternatively, we could manipulate the guarded data directly.
     // This wouldn't break isolation because of the `Mutex`, and wouldn't break atomicity
-    // in `WorkflowManager` because there are no rollbacks, and all storage operations
-    // are synchronous. That is, there are no wait points in the `WorkflowManager`-produced futures
+    // in `Runtime` because there are no rollbacks, and all storage operations
+    // are synchronous. That is, there are no wait points in the `Runtime`-produced futures
     // at which the future may be cancelled to observe a partially applied transaction.
     // However, this approach is hard to reason about in the general case; it is not cancel-safe
     // if used together with "true" async operations. Hence, foolproof cloning of `Inner`.
@@ -415,16 +436,16 @@ impl WriteChannels for LocalTransaction<'_> {
 
     async fn push_messages(&mut self, id: ChannelId, messages: Vec<Vec<u8>>) {
         let channel = self.inner_mut().channels.get_mut(&id).unwrap();
-        debug_assert!(!channel.record.is_closed);
-
-        let len = messages.len();
-        channel
-            .messages
-            .extend(messages.into_iter().map(Message::from));
-        channel.record.received_messages += len;
+        if !channel.record.is_closed {
+            let len = messages.len() as u64;
+            channel
+                .messages
+                .extend(messages.into_iter().map(Message::from));
+            channel.record.received_messages += len;
+        }
     }
 
-    async fn truncate_channel(&mut self, id: ChannelId, min_index: usize) {
+    async fn truncate_channel(&mut self, id: ChannelId, min_index: u64) {
         if let Some(channel) = self.inner_mut().channels.get_mut(&id) {
             channel.truncate(min_index);
         }
@@ -547,6 +568,68 @@ impl WriteWorkflowWakers for LocalTransaction<'_> {
 }
 
 #[async_trait]
+impl WorkerStorageConnection for LocalTransaction<'_> {
+    type Error = Infallible;
+
+    async fn worker(&mut self, name: &str) -> Result<Option<WorkerRecord>, Self::Error> {
+        let mut workers = self.inner().workers.values();
+        let existing_worker = workers.find(|worker| worker.name == name);
+        Ok(existing_worker.cloned())
+    }
+
+    async fn get_or_create_worker(&mut self, name: &str) -> Result<WorkerRecord, Self::Error> {
+        let mut workers = self.inner().workers.values();
+        let existing_worker = workers.find(|worker| worker.name == name);
+        Ok(if let Some(worker) = existing_worker {
+            worker.clone()
+        } else {
+            let id = self.readonly.next_worker_id.fetch_add(1, Ordering::SeqCst);
+            let inbound_channel_id = self.allocate_channel_id().await;
+            self.insert_channel(inbound_channel_id, ChannelRecord::owned_by_host())
+                .await;
+
+            let record = WorkerRecord {
+                id,
+                name: name.to_owned(),
+                inbound_channel_id,
+                cursor: 0,
+            };
+            self.inner_mut().workers.insert(id, record.clone());
+            record
+        })
+    }
+
+    async fn update_worker_cursor(
+        &mut self,
+        worker_id: u64,
+        cursor: u64,
+    ) -> Result<(), Self::Error> {
+        let worker = self.inner_mut().workers.get_mut(&worker_id).unwrap();
+        worker.cursor = cursor;
+        Ok(())
+    }
+
+    async fn push_message(
+        &mut self,
+        channel_id: ChannelId,
+        message: Vec<u8>,
+    ) -> Result<(), Self::Error> {
+        self.push_messages(channel_id, vec![message]).await;
+        Ok(())
+    }
+
+    async fn close_response_channel(&mut self, channel_id: ChannelId) -> Result<bool, Self::Error> {
+        Ok(StorageHelper::new(self)
+            .close_channel_side(channel_id, ChannelSide::HostSender)
+            .await)
+    }
+
+    async fn release(mut self) {
+        self.commit().await;
+    }
+}
+
+#[async_trait]
 impl StorageTransaction for LocalTransaction<'_> {
     async fn commit(mut self) {
         if self.truncate_messages {
@@ -579,6 +662,7 @@ impl Storage for LocalStorage {
                 next_channel_id: &self.next_channel_id,
                 next_workflow_id: &self.next_workflow_id,
                 next_waker_id: &self.next_waker_id,
+                next_worker_id: &self.next_worker_id,
             },
             target,
             truncate_messages: self.truncate_messages,
@@ -591,6 +675,7 @@ impl Storage for LocalStorage {
             next_channel_id: &self.next_channel_id,
             next_workflow_id: &self.next_workflow_id,
             next_waker_id: &self.next_waker_id,
+            next_worker_id: &self.next_worker_id,
         }
     }
 }
@@ -652,7 +737,7 @@ mod tests {
         transaction.insert_channel(1, channel_state).await;
 
         let messages: Vec<_> = transaction
-            .channel_messages(1, 0..=usize::MAX)
+            .channel_messages(1, 0..=u64::MAX)
             .collect()
             .await;
         assert_messages(&messages, &[]);
@@ -665,7 +750,7 @@ mod tests {
             .await;
 
         let messages: Vec<_> = transaction
-            .channel_messages(1, 0..=usize::MAX)
+            .channel_messages(1, 0..=u64::MAX)
             .collect()
             .await;
         assert_messages(&messages, &[(0, first_message)]);
@@ -679,13 +764,13 @@ mod tests {
             .push_messages(1, vec![second_message.to_vec()])
             .await;
 
-        for full_range in [0..=usize::MAX, 0..=2, 0..=1] {
+        for full_range in [0..=u64::MAX, 0..=2, 0..=1] {
             let messages: Vec<_> = transaction.channel_messages(1, full_range).collect().await;
             assert_messages(&messages, &[(0, first_message), (1, second_message)]);
         }
         let messages: Vec<_> = transaction.channel_messages(1, 0..=0).collect().await;
         assert_messages(&messages, &[(0, first_message)]);
-        for end_range in [1..=usize::MAX, 1..=2, 1..=1] {
+        for end_range in [1..=u64::MAX, 1..=2, 1..=1] {
             let messages: Vec<_> = transaction.channel_messages(1, end_range).collect().await;
             assert_messages(&messages, &[(1, second_message)]);
         }
@@ -694,7 +779,7 @@ mod tests {
 
         transaction.truncate_channel(1, 1).await;
 
-        for full_range in [0..=usize::MAX, 0..=2, 0..=1, 1..=usize::MAX, 1..=2, 1..=1] {
+        for full_range in [0..=u64::MAX, 0..=2, 0..=1, 1..=u64::MAX, 1..=2, 1..=1] {
             let messages: Vec<_> = transaction.channel_messages(1, full_range).collect().await;
             assert_messages(&messages, &[(1, second_message)]);
         }
@@ -702,7 +787,7 @@ mod tests {
         assert_messages(&messages, &[]);
     }
 
-    fn assert_messages(actual: &[(usize, Vec<u8>)], expected: &[(usize, &[u8])]) {
+    fn assert_messages(actual: &[(u64, Vec<u8>)], expected: &[(u64, &[u8])]) {
         assert_eq!(actual.len(), expected.len(), "{actual:?} != {expected:?}");
         for (actual_msg, expected_msg) in actual.iter().zip(expected) {
             assert_eq!(actual_msg.0, expected_msg.0);

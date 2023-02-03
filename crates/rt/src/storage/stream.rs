@@ -23,6 +23,7 @@ use super::{
     WorkflowWakerRecord, WriteChannels, WriteModules, WriteWorkflowWakers, WriteWorkflows,
 };
 use tardigrade::{ChannelId, WakerId, WorkflowId};
+use tardigrade_worker::{WorkerRecord, WorkerStorageConnection};
 
 /// Event signalling that one or more messages were added to the channel.
 #[derive(Debug)]
@@ -34,7 +35,7 @@ pub struct MessageEvent {
 #[derive(Debug)]
 pub enum MessageOrEof {
     /// Message payload together with the 0-based message index.
-    Message(usize, Vec<u8>),
+    Message(u64, Vec<u8>),
     /// Channel end marker.
     Eof,
 }
@@ -45,7 +46,7 @@ pub trait StreamMessages: Storage {
     fn stream_messages(
         &self,
         channel_id: ChannelId,
-        start_index: usize,
+        start_index: u64,
         sink: mpsc::Sender<MessageOrEof>,
     ) -> BoxFuture<'static, ()>;
 }
@@ -54,7 +55,7 @@ impl<S: StreamMessages + ?Sized> StreamMessages for &S {
     fn stream_messages(
         &self,
         channel_id: ChannelId,
-        start_index: usize,
+        start_index: u64,
         sink: mpsc::Sender<MessageOrEof>,
     ) -> BoxFuture<'static, ()> {
         (**self).stream_messages(channel_id, start_index, sink)
@@ -64,7 +65,7 @@ impl<S: StreamMessages + ?Sized> StreamMessages for &S {
 pin_project! {
     /// Stream of commits returned from [`Streaming::stream_commits()`].
     #[derive(Debug)]
-    #[must_use = "should be plugged into `WorkflowManager::drive()`"]
+    #[must_use = "should be plugged into `Runtime::drive()`"]
     pub struct CommitStream {
         #[pin]
         inner: mpsc::Receiver<()>,
@@ -113,7 +114,7 @@ impl FusedStream for CommitStream {
 #[derive(Debug)]
 struct MessageStreamRequest {
     channel_id: ChannelId,
-    start_index: usize,
+    start_index: u64,
     message_sx: mpsc::Sender<MessageOrEof>,
 }
 
@@ -213,7 +214,7 @@ impl<S: Storage> StreamMessages for Streaming<S> {
     fn stream_messages(
         &self,
         channel_id: ChannelId,
-        start_index: usize,
+        start_index: u64,
         sink: mpsc::Sender<MessageOrEof>,
     ) -> BoxFuture<'static, ()> {
         let request = MessageStreamRequest {
@@ -238,7 +239,7 @@ pub struct StreamingTransaction<T> {
     message_events_sx: mpsc::Sender<MessageEvent>,
     commits_sx: mpsc::Sender<()>,
     has_active_workflow_updates: bool,
-    new_messages: HashMap<ChannelId, usize>,
+    new_messages: HashMap<ChannelId, u64>,
 }
 
 delegate_read_traits!(StreamingTransaction<T> { inner: T });
@@ -290,13 +291,13 @@ impl<T: StorageTransaction> WriteChannels for StreamingTransaction<T> {
     }
 
     async fn push_messages(&mut self, id: ChannelId, messages: Vec<Vec<u8>>) {
-        let len = messages.len();
+        let len = messages.len() as u64;
         self.inner.push_messages(id, messages).await;
         *self.new_messages.entry(id).or_default() += len;
     }
 
     #[inline]
-    async fn truncate_channel(&mut self, id: ChannelId, min_index: usize) {
+    async fn truncate_channel(&mut self, id: ChannelId, min_index: u64) {
         self.inner.truncate_channel(id, min_index).await;
     }
 }
@@ -396,11 +397,54 @@ impl<T: StorageTransaction> StorageTransaction for StreamingTransaction<T> {
     }
 }
 
+#[async_trait]
+impl<T: StorageTransaction> WorkerStorageConnection for StreamingTransaction<T> {
+    type Error = T::Error;
+
+    async fn worker(&mut self, name: &str) -> Result<Option<WorkerRecord>, Self::Error> {
+        self.inner.worker(name).await
+    }
+
+    async fn get_or_create_worker(&mut self, name: &str) -> Result<WorkerRecord, Self::Error> {
+        self.inner.get_or_create_worker(name).await
+    }
+
+    async fn update_worker_cursor(
+        &mut self,
+        worker_id: u64,
+        cursor: u64,
+    ) -> Result<(), Self::Error> {
+        self.inner.update_worker_cursor(worker_id, cursor).await
+    }
+
+    async fn push_message(
+        &mut self,
+        channel_id: ChannelId,
+        message: Vec<u8>,
+    ) -> Result<(), Self::Error> {
+        self.push_messages(channel_id, vec![message]).await;
+        Ok(())
+    }
+
+    async fn close_response_channel(&mut self, channel_id: ChannelId) -> Result<bool, Self::Error> {
+        let result = self.inner.close_response_channel(channel_id).await.unwrap();
+        if result {
+            // TODO: this logic leads to false positives if the channel was already closed
+            self.new_messages.entry(channel_id).or_default();
+        }
+        Ok(result)
+    }
+
+    async fn release(self) {
+        self.commit().await;
+    }
+}
+
 #[derive(Debug)]
 struct Subscription {
     message_sx: mpsc::Sender<MessageOrEof>,
     channel_id: ChannelId,
-    cursor: usize,
+    cursor: u64,
     commits_rx: CommitStream,
 }
 

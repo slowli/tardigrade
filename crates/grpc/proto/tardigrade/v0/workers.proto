@@ -1,0 +1,46 @@
+// Worker-specific functionality for the Tardigrade runtime.
+
+syntax = "proto3";
+
+package tardigrade.v0;
+
+import "google/protobuf/empty.proto";
+
+service WorkersService {
+  // Gets or creates a worker with the specified name.
+  rpc GetOrCreateWorker(GetOrCreateWorkerRequest) returns (Worker) {}
+  // Updates the worker record.
+  rpc UpdateWorker(UpdateWorkerRequest) returns (google.protobuf.Empty) {}
+}
+
+// Request to get information about a worker with a specific name,
+// or initialize one if it was missing.
+message GetOrCreateWorkerRequest {
+  // Globally unique worker name, such as `tardigrade.v0.Timer`.
+  string name = 1;
+  // Create a new worker record if it was missing?
+  bool create_if_missing = 2;
+}
+
+// Worker record.
+message Worker {
+  // Primary key of the worker record.
+  uint64 id = 1;
+  // Globally unique worker name, such as `tardigrade.v0.Timer`.
+  string name = 2;
+  // Index of the inbound channel used by the worker.
+  uint64 inbound_channel_id = 3;
+  // The current cursor position of the worker.
+  uint64 cursor = 4;
+}
+
+// Request to update the worker record.
+message UpdateWorkerRequest {
+  // ID of the worker to be updated.
+  uint64 worker_id = 1;
+  // Type of the update.
+  oneof update_type {
+    // Updates the cursor position of the worker.
+    uint64 cursor = 2;
+  }
+}

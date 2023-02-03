@@ -119,13 +119,10 @@ pub(crate) struct TargetStruct {
 
 impl TargetStruct {
     pub fn new(input: &DeriveInput) -> darling::Result<Self> {
-        let fields = match &input.data {
-            Data::Struct(DataStruct { fields, .. }) => fields,
-            _ => {
-                return Err(darling::Error::unsupported_shape(
-                    "can be only implemented for structs",
-                ))
-            }
+        let Data::Struct(DataStruct { fields, .. }) = &input.data else {
+            return Err(darling::Error::unsupported_shape(
+                "can be only implemented for structs",
+            ));
         };
         let style = Style::from(fields);
         let fields = fields

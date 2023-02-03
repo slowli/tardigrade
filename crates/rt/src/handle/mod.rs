@@ -1,4 +1,4 @@
-//! Handles for workflows in a [`WorkflowManager`] and their components (e.g., channels).
+//! Handles for workflows in a [`Runtime`] and their components (e.g., channels).
 //!
 //! The root of the handle hierarchy is [`StorageRef`], a thin wrapper around a [`Storage`].
 //! Its methods allow accessing workflows and channels contained in the storage.
@@ -25,7 +25,7 @@
 //! # }
 //! ```
 //!
-//! [`WorkflowManager`]: crate::manager::WorkflowManager
+//! [`Runtime`]: crate::runtime::Runtime
 
 use async_trait::async_trait;
 use futures::{Future, FutureExt};
@@ -175,13 +175,13 @@ impl<'a, S: Storage> StorageRef<'a, S> {
         }
     }
 
-    /// Returns the number of active workflows.
-    pub async fn workflow_count(&self) -> usize {
+    /// Returns the current number of active workflows.
+    pub async fn workflow_count(&self) -> u64 {
         #[allow(clippy::manual_async_fn)] // manual impl is required because of the `Send` bound
         #[inline]
         fn count_workflows<'t, T: 't + ReadonlyStorageTransaction>(
             transaction: T,
-        ) -> impl Future<Output = usize> + Send + 't {
+        ) -> impl Future<Output = u64> + Send + 't {
             async move { transaction.count_active_workflows().await }
         }
 

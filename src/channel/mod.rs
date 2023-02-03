@@ -34,15 +34,15 @@ mod requests;
 
 pub use self::{
     broadcast::{BroadcastError, BroadcastPublisher, BroadcastSubscriber},
-    requests::{Request, RequestHandles, Requests, RequestsBuilder, Response},
+    requests::{RequestHandles, Requests, RequestsBuilder},
 };
 pub use crate::error::SendError;
+pub use tardigrade_shared::{Request, Response};
 
 use crate::{
-    codec::{Codec, Raw},
     handle::{AccessError, AccessErrorKind, Handle, HandlePath, ReceiverAt, SenderAt},
     workflow::{HandleFormat, InsertHandles, IntoRaw, TakeHandles, TryFromRaw, WithHandle},
-    ChannelId,
+    ChannelId, Codec, Raw,
 };
 
 pin_project! {

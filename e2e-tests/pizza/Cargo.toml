@@ -37,6 +37,10 @@ version = "0.1.0"
 git = "https://github.com/slowli/test-casing.git"
 rev = "c778c3119990a041d03cfa435138d21c174013cc"
 
+[dev-dependencies.tardigrade-worker]
+version = "0.1.0"
+path = "../../crates/worker"
+
 [dev-dependencies.tardigrade-rt]
 version = "0.1.0"
 path = "../../crates/rt"

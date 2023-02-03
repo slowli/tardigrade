@@ -7,7 +7,14 @@
 #![warn(clippy::all, clippy::pedantic)]
 #![allow(clippy::must_use_candidate, clippy::module_name_repetitions)]
 
+mod codec;
 pub mod handle;
 mod helpers;
 pub mod interface;
 mod path;
+mod types;
+
+pub use self::{
+    codec::{Codec, Json, Raw},
+    types::{ChannelId, Request, Response, TaskId, TimerId, WakerId, WorkflowId},
+};

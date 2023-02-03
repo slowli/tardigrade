@@ -130,8 +130,7 @@ impl PersistedWorkflowData {
                 .filter(|state| state.spawned_by.is_none())
                 .count(),
             1,
-            "Cannot find main task in workflow: {:#?}",
-            self
+            "Cannot find main task in workflow: {self:#?}",
         );
         self.tasks.values().find(|state| state.spawned_by.is_none())
     }

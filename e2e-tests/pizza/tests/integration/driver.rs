@@ -23,11 +23,10 @@ use tardigrade::{
     Codec, Json, TimerId, WorkflowId,
 };
 use tardigrade_rt::{
-    manager::{DriveConfig, Termination, TickResult},
     receipt::{Event, Receipt, ResourceEvent, ResourceEventKind, ResourceId},
+    runtime::{DriveConfig, Termination, TickResult},
     storage::CommitStream,
-    test::MockScheduler,
-    AsyncIoScheduler,
+    AsyncIoScheduler, MockScheduler,
 };
 
 use super::{

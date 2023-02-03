@@ -104,7 +104,7 @@ pub struct ChannelRecord {
     #[serde(default, skip_serializing_if = "is_false")]
     pub is_closed: bool,
     /// Number of messages written to the channel.
-    pub received_messages: usize,
+    pub received_messages: u64,
 }
 
 impl ChannelRecord {
@@ -115,6 +115,17 @@ impl ChannelRecord {
             sender_workflow_ids: HashSet::new(),
             has_external_sender: false,
             is_closed: true,
+            received_messages: 0,
+        }
+    }
+
+    /// Returns a record for a channel with both sides owned by the host.
+    pub fn owned_by_host() -> Self {
+        Self {
+            receiver_workflow_id: None,
+            sender_workflow_ids: HashSet::new(),
+            has_external_sender: true,
+            is_closed: false,
             received_messages: 0,
         }
     }
@@ -137,7 +148,7 @@ pub struct WorkflowRecord<T = WorkflowState> {
     /// Name of the workflow in the module.
     pub name_in_module: String,
     /// Number of the workflow executions.
-    pub execution_count: usize,
+    pub execution_count: u64,
     /// Current state of the workflow.
     pub state: T,
 }
@@ -293,7 +304,7 @@ pub struct ErroneousMessageRef {
     /// ID of the channel the message was received from.
     pub channel_id: ChannelId,
     /// 0-based index of the message in the channel.
-    pub index: usize,
+    pub index: u64,
 }
 
 /// Workflow selection criteria used in [`insert_waker_for_matching_workflows()`].

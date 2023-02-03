@@ -44,10 +44,10 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use futures::stream::BoxStream;
+use futures::{channel::mpsc, future, stream::BoxStream, FutureExt, StreamExt};
 use tracing_tunnel::PersistedMetadata;
 
-use std::{ops, sync::Arc};
+use std::{convert::Infallible, ops, sync::Arc};
 
 #[macro_use]
 mod macros;
@@ -74,10 +74,11 @@ pub use self::{
 };
 
 use tardigrade::{ChannelId, WakerId, WorkflowId};
+use tardigrade_worker::{MessageStream, WorkerStorageConnection, WorkerStoragePool};
 
 /// Async, transactional storage for workflows and workflow channels.
 ///
-/// A storage is required to instantiate a [`WorkflowManager`](crate::manager::WorkflowManager).
+/// A storage is required to instantiate a [`Runtime`](crate::runtime::Runtime).
 #[async_trait]
 pub trait Storage: Send + Sync {
     /// Read/write transaction for the storage. See [`StorageTransaction`] for required
@@ -158,17 +159,23 @@ impl<T> ReadonlyStorageTransaction for T where
 ///
 /// [`Self::commit()`] must be called for before the transaction is dropped.
 /// Explicit transaction rollback support is not required; all transactions instantiated
-/// by a [`WorkflowManager`] are guaranteed to eventually be committed (save for corner cases,
+/// by a [`Runtime`] are guaranteed to eventually be committed (save for corner cases,
 /// e.g., panicking when the transaction is active).
 /// If rollback *is* supported by the storage, it is assumed to be the default behavior
 /// on transaction drop. It would be an error to commit transactions on drop,
 /// since this would produce errors in the aforementioned corner cases.
 ///
-/// [`WorkflowManager`]: crate::manager::WorkflowManager
+/// [`Runtime`]: crate::runtime::Runtime
 #[must_use = "transactions must be committed to take effect"]
 #[async_trait]
 pub trait StorageTransaction:
-    Send + Sync + WriteModules + WriteChannels + WriteWorkflows + WriteWorkflowWakers
+    Send
+    + Sync
+    + WriteModules
+    + WriteChannels
+    + WriteWorkflows
+    + WriteWorkflowWakers
+    + WorkerStorageConnection<Error = Infallible>
 {
     /// Commits this transaction to the storage. This method must be called
     /// to (atomically) apply transaction changes.
@@ -213,14 +220,14 @@ pub trait ReadChannels {
     /// # Errors
     ///
     /// Returns an error if the message cannot be retrieved.
-    async fn channel_message(&self, id: ChannelId, index: usize) -> Result<Vec<u8>, MessageError>;
+    async fn channel_message(&self, id: ChannelId, index: u64) -> Result<Vec<u8>, MessageError>;
 
     /// Gets messages with indices in the specified range from the specified channel.
     fn channel_messages(
         &self,
         id: ChannelId,
-        indices: ops::RangeInclusive<usize>,
-    ) -> BoxStream<'_, (usize, Vec<u8>)>;
+        indices: ops::RangeInclusive<u64>,
+    ) -> BoxStream<'_, (u64, Vec<u8>)>;
 }
 
 /// Allows modifying stored information about channels.
@@ -245,14 +252,14 @@ pub trait WriteChannels: ReadChannels {
     async fn push_messages(&mut self, id: ChannelId, messages: Vec<Vec<u8>>);
 
     /// Truncates the channel so that `min_index` is the minimum retained index.
-    async fn truncate_channel(&mut self, id: ChannelId, min_index: usize);
+    async fn truncate_channel(&mut self, id: ChannelId, min_index: u64);
 }
 
 /// Allows reading information about workflows.
 #[async_trait]
 pub trait ReadWorkflows {
     /// Returns the number of active workflows.
-    async fn count_active_workflows(&self) -> usize;
+    async fn count_active_workflows(&self) -> u64;
     /// Retrieves a snapshot of the workflow with the specified ID.
     async fn workflow(&self, id: WorkflowId) -> Option<WorkflowRecord>;
 
@@ -327,3 +334,37 @@ impl<T: ReadonlyStorageTransaction> AsRef<T> for Readonly<T> {
 }
 
 delegate_read_traits!(Readonly<T> { inner: T });
+
+/// Wrapper around a [`Storage`] implementing [`WorkerConnection`] trait.
+/// This can be used for in-process workers.
+#[derive(Debug, Clone)]
+pub struct InProcessConnection<S>(pub S);
+
+#[async_trait]
+impl<S> WorkerStoragePool for InProcessConnection<S>
+where
+    S: StreamMessages + 'static,
+    for<'a> S::Transaction<'a>: WorkerStorageConnection<Error = Infallible>,
+{
+    type Error = Infallible;
+    type Connection<'a> = S::Transaction<'a> where Self: 'a;
+
+    async fn connect(&self) -> Self::Connection<'_> {
+        self.0.transaction().await
+    }
+
+    fn stream_messages(&self, channel_id: ChannelId, start_idx: u64) -> MessageStream<Self::Error> {
+        let (sx, rx) = mpsc::channel(16);
+        self.0
+            .stream_messages(channel_id, start_idx, sx)
+            .map(|()| rx)
+            .flatten_stream()
+            .filter_map(|message| {
+                future::ready(match message {
+                    MessageOrEof::Message(idx, payload) => Some(Ok((idx, payload))),
+                    MessageOrEof::Eof => None,
+                })
+            })
+            .boxed()
+    }
+}

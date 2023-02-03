@@ -1,4 +1,4 @@
-//! Tests for `ManagerWrapper`.
+//! Tests for `RuntimeWrapper`.
 
 use assert_matches::assert_matches;
 use futures::TryStreamExt;
@@ -16,8 +16,10 @@ use crate::{
         push_messages_request::{pushed, Pushed},
         runtime_service_server::RuntimeService,
         test_service_server::TestService,
+        update_worker_request::UpdateType,
+        workers_service_server::WorkersService,
     },
-    ManagerService,
+    RuntimeWrapper, StorageWrapper,
 };
 use tardigrade::{
     interface::{ArgsSpec, InterfaceBuilder, ReceiverSpec, SenderSpec},
@@ -25,23 +27,23 @@ use tardigrade::{
 };
 use tardigrade_rt::{
     engine::AsWorkflowData,
-    manager::WorkflowManager,
+    runtime::Runtime,
     storage::{LocalStorage, Streaming},
-    test::{
-        engine::{MockAnswers, MockEngine, MockInstance},
-        MockScheduler,
-    },
-    Schedule, TokioScheduler,
+    test::engine::{MockAnswers, MockEngine, MockInstance},
+    MockScheduler, Schedule, TokioScheduler,
 };
 
-type TestManager<C> = WorkflowManager<MockEngine, C, Streaming<Arc<LocalStorage>>>;
+type TestRuntime<C> = Runtime<MockEngine, C, Streaming<Arc<LocalStorage>>>;
 
-fn create_manager<C: Schedule>(engine: MockEngine, clock: C) -> TestManager<C> {
+fn create_storage() -> Streaming<Arc<LocalStorage>> {
     let storage = Arc::new(LocalStorage::default());
     let (storage, routing_task) = Streaming::new(storage);
     task::spawn(routing_task);
+    storage
+}
 
-    WorkflowManager::builder(engine, storage)
+fn create_runtime<C: Schedule>(engine: MockEngine, clock: C) -> TestRuntime<C> {
+    Runtime::builder(engine, create_storage())
         .with_clock(clock)
         .build()
 }
@@ -104,9 +106,8 @@ fn assert_raw_payload(message: &proto::Message, expected: &[u8]) {
 
 #[tokio::test]
 async fn channel_management() {
-    let (poll_fns, _) = MockAnswers::channel();
-    let manager = create_manager(mock_engine(poll_fns), TokioScheduler);
-    let service = ManagerService::new(manager);
+    let storage = create_storage();
+    let service = StorageWrapper::new(storage);
 
     let request = proto::CreateChannelRequest {};
     let channel = service.create_channel(Request::new(request)).await;
@@ -169,29 +170,30 @@ async fn channel_management() {
 #[tokio::test]
 async fn server_basics() {
     let (poll_fns, mut poll_fns_sx) = MockAnswers::channel();
-    let manager = create_manager(mock_engine(poll_fns), TokioScheduler);
-    let service = ManagerService::new(manager);
+    let runtime = create_runtime(mock_engine(poll_fns), TokioScheduler);
+    let runtime = RuntimeWrapper::new(runtime);
+    let channels = runtime.storage_wrapper();
 
-    test_module_deployment(&service).await;
-    test_workflow_creation_errors(&service).await;
+    test_module_deployment(&runtime).await;
+    test_workflow_creation_errors(&runtime).await;
 
     let workflow = poll_fns_sx
         .send(init_workflow)
-        .async_scope(test_workflow_creation(&service, true))
+        .async_scope(test_workflow_creation(&runtime, true))
         .await;
     poll_fns_sx
         .send(complete_workflow)
-        .async_scope(test_workflow_completion(&service, &workflow))
+        .async_scope(test_workflow_completion(&runtime, &channels, &workflow))
         .await;
 }
 
-async fn test_module_deployment<S: RuntimeService>(service: &S) {
+async fn test_module_deployment(runtime: &impl RuntimeService) {
     let request = proto::DeployModuleRequest {
         id: "test".to_owned(),
         bytes: b"test".to_vec(),
         dry_run: false,
     };
-    let module = service.deploy_module(Request::new(request)).await;
+    let module = runtime.deploy_module(Request::new(request)).await;
     let module = module.unwrap().into_inner();
     assert_eq!(module.id, "test");
 
@@ -206,20 +208,20 @@ async fn test_module_deployment<S: RuntimeService>(service: &S) {
         proto::HandleType::Sender as i32
     );
 
-    let modules = service.list_modules(Request::new(())).await;
+    let modules = runtime.list_modules(Request::new(())).await;
     let modules: Vec<_> = modules.unwrap().into_inner().try_collect().await.unwrap();
     assert_eq!(modules.len(), 1);
     assert_eq!(modules[0].id, "test");
 }
 
-async fn test_workflow_creation_errors<S: RuntimeService>(service: &S) {
+async fn test_workflow_creation_errors(runtime: &impl RuntimeService) {
     let request = proto::CreateWorkflowRequest {
         module_id: "bogus".to_owned(), // <<< invalid: module with this ID is not deployed
         name_in_module: "Workflow".to_owned(),
         args: Some(create_workflow_request::Args::RawArgs(vec![])),
         channels: HashMap::new(),
     };
-    let err = service
+    let err = runtime
         .create_workflow(Request::new(request))
         .await
         .unwrap_err();
@@ -236,7 +238,7 @@ async fn test_workflow_creation_errors<S: RuntimeService>(service: &S) {
         args: Some(create_workflow_request::Args::RawArgs(vec![])),
         channels: HashMap::new(),
     };
-    let err = service
+    let err = runtime
         .create_workflow(Request::new(request))
         .await
         .unwrap_err();
@@ -253,7 +255,7 @@ async fn test_workflow_creation_errors<S: RuntimeService>(service: &S) {
         args: Some(create_workflow_request::Args::RawArgs(vec![])),
         channels: HashMap::new(), // <<< invalid: handles are missing
     };
-    let err = service
+    let err = runtime
         .create_workflow(Request::new(request))
         .await
         .unwrap_err();
@@ -261,8 +263,8 @@ async fn test_workflow_creation_errors<S: RuntimeService>(service: &S) {
     assert!(err.message().contains("invalid shape"), "{}", err.message());
 }
 
-async fn test_workflow_creation<S: RuntimeService>(
-    service: &S,
+async fn test_workflow_creation(
+    runtime: &impl RuntimeService,
     has_driver: bool,
 ) -> proto::Workflow {
     let orders_config = proto::ChannelConfig {
@@ -283,7 +285,7 @@ async fn test_workflow_creation<S: RuntimeService>(
             ("events".to_owned(), events_config),
         ]),
     };
-    let workflow = service.create_workflow(Request::new(request)).await;
+    let workflow = runtime.create_workflow(Request::new(request)).await;
     let workflow = workflow.unwrap().into_inner();
 
     assert_eq!(workflow.module_id, "test");
@@ -296,12 +298,13 @@ async fn test_workflow_creation<S: RuntimeService>(
     }
 
     let request = proto::GetWorkflowRequest { id: workflow.id };
-    let workflow = service.get_workflow(Request::new(request)).await;
+    let workflow = runtime.get_workflow(Request::new(request)).await;
     workflow.unwrap().into_inner()
 }
 
-async fn test_workflow_completion<S: RuntimeService + ChannelsService>(
-    service: &S,
+async fn test_workflow_completion(
+    runtime: &impl RuntimeService,
+    channels: &impl ChannelsService,
     workflow: &proto::Workflow,
 ) {
     const TIMEOUT: Duration = Duration::from_millis(20);
@@ -321,7 +324,7 @@ async fn test_workflow_completion<S: RuntimeService + ChannelsService>(
     let events_id = persisted.channels["events"].id;
 
     let request = proto::GetChannelRequest { id: events_id };
-    let events_info = service.get_channel(Request::new(request)).await;
+    let events_info = channels.get_channel(Request::new(request)).await;
     let events_info = events_info.unwrap().into_inner();
     assert!(events_info.receiver_workflow_id.is_none());
     assert_eq!(events_info.sender_workflow_ids, vec![workflow.id]);
@@ -333,7 +336,7 @@ async fn test_workflow_completion<S: RuntimeService + ChannelsService>(
         codec: proto::MessageCodec::Unspecified.into(),
         follow: true,
     };
-    let events_rx = service.stream_messages(Request::new(request)).await;
+    let events_rx = channels.stream_messages(Request::new(request)).await;
     let events_rx = events_rx.unwrap().into_inner();
     futures::pin_mut!(events_rx);
 
@@ -345,7 +348,7 @@ async fn test_workflow_completion<S: RuntimeService + ChannelsService>(
             payload: Some(pushed::Payload::Raw(b"order #0".to_vec())),
         }],
     };
-    service.push_messages(Request::new(request)).await.unwrap();
+    channels.push_messages(Request::new(request)).await.unwrap();
 
     let event = events_rx.try_next().await.unwrap().unwrap();
     assert_eq!(
@@ -358,7 +361,7 @@ async fn test_workflow_completion<S: RuntimeService + ChannelsService>(
     assert_raw_payload(&event, b"event #0");
 
     let request = proto::GetWorkflowRequest { id: workflow.id };
-    let workflow = service.get_workflow(Request::new(request)).await;
+    let workflow = runtime.get_workflow(Request::new(request)).await;
     let workflow = workflow.unwrap().into_inner();
     assert_matches!(workflow.state, Some(proto::workflow::State::Completed(_)));
 }
@@ -385,11 +388,11 @@ fn resolve_timer(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
 
 async fn test_workflow_with_mock_scheduler(has_driver: bool) {
     let (poll_fns, mut poll_fns_sx) = MockAnswers::channel();
-    let manager = create_manager(mock_engine(poll_fns), MockScheduler::default());
+    let runtime = create_runtime(mock_engine(poll_fns), MockScheduler::default());
     let service = if has_driver {
-        ManagerService::new(manager)
+        RuntimeWrapper::new(runtime)
     } else {
-        ManagerService::from(manager)
+        RuntimeWrapper::from(runtime)
     };
 
     test_module_deployment(&service).await;
@@ -490,4 +493,48 @@ async fn workflow_with_mock_scheduler() {
 #[tokio::test]
 async fn workflow_with_mock_scheduler_and_driver() {
     test_workflow_with_mock_scheduler(true).await;
+}
+
+#[tokio::test]
+async fn workers_basics() {
+    let storage = create_storage();
+    let storage = StorageWrapper::new(storage);
+
+    let mut req = proto::GetOrCreateWorkerRequest {
+        name: "tardigrade.v0.Timers".to_owned(),
+        create_if_missing: false,
+    };
+    let worker = storage
+        .get_or_create_worker(Request::new(req.clone()))
+        .await;
+    let err = worker.unwrap_err();
+    assert_eq!(err.code(), Code::NotFound);
+
+    req.create_if_missing = true;
+    let worker = storage.get_or_create_worker(Request::new(req)).await;
+    let worker = worker.unwrap().into_inner();
+    assert_eq!(worker.name, "tardigrade.v0.Timers");
+    assert_eq!(worker.cursor, 0);
+
+    let inbound_channel_id = worker.inbound_channel_id;
+    let req = proto::GetChannelRequest {
+        id: inbound_channel_id,
+    };
+    let channel = storage.get_channel(Request::new(req)).await;
+    let channel = channel.unwrap().into_inner();
+    assert!(!channel.is_closed);
+
+    let req = proto::UpdateWorkerRequest {
+        worker_id: worker.id,
+        update_type: Some(UpdateType::Cursor(2)),
+    };
+    storage.update_worker(Request::new(req)).await.unwrap();
+
+    let req = proto::GetOrCreateWorkerRequest {
+        name: "tardigrade.v0.Timers".to_owned(),
+        create_if_missing: false,
+    };
+    let worker = storage.get_or_create_worker(Request::new(req)).await;
+    let worker = worker.unwrap().into_inner();
+    assert_eq!(worker.cursor, 2);
 }

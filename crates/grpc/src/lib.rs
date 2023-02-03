@@ -9,6 +9,26 @@
 //! [`tonic`]: https://docs.rs/tonic/
 //! [the CLI app]: https://crates.io/crates/tardigrade-cli
 //!
+//! # Crate features
+//!
+//! At least one of `server` and `client` features should be enabled, since the crate
+//! is useless otherwise.
+//!
+//! ## `server`
+//!
+//! *(On by default)*
+//!
+//! Exposes server functionality for Tardigrade [`Runtime`] and [`Storage`] abstractions.
+//!
+//! ## `client`
+//!
+//! *(Off by default)*
+//!
+//! Exposes client functionality to connect to the runtime.
+//!
+//! [`Runtime`]: tardigrade_rt::runtime::Runtime
+//! [`Storage`]: tardigrade_rt::storage::Storage
+//!
 //! # Examples
 //!
 //! ```
@@ -17,24 +37,24 @@
 //! # use std::{net::SocketAddr, sync::Arc};
 //!
 //! use tardigrade_rt::{
-//!     engine::Wasmtime, manager::WorkflowManager, TokioScheduler,
+//!     engine::Wasmtime, runtime::Runtime, TokioScheduler,
 //!     storage::{LocalStorage, Streaming},
 //! };
 //! use tardigrade_grpc::*;
 //!
 //! # async fn test_wrapper() -> anyhow::Result<()> {
-//! // Build a workflow manager
+//! // Build a workflow runtime
 //! let storage = Arc::new(LocalStorage::default());
 //! let (storage, routing_task) = Streaming::new(storage);
 //! task::spawn(routing_task);
-//! let manager = WorkflowManager::builder(Wasmtime::default(), storage)
+//! let runtime = Runtime::builder(Wasmtime::default(), storage)
 //!     .with_clock(TokioScheduler)
 //!     .build();
 //!
-//! // Create services based on the manager
-//! let service = ManagerService::new(manager);
-//! let runtime_service = RuntimeServiceServer::new(service.clone());
-//! let channels_service = ChannelsServiceServer::new(service);
+//! // Create services based on the runtime
+//! let service = RuntimeWrapper::new(runtime);
+//! let channels_service = ChannelsServiceServer::new(service.storage_wrapper());
+//! let runtime_service = RuntimeServiceServer::new(service);
 //!
 //! // Create gRPC server with the services
 //! let addr: SocketAddr = "[::]:9000".parse()?;
@@ -61,24 +81,36 @@
     clippy::doc_markdown // false positive on "gRPC"
 )]
 
-mod mapping;
-mod service;
+#[cfg(not(any(feature = "server", feature = "client")))]
+compile_error!(
+    "At least one of `server` and `client` features should be enabled; \
+     the crate is useless otherwise"
+);
 
-#[cfg(test)]
-mod tests;
+#[cfg(feature = "client")]
+mod client;
+#[cfg(feature = "server")]
+mod service;
 
 #[allow(clippy::pedantic)] // too may lints triggered
 mod proto {
     tonic::include_proto!("tardigrade.v0");
 }
 
+#[cfg(feature = "client")]
+#[cfg_attr(docsrs, doc(cfg(feature = "client")))]
+pub use crate::client::Client;
+#[cfg(feature = "server")]
+#[cfg_attr(docsrs, doc(cfg(feature = "server")))]
 pub use crate::{
     proto::{
         channels_service_server::ChannelsServiceServer,
         runtime_service_server::RuntimeServiceServer, test_service_server::TestServiceServer,
     },
-    service::{ManagerService, WithClockType},
+    service::{RuntimeWrapper, StorageWrapper, WithClockType},
 };
 
 /// Serialized file descriptor set for messages and services declared in this crate.
+#[cfg(feature = "server")]
+#[cfg_attr(docsrs, doc(cfg(feature = "server")))]
 pub const SERVICE_DESCRIPTOR: &[u8] = tonic::include_file_descriptor_set!("tardigrade_descriptor");

@@ -119,7 +119,7 @@ fn test_requests(init: TestInit) {
                     strings.push(data);
                     str_lengths.responses.send(response).await.ok();
                 }
-                Request::Cancel { id } => {
+                Request::Cancel { id, .. } => {
                     cancelled_ids.insert(id);
                 }
             }

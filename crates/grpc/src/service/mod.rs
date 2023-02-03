@@ -8,15 +8,20 @@ use tonic::{Request, Response, Status};
 
 use std::collections::HashMap;
 
-use crate::mapping::from_timestamp;
+mod mapping;
+mod storage;
+
+#[cfg(test)]
+mod tests;
+
+pub use self::storage::StorageWrapper;
+
+use self::mapping::from_timestamp;
 use crate::proto::{
-    channel_config, channels_service_server::ChannelsService, create_workflow_request,
-    push_messages_request::pushed, runtime_info::ClockType, runtime_service_server::RuntimeService,
-    test_service_server::TestService, AbortWorkflowRequest, Channel, ChannelConfig,
-    CloseChannelRequest, CreateChannelRequest, CreateWorkflowRequest, DeployModuleRequest,
-    GetChannelRequest, GetMessageRequest, GetWorkflowRequest, HandleType, Message, MessageCodec,
-    Module, PushMessagesRequest, RuntimeInfo, StreamMessagesRequest, TickResult,
-    TickWorkflowRequest, Workflow,
+    channel_config, create_workflow_request, runtime_info::ClockType,
+    runtime_service_server::RuntimeService, test_service_server::TestService, AbortWorkflowRequest,
+    ChannelConfig, CreateWorkflowRequest, DeployModuleRequest, GetWorkflowRequest, HandleType,
+    Module, RuntimeInfo, TickResult, TickWorkflowRequest, Workflow,
 };
 use tardigrade::{
     handle::{Handle, HandlePathBuf},
@@ -27,21 +32,20 @@ use tardigrade::{
 use tardigrade_rt::{
     engine::WorkflowEngine,
     handle::AnyWorkflowHandle,
-    manager::{AsManager, DriveConfig, ManagerSpawner, WorkflowManager, WorkflowTickError},
+    runtime::{AsRuntime, DriveConfig, Runtime, RuntimeSpawner, WorkflowTickError},
     storage::{
         ReadModules, ReadWorkflows, Storage, StorageTransaction, StreamMessages, Streaming,
         TransactionAsStorage,
     },
-    test::MockScheduler,
-    Schedule, TokioScheduler,
+    MockScheduler, Schedule, TokioScheduler,
 };
 
 type TxStorage<'a, S> = TransactionAsStorage<<S as Storage>::Transaction<'a>>;
 
-type TxManager<'a, M> = WorkflowManager<
-    <M as AsManager>::Engine,
-    <M as AsManager>::Clock,
-    TxStorage<'a, <M as AsManager>::Storage>,
+type TxRuntime<'a, R> = Runtime<
+    <R as AsRuntime>::Engine,
+    <R as AsRuntime>::Clock,
+    TxStorage<'a, <R as AsRuntime>::Storage>,
 >;
 
 /// Scheduler that can be described.
@@ -62,77 +66,83 @@ impl WithClockType for MockScheduler {
     }
 }
 
-/// gRPC service wrapper for the [Tardigrade runtime](WorkflowManager).
+/// gRPC service wrapper for the [Tardigrade runtime](Runtime).
 ///
 /// # Examples
 ///
 /// See [crate-level docs](index.html#examples) for the examples of usage.
 #[derive(Debug, Clone)]
-pub struct ManagerService<M> {
-    inner: M,
+pub struct RuntimeWrapper<R> {
+    inner: R,
     has_driver: bool,
     clock_type: ClockType,
 }
 
-impl<S, M: AsManager<Storage = Streaming<S>>> ManagerService<M>
+impl<S, R: AsRuntime<Storage = Streaming<S>>> RuntimeWrapper<R>
 where
     S: Storage + Clone + 'static,
-    M::Clock: Schedule,
+    R::Clock: Schedule,
 {
-    /// Creates a new wrapper around the provided `manager`. Drives the manager in the background
-    /// task using [`WorkflowManager::drive()`].
-    pub fn new(mut manager: M) -> Self {
-        let storage = manager.as_manager_mut().storage_mut();
+    /// Creates a new wrapper around the provided `runtime`. Drives the runtime in the background
+    /// task using [`Runtime::drive()`].
+    pub fn new(mut runtime: R) -> Self {
+        let storage = runtime.as_runtime_mut().storage_mut();
         let mut commits_rx = storage.stream_commits();
         {
-            let manager = manager.as_manager().clone();
+            let runtime = runtime.as_runtime().clone();
             let mut config = DriveConfig::new();
             config.wait_for_workflows();
             task::spawn(async move {
-                manager.drive(&mut commits_rx, config).await;
+                runtime.drive(&mut commits_rx, config).await;
             });
         }
 
         Self {
-            inner: manager,
+            inner: runtime,
             has_driver: true,
             clock_type: ClockType::Unspecified,
         }
     }
-}
 
-impl<M: AsManager> ManagerService<M>
-where
-    M::Clock: WithClockType,
-{
-    /// Records the clock type used in the wrapped runtime.
-    pub fn set_clock_type(&mut self) {
-        self.clock_type = <M::Clock>::clock_type();
+    /// Returns a service wrapper for the underlying storage.
+    pub fn storage_wrapper(&self) -> StorageWrapper<Streaming<S>> {
+        let storage = self.inner.as_runtime().storage();
+        StorageWrapper::new(storage.as_ref().clone())
     }
 }
 
-/// Wraps the specified manager. Unlike [`Self::new()`], does not start any background tasks.
-impl<S, M: AsManager<Storage = Streaming<S>>> From<M> for ManagerService<M>
+impl<R: AsRuntime> RuntimeWrapper<R>
+where
+    R::Clock: WithClockType,
+{
+    /// Records the clock type used in the wrapped runtime.
+    pub fn set_clock_type(&mut self) {
+        self.clock_type = <R::Clock>::clock_type();
+    }
+}
+
+/// Wraps the specified runtime. Unlike [`Self::new()`], does not start any background tasks.
+impl<S, R: AsRuntime<Storage = Streaming<S>>> From<R> for RuntimeWrapper<R>
 where
     S: Storage + Clone + 'static,
-    M::Clock: Schedule,
+    R::Clock: Schedule,
 {
-    fn from(manager: M) -> Self {
+    fn from(runtime: R) -> Self {
         Self {
-            inner: manager,
+            inner: runtime,
             has_driver: false,
             clock_type: ClockType::Unspecified,
         }
     }
 }
 
-impl<M: AsManager> ManagerService<M>
+impl<R: AsRuntime> RuntimeWrapper<R>
 where
-    M::Storage: StreamMessages + Clone + 'static,
+    R::Storage: StreamMessages + Clone + 'static,
 {
     #[tracing::instrument(level = "debug", skip(spawner), err)]
     async fn create_handles<'r, 'a: 'r>(
-        spawner: &ManagerSpawner<'r, TxManager<'a, M>, Raw>,
+        spawner: &RuntimeSpawner<'r, TxRuntime<'a, R>, Raw>,
         config: &HashMap<String, ChannelConfig>,
     ) -> Result<UntypedHandles<Raw>, Status> {
         let mut handles = UntypedHandles::<Raw>::new();
@@ -153,7 +163,7 @@ where
 
     #[tracing::instrument(level = "debug", skip(spawner), err)]
     async fn create_handle<'r, 'a: 'r>(
-        spawner: &ManagerSpawner<'r, TxManager<'a, M>, Raw>,
+        spawner: &RuntimeSpawner<'r, TxRuntime<'a, R>, Raw>,
         ty: i32,
         path: &HandlePathBuf,
     ) -> Result<Handle<ChannelId>, Status> {
@@ -192,7 +202,7 @@ where
     }
 
     async fn do_get_workflow(&self, workflow_id: WorkflowId) -> Result<Response<Workflow>, Status> {
-        let storage = self.inner.as_manager().storage();
+        let storage = self.inner.as_runtime().storage();
         let storage = storage.as_ref();
         let transaction = storage.readonly_transaction().await;
         let workflow = transaction.workflow(workflow_id).await;
@@ -215,10 +225,10 @@ where
         };
 
         let definition_id = format!("{}::{}", request.module_id, request.name_in_module);
-        let mut manager = self.inner.as_manager().clone();
-        let tx_manager = manager.in_transaction().await;
+        let mut runtime = self.inner.as_runtime().clone();
+        let tx_runtime = runtime.in_transaction().await;
 
-        let spawner = tx_manager.raw_spawner();
+        let spawner = tx_runtime.raw_spawner();
         let builder = spawner.new_workflow::<()>(&definition_id).await;
         let builder = builder.map_err(|_| {
             let message = format!("workflow definition `{definition_id}` does not exist");
@@ -230,7 +240,7 @@ where
         let workflow_id =
             workflow_id.map_err(|err| Status::invalid_argument(format!("{err:#}")))?;
 
-        let Some(transaction) = tx_manager.into_storage().into_inner() else {
+        let Some(transaction) = tx_runtime.into_storage().into_inner() else {
             return Err(Status::internal("cannot commit transaction"));
         };
         transaction.commit().await;
@@ -239,10 +249,10 @@ where
 }
 
 #[tonic::async_trait]
-impl<M> RuntimeService for ManagerService<M>
+impl<R> RuntimeService for RuntimeWrapper<R>
 where
-    M: AsManager + 'static,
-    M::Storage: StreamMessages + Clone + 'static,
+    R: AsRuntime + 'static,
+    R::Storage: StreamMessages + Clone + 'static,
 {
     #[tracing::instrument(skip_all, err)]
     async fn get_info(&self, _request: Request<()>) -> Result<Response<RuntimeInfo>, Status> {
@@ -258,9 +268,9 @@ where
         &self,
         request: Request<DeployModuleRequest>,
     ) -> Result<Response<Module>, Status> {
-        let manager = self.inner.as_manager();
+        let runtime = self.inner.as_runtime();
         let request = request.into_inner();
-        let module = manager
+        let module = runtime
             .engine()
             .create_module(request.bytes.into())
             .await
@@ -269,7 +279,7 @@ where
         let module = if request.dry_run {
             Module::from_engine_module(request.id, module)
         } else {
-            let module = manager.insert_module(&request.id, module).await;
+            let module = runtime.insert_module(&request.id, module).await;
             Module::from_record(module)
         };
         Ok(Response::new(module))
@@ -282,7 +292,7 @@ where
         &self,
         _request: Request<()>,
     ) -> Result<Response<Self::ListModulesStream>, Status> {
-        let storage = self.inner.as_manager().storage();
+        let storage = self.inner.as_runtime().storage();
         let storage = storage.as_ref().clone();
 
         let modules = stream! {
@@ -319,9 +329,9 @@ where
     ) -> Result<Response<TickResult>, Status> {
         let workflow_id = request.get_ref().workflow_id;
 
-        let manager = self.inner.as_manager();
+        let runtime = self.inner.as_runtime();
         let result = if let Some(workflow_id) = workflow_id {
-            match manager.tick_workflow(workflow_id).await {
+            match runtime.tick_workflow(workflow_id).await {
                 Ok(result) => Ok(result),
                 Err(WorkflowTickError::WouldBlock(err)) => Err(err),
                 Err(WorkflowTickError::NotFound) => {
@@ -334,7 +344,7 @@ where
                 }
             }
         } else {
-            manager.tick().await
+            runtime.tick().await
         };
         let result = result.map_err(|would_block| (workflow_id, would_block));
 
@@ -349,7 +359,7 @@ where
     ) -> Result<Response<Workflow>, Status> {
         let workflow_id = request.get_ref().id;
 
-        let storage = self.inner.as_manager().storage();
+        let storage = self.inner.as_runtime().storage();
         let workflow = storage.any_workflow(workflow_id).await;
         let workflow = workflow
             .ok_or_else(|| Status::not_found(format!("workflow {workflow_id} does not exist")))?;
@@ -374,178 +384,10 @@ where
 }
 
 #[tonic::async_trait]
-impl<M> ChannelsService for ManagerService<M>
+impl<R> TestService for RuntimeWrapper<R>
 where
-    M: AsManager + 'static,
-    M::Storage: StreamMessages + Clone + 'static,
-{
-    #[tracing::instrument(skip_all, err)]
-    async fn create_channel(
-        &self,
-        _request: Request<CreateChannelRequest>,
-    ) -> Result<Response<Channel>, Status> {
-        let manager = self.inner.as_manager();
-        let (sender, _) = manager.storage().new_channel().await;
-        let channel = sender.channel_info().clone();
-        let channel = Channel::from_record(sender.channel_id(), channel);
-        Ok(Response::new(channel))
-    }
-
-    #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
-    async fn get_channel(
-        &self,
-        request: Request<GetChannelRequest>,
-    ) -> Result<Response<Channel>, Status> {
-        let channel_id = request.get_ref().id;
-        let manager = self.inner.as_manager();
-        let channel = manager.storage().channel(channel_id).await;
-        let channel = channel
-            .ok_or_else(|| Status::not_found(format!("channel {channel_id} does not exist")))?;
-        let channel = Channel::from_record(channel_id, channel);
-        Ok(Response::new(channel))
-    }
-
-    #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
-    async fn close_channel(
-        &self,
-        request: Request<CloseChannelRequest>,
-    ) -> Result<Response<Channel>, Status> {
-        let channel_id = request.get_ref().id;
-        let handle_to_close = HandleType::from_i32(request.get_ref().half)
-            .ok_or_else(|| Status::invalid_argument("invalid channel half specified"))?;
-
-        let storage = self.inner.as_manager().storage();
-        match handle_to_close {
-            HandleType::Sender => {
-                let sender = storage.sender(channel_id).await.ok_or_else(|| {
-                    Status::not_found(format!("channel {channel_id} does not exist"))
-                })?;
-                sender.close().await;
-            }
-
-            HandleType::Receiver => {
-                let receiver = storage.receiver(channel_id).await.ok_or_else(|| {
-                    Status::not_found(format!("channel {channel_id} does not exist"))
-                })?;
-                receiver.close().await;
-            }
-
-            HandleType::Unspecified => {
-                let message = "invalid channel half specified";
-                return Err(Status::invalid_argument(message));
-            }
-        }
-
-        // The channel should exist at this point, but we handle errors just in case.
-        let channel = storage
-            .channel(channel_id)
-            .await
-            .ok_or_else(|| Status::not_found(format!("channel {channel_id} does not exist")))?;
-        let channel = Channel::from_record(channel_id, channel);
-        Ok(Response::new(channel))
-    }
-
-    #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
-    async fn get_message(
-        &self,
-        request: Request<GetMessageRequest>,
-    ) -> Result<Response<Message>, Status> {
-        let request = request.into_inner();
-        let codec = MessageCodec::from_i32(request.codec)
-            .ok_or_else(|| Status::invalid_argument("invalid message codec specified"))?;
-
-        let reference = request
-            .r#ref
-            .ok_or_else(|| Status::invalid_argument("message reference is not specified"))?;
-        let channel_id = reference.channel_id;
-        let message_idx = usize::try_from(reference.index)
-            .map_err(|_| Status::invalid_argument("message index is too large"))?;
-
-        let manager = self.inner.as_manager();
-        let receiver = manager.storage().receiver(channel_id).await;
-        let receiver = receiver
-            .ok_or_else(|| Status::not_found(format!("channel {channel_id} does not exist")))?;
-        let receiver = receiver.into_owned();
-
-        let message = receiver.receive_message(message_idx).await;
-        let message = message.map_err(|err| Status::not_found(err.to_string()))?;
-        let message = Message::try_from_data(channel_id, message, codec)?;
-        Ok(Response::new(message))
-    }
-
-    type StreamMessagesStream = BoxStream<'static, Result<Message, Status>>;
-
-    #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
-    async fn stream_messages(
-        &self,
-        request: Request<StreamMessagesRequest>,
-    ) -> Result<Response<Self::StreamMessagesStream>, Status> {
-        let request = request.get_ref();
-        let codec = MessageCodec::from_i32(request.codec)
-            .ok_or_else(|| Status::invalid_argument("invalid message codec specified"))?;
-        let channel_id = request.channel_id;
-        let start_index = usize::try_from(request.start_index)
-            .map_err(|_| Status::invalid_argument("message index is too large"))?;
-
-        let manager = self.inner.as_manager();
-        let receiver = manager.storage().receiver(channel_id).await;
-        let receiver = receiver
-            .ok_or_else(|| Status::not_found(format!("channel {channel_id} does not exist")))?;
-
-        let messages = if request.follow {
-            receiver
-                .stream_messages(start_index..)
-                .map(move |message| Message::try_from_data(channel_id, message, codec))
-                .boxed()
-        } else {
-            let receiver = receiver.into_owned();
-            let messages = stream! {
-                let messages = receiver.receive_messages(start_index..);
-                for await message in messages {
-                    yield Message::try_from_data(channel_id, message, codec);
-                }
-            };
-            messages.boxed()
-        };
-        Ok(Response::new(messages))
-    }
-
-    #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
-    async fn push_messages(
-        &self,
-        request: Request<PushMessagesRequest>,
-    ) -> Result<Response<()>, Status> {
-        let request = request.into_inner();
-        let channel_id = request.channel_id;
-
-        let manager = self.inner.as_manager();
-        let sender = manager.storage().sender(channel_id).await;
-        let sender = sender
-            .ok_or_else(|| Status::not_found(format!("channel {channel_id} does not exist")))?;
-
-        let messages: Result<Vec<_>, _> = request
-            .messages
-            .into_iter()
-            .map(|message| match message.payload {
-                None => Err(Status::invalid_argument("no message payload specified")),
-                Some(pushed::Payload::Raw(bytes)) => Ok(bytes),
-                Some(pushed::Payload::Str(string)) => Ok(string.into_bytes()),
-            })
-            .collect();
-
-        sender
-            .send_all(messages?)
-            .await
-            .map_err(|err| Status::aborted(err.to_string()))?;
-        Ok(Response::new(()))
-    }
-}
-
-#[tonic::async_trait]
-impl<M> TestService for ManagerService<M>
-where
-    M: AsManager<Clock = MockScheduler> + 'static,
-    M::Storage: StreamMessages + Clone + 'static,
+    R: AsRuntime<Clock = MockScheduler> + 'static,
+    R::Storage: StreamMessages + Clone + 'static,
 {
     #[tracing::instrument(skip_all, err, fields(request = ?request.get_ref()))]
     async fn set_time(&self, request: Request<Timestamp>) -> Result<Response<()>, Status> {
@@ -553,10 +395,10 @@ where
         let timestamp = from_timestamp(timestamp)
             .ok_or_else(|| Status::invalid_argument("provided timestamp is invalid"))?;
 
-        let manager = self.inner.as_manager();
-        manager.clock().set_now(timestamp);
+        let runtime = self.inner.as_runtime();
+        runtime.clock().set_now(timestamp);
         if !self.has_driver {
-            manager.set_current_time(timestamp).await;
+            runtime.set_current_time(timestamp).await;
         }
 
         Ok(Response::new(()))

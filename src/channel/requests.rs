@@ -11,51 +11,17 @@ use futures::{
     stream::{self, FusedStream},
     FutureExt, SinkExt, StreamExt,
 };
-use serde::{Deserialize, Serialize};
 
 use std::{collections::HashMap, future::Future, marker::PhantomData};
+
+use tardigrade_shared::{Request, Response};
 
 use crate::{
     channel::{Receiver, Sender},
     task::{self, JoinHandle},
     workflow::{HandleFormat, InEnv, Wasm, WithHandle},
-    ChannelId, Codec,
+    Codec,
 };
-
-/// Container for a [request](Requests) that can also be used to cancel the pending request
-/// from the client side.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Request<T> {
-    /// New request.
-    New {
-        /// Identifier of the request unique within the [`Requests`] instance generating
-        /// requests.
-        #[serde(rename = "@id")]
-        id: u64,
-        /// Payload of the request.
-        data: T,
-        /// ID of the response channel.
-        #[serde(rename = "rx")]
-        response_channel_id: ChannelId,
-    },
-    /// Request cancellation.
-    Cancel {
-        /// Identifier of a [previously created](Self::New) request.
-        #[serde(rename = "@id")]
-        id: u64,
-    },
-}
-
-/// Container for the response to a [`Request`].
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct Response<T> {
-    /// Identifier of the request that this response corresponds to.
-    #[serde(rename = "@id")]
-    pub id: u64,
-    /// Wrapped response payload.
-    pub data: T,
-}
 
 #[derive(Debug)]
 struct RequestsHandle<Req, Resp> {
@@ -162,9 +128,12 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
                     "removed cancelled pending requests"
                 );
             }
-            let canceled_ids = canceled_ids
-                .into_iter()
-                .map(|id| Ok(Request::Cancel { id }));
+            let canceled_ids = canceled_ids.into_iter().map(|id| {
+                Ok(Request::Cancel {
+                    id,
+                    response_channel_id,
+                })
+            });
             requests_sx
                 .send_all(&mut stream::iter(canceled_ids))
                 .await
@@ -189,7 +158,8 @@ impl<Req, Resp> RequestsHandle<Req, Resp> {
 
 /// [`Request`] sender based on a pair of channels: an outbound channel to send requests,
 /// and the corresponding inbound channel to listen to responses.
-/// Can be used to call to external task executors.
+/// Can be used to call a worker; for this, the outbound channel must specify the `worker`
+/// name.
 ///
 /// # Examples
 ///

@@ -30,7 +30,7 @@ pub enum WakeUpCause {
         /// ID of the channel.
         channel_id: ChannelId,
         /// 0-based message index.
-        message_index: usize,
+        message_index: u64,
     },
     /// Woken up by a channel getting closed.
     ChannelClosed {

@@ -19,11 +19,9 @@ use crate::{
         ChannelEvent, ChannelEventKind, Event, ExecutedFunction, Execution, ExecutionError,
         Receipt, ResourceEventKind, ResourceId,
     },
-    test::{
-        engine::{MockAnswers, MockDefinition, MockInstance, MockPollFn},
-        MockScheduler,
-    },
+    test::engine::{MockAnswers, MockDefinition, MockInstance, MockPollFn},
     workflow::{PersistedWorkflow, Workflow},
+    MockScheduler,
 };
 use tardigrade::{
     abi::PollMessage, interface::Interface, task::JoinError, ChannelId, TimerDefinition,

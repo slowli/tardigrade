@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 env:
-  msrv: 1.65.0
+  msrv: 1.66.0
   nightly: nightly-2022-11-24
   protoc: "21.12"
   grpcurl: 1.8.7
@@ -150,6 +150,12 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           name: "Clippy: runtime, no features"
           args: -p tardigrade-rt --lib --no-default-features -- -D warnings
+      - name: Clippy (gRPC client)
+        uses: actions-rs/clippy-check@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          name: "Clippy: gRPC client"
+          args: -p tardigrade-grpc --lib --no-default-features --features client -- -D warnings
       - name: Clippy (CLI)
         uses: actions-rs/clippy-check@v1
         with:
@@ -224,6 +230,7 @@ jobs:
           cargo clean --doc && \
           cargo rustdoc -p tardigrade-shared --all-features -- --cfg docsrs && \
           cargo rustdoc -p tardigrade --all-features -- --cfg docsrs && \
+          cargo rustdoc -p tardigrade-worker --all-features -- --cfg docsrs && \
           cargo rustdoc -p tardigrade-rt --all-features -- --cfg docsrs && \
           cargo rustdoc -p tardigrade-grpc --all-features -- --cfg docsrs
 

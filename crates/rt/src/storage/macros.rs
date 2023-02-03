@@ -31,7 +31,7 @@ macro_rules! delegate_read_traits {
             async fn channel_message(
                 &self,
                 id: tardigrade::ChannelId,
-                index: usize,
+                index: u64,
             ) -> Result<Vec<u8>, $crate::storage::MessageError> {
                 self.$field.channel_message(id, index).await
             }
@@ -39,8 +39,8 @@ macro_rules! delegate_read_traits {
             fn channel_messages(
                 &self,
                 id: tardigrade::ChannelId,
-                indices: std::ops::RangeInclusive<usize>,
-            ) -> futures::stream::BoxStream<'_, (usize, Vec<u8>)> {
+                indices: std::ops::RangeInclusive<u64>,
+            ) -> futures::stream::BoxStream<'_, (u64, Vec<u8>)> {
                 self.$field.channel_messages(id, indices)
             }
         }
@@ -50,7 +50,7 @@ macro_rules! delegate_read_traits {
         $(where
             $field_ty: $crate::storage::ReadonlyStorageTransaction,)?
         {
-            async fn count_active_workflows(&self) -> usize {
+            async fn count_active_workflows(&self) -> u64 {
                 self.$field.count_active_workflows().await
             }
 
