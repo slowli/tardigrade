@@ -1,5 +1,6 @@
 //! Channel handles for sending / receiving messages.
 
+use async_stream::stream;
 use futures::{channel::mpsc, stream::BoxStream, FutureExt, Stream, StreamExt};
 
 use std::{
@@ -11,12 +12,9 @@ use std::{
     task::{ready, Context, Poll},
 };
 
-use crate::{
-    storage::{
-        helper, ChannelRecord, MessageError, MessageOrEof, ReadChannels, Storage,
-        StorageTransaction, StreamMessages, WriteChannels,
-    },
-    utils::RefStream,
+use crate::storage::{
+    helper, ChannelRecord, MessageError, MessageOrEof, ReadChannels, Storage, StorageTransaction,
+    StreamMessages, WriteChannels,
 };
 use tardigrade::{
     channel::SendError,
@@ -244,17 +242,17 @@ impl<T, C: Codec<T>, S: Storage> MessageReceiver<T, C, S> {
         indices: impl ops::RangeBounds<u64>,
     ) -> impl Stream<Item = ReceivedMessage<T, C>> + '_ {
         let indices = unify_index_range(indices);
-        let messages_future = async {
+        stream! {
             let tx = self.storage.readonly_transaction().await;
-            RefStream::from_source(tx, |tx| tx.channel_messages(self.channel_id, indices))
-        };
-        messages_future
-            .flatten_stream()
-            .map(|(index, raw_message)| ReceivedMessage {
-                index,
-                raw_message,
-                _ty: PhantomData,
-            })
+            let messages = tx.channel_messages(self.channel_id, indices);
+            for await (index, raw_message) in messages {
+                yield ReceivedMessage {
+                    index,
+                    raw_message,
+                    _ty: PhantomData,
+                };
+            }
+        }
     }
 
     /// Checks whether this receiver can be used to manipulate the channel (e.g., close it).
