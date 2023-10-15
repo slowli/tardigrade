@@ -425,11 +425,7 @@ pub struct RuntimeSpawner<'a, M, Fmt = ()> {
 
 impl<M, Fmt> Clone for RuntimeSpawner<'_, M, Fmt> {
     fn clone(&self) -> Self {
-        Self {
-            inner: self.inner,
-            close_senders: self.close_senders,
-            _format: PhantomData,
-        }
+        *self
     }
 }
 

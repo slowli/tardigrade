@@ -97,7 +97,7 @@ impl Stream for CommitStream {
                     }
                 }
                 Poll::Ready(None) => return Poll::Ready(None),
-                Poll::Ready(Some(_)) => {
+                Poll::Ready(Some(())) => {
                     seen_item = true;
                 }
             }
@@ -184,15 +184,8 @@ impl<S: Storage + Clone> Streaming<S> {
 
 #[async_trait]
 impl<S: Storage> Storage for Streaming<S> {
-    type Transaction<'a>
-    where
-        S: 'a,
-    = StreamingTransaction<S::Transaction<'a>>;
-
-    type ReadonlyTransaction<'a>
-    where
-        S: 'a,
-    = S::ReadonlyTransaction<'a>;
+    type Transaction<'a> = StreamingTransaction<S::Transaction<'a>> where S: 'a;
+    type ReadonlyTransaction<'a> = S::ReadonlyTransaction<'a> where S: 'a;
 
     async fn transaction(&self) -> Self::Transaction<'_> {
         let transaction = self.inner.transaction().await;

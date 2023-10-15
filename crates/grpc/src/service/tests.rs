@@ -482,7 +482,7 @@ where
     let result = result.unwrap().into_inner();
 
     assert_eq!(result.workflow_id, Some(workflow_id));
-    assert_matches!(result.outcome, Some(proto::tick_result::Outcome::Ok(_)));
+    assert_matches!(result.outcome, Some(proto::tick_result::Outcome::Ok(())));
 }
 
 #[tokio::test]

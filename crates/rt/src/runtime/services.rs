@@ -72,12 +72,12 @@ pub(crate) trait StashStub: Any + Send + Sync {
 }
 
 impl dyn StashStub {
-    pub(crate) fn downcast<T: StashStub>(self: Box<Self>) -> Box<T> {
+    pub(crate) fn downcast<T: StashStub>(self: Box<Self>) -> T {
         assert_eq!(self.as_ref().type_id(), TypeId::of::<T>());
-        unsafe {
+        *unsafe {
             // SAFETY: This duplicates downcasting logic from `Box::<dyn Any>::downcast()`.
             let leaked = (Box::leak(self) as *mut Self).cast::<T>();
-            Box::from_raw(leaked)
+            Box::<T>::from_raw(leaked)
         }
     }
 }

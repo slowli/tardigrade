@@ -84,7 +84,7 @@ fn emit_event_and_flush(ctx: &mut MockInstance) -> anyhow::Result<()> {
     let data = ctx.data_mut();
     let events_id = data.persisted.channels().channel_id("events").unwrap();
     let poll_res = data.sender(events_id).poll_ready().into_inner(ctx)?;
-    assert_matches!(poll_res, Poll::Ready(Ok(_)));
+    assert_matches!(poll_res, Poll::Ready(Ok(())));
 
     let data = ctx.data_mut();
     data.sender(events_id).start_send(b"event #1".to_vec())?;
@@ -107,7 +107,7 @@ fn consume_message(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     // Emit a trace (shouldn't block the task).
     let mut traces = ctx.data_mut().sender(traces_id);
     let poll_res = traces.poll_ready().into_inner(ctx)?;
-    assert_matches!(poll_res, Poll::Ready(Ok(_)));
+    assert_matches!(poll_res, Poll::Ready(Ok(())));
     let mut traces = ctx.data_mut().sender(traces_id);
     traces.start_send(b"trace #1".to_vec())?;
     emit_event_and_flush(ctx)?;
@@ -119,7 +119,7 @@ fn consume_message(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>> {
     // Check that sending traces is still possible
     let mut traces = ctx.data_mut().sender(traces_id);
     let poll_res = traces.poll_ready().into_inner(ctx)?;
-    assert_matches!(poll_res, Poll::Ready(Ok(_)));
+    assert_matches!(poll_res, Poll::Ready(Ok(())));
 
     Ok(Poll::Pending)
 }
@@ -531,7 +531,7 @@ fn rolling_back_emitting_messages_on_trap() {
             .unwrap();
         let mut traces = ctx.data_mut().sender(traces_id);
         let poll_res = traces.poll_ready().into_inner(ctx)?;
-        assert_matches!(poll_res, Poll::Ready(Ok(_)));
+        assert_matches!(poll_res, Poll::Ready(Ok(())));
         ctx.data_mut()
             .sender(traces_id)
             .start_send(b"trace #1".to_vec())?;
@@ -726,7 +726,7 @@ fn completing_main_task_with_compound_error() {
 fn completing_subtask_with_error() {
     let check_subtask_completion: MockPollFn = |ctx| {
         let poll_res = ctx.data_mut().task(1).poll_completion().into_inner(ctx)?;
-        assert_matches!(poll_res, Poll::Ready(Ok(_)));
+        assert_matches!(poll_res, Poll::Ready(Ok(())));
         Ok(Poll::Pending)
     };
     let mut main_task_polls = mimicry::Answers::from_values([

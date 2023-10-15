@@ -79,7 +79,7 @@ impl<W, S: fmt::Debug> fmt::Debug for WorkflowHandle<W, S> {
             .field("storage", &self.storage)
             .field("record", &self.record)
             .field("channel_ids", &self.channel_ids)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

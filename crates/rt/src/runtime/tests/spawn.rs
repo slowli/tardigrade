@@ -374,7 +374,7 @@ async fn sending_message_to_child() {
         let child_orders_id = child_channels.channel_id("orders").unwrap();
         let mut child_orders = ctx.data_mut().sender(child_orders_id);
         let poll_result = child_orders.poll_ready().into_inner(ctx)?;
-        assert_matches!(poll_result, Poll::Ready(Ok(_)));
+        assert_matches!(poll_result, Poll::Ready(Ok(())));
 
         let mut child_orders = ctx.data_mut().sender(child_orders_id);
         child_orders.start_send(b"child_order".to_vec())?;

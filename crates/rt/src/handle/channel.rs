@@ -423,7 +423,7 @@ impl<T, C: Codec<T>> fmt::Debug for MessageStream<T, C> {
         formatter
             .debug_struct("MessageStream")
             .field("is_closed", &self.is_closed)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

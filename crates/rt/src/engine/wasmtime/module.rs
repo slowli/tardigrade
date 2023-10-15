@@ -190,7 +190,7 @@ impl fmt::Debug for WasmtimeDefinition {
             .debug_struct("WasmtimeDefinition")
             .field("workflow_name", &self.workflow_name)
             .field("data_section", &self.data_section)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

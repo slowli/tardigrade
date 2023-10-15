@@ -1,5 +1,7 @@
 //! Tests for `Runtime`.
 
+#![allow(clippy::large_futures)]
+
 use anyhow::anyhow;
 use assert_matches::assert_matches;
 use mimicry::Answers;
@@ -322,7 +324,7 @@ async fn closing_workflow_channels() {
 
         let mut events = ctx.data_mut().sender(events_id);
         let poll_result = events.poll_flush().into_inner(ctx)?;
-        assert_matches!(poll_result, Poll::Ready(Ok(_)));
+        assert_matches!(poll_result, Poll::Ready(Ok(())));
 
         let mut events = ctx.data_mut().sender(events_id);
         let poll_result = events.poll_ready().into_inner(ctx)?;

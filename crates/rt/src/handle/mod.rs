@@ -66,7 +66,7 @@ pub struct StorageRef<'a, S> {
 
 impl<S: Storage> Clone for StorageRef<'_, S> {
     fn clone(&self) -> Self {
-        Self { inner: self.inner }
+        *self
     }
 }
 

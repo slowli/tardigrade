@@ -134,6 +134,7 @@ impl Interface {
     }
 
     /// Serializes this interface.
+    #[allow(clippy::missing_panics_doc)]
     pub fn to_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("failed serializing `Interface`")
     }
