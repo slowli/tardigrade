@@ -34,7 +34,7 @@ async-io = { version = "1.7.0", optional = true }
 # Implements the scheduler trait based on `tokio` runtime.
 tokio = { version = "1.23.0", features = ["time"], optional = true }
 
-tardigrade = { version = "0.1.0", path = "../.." }
+tardigrade = { version = "0.1.0", path = "../lib" }
 tardigrade-worker = { version = "0.1.0", path = "../worker" }
 
 [dependencies.externref]

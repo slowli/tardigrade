@@ -27,6 +27,3 @@ tardigrade-grpc = { version = "0.1.0", path = "../grpc", features = ["server"] }
 [[bin]]
 name = "tardigrade-grpc"
 path = "src/main.rs"
-
-[workspace]
-members = [] # Separate workspace to commit the lockfile

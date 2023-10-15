@@ -150,7 +150,7 @@ is also flexible enough to allow workflows with the interface not known at compi
 
 ### Crates
 
-- The `tardigrade` crate [at the root](.) provides client bindings
+- The [`tardigrade`](crates/lib) crate provides client bindings
   (i.e., it is necessary to include it as a dependency for workflow WASM modules).
 - The [`tardigrade-derive`](crates/derive) crate provides proc macros
   for client bindings.

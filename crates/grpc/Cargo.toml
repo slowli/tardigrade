@@ -20,7 +20,7 @@ tokio = { version = "1.24.1", features = ["rt"], optional = true }
 tonic = { version = "0.8.3", default-features = false, features = ["codegen", "prost"] }
 tracing = { version = "0.1.37", features = ["attributes"] }
 
-tardigrade = { version = "0.1.0", path = "../.." }
+tardigrade = { version = "0.1.0", path = "../lib" }
 tardigrade-rt = { version = "0.1.0", path = "../rt", features = ["tokio"], optional = true }
 tardigrade-worker = { version = "0.1.0", path = "../worker" }
 

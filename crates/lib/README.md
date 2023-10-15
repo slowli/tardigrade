@@ -2,6 +2,10 @@
 
 [![Build Status](https://github.com/slowli/tardigrade/workflows/CI/badge.svg?branch=main)](https://github.com/slowli/tardigrade/actions)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%2FApache--2.0-blue)](https://github.com/slowli/tardigrade#license)
+![rust 1.66+ required](https://img.shields.io/badge/rust-1.66+-blue.svg?label=Required%20Rust)
+
+**Documentation:**
+[![crate docs (main)](https://img.shields.io/badge/main-yellow.svg?label=docs)](https://slowli.github.io/tardigrade/tardigrade/)
 
 Tardigrade is a Rust library for workflow automation, aka (business) process 
 automation / orchestration. It allows defining workflows as a WASM module and running it
@@ -24,7 +28,22 @@ As such, concurrency primitives (fork / join, fork / select, etc.)
 are not the responsibility of the workflow engine – they come for free with
 the programming language / tooling; a workflow can do anything the underlying tooling can do.
 
-*See [architecture](ARCHITECTURE.md) for more technical details.*
+*See [architecture](../../ARCHITECTURE.md) for more technical details.*
+
+## Usage
+
+Add this to your `Crate.toml`:
+
+```toml
+[dependencies]
+tardigrade = "0.1.0"
+```
+
+To build a workflow module, it should be built for the `wasm32-unknown-unknown` target
+with usual WASM config applied (e.g., `lib.crate-type = ["cdylib", "rlib"]` defined
+in the crate manifest).
+
+See the crate docs for more details and examples of workflow definitions.
 
 ## Project status 🚧
 
@@ -45,8 +64,8 @@ Newer approaches to process orchestration include
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE)
-or [MIT license](LICENSE-MIT) at your option.
+Licensed under either of [Apache License, Version 2.0](../../LICENSE-APACHE)
+or [MIT license](../../LICENSE-MIT) at your option.
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in `tardigrade` by you, as defined in the Apache-2.0 license,

@@ -486,7 +486,7 @@ where
         formatter
             .debug_struct("TestInstance")
             .field("args", &self.args)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

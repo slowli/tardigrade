@@ -20,7 +20,7 @@ futures = "0.3.21"
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1.37"
 
-tardigrade = { version = "0.1.0", path = "../.." }
+tardigrade = { version = "0.1.0", path = "../../crates/lib" }
 
 [dev-dependencies]
 anyhow = "1.0.66"
