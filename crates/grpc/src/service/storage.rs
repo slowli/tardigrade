@@ -73,8 +73,8 @@ where
         request: Request<CloseChannelRequest>,
     ) -> Result<Response<Channel>, Status> {
         let channel_id = request.get_ref().id;
-        let handle_to_close = HandleType::from_i32(request.get_ref().half)
-            .ok_or_else(|| Status::invalid_argument("invalid channel half specified"))?;
+        let handle_to_close = HandleType::try_from(request.get_ref().half)
+            .map_err(|_| Status::invalid_argument("invalid channel half specified"))?;
 
         let storage = StorageRef::from(&self.storage);
         match handle_to_close {
@@ -113,8 +113,8 @@ where
         request: Request<GetMessageRequest>,
     ) -> Result<Response<Message>, Status> {
         let request = request.into_inner();
-        let codec = MessageCodec::from_i32(request.codec)
-            .ok_or_else(|| Status::invalid_argument("invalid message codec specified"))?;
+        let codec = MessageCodec::try_from(request.codec)
+            .map_err(|_| Status::invalid_argument("invalid message codec specified"))?;
 
         let reference = request
             .r#ref
@@ -141,8 +141,8 @@ where
         request: Request<StreamMessagesRequest>,
     ) -> Result<Response<Self::StreamMessagesStream>, Status> {
         let request = request.get_ref();
-        let codec = MessageCodec::from_i32(request.codec)
-            .ok_or_else(|| Status::invalid_argument("invalid message codec specified"))?;
+        let codec = MessageCodec::try_from(request.codec)
+            .map_err(|_| Status::invalid_argument("invalid message codec specified"))?;
         let channel_id = request.channel_id;
         let start_index = request.start_index;
 

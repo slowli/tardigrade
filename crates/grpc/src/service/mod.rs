@@ -167,16 +167,16 @@ where
         ty: i32,
         path: &HandlePathBuf,
     ) -> Result<Handle<ChannelId>, Status> {
-        Ok(match HandleType::from_i32(ty) {
-            Some(HandleType::Receiver) => {
+        Ok(match HandleType::try_from(ty) {
+            Ok(HandleType::Receiver) => {
                 let (_, receiver) = spawner.new_channel().await;
                 Handle::Receiver(receiver)
             }
-            Some(HandleType::Sender) => {
+            Ok(HandleType::Sender) => {
                 let (sender, _) = spawner.new_channel().await;
                 Handle::Sender(sender)
             }
-            Some(HandleType::Unspecified) | None => {
+            Ok(HandleType::Unspecified) | Err(_) => {
                 let message = format!("Invalid handle type specified for handle at `{path}`");
                 return Err(Status::invalid_argument(message));
             }
@@ -189,12 +189,10 @@ where
         id: ChannelId,
         path: &HandlePathBuf,
     ) -> Result<Handle<ChannelId>, Status> {
-        Ok(match HandleType::from_i32(ty) {
-            Some(HandleType::Receiver) => Handle::Receiver(id),
-
-            Some(HandleType::Sender) => Handle::Sender(id),
-
-            Some(HandleType::Unspecified) | None => {
+        Ok(match HandleType::try_from(ty) {
+            Ok(HandleType::Receiver) => Handle::Receiver(id),
+            Ok(HandleType::Sender) => Handle::Sender(id),
+            Ok(HandleType::Unspecified) | Err(_) => {
                 let message = format!("Invalid handle type specified for handle at `{path}`");
                 return Err(Status::invalid_argument(message));
             }
