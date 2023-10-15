@@ -76,7 +76,7 @@ async fn initialize_child(
 ) -> (Receipt, Receipt) {
     poll_fn_sx
         .send_all([allocate_channels, spawn_child])
-        .async_scope(async {
+        .box_async_scope(async {
             // Allocate channels for the created child.
             let channels_receipt = tick_workflow(runtime, workflow_id).await.unwrap();
             // ...Then initialize the child.
@@ -145,7 +145,7 @@ async fn spawning_child_workflow() {
 
     poll_fn_sx
         .send(poll_child_traces)
-        .async_scope(tick_workflow(&runtime, workflow_id))
+        .box_async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
     workflow.update().await.unwrap();
@@ -175,7 +175,7 @@ async fn send_message_from_child(
     // Emulate the child workflow putting a message to the `traces` channel.
     poll_fn_sx
         .send(|_| Ok(Poll::Pending))
-        .async_scope(tick_workflow(runtime, CHILD_ID))
+        .box_async_scope(tick_workflow(runtime, CHILD_ID))
         .await
         .unwrap();
     helper::send_messages(&runtime.storage, traces_id, vec![b"trace".to_vec()])
@@ -198,7 +198,7 @@ async fn send_message_from_child(
     };
     let receipt = poll_fn_sx
         .send(receive_child_trace)
-        .async_scope(feed_message(runtime, PARENT_ID, traces_id))
+        .box_async_scope(feed_message(runtime, PARENT_ID, traces_id))
         .await
         .unwrap();
 
@@ -252,7 +252,7 @@ async fn test_spawning_child_with_error(
 
     let child_receipt = poll_fn_sx
         .send_all([channels_fn, spawn_fn])
-        .async_scope(async {
+        .box_async_scope(async {
             // Allocate channels for the created child.
             tick_workflow(&runtime, workflow_id).await.unwrap();
             // ...Then try initializing the child.
@@ -382,7 +382,7 @@ async fn sending_message_to_child() {
     };
     poll_fn_sx
         .send(send_message_to_child)
-        .async_scope(tick_workflow(&runtime, workflow_id))
+        .box_async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
 
@@ -406,7 +406,7 @@ async fn sending_message_to_child() {
     };
     poll_fn_sx
         .send(init_child)
-        .async_scope(tick_workflow(&runtime, CHILD_ID))
+        .box_async_scope(tick_workflow(&runtime, CHILD_ID))
         .await
         .unwrap();
 
@@ -420,7 +420,7 @@ async fn sending_message_to_child() {
     };
     poll_fn_sx
         .send(poll_orders_in_child)
-        .async_scope(feed_message(&runtime, CHILD_ID, child_orders_id))
+        .box_async_scope(feed_message(&runtime, CHILD_ID, child_orders_id))
         .await
         .unwrap();
 }
@@ -464,7 +464,7 @@ async fn test_child_workflow_channel_management(complete_child: bool) {
     };
     poll_fn_sx
         .send(poll_child_traces_and_completion)
-        .async_scope(tick_workflow(&runtime, workflow_id))
+        .box_async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
 
@@ -491,7 +491,7 @@ async fn test_child_workflow_channel_management(complete_child: bool) {
     };
     poll_fn_sx
         .send(poll_child_workflow)
-        .async_scope(tick_workflow(&runtime, child_id))
+        .box_async_scope(tick_workflow(&runtime, child_id))
         .await
         .unwrap();
 
@@ -536,7 +536,7 @@ async fn test_child_resources_after_drop(
     };
     let receipt = poll_fn_sx
         .send(test_child_resources)
-        .async_scope(tick_workflow(runtime, PARENT_ID))
+        .box_async_scope(tick_workflow(runtime, PARENT_ID))
         .await
         .unwrap();
 
@@ -634,7 +634,7 @@ async fn init_workflow_with_copied_child_channel(
             spawn_child,
             poll_child_completion_with_copied_channel,
         ])
-        .async_scope(async {
+        .box_async_scope(async {
             tick_workflow(runtime, workflow_id).await.unwrap(); // allocate channels
             tick_workflow(runtime, workflow_id).await.unwrap(); // spawn child
             tick_workflow(runtime, workflow_id).await.unwrap(); // poll child completion
@@ -675,7 +675,7 @@ async fn spawning_child_with_copied_sender() {
     };
     poll_fn_sx
         .send(write_event_and_complete_child)
-        .async_scope(tick_workflow(&runtime, CHILD_ID))
+        .box_async_scope(tick_workflow(&runtime, CHILD_ID))
         .await
         .unwrap();
 
@@ -716,7 +716,7 @@ async fn test_child_with_copied_closed_sender(close_before_spawn: bool) {
     };
     poll_fn_sx
         .send(test_writing_event_in_child)
-        .async_scope(tick_workflow(&runtime, CHILD_ID))
+        .box_async_scope(tick_workflow(&runtime, CHILD_ID))
         .await
         .unwrap();
 }
@@ -746,7 +746,7 @@ async fn test_child_with_aliased_sender(complete_child: bool) {
             spawn_child,
             poll_child_completion_with_copied_channel,
         ])
-        .async_scope(async {
+        .box_async_scope(async {
             tick_workflow(&runtime, workflow_id).await.unwrap(); // allocate channels
             tick_workflow(&runtime, workflow_id).await.unwrap(); // spawn child workflow
             tick_workflow(&runtime, workflow_id).await.unwrap(); // poll child completion
@@ -779,7 +779,7 @@ async fn test_child_with_aliased_sender(complete_child: bool) {
     };
     poll_fn_sx
         .send(write_event_and_drop_events)
-        .async_scope(tick_workflow(&runtime, CHILD_ID))
+        .box_async_scope(tick_workflow(&runtime, CHILD_ID))
         .await
         .unwrap();
 
@@ -804,7 +804,7 @@ async fn test_child_with_aliased_sender(complete_child: bool) {
         })
     };
     guard
-        .async_scope(tick_workflow(&runtime, CHILD_ID))
+        .box_async_scope(tick_workflow(&runtime, CHILD_ID))
         .await
         .unwrap();
 
@@ -841,7 +841,7 @@ async fn completing_child_with_error() {
     initialize_child(&runtime, workflow_id, &mut poll_fn_sx).await;
     poll_fn_sx
         .send_all([poll_child_completion, complete_task_with_error])
-        .async_scope(async {
+        .box_async_scope(async {
             tick_workflow(&runtime, workflow_id).await.unwrap();
             tick_workflow(&runtime, CHILD_ID).await.unwrap();
         })
@@ -868,7 +868,7 @@ async fn completing_child_with_error() {
     };
     let receipt = poll_fn_sx
         .send(check_child_completion)
-        .async_scope(tick_workflow(&runtime, workflow_id))
+        .box_async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
 
@@ -920,7 +920,7 @@ async fn completing_child_with_panic() {
 
     let tick_result = poll_fn_sx
         .send_all([allocate_channels, spawn_child])
-        .async_scope(async {
+        .box_async_scope(async {
             let result = runtime.tick_workflow(workflow_id).await.unwrap();
             result.into_inner().unwrap();
             runtime.tick_workflow(workflow_id).await.unwrap()
@@ -934,7 +934,7 @@ async fn completing_child_with_panic() {
 
     let tick_result = poll_fn_sx
         .send_all([poll_child_completion, complete_task_with_panic])
-        .async_scope(async {
+        .box_async_scope(async {
             // Both workflows are ready to be polled at this point;
             // control which one is polled first.
             tick_workflow(&runtime, workflow_id).await.unwrap();
@@ -979,7 +979,7 @@ async fn assert_child_abort(
 
     let receipt = poll_fn_sx
         .send(check_aborted_child_completion)
-        .async_scope(tick_workflow(runtime, workflow_id))
+        .box_async_scope(tick_workflow(runtime, workflow_id))
         .await
         .unwrap();
     let is_child_polled = receipt.events().any(|event| {
@@ -999,7 +999,7 @@ async fn init_workflow_with_child(
     initialize_child(runtime, workflow_id, poll_fn_sx).await;
     poll_fn_sx
         .send(poll_child_completion)
-        .async_scope(tick_workflow(runtime, workflow_id))
+        .box_async_scope(tick_workflow(runtime, workflow_id))
         .await
         .unwrap();
 }
@@ -1016,7 +1016,7 @@ async fn test_aborting_child(initialize_child: bool) {
     if initialize_child {
         poll_fn_sx
             .send(|_| Ok(Poll::Pending))
-            .async_scope(tick_workflow(&runtime, CHILD_ID))
+            .box_async_scope(tick_workflow(&runtime, CHILD_ID))
             .await
             .unwrap();
     }
@@ -1072,7 +1072,7 @@ async fn aborting_parent() {
     };
     poll_fn_sx
         .send(check_child_channels)
-        .async_scope(tick_workflow(&runtime, CHILD_ID))
+        .box_async_scope(tick_workflow(&runtime, CHILD_ID))
         .await
         .unwrap();
 

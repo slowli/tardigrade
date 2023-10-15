@@ -172,7 +172,7 @@ async fn test_executing_worker(
 
     let tick_result = poll_fn_sx
         .send(send_request)
-        .async_scope(runtime.tick_workflow(workflow.id()))
+        .box_async_scope(runtime.tick_workflow(workflow.id()))
         .await
         .unwrap();
     tick_result.into_inner().unwrap();
@@ -353,7 +353,7 @@ async fn test_closing_worker(
 
     let tick_result = poll_fn_sx
         .send(send_request)
-        .async_scope(runtime.tick_workflow(workflow.id()))
+        .box_async_scope(runtime.tick_workflow(workflow.id()))
         .await
         .unwrap();
     tick_result.into_inner().unwrap();
@@ -380,7 +380,7 @@ async fn test_closing_worker(
     };
     let tick_result = poll_fn_sx
         .send(send_second_request)
-        .async_scope(runtime.tick_workflow(workflow.id()))
+        .box_async_scope(runtime.tick_workflow(workflow.id()))
         .await
         .unwrap();
     tick_result.into_inner().unwrap();
