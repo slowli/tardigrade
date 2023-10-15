@@ -14,7 +14,7 @@ description = "Procedural macros for Tardigrade workflows"
 proc-macro = true
 
 [dependencies]
-darling = "0.14.1" # FIXME: remove
+darling.workspace = true
 proc-macro2.workspace = true
 quote.workspace = true
 serde_json.workspace = true

@@ -194,10 +194,8 @@ impl Handle {
 
 fn derive_with_handle(input: &DeriveInput) -> darling::Result<impl ToTokens> {
     // Determine whether we deal with a handle or a delegated struct.
-    let attrs = find_meta_attrs("tardigrade", &input.attrs).map_or_else(
-        || Ok(DeriveAttrs::default()),
-        |meta| DeriveAttrs::from_nested_meta(&meta),
-    )?;
+    let attrs = find_meta_attrs("tardigrade", &input.attrs)
+        .map_or_else(|| Ok(DeriveAttrs::default()), DeriveAttrs::from_meta)?;
     Handle::new(input, attrs)?.to_tokens()
 }
 

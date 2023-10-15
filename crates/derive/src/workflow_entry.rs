@@ -15,10 +15,8 @@ struct WorkflowEntry {
 
 impl WorkflowEntry {
     fn new(input: &DeriveInput) -> Result<Self, syn::Error> {
-        let attrs = find_meta_attrs("tardigrade", &input.attrs).map_or_else(
-            || Ok(DeriveAttrs::default()),
-            |meta| DeriveAttrs::from_nested_meta(&meta),
-        )?;
+        let attrs = find_meta_attrs("tardigrade", &input.attrs)
+            .map_or_else(|| Ok(DeriveAttrs::default()), DeriveAttrs::from_meta)?;
 
         Ok(Self {
             name: input.ident.clone(),

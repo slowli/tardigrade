@@ -33,6 +33,7 @@ async-trait = "0.1.57"
 base64 = "0.21.0"
 chrono = { version = "0.4.23", default-features = false, features = ["serde"] }
 clap = "4.4.6"
+darling = "0.20.3"
 externref = "0.2.0"
 flate2 = "1.0.24"
 futures = "0.3.21"
@@ -50,7 +51,7 @@ quote = "1.0"
 rand = "0.8.5"
 serde = "1"
 serde_json = "1"
-syn = "1" # FIXME: update to 2
+syn = "2"
 slab = "0.4.6"
 tokio = "1.33.0"
 tonic = { version = "0.10.2", default-features = false }
