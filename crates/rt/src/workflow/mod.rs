@@ -140,7 +140,9 @@ impl<T: RunWorkflow> Workflow<T> {
                 self.inner.drop_task(*task_id);
             }
             ExecutedFunction::Entry => {
-                let Some(ExecutedFunctionArgs::WorkflowArgs(args)) = args else { unreachable!() };
+                let Some(ExecutedFunctionArgs::WorkflowArgs(args)) = args else {
+                    unreachable!();
+                };
                 output.main_task_id = Some(self.inner.create_main_task(args)?);
             }
 

@@ -239,7 +239,9 @@ fn receiving_inbound_message() {
     let wakers = workflow.data_mut().take_wakers();
     let (waker_ids, causes): (HashSet<_>, Vec<_>) = wakers
         .map(|(id, cause)| {
-            let WakerOrTask::Waker(id) = id else { unreachable!() };
+            let WakerOrTask::Waker(id) = id else {
+                unreachable!();
+            };
             (id, cause)
         })
         .unzip();

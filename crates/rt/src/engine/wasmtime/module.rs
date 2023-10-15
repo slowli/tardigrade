@@ -318,8 +318,8 @@ impl<T: ExtendLinker> LowLevelExtendLinker for T {
         store: &mut Store<InstanceData>,
         linker: &mut Linker<InstanceData>,
     ) -> anyhow::Result<()> {
-        for (name, function) in self.functions(store) {
-            linker.define(Self::MODULE_NAME, name, function)?;
+        for (name, function) in self.functions(&mut *store) {
+            linker.define(&*store, Self::MODULE_NAME, name, function)?;
         }
         Ok(())
     }
