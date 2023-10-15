@@ -1,22 +1,22 @@
 [package]
 name = "tardigrade-worker"
-version = "0.1.0"
-edition = "2021"
-authors = ["Alex Ostrovski <ostrovski.alex@gmail.com>"]
-license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
 readme = "README.md"
-keywords = ["orchestration", "workflow", "business process"]
-categories = ["asynchronous", "wasm"]
 description = "Workers for Tardigrade runtime"
-repository = "https://github.com/slowli/tardigrade"
 
 [dependencies]
-async-trait = "0.1.61"
-futures = "0.3.25"
-serde = { version = "1.0", features = ["derive"] }
-tracing = { version = "0.1.37", features = ["attributes"] }
+async-trait.workspace = true
+futures.workspace = true
+serde = { workspace = true, features = ["derive"] }
+tracing = { workspace = true, features = ["attributes"] }
 
 tardigrade-shared = { version = "0.1.0", path = "../shared" }
 
 [dev-dependencies]
-tokio = { version = "1.24.2", features = ["rt"] }
+tokio = { workspace = true, features = ["rt"] }
