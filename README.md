@@ -43,6 +43,11 @@ groups of species able to suspend their metabolism for continuous periods
 Newer approaches to process orchestration include
 [Temporal] (an example of code-based workflow definition) and [Netflix Conductor].
 
+## Contributing
+
+All contributions are welcome! See [the contributing guide](CONTRIBUTING.md) to help
+you get involved.
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE)
