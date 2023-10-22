@@ -99,14 +99,8 @@ pub trait Storage: Send + Sync {
 
 #[async_trait]
 impl<S: Storage + ?Sized> Storage for &S {
-    type Transaction<'a>
-    where
-        Self: 'a,
-    = S::Transaction<'a>;
-    type ReadonlyTransaction<'a>
-    where
-        Self: 'a,
-    = S::ReadonlyTransaction<'a>;
+    type Transaction<'a> = S::Transaction<'a> where Self: 'a;
+    type ReadonlyTransaction<'a> = S::ReadonlyTransaction<'a> where Self: 'a;
 
     #[inline]
     async fn transaction(&self) -> Self::Transaction<'_> {
@@ -121,14 +115,8 @@ impl<S: Storage + ?Sized> Storage for &S {
 
 #[async_trait]
 impl<S: Storage + ?Sized> Storage for Arc<S> {
-    type Transaction<'a>
-    where
-        S: 'a,
-    = S::Transaction<'a>;
-    type ReadonlyTransaction<'a>
-    where
-        S: 'a,
-    = S::ReadonlyTransaction<'a>;
+    type Transaction<'a> = S::Transaction<'a> where S: 'a;
+    type ReadonlyTransaction<'a> = S::ReadonlyTransaction<'a> where S: 'a;
 
     #[inline]
     async fn transaction(&self) -> Self::Transaction<'_> {

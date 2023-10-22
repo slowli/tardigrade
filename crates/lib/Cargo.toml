@@ -1,0 +1,42 @@
+[package]
+name = "tardigrade"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "Client bindings for Tardigrade workflows"
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+futures.workspace = true
+once_cell.workspace = true
+pin-project-lite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+slab.workspace = true
+tracing = { workspace = true, optional = true }
+tracing-tunnel = { workspace = true, optional = true, features = ["sender"] }
+
+tardigrade-shared = { version = "0.1.0", path = "../shared" }
+tardigrade-derive = { version = "0.1.0", path = "../derive" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+externref.workspace = true
+
+[dev-dependencies]
+assert_matches.workspace = true
+async-io.workspace = true
+rand.workspace = true
+version-sync.workspace = true
+
+[features]
+default = ["tracing"]
+# Enables tracing for the library glue code and the workflows that are defined
+# using the library.
+tracing = ["dep:tracing", "tracing-tunnel"]

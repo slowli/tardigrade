@@ -157,7 +157,7 @@ where
 impl<D: DefineWorkflow> WorkflowSeed<D> {
     fn extract_services(services: Services) -> (Stubs, TracingEventReceiver) {
         let stubs = services.stubs.unwrap();
-        let stubs = *stubs.downcast::<Stubs>();
+        let stubs = stubs.downcast::<Stubs>();
         let receiver = services.tracer.unwrap();
         (stubs, receiver)
     }

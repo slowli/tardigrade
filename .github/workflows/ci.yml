@@ -7,11 +7,11 @@ on:
     branches: [ main ]
 
 env:
-  msrv: 1.66.0
-  nightly: nightly-2022-11-24
-  protoc: "21.12"
-  grpcurl: 1.8.7
-  binaryen: version_110
+  msrv: 1.70.0
+  nightly: nightly-2023-09-09
+  protoc: "24.4"
+  grpcurl: 1.8.8
+  binaryen: version_116
 
 jobs:
   build-msrv:
@@ -21,59 +21,28 @@ jobs:
       - uses: actions/checkout@v3
 
       - name: Install Rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.msrv }}
-          override: true
-          target: wasm32-unknown-unknown
+          targets: wasm32-unknown-unknown
       - name: Install protoc
         run: |
           wget -q -O protoc.zip "https://github.com/protocolbuffers/protobuf/releases/download/v$protoc/protoc-$protoc-linux-x86_64.zip" && \
           unzip -d protoc protoc.zip && \
           sudo cp -r protoc/include/* /usr/local/include && \
           sudo install protoc/bin/protoc /usr/local/bin
-      - name: Install wasm-opt
-        run: |
-          wget -q -O binaryen.tar.gz "https://github.com/WebAssembly/binaryen/releases/download/$binaryen/binaryen-$binaryen-x86_64-linux.tar.gz" && \
-          tar xf binaryen.tar.gz && \
-          sudo install "binaryen-$binaryen/bin/wasm-opt" /usr/local/bin
-      - name: Generate lockfile
-        uses: actions-rs/cargo@v1
-        with:
-          command: generate-lockfile
 
       - name: Cache cargo build
         uses: actions/cache@v3
         with:
-          path: |
-            target
-            crates/cli/target
+          path: target
           key: ${{ runner.os }}-msrv-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-msrv-cargo
 
-      # Build the E2E crate first to speed up its testing.
+      - name: Build libraries
+        run: cargo build -p tardigrade -p tardigrade-rt -p tardigrade-worker -p tardigrade-grpc --lib --all-features
       - name: Build E2E test crate
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: -p tardigrade-pizza --lib --target wasm32-unknown-unknown --profile wasm
-
-      - name: Run tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --workspace --all-features --all-targets
-      - name: Run doc tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --workspace --all-features --doc
-
-      - name: Build CLI crate
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --manifest-path=crates/cli/Cargo.toml --all-features
+        run: cargo build -p tardigrade-pizza --lib --target wasm32-unknown-unknown --profile wasm
 
   build:
     runs-on: ubuntu-latest
@@ -82,11 +51,10 @@ jobs:
       - uses: actions/checkout@v3
 
       - name: Install Rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
-          override: true
-          target: wasm32-unknown-unknown
+          targets: wasm32-unknown-unknown
           components: rustfmt, clippy
       - name: Install protoc
         run: |
@@ -102,89 +70,47 @@ jobs:
             tar xf grpcurl.tar.gz && \
             sudo install grpcurl /usr/local/bin
           )
-
       - name: Install wasm-opt
         run: |
           wget -q -O binaryen.tar.gz "https://github.com/WebAssembly/binaryen/releases/download/$binaryen/binaryen-$binaryen-x86_64-linux.tar.gz" && \
           tar xf binaryen.tar.gz && \
           sudo install "binaryen-$binaryen/bin/wasm-opt" /usr/local/bin
-      - name: Generate lockfile
-        uses: actions-rs/cargo@v1
+      - name: Install cargo-deny
+        uses: baptiste0928/cargo-install@v2
         with:
-          command: generate-lockfile
+          crate: cargo-deny
+          version: "^0.14"
 
       - name: Cache cargo build
         uses: actions/cache@v3
         with:
-          path: |
-            target
-            crates/cli/target
+          path: target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo
 
       - name: Format
-        uses: actions-rs/cargo@v1
-        with:
-          command: fmt
-          args: --all -- --check
-      - name: Format CLI
-        uses: actions-rs/cargo@v1
-        with:
-          command: fmt
-          args: --manifest-path=crates/cli/Cargo.toml --all -- --check
+        run: cargo fmt --all -- --check
       - name: Clippy
-        uses: actions-rs/clippy-check@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          name: "Clippy: all features"
-          args: --workspace --all-features --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-features --all-targets -- -D warnings
       - name: Clippy (WASM client bindings)
-        uses: actions-rs/clippy-check@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          name: "Clippy: WASM client bindings"
-          args: -p tardigrade --lib --target wasm32-unknown-unknown -- -D warnings
+        run: cargo clippy -p tardigrade --lib --target wasm32-unknown-unknown -- -D warnings
       - name: Clippy (runtime, no features)
-        uses: actions-rs/clippy-check@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          name: "Clippy: runtime, no features"
-          args: -p tardigrade-rt --lib --no-default-features -- -D warnings
+        run: cargo clippy -p tardigrade-rt --lib --no-default-features -- -D warnings
       - name: Clippy (gRPC client)
-        uses: actions-rs/clippy-check@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          name: "Clippy: gRPC client"
-          args: -p tardigrade-grpc --lib --no-default-features --features client -- -D warnings
-      - name: Clippy (CLI)
-        uses: actions-rs/clippy-check@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          name: "Clippy: CLI"
-          args: --manifest-path=crates/cli/Cargo.toml --all-features -- -D warnings
+        run: cargo clippy -p tardigrade-grpc --lib --no-default-features --features client -- -D warnings
+      - name: Check dependencies
+        run: cargo deny --workspace --all-features check
 
       # Build the E2E and CLI crates first to speed up its testing.
       - name: Build E2E test crate
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: -p tardigrade-pizza --lib --target wasm32-unknown-unknown --profile wasm
+        run: cargo build -p tardigrade-pizza --lib --target wasm32-unknown-unknown --profile wasm
       - name: Build CLI crate
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --manifest-path=crates/cli/Cargo.toml --all-features
+        run: cargo build -p tardigrade-cli --all-features
 
       - name: Run tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --workspace --all-features --all-targets
+        run: cargo test --workspace --all-features --all-targets
       - name: Run doc tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --workspace --all-features --doc
+        run: cargo test --workspace --all-features --doc
       - name: Run gRPC end-to-end tests
         run: |
           ./crates/cli/tests/test-server.sh
@@ -202,21 +128,15 @@ jobs:
       - uses: actions/checkout@v3
 
       - name: Install Rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.nightly }}
-          profile: minimal
-          override: true
       - name: Install protoc
         run: |
           wget -q -O protoc.zip "https://github.com/protocolbuffers/protobuf/releases/download/v$protoc/protoc-$protoc-linux-x86_64.zip" && \
           unzip -d protoc protoc.zip && \
           sudo cp -r protoc/include/* /usr/local/include && \
           sudo install protoc/bin/protoc /usr/local/bin
-      - name: Generate lockfile
-        uses: actions-rs/cargo@v1
-        with:
-          command: generate-lockfile
 
       - name: Cache cargo build
         uses: actions/cache@v3

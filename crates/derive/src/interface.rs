@@ -93,10 +93,8 @@ impl FromDeriveInput for GetInterface {
     fn from_derive_input(input: &DeriveInput) -> darling::Result<Self> {
         Self::check_generics(&input.generics)?;
 
-        let attrs = find_meta_attrs("tardigrade", &input.attrs).map_or_else(
-            || Ok(DeriveAttrs::default()),
-            |meta| DeriveAttrs::from_nested_meta(&meta),
-        )?;
+        let attrs = find_meta_attrs("tardigrade", &input.attrs)
+            .map_or_else(|| Ok(DeriveAttrs::default()), DeriveAttrs::from_meta)?;
 
         let compressed_spec = if attrs.auto_interface.is_some() {
             None

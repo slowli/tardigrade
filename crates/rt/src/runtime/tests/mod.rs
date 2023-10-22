@@ -2,9 +2,10 @@
 
 use anyhow::anyhow;
 use assert_matches::assert_matches;
-use mimicry::Answers;
+use async_trait::async_trait;
+use mimicry::{Answers, AnswersGuard};
 
-use std::{collections::HashSet, task::Poll};
+use std::{collections::HashSet, future::Future, task::Poll};
 
 mod driver;
 mod spawn;
@@ -33,6 +34,21 @@ use tardigrade::{
 const DEFINITION_ID: &str = "test@latest::TestWorkflow";
 
 type LocalRuntime<C = (), S = LocalStorage> = Runtime<MockEngine, C, S>;
+
+#[async_trait(?Send)]
+trait AnswersGuardExt {
+    async fn box_async_scope<Fut: Future>(self, future: Fut) -> Fut::Output;
+}
+
+#[async_trait(?Send)]
+impl<V> AnswersGuardExt for AnswersGuard<'_, V> {
+    #[inline]
+    async fn box_async_scope<Fut: Future>(self, future: Fut) -> Fut::Output {
+        let output = Box::pin(future).await;
+        drop(self);
+        output
+    }
+}
 
 fn channel_id(channel_ids: &ChannelIds, path: &str) -> ChannelId {
     channel_ids[&HandlePath::new(path)].factor()
@@ -154,7 +170,7 @@ async fn instantiating_workflow() {
 
     poll_fn_sx
         .send(initialize_task)
-        .async_scope(test_initializing_workflow(
+        .box_async_scope(test_initializing_workflow(
             &runtime,
             workflow.id(),
             workflow.channel_ids(),
@@ -197,7 +213,7 @@ async fn creating_workflow_in_transaction() {
     let workflow_id = create_test_workflow(&tx_runtime).await.id();
     let tick_result = poll_fn_sx
         .send(initialize_task)
-        .async_scope(tx_runtime.tick())
+        .box_async_scope(tx_runtime.tick())
         .await;
     tick_result.unwrap().into_inner().unwrap();
 
@@ -224,7 +240,7 @@ async fn discarding_workflow_in_transaction() {
     let channel_ids: HashSet<_> = channel_ids.map(Handle::factor).collect();
     let tick_result = poll_fn_sx
         .send(initialize_task)
-        .async_scope(tx_runtime.tick())
+        .box_async_scope(tx_runtime.tick())
         .await;
     tick_result.unwrap().into_inner().unwrap();
 
@@ -285,7 +301,7 @@ async fn initializing_workflow_with_closed_channels() {
 
     poll_fn_sx
         .send(test_channels)
-        .async_scope(tick_workflow(&runtime, workflow_id))
+        .box_async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
 
@@ -322,7 +338,7 @@ async fn closing_workflow_channels() {
 
         let mut events = ctx.data_mut().sender(events_id);
         let poll_result = events.poll_flush().into_inner(ctx)?;
-        assert_matches!(poll_result, Poll::Ready(Ok(_)));
+        assert_matches!(poll_result, Poll::Ready(Ok(())));
 
         let mut events = ctx.data_mut().sender(events_id);
         let poll_result = events.poll_ready().into_inner(ctx)?;
@@ -341,7 +357,7 @@ async fn closing_workflow_channels() {
 
     poll_fn_sx
         .send(block_on_flush)
-        .async_scope(tick_workflow(&runtime, workflow_id))
+        .box_async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
     helper::close_host_receiver(&runtime.storage, events_id).await;
@@ -361,7 +377,7 @@ async fn closing_workflow_channels() {
 
     poll_fn_sx
         .send(drop_receiver)
-        .async_scope(tick_workflow(&runtime, workflow_id))
+        .box_async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
     let channel_info = runtime.storage().channel(orders_id).await.unwrap();
@@ -414,7 +430,7 @@ async fn test_closing_receiver_from_host_side(with_message: bool) {
 
     poll_fn_sx
         .send(initialize_task)
-        .async_scope(tick_workflow(&runtime, workflow_id))
+        .box_async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
     if with_message {
@@ -427,7 +443,7 @@ async fn test_closing_receiver_from_host_side(with_message: bool) {
     if with_message {
         let receipt = poll_fn_sx
             .send(poll_receiver)
-            .async_scope(feed_message(&runtime, workflow_id, orders_id))
+            .box_async_scope(feed_message(&runtime, workflow_id, orders_id))
             .await
             .unwrap();
         let order_events = extract_channel_events(&receipt, orders_id);
@@ -446,7 +462,7 @@ async fn test_closing_receiver_from_host_side(with_message: bool) {
 
     let receipt = poll_fn_sx
         .send(test_closed_channel)
-        .async_scope(tick_workflow(&runtime, workflow_id))
+        .box_async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
     let order_events = extract_channel_events(&receipt, orders_id);
@@ -477,7 +493,7 @@ async fn error_initializing_workflow() {
 
     let err = poll_fn_sx
         .send(|_| Err(anyhow!("oops")))
-        .async_scope(tick_workflow(&runtime, workflow_id))
+        .box_async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap_err();
     let err = err.trap().to_string();
@@ -501,7 +517,7 @@ async fn error_initializing_workflow() {
 
     let receipt = poll_fn_sx
         .send(initialize_task)
-        .async_scope(tick_workflow(&runtime, workflow_id))
+        .box_async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
     assert!(!receipt.executions().is_empty());
@@ -537,7 +553,7 @@ async fn sending_message_to_workflow() {
 
     poll_fn_sx
         .send(poll_receiver)
-        .async_scope(tick_workflow(&runtime, workflow_id))
+        .box_async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
     helper::send_messages(&runtime.storage, orders_id, vec![b"order #1".to_vec()])
@@ -558,7 +574,7 @@ async fn sending_message_to_workflow() {
 
     let receipt = poll_fn_sx
         .send(consume_message)
-        .async_scope(feed_message(&runtime, workflow_id, orders_id))
+        .box_async_scope(feed_message(&runtime, workflow_id, orders_id))
         .await
         .unwrap();
     assert_eq!(receipt.executions().len(), 2); // waker + task
@@ -596,7 +612,7 @@ async fn error_processing_inbound_message_in_workflow() {
 
     poll_fn_sx
         .send(initialize_task)
-        .async_scope(tick_workflow(&runtime, workflow_id))
+        .box_async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
     helper::send_messages(&runtime.storage, orders_id, vec![b"test".to_vec()])
@@ -604,7 +620,7 @@ async fn error_processing_inbound_message_in_workflow() {
         .unwrap();
     let err = poll_fn_sx
         .send(error_after_consuming_message)
-        .async_scope(feed_message(&runtime, workflow_id, orders_id))
+        .box_async_scope(feed_message(&runtime, workflow_id, orders_id))
         .await
         .unwrap_err();
     let err = err.trap().to_string();
@@ -651,7 +667,7 @@ async fn workflow_not_consuming_inbound_message() {
 
     poll_fn_sx
         .send(poll_receiver)
-        .async_scope(tick_workflow(&runtime, workflow_id))
+        .box_async_scope(tick_workflow(&runtime, workflow_id))
         .await
         .unwrap();
     helper::send_messages(&runtime.storage, orders_id, vec![b"order #1".to_vec()])
@@ -659,7 +675,7 @@ async fn workflow_not_consuming_inbound_message() {
         .unwrap();
     let tick_result = poll_fn_sx
         .send(|_| Ok(Poll::Pending))
-        .async_scope(runtime.tick())
+        .box_async_scope(runtime.tick())
         .await;
     tick_result.unwrap().into_inner().unwrap();
 
@@ -790,7 +806,7 @@ async fn resolving_workflow_definition() {
     };
     poll_fn_sx
         .send_all([request_definition, assert_on_definition])
-        .async_scope(async {
+        .box_async_scope(async {
             tick_workflow(&runtime, workflow_id).await.unwrap();
             tick_workflow(&runtime, workflow_id).await.unwrap();
         })
@@ -821,7 +837,7 @@ async fn workflow_definition_errors() {
     };
     poll_fn_sx
         .send_all([request_definition, assert_on_definition])
-        .async_scope(async {
+        .box_async_scope(async {
             tick_workflow(&runtime, workflow_id).await.unwrap();
             tick_workflow(&runtime, workflow_id).await.unwrap();
         })

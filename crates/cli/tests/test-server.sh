@@ -5,13 +5,13 @@
 
 set -e
 
-CLI_DIR=$(dirname "$0")
-CLI_DIR=$(realpath -L "$CLI_DIR/..")
-CLI_TARGET_DIR="$CLI_DIR/target/debug"
+ROOT_DIR=$(dirname "$0")
+ROOT_DIR=$(realpath -L "$ROOT_DIR/../../..")
+CLI_TARGET_DIR="$ROOT_DIR/target/debug"
 
 function build_grpc_server {
   echo "Building gRPC server CLI app..."
-  cargo build --manifest-path="$CLI_DIR/Cargo.toml" --all-features
+  cargo build -p tardigrade-cli --all-features
 
   if [[ ! -x "$CLI_TARGET_DIR/tardigrade-grpc" ]]; then
     echo "tardigrade-grpc binary not found in expected location $CLI_TARGET_DIR"

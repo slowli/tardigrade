@@ -82,15 +82,8 @@ pub struct TransactionReadLock<'a, T> {
 
 #[async_trait]
 impl<T: StorageTransaction> Storage for TransactionAsStorage<T> {
-    type Transaction<'a>
-    where
-        Self: 'a,
-    = TransactionLock<'a, T>;
-
-    type ReadonlyTransaction<'a>
-    where
-        Self: 'a,
-    = TransactionReadLock<'a, T>;
+    type Transaction<'a> = TransactionLock<'a, T> where Self: 'a;
+    type ReadonlyTransaction<'a> = TransactionReadLock<'a, T> where Self: 'a;
 
     async fn transaction(&self) -> Self::Transaction<'_> {
         let lock = self.inner.lock().await;

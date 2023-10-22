@@ -127,7 +127,7 @@ async fn test_driver_with_multiple_messages(start_after_tick: bool) {
         orders_sx.close().await;
     };
     let drive_task = runtime.clone().drive(&mut commits_rx, DriveConfig::new());
-    let (_, termination) = future::join(orders_task, drive_task).await;
+    let ((), termination) = future::join(orders_task, drive_task).await;
     assert_matches!(termination, Termination::Finished);
 
     let events: Vec<_> = events_rx.collect().await;
@@ -196,7 +196,7 @@ async fn selecting_from_driver_and_other_future() {
         futures::pin_mut!(driver_task);
         let select_task = future::select(driver_task, until_consumed_order);
 
-        let (_, select_result) = future::join(api_actions, select_task).await;
+        let ((), select_result) = future::join(api_actions, select_task).await;
         match select_result {
             Either::Right(((), _)) => { /* just as expected */ }
             Either::Left((driver_result, _)) => panic!("{driver_result:?}"),
@@ -271,7 +271,7 @@ async fn test_dropping_storage_with_driver(drop_before_start: bool) {
         None
     });
     let timer_event = timer_event.unwrap();
-    assert_matches!(timer_event, ResourceEventKind::Polled(Poll::Ready(_)));
+    assert_matches!(timer_event, ResourceEventKind::Polled(Poll::Ready(())));
 
     assert_matches!(driver_task.await, Termination::Finished);
 }
@@ -362,7 +362,7 @@ fn assert_main_task_completed(receipt: &Receipt) {
             )
         })
         .unwrap();
-    assert_matches!(main_execution.task_result, Some(Ok(_)));
+    assert_matches!(main_execution.task_result, Some(Ok(())));
 }
 
 #[async_std::test]

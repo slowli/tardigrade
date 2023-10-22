@@ -182,7 +182,7 @@ impl fmt::Debug for ModuleExports {
         formatter
             .debug_struct("ModuleExports")
             .field("memory", &self.memory)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

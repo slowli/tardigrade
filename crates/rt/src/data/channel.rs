@@ -65,10 +65,6 @@ pub struct ReceiverState {
 }
 
 impl ReceiverState {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
     /// Returns the number of messages received over the channel.
     pub fn received_message_count(&self) -> u64 {
         self.received_messages
@@ -196,7 +192,7 @@ impl ChannelStates {
     }
 
     fn insert_receiver(&mut self, id: ChannelId) {
-        self.receivers.entry(id).or_insert_with(ReceiverState::new);
+        self.receivers.entry(id).or_default();
     }
 
     fn insert_sender(&mut self, id: ChannelId, capacity: Option<usize>) {

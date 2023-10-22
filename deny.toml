@@ -1,0 +1,72 @@
+# `cargo-deny` configuration.
+
+feature-depth = 1
+
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+vulnerability = "deny"
+unmaintained = "deny"
+yanked = "deny"
+notice = "warn"
+severity-threshold = "Medium"
+ignore = [
+  "RUSTSEC-2020-0168", # `mach` is unmaintained (used by `wasmtime`)
+]
+
+[licenses]
+unlicensed = "deny"
+allow = [
+  # Permissive open-source licenses
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception", # used by `wasmtime` and related crates
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "Unicode-DFS-2016",
+]
+copyleft = "deny"
+allow-osi-fsf-free = "neither"
+default = "deny"
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+skip = [
+  # Old version used mostly for codegen (i.e., mostly fine)
+  { name = "bitflags", version = "^1" },
+  # Used by `futures-lite` together with the new version
+  { name = "fastrand", version = "^1" },
+  # Older `hashbrown` versions are still used by `tonic` (v0.12) and `wasmtime` (v0.13) stacks
+  { name = "hashbrown", version = "^0.12" },
+  { name = "hashbrown", version = "^0.13" },
+  # Used by `walrus-macro` for codegen (i.e., mostly fine)
+  { name = "heck", version = "^0.3" },
+  # Used by `h2`
+  { name = "indexmap", version = "^1" },
+  # Used by `wasmtime`
+  { name = "itertools", version = "^0.10" },
+  # Used by `wasmtime` via `directories-next`
+  { name = "redox_syscall", version = "^0.2" },
+  # Used by `async-io`
+  { name = "socket2", version = "^0.4" },
+  # Used by `wasmtime` together with the newer version
+  { name = "wasm-encoder", version = "^0.32" },
+]
+skip-tree = [
+  # Brings some old deps; will be updated soon
+  { name = "mimicry", version = "=0.1.0" },
+  # Old version used by `tracing-subscriber`
+  { name = "regex-automata", version = "^0.1" },
+  # Old version used by `async-io`
+  { name = "rustix", version = "^0.37" },
+  # Old version used by `externref`; will be updated soon
+  { name = "walrus", version = "^0.19" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = [
+  "https://github.com/slowli/mimicry.git",
+]

@@ -4,17 +4,16 @@ use darling::{ast::Style, FromMeta};
 use proc_macro2::{Ident, Span};
 use quote::{quote, ToTokens};
 use syn::{
-    parse_quote, spanned::Spanned, Attribute, Data, DataStruct, DeriveInput, Generics, NestedMeta,
-    Path, Type, TypePath,
+    parse_quote, spanned::Spanned, Attribute, Data, DataStruct, DeriveInput, Generics, Meta, Path,
+    Type, TypePath,
 };
 
 use std::collections::{HashMap, HashSet};
 
-pub(crate) fn find_meta_attrs(name: &str, args: &[Attribute]) -> Option<NestedMeta> {
+pub(crate) fn find_meta_attrs<'a>(name: &str, args: &'a [Attribute]) -> Option<&'a Meta> {
     args.iter()
-        .filter_map(|attr| attr.parse_meta().ok())
+        .map(|attr| &attr.meta)
         .find(|meta| meta.path().is_ident(name))
-        .map(NestedMeta::from)
 }
 
 #[derive(Debug, Default, FromMeta)]
@@ -46,7 +45,7 @@ impl TargetField {
         let ident = field.ident.clone();
         let attrs = find_meta_attrs("tardigrade", &field.attrs).map_or_else(
             || Ok(TargetFieldAttrs::default()),
-            |meta| TargetFieldAttrs::from_nested_meta(&meta),
+            TargetFieldAttrs::from_meta,
         )?;
 
         let name = attrs

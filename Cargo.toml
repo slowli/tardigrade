@@ -1,46 +1,70 @@
-[package]
-name = "tardigrade"
+[workspace]
+members = [
+  # Base libraries
+  "crates/shared",
+  "crates/derive",
+  "crates/lib",
+  # Runtime and runtime helpers
+  "crates/rt",
+  "crates/grpc",
+  "crates/worker",
+  "crates/cli",
+  # E2E tests
+  "e2e-tests/pizza",
+]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.70.0"
 authors = ["Alex Ostrovski <ostrovski.alex@gmail.com>"]
 license = "MIT OR Apache-2.0"
-readme = "README.md"
-keywords = ["orchestration", "workflow", "business process"]
+keywords = ["orchestration", "workflow", "business-process"]
 categories = ["asynchronous", "wasm"]
-description = "Client bindings for Tardigrade workflows"
 repository = "https://github.com/slowli/tardigrade"
 
-[dependencies]
-async-trait = "0.1.57"
-chrono = { version = "0.4.23", default-features = false, features = ["serde"] }
-futures = "0.3.21"
-once_cell = "1.12.0"
-pin-project-lite = "0.2.9"
-serde = "1"
-serde_json = "1"
-slab = "0.4.6"
-tracing = { version = "0.1.37", optional = true }
-tracing-tunnel = { version = "0.1.0", optional = true, features = ["sender"] }
-
-tardigrade-shared = { version = "0.1.0", path = "crates/shared" }
-tardigrade-derive = { version = "0.1.0", path = "crates/derive" }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies.externref]
-version = "0.1.0"
-git = "https://github.com/slowli/externref.git"
-rev = "2e7ce459f98d0493d7734fe20b1945e41838250e"
-
-[dev-dependencies]
+[workspace.dependencies]
+anyhow = "1.0.57"
 assert_matches = "1.5.0"
 async-io = "1.7.0"
+async-std = "1.12.0"
+async-stream = "0.3.3"
+async-trait = "0.1.57"
+base64 = "0.21.0"
+chrono = { version = "0.4.23", default-features = false, features = ["serde"] }
+clap = "4.4.6"
+darling = "0.20.3"
+externref = "0.2.0"
+flate2 = "1.0.24"
+futures = "0.3.21"
+hashbrown = "0.14.1"
+http = { version = "0.2.9", default-features = false }
+leb128 = "0.2.5"
+lru = "0.12.0"
+mimicry = { version = "0.1.0", git = "https://github.com/slowli/mimicry.git", rev = "87abe3031032d3465f2e0172c96b68cd16fcf9f9"}
+once_cell = "1.12.0"
+pin-project-lite = "0.2.9"
+proc-macro2 = "1.0"
+prost = "0.12.1"
+prost-types = "0.12.1"
+quote = "1.0"
 rand = "0.8.5"
+serde = "1"
+serde_json = "1"
+syn = "2"
+slab = "0.4.6"
+test-casing = "0.1.1"
+tokio = "1.33.0"
+tonic = { version = "0.10.2", default-features = false }
+tonic-build = "0.10.2"
+tonic-reflection = "0.10.2"
+tracing = "0.1.37"
+tracing-subscriber = "0.3.17"
+tracing-capture = "0.1.0"
+tracing-tunnel = "0.1.0"
 version-sync = "0.9.4"
-
-[features]
-default = ["tracing"]
-# Enables tracing for the library glue code and the workflows that are defined
-# using the library.
-tracing = ["dep:tracing", "tracing-tunnel"]
+wasmtime = "13.0.0"
 
 [profile.wasm]
 inherits = "release"
@@ -48,14 +72,3 @@ panic = "abort"
 codegen-units = 1
 opt-level = "z" # Optimize for size, rather than speed
 lto = true
-
-[workspace]
-members = [
-  ".",
-  "crates/shared",
-  "crates/derive",
-  "crates/rt",
-  "crates/grpc",
-  "crates/worker",
-  "e2e-tests/pizza",
-]

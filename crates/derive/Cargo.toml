@@ -1,26 +1,27 @@
 [package]
 name = "tardigrade-derive"
-version = "0.1.0"
-edition = "2021"
-authors = ["Alex Ostrovski <ostrovski.alex@gmail.com>"]
-license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
 readme = "README.md"
-keywords = ["orchestration", "workflow", "business process"]
-categories = ["asynchronous", "wasm"]
 description = "Procedural macros for Tardigrade workflows"
-repository = "https://github.com/slowli/tardigrade"
 
 [lib]
 proc-macro = true
 
 [dependencies]
-darling = "0.14.1"
-proc-macro2 = "1.0"
-quote = "1.0"
-serde_json = "1.0"
-syn = "1.0"
+darling.workspace = true
+proc-macro2.workspace = true
+quote.workspace = true
+serde_json.workspace = true
+syn.workspace = true
 
 tardigrade-shared = { version = "0.1.0", path = "../shared" }
 
 [dev-dependencies]
-version-sync = "0.9.4"
+version-sync.workspace = true

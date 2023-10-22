@@ -161,7 +161,7 @@ fn consume_message_from_child(ctx: &mut MockInstance) -> anyhow::Result<Poll<()>
     // Emit a command to the child workflow.
     let mut commands = ctx.data_mut().sender(commands_id);
     let poll_res = commands.poll_ready().into_inner(ctx)?;
-    assert_matches!(poll_res, Poll::Ready(Ok(_)));
+    assert_matches!(poll_res, Poll::Ready(Ok(())));
 
     let mut commands = ctx.data_mut().sender(commands_id);
     commands.start_send(b"command #1".to_vec())?;
