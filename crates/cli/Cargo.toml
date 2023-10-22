@@ -17,7 +17,7 @@ clap = { workspace = true, features = ["derive", "wrap_help"] }
 futures.workspace = true
 http = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
-tonic.workspace = true
+tonic = { workspace = true, features = ["transport"] }
 tonic-reflection.workspace = true
 tracing = { workspace = true, features = ["attributes"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
