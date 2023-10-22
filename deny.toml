@@ -44,6 +44,10 @@ skip = [
   { name = "heck", version = "^0.3" },
   # Used by `h2`
   { name = "indexmap", version = "^1" },
+  # Used by `wasmtime`
+  { name = "itertools", version = "^0.10" },
+  # Used by `wasmtime` via `directories-next`
+  { name = "redox_syscall", version = "^0.2" },
   # Used by `async-io`
   { name = "socket2", version = "^0.4" },
   # Used by `wasmtime` together with the newer version
