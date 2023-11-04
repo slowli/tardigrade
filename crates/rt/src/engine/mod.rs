@@ -112,7 +112,7 @@ pub trait RunWorkflow: AsWorkflowData + Send {
     fn wake_waker(&mut self, waker_id: WakerId);
 
     /// Notifies that the definition with the specified `stub_id`, which was previously supplied
-    /// to [`WorkflowData::FIXME()`], has been resolved with the specified `result`.
+    /// to [`WorkflowData::request_definition()`], has been resolved with the specified `result`.
     fn resolve_definition(&mut self, stub_id: u64, result: Option<Interface>);
 
     /// Notifies that the child workflow with the specified `stub_id`, which was previously supplied

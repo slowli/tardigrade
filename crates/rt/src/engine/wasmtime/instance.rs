@@ -321,7 +321,9 @@ impl SharedChannelHandles {
 pub(super) enum HostResource {
     Receiver(ChannelId),
     Sender(ChannelId),
-    #[serde(skip)] // FIXME: why is this allowed?
+    #[serde(skip)]
+    // ^ OK because channel handles are only passed into workflow constructor and are immediately
+    // destructured by the workflow initialization code (i.e., never retained across an `await` point)
     ChannelHandles(SharedChannelHandles),
     Workflow(WorkflowId),
 }
