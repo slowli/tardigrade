@@ -96,10 +96,10 @@ pub struct SharedHandle<Fmt: HandleFormat> {
 // in a custom WASM section, so that it is available to the workflow runtime.
 #[derive(GetInterface, WithHandle, WorkflowEntry)]
 #[tardigrade(derive(Debug))]
-pub struct PizzaDelivery<Env: HandleFormat = Wasm> {
-    pub orders: InEnv<Receiver<PizzaOrder, Json>, Env>,
+pub struct PizzaDelivery<Fmt: HandleFormat = Wasm> {
+    pub orders: InEnv<Receiver<PizzaOrder, Json>, Fmt>,
     #[tardigrade(flatten)]
-    pub shared: SharedHandle<Env>,
+    pub shared: SharedHandle<Fmt>,
 }
 
 // The `GetInterface` implementation ensures (unfortunately, in runtime) that

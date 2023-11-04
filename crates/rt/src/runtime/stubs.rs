@@ -13,7 +13,7 @@ use std::{
     sync::Arc,
 };
 
-use super::{AsRuntime, CachedDefinitions, Definitions, StashStub};
+use super::{AsRuntime, CachedDefinitions, Definitions, Runtime, StashStub};
 use crate::{
     data::WorkflowData,
     engine::{DefineWorkflow, WorkflowEngine},
@@ -449,6 +449,18 @@ impl<'a, R: AsRuntime, Fmt: MapFormat> RuntimeSpawner<'a, R, Fmt> {
         self
     }
 
+    fn spawn_workflow_inner(
+        stubs: Stubs,
+        senders_to_close: Vec<ChannelId>,
+        runtime: &'a Runtime<R::Engine, R::Clock, R::Storage>,
+        transaction: <R::Storage as Storage>::Transaction<'a>,
+    ) -> impl Future<Output = anyhow::Result<WorkflowId>> + Send + 'a {
+        runtime
+            .inner
+            .definitions()
+            .then(|definitions| stubs.commit_external(definitions, transaction, senders_to_close))
+    }
+
     fn spawn_workflow(
         self,
         definition_id: &str,
@@ -471,18 +483,13 @@ impl<'a, R: AsRuntime, Fmt: MapFormat> RuntimeSpawner<'a, R, Fmt> {
         let runtime = self.inner.as_runtime();
         let mut stubs = Stubs::new(None);
         stubs.stash_workflow(0, definition_id, raw_args, channel_ids);
-        async move {
-            // TODO: This borrows cached definitions for too long
-            let definitions = runtime.inner.definitions().await;
-            runtime
-                .storage
-                .transaction()
-                .then(|transaction| {
-                    stubs.commit_external(definitions, transaction, senders_to_close)
-                })
-                .await
-        }
-        .boxed()
+        runtime
+            .storage
+            .transaction()
+            .then(|transaction| {
+                Self::spawn_workflow_inner(stubs, senders_to_close, runtime, transaction)
+            })
+            .boxed()
     }
 }
 
@@ -586,7 +593,7 @@ impl<'a, R: AsRuntime> CreateWorkflow for RuntimeSpawner<'a, R, Raw> {
         &self,
         definition_id: &str,
         args: W::Args,
-        handles: W::Handle<Self::Fmt>,
+        handles: W::Handle<Raw>,
     ) -> BoxFuture<'_, Result<Self::Spawned<W>, Self::Error>> {
         let channel_ids = W::into_untyped(handles);
         let raw_args = <W::Codec>::encode_value(args);

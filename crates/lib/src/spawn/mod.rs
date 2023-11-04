@@ -17,9 +17,9 @@
 //! // Assume we want to spawn a child workflow defined as follows:
 //! #[derive(GetInterface, WithHandle)]
 //! #[tardigrade(derive(Debug), auto_interface)]
-//! pub struct ChildWorkflow<Env: HandleFormat = Wasm> {
-//!     pub commands: InEnv<Receiver<String, Json>, Env>,
-//!     pub events: InEnv<Sender<String, Json>, Env>,
+//! pub struct ChildWorkflow<Fmt: HandleFormat = Wasm> {
+//!     pub commands: InEnv<Receiver<String, Json>, Fmt>,
+//!     pub events: InEnv<Sender<String, Json>, Fmt>,
 //! }
 //!
 //! impl WorkflowFn for ChildWorkflow {
