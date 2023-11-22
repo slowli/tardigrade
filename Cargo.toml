@@ -41,7 +41,7 @@ futures = "0.3.21"
 hashbrown = "0.14.1"
 http = { version = "0.2.9", default-features = false }
 leb128 = "0.2.5"
-lru = "0.12.0"
+lru = "0.12.1"
 mimicry = { version = "0.1.0", git = "https://github.com/slowli/mimicry.git", rev = "87abe3031032d3465f2e0172c96b68cd16fcf9f9"}
 once_cell = "1.12.0"
 pin-project-lite = "0.2.9"
