@@ -27,7 +27,7 @@ repository = "https://github.com/slowli/tardigrade"
 [workspace.dependencies]
 anyhow = "1.0.57"
 assert_matches = "1.5.0"
-async-io = "1.7.0"
+async-io = "2.2.1"
 async-std = "1.12.0"
 async-stream = "0.3.3"
 async-trait = "0.1.57"
