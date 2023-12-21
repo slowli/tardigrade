@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Request","SendError"],"fn":["channel"],"struct":["BroadcastError","BroadcastPublisher","BroadcastSubscriber","Receiver","RequestHandles","Requests","RequestsBuilder","Response","Sender"],"type":["RawReceiver","RawSender"]};

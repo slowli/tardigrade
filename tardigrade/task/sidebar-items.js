@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["JoinError"],"fn":["spawn","try_spawn","yield_now"],"struct":["ErrorContext","ErrorLocation","JoinHandle","TaskError"],"trait":["ErrorContextExt"],"type":["TaskResult"]};

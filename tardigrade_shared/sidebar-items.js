@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Request"],"mod":["handle","interface"],"struct":["Json","Raw","Response"],"trait":["Codec"],"type":["ChannelId","TaskId","TimerId","WakerId","WorkflowId"]};

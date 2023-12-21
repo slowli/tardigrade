@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["now","sleep"],"mod":["channel","handle","interface","spawn","task","test","workflow"],"struct":["Json","Raw","Timer","TimerDefinition"],"trait":["Codec"],"type":["ChannelId","TaskId","TimerId","WakerId","WorkflowId"]};

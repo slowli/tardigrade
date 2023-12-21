@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["Cancellation","FnHandler","Request","ResponseSender","Worker","WorkerRecord"],"trait":["HandleRequest","WorkerInterface","WorkerStorageConnection","WorkerStoragePool"],"type":["MessageStream"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"derive":["GetInterface","WithHandle","WorkflowEntry"],"struct":["Inverse","Wasm"],"trait":["DelegateHandle","GetInterface","HandleFormat","InsertHandles","IntoRaw","SpawnWorkflow","TakeHandles","TryFromRaw","WithHandle","WorkflowEntry","WorkflowFn"],"type":["InEnv","UntypedHandles"]};

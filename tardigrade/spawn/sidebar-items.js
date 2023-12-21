@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["HostError","ReceiverConfig","RemoteWorkflow","SenderConfig","Spawner","WorkflowBuilder","Workflows"],"trait":["CreateChannel","CreateWorkflow","ManageInterfaces"],"type":["HandlesPair"]};

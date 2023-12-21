@@ -1,0 +1,4 @@
+(function() {var implementors = {
+"tardigrade":[],
+"tardigrade_rt":[["impl&lt;'a, S: <a class=\"trait\" href=\"tardigrade_rt/storage/trait.Storage.html\" title=\"trait tardigrade_rt::storage::Storage\">Storage</a>&gt; <a class=\"trait\" href=\"tardigrade/workflow/handle/trait.HandleFormat.html\" title=\"trait tardigrade::workflow::handle::HandleFormat\">HandleFormat</a> for <a class=\"struct\" href=\"tardigrade_rt/handle/struct.StorageRef.html\" title=\"struct tardigrade_rt::handle::StorageRef\">StorageRef</a>&lt;'a, S&gt;"]]
+};if (window.register_implementors) {window.register_implementors(implementors);} else {window.pending_implementors = implementors;}})()

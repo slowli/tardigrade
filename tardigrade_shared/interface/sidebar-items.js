@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["ArgsSpec","Interface","InterfaceBuilder","ReceiverSpec","SenderSpec"],"type":["HandleSpec"]};

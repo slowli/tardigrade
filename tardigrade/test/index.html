@@ -1,0 +1,58 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Utils for workflow testing."><title>tardigrade::test - Rust</title><link rel="preload" as="font" type="font/woff2" crossorigin href="../../static.files/SourceSerif4-Regular-46f98efaafac5295.ttf.woff2"><link rel="preload" as="font" type="font/woff2" crossorigin href="../../static.files/FiraSans-Regular-018c141bf0843ffd.woff2"><link rel="preload" as="font" type="font/woff2" crossorigin href="../../static.files/FiraSans-Medium-8f9a781e4970d388.woff2"><link rel="preload" as="font" type="font/woff2" crossorigin href="../../static.files/SourceCodePro-Regular-562dcc5011b6de7d.ttf.woff2"><link rel="preload" as="font" type="font/woff2" crossorigin href="../../static.files/SourceSerif4-Bold-a2c9cd1067f8b328.ttf.woff2"><link rel="preload" as="font" type="font/woff2" crossorigin href="../../static.files/SourceCodePro-Semibold-d899c5a5c4aeb14a.ttf.woff2"><link rel="stylesheet" href="../../static.files/normalize-76eba96aa4d2e634.css"><link rel="stylesheet" href="../../static.files/rustdoc-47e7ab555ef2818a.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="tardigrade" data-themes="" data-resource-suffix="" data-rustdoc-version="1.74.0-nightly (62ebe3a2b 2023-09-08)" data-channel="nightly" data-search-js="search-5d3eaacf19ebf04f.js" data-settings-js="settings-de11bff964e9d4e5.js" data-settings-css="settings-8c76f75bfb6bd192.css" data-theme-light-css="light-f194925aa375ae96.css" data-theme-dark-css="dark-1dd4d1ce031e15de.css" data-theme-ayu-css="ayu-49e58d069f567085.css" ><script src="../../static.files/storage-db41da1a38ea3cb8.js"></script><script defer src="../../static.files/main-ef3a2de404864b0b.js"></script><noscript><link rel="stylesheet" media="(prefers-color-scheme:light)" href="../../static.files/light-f194925aa375ae96.css"><link rel="stylesheet" media="(prefers-color-scheme:dark)" href="../../static.files/dark-1dd4d1ce031e15de.css"><link rel="stylesheet" href="../../static.files/noscript-cffde32267a19fd6.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-16x16-8b506e7a72182f1c.png"><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-422f7d1d52889060.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-2c020d218678b618.svg"></head><body class="rustdoc mod"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="mobile-topbar"><button class="sidebar-menu-toggle">&#9776;</button><a class="logo-container" href="../../tardigrade/index.html"><img class="rust-logo" src="../../static.files/rust-logo-151179464ae7ed46.svg" alt="logo"></a><h2></h2></nav><nav class="sidebar"><a class="logo-container" href="../../tardigrade/index.html"><img class="rust-logo" src="../../static.files/rust-logo-151179464ae7ed46.svg" alt="logo"></a><h2 class="location"><a href="#">Module test</a></h2><div class="sidebar-elems"><section><ul class="block"><li><a href="#structs">Structs</a></li></ul></section></div></nav><main><div class="width-limiter"><nav class="sub"><form class="search-form"><span></span><input class="search-input" name="search" aria-label="Run search in the documentation" autocomplete="off" spellcheck="false" placeholder="Click or press ‘S’ to search, ‘?’ for more options…" type="search"><div id="help-button" title="help" tabindex="-1"><a href="../../help.html">?</a></div><div id="settings-menu" tabindex="-1"><a href="../../settings.html" title="settings"><img width="22" height="22" alt="Change settings" src="../../static.files/wheel-7b819b6101059cd0.svg"></a></div></form></nav><section id="main-content" class="content"><div class="main-heading"><h1>Module <a href="../index.html">tardigrade</a>::<wbr><a class="mod" href="#">test</a><button id="copy-path" title="Copy item path to clipboard"><img src="../../static.files/clipboard-7571035ce49a181d.svg" width="19" height="18" alt="Copy item path"></button></h1><span class="out-of-band"><a class="src" href="../../src/tardigrade/test.rs.html#1-598">source</a> · <button id="toggle-all-docs" title="collapse all docs">[<span>&#x2212;</span>]</button></span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Utils for workflow testing.</p>
+<p>This emulates imports / exports provided to WASM workflow modules by the Tardigrade runtime,
+allowing to test workflow logic without launching a runtime (or even including
+the corresponding crate as a dev dependency).</p>
+<h2 id="examples"><a href="#examples">Examples</a></h2>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="comment">// Assume we want to test this workflow.
+</span><span class="attr">#[derive(WithHandle, GetInterface)]
+#[tardigrade(derive(Debug), auto_interface)]
+</span><span class="kw">pub struct </span>MyWorkflow&lt;Fmt: HandleFormat = Wasm&gt; {
+    <span class="kw">pub </span>events: InEnv&lt;Sender&lt;Event, Json&gt;, Fmt&gt;,
+}
+
+<span class="doccomment">/// Arguments provided to the workflow on creation.
+</span><span class="attr">#[derive(Debug, Serialize, Deserialize)]
+</span><span class="kw">pub struct </span>Args {
+    <span class="kw">pub </span>counter: u32,
+}
+
+<span class="doccomment">/// Events emitted by the workflow.
+</span><span class="attr">#[derive(Debug, Serialize, Deserialize)]
+</span><span class="kw">pub enum </span>Event {
+    Count(u32),
+}
+
+<span class="kw">impl </span>WorkflowFn <span class="kw">for </span>MyWorkflow {
+    <span class="kw">type </span>Args = Args;
+    <span class="kw">type </span>Codec = Json;
+}
+
+<span class="comment">// Workflow logic
+</span><span class="attr">#[async_trait(<span class="question-mark">?</span>Send)]
+</span><span class="kw">impl </span>SpawnWorkflow <span class="kw">for </span>MyWorkflow {
+    <span class="kw">async fn </span>spawn(args: Args, <span class="kw-2">mut </span>handle: <span class="self">Self</span>) -&gt; TaskResult {
+        <span class="kw">for </span>i <span class="kw">in </span><span class="number">0</span>..args.counter {
+            tardigrade::sleep(Duration::from_millis(<span class="number">100</span>)).<span class="kw">await</span>;
+            handle.events.send(Event::Count(i)).<span class="kw">await</span>.ok();
+        }
+        <span class="prelude-val">Ok</span>(())
+    }
+}
+
+<span class="comment">// We can test the workflow as follows:
+</span><span class="kw">use </span>tardigrade::{spawn::RemoteWorkflow, test::{TestInstance, Timers}};
+
+<span class="kw">async fn </span>test_workflow(handle: MyWorkflow&lt;Inverse&lt;Wasm&gt;&gt;) {
+    <span class="comment">// The workflow should be waiting for a timer to emit an event.
+    </span><span class="kw">let </span><span class="kw-2">mut </span>events = handle.events;
+    <span class="macro">assert!</span>(events.next().now_or_never().is_none());
+
+    <span class="kw">let </span>now = Timers::now();
+    <span class="kw">let </span>new_now = Timers::next_timer_expiration().unwrap();
+    <span class="macro">assert_eq!</span>((new_now - now).num_milliseconds(), <span class="number">100</span>);
+    Timers::set_now(new_now);
+    <span class="kw">let </span>event = events.next().<span class="kw">await</span>.unwrap();
+    <span class="macro">assert_matches!</span>(event, Event::Count(<span class="number">0</span>));
+}
+TestInstance::&lt;MyWorkflow&gt;::new(Args { counter: <span class="number">1 </span>}).run(test_workflow);</code></pre></div>
+</div></details><h2 id="structs" class="small-section-header"><a href="#structs">Structs</a></h2><ul class="item-table"><li><div class="item-name"><a class="struct" href="struct.MockScheduler.html" title="struct tardigrade::test::MockScheduler">MockScheduler</a></div><div class="desc docblock-short">Mock workflow scheduler.</div></li><li><div class="item-name"><a class="struct" href="struct.Runtime.html" title="struct tardigrade::test::Runtime">Runtime</a></div><div class="desc docblock-short">Mock runtime allowing to execute workflows.</div></li><li><div class="item-name"><a class="struct" href="struct.TestInstance.html" title="struct tardigrade::test::TestInstance">TestInstance</a></div><div class="desc docblock-short">Instance of a workflow combined with a <a href="struct.Runtime.html" title="struct tardigrade::test::Runtime"><code>Runtime</code></a>.</div></li><li><div class="item-name"><a class="struct" href="struct.Timers.html" title="struct tardigrade::test::Timers">Timers</a></div><div class="desc docblock-short">Handle allowing to manipulate time in the test environment.</div></li><li><div class="item-name"><a class="struct" href="struct.WorkflowRegistry.html" title="struct tardigrade::test::WorkflowRegistry">WorkflowRegistry</a></div><div class="desc docblock-short">Mock registry for workflows.</div></li></ul></section></div></main></body></html>

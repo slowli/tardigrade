@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["AnyWorkflowHandle"],"struct":["CompletedWorkflowHandle","ConcurrencyError","ErroneousMessage","ErroredWorkflowHandle","MessageReceiver","MessageSender","ReceivedMessage","StorageRef","WorkflowHandle"],"type":["HostHandles","RawMessageReceiver","RawMessageSender"]};
