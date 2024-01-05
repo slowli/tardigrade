@@ -25,15 +25,15 @@ categories = ["asynchronous", "wasm"]
 repository = "https://github.com/slowli/tardigrade"
 
 [workspace.dependencies]
-anyhow = "1.0.76"
+anyhow = "1.0.79"
 assert_matches = "1.5.0"
 async-io = "2.2.2"
 async-std = "1.12.0"
 async-stream = "0.3.3"
-async-trait = "0.1.75"
+async-trait = "0.1.77"
 base64 = "0.21.5"
 chrono = { version = "0.4.23", default-features = false, features = ["serde"] }
-clap = "4.4.11"
+clap = "4.4.13"
 darling = "0.20.3"
 externref = "0.2.0"
 flate2 = "1.0.24"
