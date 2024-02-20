@@ -25,23 +25,23 @@ categories = ["asynchronous", "wasm"]
 repository = "https://github.com/slowli/tardigrade"
 
 [workspace.dependencies]
-anyhow = "1.0.76"
+anyhow = "1.0.80"
 assert_matches = "1.5.0"
-async-io = "2.2.2"
+async-io = "2.3.1"
 async-std = "1.12.0"
 async-stream = "0.3.3"
-async-trait = "0.1.75"
-base64 = "0.21.5"
-chrono = { version = "0.4.23", default-features = false, features = ["serde"] }
-clap = "4.4.11"
-darling = "0.20.3"
+async-trait = "0.1.77"
+base64 = "0.21.7"
+chrono = { version = "0.4.34", default-features = false, features = ["serde"] }
+clap = "4.5.1"
+darling = "0.20.6"
 externref = "0.2.0"
 flate2 = "1.0.24"
 futures = "0.3.21"
 hashbrown = "0.14.3"
 http = { version = "0.2.9", default-features = false }
 leb128 = "0.2.5"
-lru = "0.12.1"
+lru = "0.12.2"
 mimicry = { version = "0.1.0", git = "https://github.com/slowli/mimicry.git", rev = "87abe3031032d3465f2e0172c96b68cd16fcf9f9"}
 once_cell = "1.19.0"
 pin-project-lite = "0.2.9"
@@ -55,7 +55,7 @@ serde_json = "1"
 syn = "2"
 slab = "0.4.6"
 test-casing = "0.1.2"
-tokio = "1.35.1"
+tokio = "1.36.0"
 tonic = { version = "0.10.2", default-features = false }
 tonic-build = "0.10.2"
 tonic-reflection = "0.10.2"
